@@ -1,0 +1,9 @@
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.env
+
+# 自動產生／暫存，不進版控
+backups/
+.tmp_import_tests/
