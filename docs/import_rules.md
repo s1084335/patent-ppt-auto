@@ -104,8 +104,8 @@ WIPS 目前為 148 欄，原始欄位與原始值都必須保留。
 ```text
 patents:
 每一列 Excel 專利資料對應一列 patents。
-只放專利本身主欄位、year 欄位，以及去重用的三個號碼欄位。
-三個號碼欄位在 patents 以繁體欄位名保存，不混成抽象欄位。
+只放專利本身主欄位、year 欄位，以及識別用的四個號碼欄位。
+四個號碼欄位在 patents 以繁體欄位名保存，不混成抽象欄位。
 
 patent_people:
 每一列 Excel 專利資料對應一列 patent_people。
@@ -131,7 +131,7 @@ WIPS 欄位保存規則：
 申请号 -> patents."申請號"
 授权公告号 -> patents."授權公告號"
 未审查的公开号 -> patents."未審查的公開號"
-审查的公告号 -> patent_attributes."審查的公告號"
+审查的公告号 -> patents."審查的公告號"
 ```
 
 不得做：
@@ -160,12 +160,13 @@ WIPS 欄位保存規則：
 
 ## 去重規則
 
-去重使用正式公告號、公開號與申請號的組合。
+去重使用 WIPS 四種專利識別號碼做 identifier lookup，不使用多欄組合字串完全相等作為合併條件。
 
-WIPS 第一版去重欄位：
+WIPS 識別欄位：
 
 ```text
 授权公告号
+审查的公告号
 未审查的公开号
 申请号
 ```
@@ -173,26 +174,29 @@ WIPS 第一版去重欄位：
 規則：
 
 ```text
-如果 授权公告号、未审查的公开号、申请号 任一有值：
-dedupe_key = WIPS_NUMBER_COMBINATION|授权公告号={授权公告号}|未审查的公开号={未审查的公开号}|申请号={申请号}
+匯入一列時，依序用下列非空欄位查找既有 patents：
+1. 授权公告号 -> patents."授權公告號"
+2. 审查的公告号 -> patents."審查的公告號"
+3. 未审查的公开号 -> patents."未審查的公開號"
+4. 申请号 -> patents."申請號"；此項會同時比對相容的 country_code / database_name，降低跨資料庫誤合併。
 
-如果 授权公告号、未审查的公开号、申请号 都空白：
+如果四個識別欄位都空白：
 dedupe_key = WIPS_ROW|source_file_id|row_number
 ```
 
 注意：
 
 ```text
-dedupe_key 只用於去重，不代表資料欄位合併。
+dedupe_key 只用於來源追蹤與除錯，不作為專利合併的唯一判準。
 授权公告号 保存為 patents."授權公告號"。
+审查的公告号 保存為 patents."審查的公告號"。
 未审查的公开号 保存為 patents."未審查的公開號"。
 申请号 保存為 patents."申請號"。
-审查的公告号 不納入第一版 dedupe_key。
 ```
 
 ## 重複資料與差異解決規則
 
-同一個 `dedupe_key` 已存在時，不建立新的 `patents` 主資料列。
+同一個 identifier lookup 命中既有 `patents` 時，不建立新的 `patents` 主資料列。
 
 主資料更新採用來源優先權策略：
 
@@ -383,7 +387,7 @@ created_at
 updated_at
 ```
 
-`dedupe_key` 放在 `patent_sources`，不放在 `patents`。
+`dedupe_key` 放在 `patent_sources`，不放在 `patents`；它保存本列匯入時看到的識別碼快照，不取代四個獨立號碼欄位。
 
 來源檔案與匯入時間不存進 `patents`，由 `patent_source_summary` view 查詢。
 

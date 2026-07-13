@@ -57,6 +57,7 @@ CREATE TABLE raw_layer.raw_records (
 CREATE TABLE core_layer.patents (
     id BIGSERIAL PRIMARY KEY,
     "授權公告號" TEXT,
+    "審查的公告號" TEXT,
     "未審查的公開號" TEXT,
     "申請號" TEXT,
     country_code TEXT,
@@ -77,6 +78,10 @@ CREATE TABLE core_layer.patents (
     "獨立項數量[KR,JP,US,CN,EP,IN]" TEXT,
     "獨立項[KR,JP,US,CN,EP,IN]" TEXT,
     "獨立項(原文)[KR,JP,CN,EP]" TEXT,
+    "Orig. CPC(Main)" TEXT,
+    "Orig. IPC(Main)" TEXT,
+    "Curr. CPC(Main)" TEXT,
+    "Curr. IPC(Main)" TEXT,
     legal_status TEXT,
     "WIPS同族ID" TEXT
 );
@@ -132,7 +137,6 @@ CREATE TABLE core_layer.patent_attributes (
     "發行日[JP,EP,PCT]" TEXT,
     "授權公告日" TEXT,
     "未審查的公開日" TEXT,
-    "審查的公告號" TEXT,
     "審查的公告日" TEXT,
     "母案申請日 [KR,JP,EP,CN,IN,CA]" TEXT,
     "優先權申請號" TEXT,
@@ -152,14 +156,10 @@ CREATE TABLE core_layer.patent_attributes (
     "PCT公開日" TEXT,
     "Orig. FI[JP]" TEXT,
     "Orig. F-term[JP]" TEXT,
-    "Curr. IPC(Main)" TEXT,
     "Curr. IPC(All)" TEXT,
     "Orig. IPC(All)" TEXT,
     "Curr. FI[JP]" TEXT,
-    "Orig. CPC(Main)" TEXT,
     "Orig. US Class(All)[US]" TEXT,
-    "Curr. CPC(Main)" TEXT,
-    "Orig. IPC(Main)" TEXT,
     "Curr. CPC(All)" TEXT,
     "Orig. US Class(Main)[US]" TEXT,
     "Curr. US Class(Main)[US]" TEXT,
@@ -238,6 +238,7 @@ CREATE INDEX idx_source_files_file_hash ON raw_layer.source_files(file_hash);
 CREATE INDEX idx_source_files_imported_at ON raw_layer.source_files(imported_at);
 
 CREATE INDEX idx_patents_official_publication_number ON core_layer.patents("授權公告號");
+CREATE INDEX idx_patents_examined_publication_number ON core_layer.patents("審查的公告號");
 CREATE INDEX idx_patents_publication_number ON core_layer.patents("未審查的公開號");
 CREATE INDEX idx_patents_application_number ON core_layer.patents("申請號");
 CREATE INDEX idx_patents_publication_year ON core_layer.patents(publication_year);

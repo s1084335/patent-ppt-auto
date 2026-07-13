@@ -7,3 +7,13 @@ __pycache__/
 # 自動產生／暫存，不進版控
 backups/
 .tmp_import_tests/
+tmp/
+output/
+
+# 分類樹 v0 歸檔：腳本與設計文件進版控，可重生的大產出不進
+# （AutoPhrase repo snapshot 可從官方重下、片語與共現產出可重跑）
+archive/taxonomy-v0/taxonomy/autophrase/AutoPhrase/
+archive/taxonomy-v0/taxonomy/autophrase/input/
+archive/taxonomy-v0/taxonomy/autophrase/output/
+archive/taxonomy-v0/taxonomy/cooccur/
+archive/taxonomy-v0/taxonomy/out/

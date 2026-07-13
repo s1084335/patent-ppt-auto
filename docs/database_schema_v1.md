@@ -1,4 +1,6 @@
-# 資料庫 Schema v1
+# 資料庫 Schema v1（歷史草案）
+
+> 注意：本文件是早期 7 表草案。現行可執行 schema 以 `alembic/versions/0001_baseline_schema.sql`、後續 Alembic migration、`docs/import_rules.md` 與實作程式為準。
 
 第一版採用 7 張表，目標是讓 WIPS 全部欄位都有整理後的位置，同時保留 GPSS 等其他來源的擴充彈性。
 
@@ -41,24 +43,24 @@ publication_year
 
 ## 去重規則
 
-第一版固定使用：
+現行 WIPS 匯入不再把公告號/公開號混成 `publication_number`，也不再用多欄組合字串完全相等作為專利合併條件。
+
+WIPS identifier lookup 使用：
 
 ```text
-dedupe_key = publication_number + "|" + application_number
+授權公告號 -> patents."授權公告號"
+審查的公告號 -> patents."審查的公告號"
+未審查的公開號 -> patents."未審查的公開號"
+申請號 -> patents."申請號"
 ```
 
-WIPS 的 `publication_number` 來源優先序：
+查找優先序：
 
 ```text
-授權公告號 -> 未審查的公开号 -> 审查的公告号
+授權公告號 -> 審查的公告號 -> 未審查的公開號 -> 申請號
 ```
 
-GPSS 則預計使用：
-
-```text
-PN -> publication_number
-AN -> application_number
-```
+`dedupe_key` 僅保存本列來源識別碼快照與 fallback row key，供來源追蹤與除錯使用，不作為合併唯一真相。
 
 ## 第一版暫不拆出的表
 

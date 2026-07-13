@@ -248,6 +248,7 @@ PATENT_FIELDS = {
     "发明专利/实用新型": "patent_type",
     "授权公告号": "授權公告號",
     "未审查的公开号": "未審查的公開號",
+    "审查的公告号": "審查的公告號",
     "申请号": "申請號",
     "标题": "title",
     "标题(原文)": "title_original",
@@ -259,6 +260,10 @@ PATENT_FIELDS = {
     "独立项数量[KR,JP,US,CN,EP,IN]": "獨立項數量[KR,JP,US,CN,EP,IN]",
     "独立项[KR,JP,US,CN,EP,IN]": "獨立項[KR,JP,US,CN,EP,IN]",
     "独立项(原文)[KR,JP,CN,EP]": "獨立項(原文)[KR,JP,CN,EP]",
+    "Orig. CPC(Main)": "Orig. CPC(Main)",
+    "Orig. IPC(Main)": "Orig. IPC(Main)",
+    "Curr. CPC(Main)": "Curr. CPC(Main)",
+    "Curr. IPC(Main)": "Curr. IPC(Main)",
     "状态[US,JP,KR,CN,EP,CA,AU]": "legal_status",
     "WIPS同族ID": "WIPS同族ID",
 }

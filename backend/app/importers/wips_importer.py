@@ -18,15 +18,28 @@ from backend.app.mappings.wips import (
     PATENT_FIELDS,
     PEOPLE_FIELD_COLUMNS,
     PEOPLE_GROUPS,
+    PUBLICATION_DATE_FIELDS,
     SOURCE_SYSTEM,
     canonical_field_name,
 )
 from backend.app.transforms.dates import parse_date, year_from_date
 from backend.app.transforms.text import clean_long_text, clean_text, value_to_text
 
-OFFICIAL_PUBLICATION_NUMBER_FIELD = "授权公告号"
-PUBLICATION_NUMBER_FIELD = "未审查的公开号"
+GRANT_PUBLICATION_NUMBER_FIELD = "授权公告号"
+UNEXAMINED_PUBLICATION_NUMBER_FIELD = "未审查的公开号"
+EXAMINED_PUBLICATION_NUMBER_FIELD = "审查的公告号"
 APPLICATION_NUMBER_FIELD = "申请号"
+IDENTIFIER_SOURCE_FIELDS = (
+    GRANT_PUBLICATION_NUMBER_FIELD,
+    EXAMINED_PUBLICATION_NUMBER_FIELD,
+    UNEXAMINED_PUBLICATION_NUMBER_FIELD,
+    APPLICATION_NUMBER_FIELD,
+)
+PATENT_IDENTIFIER_LOOKUP_ORDER = (
+    "授權公告號",
+    "審查的公告號",
+    "未審查的公開號",
+)
 PEOPLE_FIELDS = tuple(dict.fromkeys(field for fields in PEOPLE_GROUPS.values() for field in fields.values()))
 CONFLICT_RESOLUTION_STRATEGY = "incoming_source_priority"
 
@@ -271,11 +284,11 @@ def select_patent_sheet(workbook) -> str:
 def normalize_record(raw: dict[str, Any]) -> dict[str, Any]:
     canonical_raw = canonicalize_record(raw)
     application_date = parse_date(canonical_raw.get(APPLICATION_DATE_FIELD))
+    publication_date = first_parsed_date(canonical_raw, PUBLICATION_DATE_FIELDS)
 
     patent = {target: clean_long_text(canonical_raw.get(source)) for source, target in PATENT_FIELDS.items()}
-    patent["publication_number"] = None
-    patent["publication_date"] = None
-    patent["publication_year"] = None
+    patent["publication_date"] = publication_date
+    patent["publication_year"] = year_from_date(publication_date)
     patent["application_date"] = application_date
     patent["application_year"] = year_from_date(application_date)
     patent["dedupe_key"] = build_dedupe_key(canonical_raw)
@@ -287,17 +300,21 @@ def normalize_record(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def first_parsed_date(raw: dict[str, Any], fields: list[str]) -> Any:
+    for field in fields:
+        parsed = parse_date(raw.get(field))
+        if parsed:
+            return parsed
+    return None
+
+
 def build_dedupe_key(raw: dict[str, Any]) -> str | None:
-    official_publication_number = clean_text(raw.get(OFFICIAL_PUBLICATION_NUMBER_FIELD))
-    publication_number = clean_text(raw.get(PUBLICATION_NUMBER_FIELD))
-    application_number = clean_text(raw.get(APPLICATION_NUMBER_FIELD))
-    if not official_publication_number and not publication_number and not application_number:
+    identifiers = {field: clean_text(raw.get(field)) for field in IDENTIFIER_SOURCE_FIELDS}
+    if not any(identifiers.values()):
         return None
     return (
-        "WIPS_NUMBER_COMBINATION|"
-        f"{OFFICIAL_PUBLICATION_NUMBER_FIELD}={official_publication_number or ''}|"
-        f"{PUBLICATION_NUMBER_FIELD}={publication_number or ''}|"
-        f"{APPLICATION_NUMBER_FIELD}={application_number or ''}"
+        "WIPS_IDENTIFIERS|"
+        + "|".join(f"{field}={identifiers[field] or ''}" for field in IDENTIFIER_SOURCE_FIELDS)
     )
 
 
@@ -430,7 +447,6 @@ def insert_raw_record(cur, source_file_id: int, sheet_name: str, raw: dict[str, 
 
 
 def upsert_patent(cur, patent: dict[str, Any], source_file_id: int, raw_record_id: int) -> int:
-    dedupe_key = patent["dedupe_key"]
     patent_params = {
         **patent,
         "claim_count": patent.get("權利要求的項數"),
@@ -440,71 +456,36 @@ def upsert_patent(cur, patent: dict[str, Any], source_file_id: int, raw_record_i
         "independent_claim_count": patent.get("獨立項數量[KR,JP,US,CN,EP,IN]"),
         "independent_claims": patent.get("獨立項[KR,JP,US,CN,EP,IN]"),
         "independent_claims_original": patent.get("獨立項(原文)[KR,JP,CN,EP]"),
+        "orig_cpc_main": patent.get("Orig. CPC(Main)"),
+        "orig_ipc_main": patent.get("Orig. IPC(Main)"),
+        "curr_cpc_main": patent.get("Curr. CPC(Main)"),
+        "curr_ipc_main": patent.get("Curr. IPC(Main)"),
     }
-    cur.execute(
-        """
-        SELECT patent_id
-        FROM patent_sources
-        WHERE dedupe_key = %s
-        ORDER BY id
-        LIMIT 1
-        """,
-        (dedupe_key,),
-    )
-    existing = cur.fetchone()
-    if existing:
-        patent_id = existing[0]
-        cur.execute(
-            """
-            UPDATE patents
-            SET
-                "授權公告號" = COALESCE(%(授權公告號)s, "授權公告號"),
-                "未審查的公開號" = COALESCE(%(未審查的公開號)s, "未審查的公開號"),
-                "申請號" = COALESCE(%(申請號)s, "申請號"),
-                country_code = COALESCE(%(country_code)s, country_code),
-                database_name = COALESCE(%(database_name)s, database_name),
-                document_kind = COALESCE(%(document_kind)s, document_kind),
-                patent_type = COALESCE(%(patent_type)s, patent_type),
-                publication_date = COALESCE(%(publication_date)s, publication_date),
-                publication_year = COALESCE(%(publication_year)s, publication_year),
-                application_date = COALESCE(%(application_date)s, application_date),
-                application_year = COALESCE(%(application_year)s, application_year),
-                title = COALESCE(%(title)s, title),
-                title_original = COALESCE(%(title_original)s, title_original),
-                abstract = COALESCE(%(abstract)s, abstract),
-                "權利要求的項數" = COALESCE(%(claim_count)s, "權利要求的項數"),
-                "所有權利要求[JP,KR,CN]" = COALESCE(%(all_claims)s, "所有權利要求[JP,KR,CN]"),
-                "主權項" = COALESCE(%(main_claim)s, "主權項"),
-                "主權項(原文)" = COALESCE(%(main_claim_original)s, "主權項(原文)"),
-                "獨立項數量[KR,JP,US,CN,EP,IN]" = COALESCE(%(independent_claim_count)s, "獨立項數量[KR,JP,US,CN,EP,IN]"),
-                "獨立項[KR,JP,US,CN,EP,IN]" = COALESCE(%(independent_claims)s, "獨立項[KR,JP,US,CN,EP,IN]"),
-                "獨立項(原文)[KR,JP,CN,EP]" = COALESCE(%(independent_claims_original)s, "獨立項(原文)[KR,JP,CN,EP]"),
-                legal_status = COALESCE(%(legal_status)s, legal_status),
-                "WIPS同族ID" = COALESCE(%(WIPS同族ID)s, "WIPS同族ID")
-            WHERE id = %(patent_id)s
-            """,
-            {**patent_params, "patent_id": patent_id},
-        )
+    patent_id = find_existing_patent_id(cur, patent)
+    if patent_id:
+        update_patent_empty_fields(cur, patent_id, patent_params)
         return patent_id
 
     cur.execute(
         """
         INSERT INTO patents (
-            "授權公告號", "未審查的公開號", "申請號", country_code, database_name, document_kind,
-            patent_type, publication_date, publication_year, application_date, application_year,
-            title, title_original, abstract, "權利要求的項數", "所有權利要求[JP,KR,CN]",
-            "主權項", "主權項(原文)", "獨立項數量[KR,JP,US,CN,EP,IN]",
-            "獨立項[KR,JP,US,CN,EP,IN]", "獨立項(原文)[KR,JP,CN,EP]",
-            legal_status, "WIPS同族ID"
+            "授權公告號", "審查的公告號", "未審查的公開號", "申請號", country_code,
+            database_name, document_kind, patent_type, publication_date, publication_year,
+            application_date, application_year, title, title_original, abstract,
+            "權利要求的項數", "所有權利要求[JP,KR,CN]", "主權項", "主權項(原文)",
+            "獨立項數量[KR,JP,US,CN,EP,IN]", "獨立項[KR,JP,US,CN,EP,IN]",
+            "獨立項(原文)[KR,JP,CN,EP]", "Orig. CPC(Main)", "Orig. IPC(Main)",
+            "Curr. CPC(Main)", "Curr. IPC(Main)", legal_status, "WIPS同族ID"
         )
         VALUES (
-            %(授權公告號)s, %(未審查的公開號)s, %(申請號)s, %(country_code)s,
-            %(database_name)s, %(document_kind)s, %(patent_type)s, %(publication_date)s,
-            %(publication_year)s, %(application_date)s, %(application_year)s, %(title)s,
-            %(title_original)s, %(abstract)s, %(claim_count)s, %(all_claims)s,
-            %(main_claim)s, %(main_claim_original)s, %(independent_claim_count)s,
-            %(independent_claims)s, %(independent_claims_original)s,
-            %(legal_status)s, %(WIPS同族ID)s
+            %(授權公告號)s, %(審查的公告號)s, %(未審查的公開號)s, %(申請號)s,
+            %(country_code)s, %(database_name)s, %(document_kind)s, %(patent_type)s,
+            %(publication_date)s, %(publication_year)s, %(application_date)s,
+            %(application_year)s, %(title)s, %(title_original)s, %(abstract)s,
+            %(claim_count)s, %(all_claims)s, %(main_claim)s, %(main_claim_original)s,
+            %(independent_claim_count)s, %(independent_claims)s,
+            %(independent_claims_original)s, %(orig_cpc_main)s, %(orig_ipc_main)s,
+            %(curr_cpc_main)s, %(curr_ipc_main)s, %(legal_status)s, %(WIPS同族ID)s
         )
         RETURNING id
         """,
@@ -512,6 +493,94 @@ def upsert_patent(cur, patent: dict[str, Any], source_file_id: int, raw_record_i
     )
     patent_id = cur.fetchone()[0]
     return patent_id
+
+
+def find_existing_patent_id(cur, patent: dict[str, Any]) -> int | None:
+    for column_name in PATENT_IDENTIFIER_LOOKUP_ORDER:
+        value = patent.get(column_name)
+        if not value:
+            continue
+        cur.execute(
+            f"""
+            SELECT id
+            FROM patents
+            WHERE "{column_name}" = %s
+            ORDER BY id
+            LIMIT 1
+            """,
+            (value,),
+        )
+        existing = cur.fetchone()
+        if existing:
+            return existing[0]
+
+    application_number = patent.get("申請號")
+    if not application_number:
+        return None
+    cur.execute(
+        """
+        SELECT id
+        FROM patents
+        WHERE "申請號" = %s
+          AND (%s::text IS NULL OR country_code IS NULL OR country_code = %s)
+          AND (%s::text IS NULL OR database_name IS NULL OR database_name = %s)
+        ORDER BY
+            CASE WHEN country_code = %s THEN 0 ELSE 1 END,
+            CASE WHEN database_name = %s THEN 0 ELSE 1 END,
+            id
+        LIMIT 1
+        """,
+        (
+            application_number,
+            patent.get("country_code"),
+            patent.get("country_code"),
+            patent.get("database_name"),
+            patent.get("database_name"),
+            patent.get("country_code"),
+            patent.get("database_name"),
+        ),
+    )
+    existing = cur.fetchone()
+    return existing[0] if existing else None
+
+
+def update_patent_empty_fields(cur, patent_id: int, patent_params: dict[str, Any]) -> None:
+    cur.execute(
+        """
+        UPDATE patents
+        SET
+            "授權公告號" = COALESCE("授權公告號", %(授權公告號)s),
+            "審查的公告號" = COALESCE("審查的公告號", %(審查的公告號)s),
+            "未審查的公開號" = COALESCE("未審查的公開號", %(未審查的公開號)s),
+            "申請號" = COALESCE("申請號", %(申請號)s),
+            country_code = COALESCE(country_code, %(country_code)s),
+            database_name = COALESCE(database_name, %(database_name)s),
+            document_kind = COALESCE(document_kind, %(document_kind)s),
+            patent_type = COALESCE(patent_type, %(patent_type)s),
+            publication_date = COALESCE(publication_date, %(publication_date)s),
+            publication_year = COALESCE(publication_year, %(publication_year)s),
+            application_date = COALESCE(application_date, %(application_date)s),
+            application_year = COALESCE(application_year, %(application_year)s),
+            title = COALESCE(title, %(title)s),
+            title_original = COALESCE(title_original, %(title_original)s),
+            abstract = COALESCE(abstract, %(abstract)s),
+            "權利要求的項數" = COALESCE("權利要求的項數", %(claim_count)s),
+            "所有權利要求[JP,KR,CN]" = COALESCE("所有權利要求[JP,KR,CN]", %(all_claims)s),
+            "主權項" = COALESCE("主權項", %(main_claim)s),
+            "主權項(原文)" = COALESCE("主權項(原文)", %(main_claim_original)s),
+            "獨立項數量[KR,JP,US,CN,EP,IN]" = COALESCE("獨立項數量[KR,JP,US,CN,EP,IN]", %(independent_claim_count)s),
+            "獨立項[KR,JP,US,CN,EP,IN]" = COALESCE("獨立項[KR,JP,US,CN,EP,IN]", %(independent_claims)s),
+            "獨立項(原文)[KR,JP,CN,EP]" = COALESCE("獨立項(原文)[KR,JP,CN,EP]", %(independent_claims_original)s),
+            "Orig. CPC(Main)" = COALESCE("Orig. CPC(Main)", %(orig_cpc_main)s),
+            "Orig. IPC(Main)" = COALESCE("Orig. IPC(Main)", %(orig_ipc_main)s),
+            "Curr. CPC(Main)" = COALESCE("Curr. CPC(Main)", %(curr_cpc_main)s),
+            "Curr. IPC(Main)" = COALESCE("Curr. IPC(Main)", %(curr_ipc_main)s),
+            legal_status = COALESCE(legal_status, %(legal_status)s),
+            "WIPS同族ID" = COALESCE("WIPS同族ID", %(WIPS同族ID)s)
+        WHERE id = %(patent_id)s
+        """,
+        {**patent_params, "patent_id": patent_id},
+    )
 
 
 def insert_patent_source(cur, patent_id: int, raw_record_id: int, source_file_id: int, dedupe_key: str) -> None:
@@ -580,5 +649,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

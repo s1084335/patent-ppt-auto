@@ -98,17 +98,17 @@ docs\import_rules.md
 2. 欄位內容不混合、不改名、不跨欄位擇一覆蓋。
 3. 多人/多公司不拆。
 4. 分類碼不拆。
-5. 授权公告号、未审查的公开号、申请号 放在 patents，資料庫欄位顯示為繁體，不混成 publication_number 或 application_number。
+5. 授权公告号、审查的公告号、未审查的公开号、申请号 放在 patents，資料庫欄位顯示為繁體，不混成 publication_number 或 application_number。
 6. 公告日/公開日欄位原樣保留，不混成 publication_date。
-7. 去重使用 授权公告号、未审查的公开号、申请号 三欄組合。
-8. 三欄都空白時，用 source_file_id + row_number 作為獨立列。
-9. dedupe_key 只用於去重，不代表資料欄位合併。
+7. 去重使用四種識別欄位做 identifier lookup，不再使用三欄組合字串完全相等作為合併條件。
+8. 四個識別欄位都空白時，用 source_file_id + row_number 作為獨立列。
+9. dedupe_key 只用於來源追蹤與除錯，不代表資料欄位合併。
 10. 整理後欄位層不能依賴 raw_records 補欄位存在性。
-11. patents 每筆 Excel 資料一列，只放專利本身欄位、year 欄位，以及去重用的三個號碼欄位。
+11. patents 每筆 Excel 資料一列，只放專利本身欄位、year 欄位，以及識別用的四個號碼欄位。
 12. patent_people 每筆 Excel 資料寫入一列，人員來源欄位各自成欄，空欄位保留為 NULL。
 13. 非 patents / 非 patent_people 的 Excel 欄位都要寫入 patent_attributes 寬表，空值也要保留為 NULL。
 14. WIPS 欄位名稱支援常見繁體正規化到既有 mapping，但 raw_records 保留原始欄名。
-15. 同一 dedupe_key 已存在時，patents / patent_people 依來源優先權更新，策略為 incoming_source_priority。
+15. identifier lookup 命中既有 patents 時，patents / patent_people 依來源優先權更新，策略為 incoming_source_priority。
 16. 既有值與新來源值不同時，以新來源值更新主資料，來源差異由 raw_records / patent_sources / patent_attributes 保留追溯。
 17. 不同來源原始資料保留在 raw_records / patent_sources / patent_attributes 追溯。
 18. WIPS 來源格式支援 XLSX / CSV / TXT / XML / MDB，格式只影響讀取層，不改分表與去重規則。
@@ -180,7 +180,7 @@ python -m uv run python -m backend.app.importers.wips_importer data\raw\wips_lis
 2. patent_attributes 是否以寬表保留其他 WIPS 原欄位。
 3. patent_people 是否每件專利一列，且多人/多公司同格保存在對應來源欄位。
 4. patent_attributes 是否保留分類碼欄位，例如 Orig. CPC(Main)、Curr. IPC(All)。
-5. patents 是否透過 patent_sources.dedupe_key 依 授权公告号、未审查的公开号、申请号 三欄組合去重。
+5. patents 是否依 授权公告号、审查的公告号、未审查的公开号、申请号 四種識別欄位查找去重。
 ```
 
 ## 重要提醒
@@ -189,5 +189,5 @@ python -m uv run python -m backend.app.importers.wips_importer data\raw\wips_lis
 
 ```text
 欄位保存：原本是什麼欄位，就按 mapping 放到對應資料表欄位；資料庫實體欄位使用繁體中文或英文。
-去重：使用 授权公告号、未审查的公开号、申请号 三欄組合。
+去重：使用 授权公告号、审查的公告号、未审查的公开号、申请号 四種識別欄位查找。
 ```

@@ -1,0 +1,37 @@
+# Patent tool — database container (first stage).
+# Only postgres for now; the backend is not designed yet. Host port 5433 is
+# reserved so the future backend (and local tools/alembic) connect via
+# localhost:5433 while the native PostgreSQL 18 keeps 5432.
+#
+# Usage:
+#   copy .env.example to .env and set POSTGRES_PASSWORD
+#   docker compose up -d postgres
+#   (schema) set PGPORT=5433 then run: .venv\Scripts\python.exe -m alembic upgrade head
+
+services:
+  postgres:
+    image: postgres:18
+    container_name: patent-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-patent_ppt}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      # postgres:18 image keeps PGDATA under /var/lib/postgresql (new 18+ layout)
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-patent_ppt}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # Reserved for later stages (same backend image for both):
+  #   migrate:  command: alembic upgrade head  (run once, then stop)
+  #   backend:  app-runner CLI container, mounts ./data and ./output
+  #   frontend: HTML frontend
+
+volumes:
+  pgdata:
