@@ -16,10 +16,12 @@ output/
 # 本機模型檔很大，不進版控；容器 build/deploy 另行提供模型目錄
 backend/models/
 
-# WIPS 原始匯出可從 WIPS 重下、分群模型產出可重跑，體積大不進版控
-# （data/mappings/ 為人工維護的對照表，仍需進版控）
+# 資料檔一律不進版控（使用者定案 2026-07-17）：體積大、git 對 xlsx 二進位
+# 無法差分，每次變動都存整份。既有版本仍可從歷史取回，見 docs 或 git log。
+# （data/mappings/ 為人工維護的對照表，體積小且需版本追蹤，仍進版控）
 data/raw/
 data/model_artifacts/
+data/signal corpus/
 
 # 檔案結構探查產出，可重跑
 *.inspect.ndjson
