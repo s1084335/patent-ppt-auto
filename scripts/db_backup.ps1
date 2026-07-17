@@ -5,7 +5,8 @@ param(
     [string]$HostName = "localhost",
     [int]$Port = 5432,
     [string]$PgBin = "D:\PostgreSQL\18\bin",
-    [string]$BackupDir = "backups"
+    [string]$BackupDir = "backups",
+    [switch]$SchemaOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,22 +28,30 @@ if (-not $env:PGPASSWORD) {
 }
 
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$backupFile = Join-Path $ResolvedBackupDir "$Database`_$timestamp.dump"
+$backupKind = if ($SchemaOnly) { "schema" } else { "full" }
+$backupFile = Join-Path $ResolvedBackupDir "$Database`_$backupKind`_$timestamp.dump"
 
-Write-Host "Creating backup: $backupFile"
+Write-Host "Creating $backupKind backup: $backupFile"
 
-& $pgDump `
-    -w `
-    -h $HostName `
-    -p $Port `
-    -U $User `
-    -d $Database `
-    -F c `
-    -f $backupFile
+$dumpArgs = @(
+    "-w",
+    "-h", $HostName,
+    "-p", $Port,
+    "-U", $User,
+    "-d", $Database,
+    "-F", "c",
+    "-f", $backupFile
+)
+
+if ($SchemaOnly) {
+    $dumpArgs += "--schema-only"
+}
+
+& $pgDump @dumpArgs
 
 if ($LASTEXITCODE -ne 0) {
     throw "pg_dump failed with exit code $LASTEXITCODE"
 }
 
-Write-Host "Backup completed: $backupFile"
+Write-Host "$backupKind backup completed: $backupFile"
 Write-Output $backupFile

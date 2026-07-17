@@ -24,6 +24,12 @@ from backend.app.mappings.wips import (
 )
 from backend.app.transforms.dates import parse_date, year_from_date
 from backend.app.transforms.text import clean_long_text, clean_text, value_to_text
+from backend.app.transforms.patent_numbers import (
+    APPLICATION_NUMBER_TRANSFORMED,
+    UNEXAMINED_PUBLICATION_NUMBER_TRANSFORMED,
+    transform_patent_number,
+    transformed_number_fields,
+)
 
 GRANT_PUBLICATION_NUMBER_FIELD = "授权公告号"
 UNEXAMINED_PUBLICATION_NUMBER_FIELD = "未审查的公开号"
@@ -38,7 +44,7 @@ IDENTIFIER_SOURCE_FIELDS = (
 PATENT_IDENTIFIER_LOOKUP_ORDER = (
     "授權公告號",
     "審查的公告號",
-    "未審查的公開號",
+    UNEXAMINED_PUBLICATION_NUMBER_TRANSFORMED,
 )
 PEOPLE_FIELDS = tuple(dict.fromkeys(field for fields in PEOPLE_GROUPS.values() for field in fields.values()))
 CONFLICT_RESOLUTION_STRATEGY = "incoming_source_priority"
@@ -287,6 +293,7 @@ def normalize_record(raw: dict[str, Any]) -> dict[str, Any]:
     publication_date = first_parsed_date(canonical_raw, PUBLICATION_DATE_FIELDS)
 
     patent = {target: clean_long_text(canonical_raw.get(source)) for source, target in PATENT_FIELDS.items()}
+    patent.update(transformed_number_fields(patent))
     patent["publication_date"] = publication_date
     patent["publication_year"] = year_from_date(publication_date)
     patent["application_date"] = application_date
@@ -309,7 +316,16 @@ def first_parsed_date(raw: dict[str, Any], fields: list[str]) -> Any:
 
 
 def build_dedupe_key(raw: dict[str, Any]) -> str | None:
+    country_code = clean_text(raw.get("国家代码"))
     identifiers = {field: clean_text(raw.get(field)) for field in IDENTIFIER_SOURCE_FIELDS}
+    identifiers[UNEXAMINED_PUBLICATION_NUMBER_FIELD] = transform_patent_number(
+        country_code,
+        identifiers[UNEXAMINED_PUBLICATION_NUMBER_FIELD],
+    )
+    identifiers[APPLICATION_NUMBER_FIELD] = transform_patent_number(
+        country_code,
+        identifiers[APPLICATION_NUMBER_FIELD],
+    )
     if not any(identifiers.values()):
         return None
     return (
@@ -456,6 +472,7 @@ def upsert_patent(cur, patent: dict[str, Any], source_file_id: int, raw_record_i
         "independent_claim_count": patent.get("獨立項數量[KR,JP,US,CN,EP,IN]"),
         "independent_claims": patent.get("獨立項[KR,JP,US,CN,EP,IN]"),
         "independent_claims_original": patent.get("獨立項(原文)[KR,JP,CN,EP]"),
+        "effect_summary": patent.get("效果 摘要[US,EP,PCT,JP,KR,CN,TW]"),
         "orig_cpc_main": patent.get("Orig. CPC(Main)"),
         "orig_ipc_main": patent.get("Orig. IPC(Main)"),
         "curr_cpc_main": patent.get("Curr. CPC(Main)"),
@@ -474,7 +491,8 @@ def upsert_patent(cur, patent: dict[str, Any], source_file_id: int, raw_record_i
             application_date, application_year, title, title_original, abstract,
             "權利要求的項數", "所有權利要求[JP,KR,CN]", "主權項", "主權項(原文)",
             "獨立項數量[KR,JP,US,CN,EP,IN]", "獨立項[KR,JP,US,CN,EP,IN]",
-            "獨立項(原文)[KR,JP,CN,EP]", "Orig. CPC(Main)", "Orig. IPC(Main)",
+            "獨立項(原文)[KR,JP,CN,EP]", "效果 摘要[US,EP,PCT,JP,KR,CN,TW]",
+            "Orig. CPC(Main)", "Orig. IPC(Main)",
             "Curr. CPC(Main)", "Curr. IPC(Main)", legal_status, "WIPS同族ID"
         )
         VALUES (
@@ -484,7 +502,8 @@ def upsert_patent(cur, patent: dict[str, Any], source_file_id: int, raw_record_i
             %(application_year)s, %(title)s, %(title_original)s, %(abstract)s,
             %(claim_count)s, %(all_claims)s, %(main_claim)s, %(main_claim_original)s,
             %(independent_claim_count)s, %(independent_claims)s,
-            %(independent_claims_original)s, %(orig_cpc_main)s, %(orig_ipc_main)s,
+            %(independent_claims_original)s, %(effect_summary)s,
+            %(orig_cpc_main)s, %(orig_ipc_main)s,
             %(curr_cpc_main)s, %(curr_ipc_main)s, %(legal_status)s, %(WIPS同族ID)s
         )
         RETURNING id
@@ -514,14 +533,14 @@ def find_existing_patent_id(cur, patent: dict[str, Any]) -> int | None:
         if existing:
             return existing[0]
 
-    application_number = patent.get("申請號")
+    application_number = patent.get(APPLICATION_NUMBER_TRANSFORMED)
     if not application_number:
         return None
     cur.execute(
         """
         SELECT id
         FROM patents
-        WHERE "申請號" = %s
+        WHERE "申請號(轉換後)" = %s
           AND (%s::text IS NULL OR country_code IS NULL OR country_code = %s)
           AND (%s::text IS NULL OR database_name IS NULL OR database_name = %s)
         ORDER BY
@@ -571,6 +590,10 @@ def update_patent_empty_fields(cur, patent_id: int, patent_params: dict[str, Any
             "獨立項數量[KR,JP,US,CN,EP,IN]" = COALESCE("獨立項數量[KR,JP,US,CN,EP,IN]", %(independent_claim_count)s),
             "獨立項[KR,JP,US,CN,EP,IN]" = COALESCE("獨立項[KR,JP,US,CN,EP,IN]", %(independent_claims)s),
             "獨立項(原文)[KR,JP,CN,EP]" = COALESCE("獨立項(原文)[KR,JP,CN,EP]", %(independent_claims_original)s),
+            "效果 摘要[US,EP,PCT,JP,KR,CN,TW]" = COALESCE(
+                "效果 摘要[US,EP,PCT,JP,KR,CN,TW]",
+                %(effect_summary)s
+            ),
             "Orig. CPC(Main)" = COALESCE("Orig. CPC(Main)", %(orig_cpc_main)s),
             "Orig. IPC(Main)" = COALESCE("Orig. IPC(Main)", %(orig_ipc_main)s),
             "Curr. CPC(Main)" = COALESCE("Curr. CPC(Main)", %(curr_cpc_main)s),

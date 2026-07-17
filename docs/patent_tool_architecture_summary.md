@@ -2,16 +2,20 @@
 
 ## 1. 專案目標
 
-本專案目標是建立一套「專利資料庫建置與專利侵權比對工具」，可將 WIPS Excel、GPSS API 或其他專利資料來源匯入後，經過原始保存、清理、去重合併、正式入庫與追溯記錄，優先支援主權項與獨立項的自動侵權比對，並由 HTML 前端操作、AI chat 協助分析，最後輸出可追溯的報告檔案。報表分析仍保留在架構中，但重要性低於侵權比對、匯入/匯出紀錄與報告生成；公司名稱標準化只作為報表統計與使用者端顯示的對照層，不改寫資料庫原始欄位值。
+本專案目標是建立一套「專利資料庫建置與專利侵權比對工具」，可將 WIPS Excel、GPSS API 或其他專利資料來源匯入後，經過原始保存、清理、去重合併、正式入庫與追溯記錄，優先支援主權項與獨立項的自動侵權比對，並由 HTML 前端操作、AI chat 協助分析，最後輸出可追溯的報告檔案。正式部署固定採五個 Docker Compose 容器，由 Nginx 作為唯一系統入口、Backend 提供 API 與 Job 管理、Worker 執行長時間運算。報表分析仍保留在架構中，但重要性低於侵權比對、匯入/匯出紀錄與報告生成；公司名稱標準化採獨立專利權人對照表作為報表統計與使用者端顯示的 mapping layer，不改寫資料庫原始欄位值。
 
 目前定位如下：
 
 ```text
 PostgreSQL 輕量正式資料庫
-+ Docker 掛載式 Python 執行環境
++ 固定五容器 Docker Compose（nginx / frontend / backend / worker / postgres）
++ Nginx 唯一系統入口
++ Backend API / 驗證 / Workspace / Job 建立與查詢
++ Worker 分群 / 報表 / Embedding / 案件比對
 + Import / Export Audit Service
 + Claim Comparison / Infringement Analysis Service
 + Company Alias / Owner Display Mapping Service
++ Claude Code CLI + Skills + Playwright MCP 專利權人代碼補全流程
 + Claude AI Service / AI chat 區塊
 + PostgreSQL SQL / views / materialized views 報表統計
 + HTML 前端
@@ -24,78 +28,55 @@ Obsidian 暫時不納入正式架構；前端先標記為 HTML，並預留類似
 
 ## 2. 系統總架構
 
-啟用初期建議使用 Docker Compose 部署在一台伺服器電腦上，使用者透過瀏覽器操作 HTML 前端。
+正式部署固定使用 Docker Compose，穩態只能有五個 service／container：`nginx`、`frontend`、`backend`、`worker`、`postgres`。不得為分類、報表、Embedding、案件比對、migration 或 queue 再拆出第六個常駐容器。
 
 ```text
 使用者電腦
-└─ HTML 前端
-      ↓
+└─ Browser
+      ↓ HTTP / HTTPS
 伺服器電腦 / Docker Compose
+├─ nginx container
+│  ├─ 唯一對外入口
+│  ├─ / → frontend
+│  └─ /api/ → backend
+│
 ├─ frontend container
 │  └─ HTML / JS / CSS
 │
-├─ app-runner container
-│  ├─ Python runtime / CLI entrypoints
-│  ├─ Import Service
-│  ├─ Clean / Dedup Service
-│  ├─ Company Alias / Owner Display Mapping Service
-│  ├─ Claim Comparison / Infringement Runner
-│  ├─ Report Runner
-│  ├─ Export Runner
-│  ├─ Import / Export Audit Service
-│  └─ AI Service / AI chat backend module
+├─ backend container
+│  ├─ API
+│  ├─ request / schema / output 驗證
+│  ├─ Workspace 建立與查詢
+│  ├─ Job 建立、排程狀態與結果查詢
+│  └─ 不執行長時間運算
 │
-├─ migrate container
-│  ├─ 使用 backend image
-│  ├─ 執行 alembic upgrade head
-│  └─ migration 跑完即停止
-│
-├─ classifier-worker container
-│  ├─ 常駐背景分類服務
-│  ├─ 規則分類
-│  ├─ Claude 分類
-│  ├─ 低信心重檢
-│  ├─ 分類版本監控
-│  └─ 分類調整建議
-│
-├─ report-worker container
-│  ├─ Claim comparison report assembly
-│  ├─ PostgreSQL SQL / views / materialized views 報表統計
-│  ├─ Claude 報告文字生成
-│  ├─ Excel Exporter
-│  └─ PPT / Report Exporter
+├─ worker container
+│  ├─ 分群
+│  ├─ 報表
+│  ├─ Embedding
+│  └─ 案件比對
 │
 └─ postgres container
-   └─ PostgreSQL
+   ├─ PostgreSQL 正式資料庫
+   └─ Workspace / Job queue / 狀態 / 結果
 ```
 
-輕量版初期也可以先簡化成三個容器：
+五個容器的責任不可因功能增加而再拆分。分類、報表、Embedding、案件比對共用同一個 `worker` runtime；第一版 Job queue 使用 PostgreSQL，不新增 Redis。`backend` 與 `worker` 可共用 backend image，但啟動命令與責任不同。
+
+資料庫 migration 不併入 backend 或 worker 啟動流程，也不建立常駐 `migrate` service：
 
 ```text
-frontend container
-backend container
-postgres container
-```
-
-其中 `backend container` 先同時包含 Python runtime、匯入/清理/比對/匯出 runner、分類 worker、報表 worker 與 AI Service；正式使用以 Docker volume 掛載專案、資料與輸出目錄後執行，不以常駐 Web API 作為第一版正式入口。
-
-資料庫 migration 不併入 app-runner 或 worker 啟動流程。即使輕量版把 runner 與 worker 包在同一個 backend image，也要保留獨立 `migrate container`：
-
-```text
-migrate container
-└─ 使用 backend image
-   └─ alembic upgrade head
-      └─ 跑完停止
+docker compose run --rm backend alembic upgrade head
 ```
 
 此設計的目的：
 
 ```text
-schema 變更由明確的 migration 任務處理。
-app-runner 啟動或執行任務時不自動修改資料庫 schema。
+schema 變更由明確的一次性 migration 命令處理。
+backend 啟動或處理 API 時不自動修改資料庫 schema。
 worker 啟動時不自動修改資料庫。
-避免多個服務同時啟動時重複跑 migration。
-server 部署時可先跑 migrate，再啟動 app-runner / worker。
+一次性 migration container 使用 --rm，完成後不留在 docker compose ps -a。
+只有 schema 有變更時才按需啟動一次性 migration；一般啟動不必每次執行。
 ```
 
 ---
@@ -107,42 +88,36 @@ server 部署時可先跑 migrate，再啟動 app-runner / worker。
 ```text
 Backend image build
         ↓
-migrate container
-        ↓
-alembic upgrade head
+docker compose run --rm backend alembic upgrade head
         ↓
 PostgreSQL schema ready
         ↓
-WIPS Excel / GPSS API / 其他專利資料
+nginx → frontend / backend API
         ↓
-Import Service
+Backend 建立 Workspace / Job
         ↓
-Raw Layer / Core Layer
+PostgreSQL 保存 Job queue / 狀態
         ↓
-Clean / Normalize / Dedup Service
+Worker claim Job
         ↓
-Company Alias / Owner Display Mapping Service
+分群 / 報表 / Embedding / 案件比對
         ↓
-Claim Comparison / Infringement Analysis Service
+PostgreSQL 保存結構化結果與追溯
         ↓
-主權項比對結果 / 獨立項比對結果
+Backend 查詢 Job 狀態與結果
         ↓
-AI Service / Claude 協助比對說明與報告文字
-        ↓
-HTML 前端顯示 / AI chat 區塊
-        ↓
-Excel / PPT / Report 輸出
-        ↓
-Import / Export audit records
+nginx → frontend 顯示 / 檔案輸出
 ```
 
 重要原則：
 
 ```text
 不要在匯入前做不可追溯的比對或分類\r\n不要讓 AI 直接修改正式資料\r\n分類與報表是衍生能力，優先順序低於侵權比對與報告輸出
-前端或使用者端不直接改 PostgreSQL；正式任務透過 Docker 掛載後的 app-runner 執行
-資料庫 schema migration 只能由 migrate container 執行
-app-runner / worker 不得自行執行 alembic upgrade head
+Nginx 是唯一對外入口，frontend / backend / worker / postgres 不直接暴露給使用者端
+前端不直接改 PostgreSQL；由 backend 建立 Job，worker 執行長時間任務
+資料庫 schema migration 使用 backend image 的一次性 --rm 命令
+backend / worker 啟動流程不得自行執行 alembic upgrade head
+穩態 docker compose ps -a 只能看見五個容器
 ```
 
 ---
@@ -188,7 +163,7 @@ Layer 3 Derived Layer
   目前預留，尚未實作
       ↓
 Layer 4 Runner / Report Layer
-  Docker app-runner / Report runner / Exporter / Frontend query
+  Nginx / Frontend / Backend API / Worker / Exporter
   目前預留，尚未實作
 ```
 
@@ -312,6 +287,7 @@ Layer 3 只能由 Raw / Core / relation layer 衍生或重算。
 Layer 3 不作為原始資料來源。
 Layer 3 可建立公司名稱顯示映射、處理專利家族去重/不去重查詢口徑，也可以用 PostgreSQL SQL / views / materialized views 為報表拆 IPC / CPC、整理引用、彙總申請人、計算競爭力指標。
 公司名稱標準化只用於報表統計與使用者端顯示，不回寫或覆蓋 Core Layer 的原始公司/專利權人欄位值。
+報表統計的公司維度應以專利權人/公司對照表解析出的正規化公司名稱計算；若找不到對照，才 fallback 到原始公司名稱並標記為待補全。
 analysis_table 可保存單次報告的篩選條件、選入專利集合、最終統計結果或可專利性/侵權比對結果。
 analysis_table 不得覆蓋 Raw / Core 的原始資料。
 analysis_table 的專利集合應可追溯回 derived_layer.report_patent_base 與 core_layer.patents。
@@ -327,9 +303,9 @@ Layer 4：應用輸出層 Runner / Report Layer
 預留用途：
 
 ```text
-Docker app-runner 查詢入口
-Claim Comparison runner
-Report runner
+Backend API / Workspace / Job 查詢入口
+Worker Claim Comparison Job
+Worker Report Job
 Dashboard / HTML 前端查詢
 AI chat 區塊
 Excel Exporter
@@ -349,7 +325,7 @@ Layer 4 邊界：
 
 ```text
 資料庫容器只提供 PostgreSQL 與 SQL 查詢能力。
-正式查詢、比對與匯出功能由 Docker app-runner / report runner / frontend 實作。
+正式 API 與查詢由 backend 實作；分群、報表、Embedding、案件比對由單一 worker 實作；frontend 經 nginx 使用系統功能。
 PPT / HTML / Excel / Power BI / 最終報告輸出讀取 Derived / Analytics 查詢結果，不直接改 Raw Layer，輸出動作必須留下 audit record。
 Claude AI Service 只能透過後端服務讀取整理後資料、比對結果或報表結果，不直接操作資料庫 schema。
 ```
@@ -378,48 +354,52 @@ Layer 3 / Layer 4 先保留架構位置，不新增資料表或服務。
 
 ## 3.2 資料庫 Migration 架構
 
-server 化後，資料庫 schema 版本管理採用 Alembic，但 migration 執行責任必須獨立於 app-runner 與 worker。
+server 化後，資料庫 schema 版本管理採用 Alembic；migration 執行責任獨立於 backend 與 worker 的啟動流程，但不再建立第六個 Compose service。
 
 目標架構：
 
 ```text
 backend image
-├─ Python runtime / CLI runner
-├─ worker runtime
-├─ importer / report runtime
+├─ Backend API runtime
+├─ Worker runtime
+├─ Job / Workspace application service
 └─ Alembic migration runtime
 
-migrate container
+backend container
 └─ image: backend image
-   command: alembic upgrade head
-   lifecycle: run once, then stop
-
-app-runner container
-└─ image: backend image
-   command: run selected Python entrypoint
+   command: start API server
    不執行 migration
 
-classifier-worker / report-worker container
+worker container
 └─ image: backend image
    command: start worker
+   workloads: clustering / reporting / embedding / case comparison
    不執行 migration
+
+one-off migration
+└─ docker compose run --rm backend alembic upgrade head
+   由資料庫更新／部署流程自動觸發
+   每次新建、完成即移除，不使用 restart policy
+   不形成第六個常駐 service / container
 ```
 
-部署順序：
+按需 migration 操作：
 
 ```text
-1. 啟動 postgres container。
-2. 執行 migrate container：alembic upgrade head。
-3. migrate 成功結束。
-4. 啟動 app-runner / worker / frontend。
+1. 一般啟動直接啟動 nginx / frontend / backend / worker / postgres 五個 service。
+2. 只有 schema 有變更時，先確保 postgres 可連線。
+3. 按需執行 docker compose run --rm backend alembic upgrade head。
+4. 更新／部署流程可自動執行此命令；migration 失敗時停止更新，不啟動新版 backend / worker。
+5. 確認 migration 成功且一次性 container 已移除。
+6. 確認 docker compose ps -a 穩態只有五個容器。
 ```
 
 設計規則：
 
 ```text
 Alembic migration 檔案放在 backend 專案內。
-migrate container 使用與 app-runner / worker 相同的 backend image。
-app-runner / worker 啟動流程不得包含 alembic upgrade head。
+一次性 migration 使用與 backend / worker 相同的 backend image。
+backend / worker 啟動流程不得包含 alembic upgrade head。
 Docker PostgreSQL init SQL 只負責最小初始化或空資料庫準備，不作為長期 schema 更新機制。
 既有資料庫要納入 Alembic 管理時，需先評估 stamp head 或專門 migration，不能直接覆蓋資料。
 ```
@@ -432,14 +412,14 @@ alembic/ 目錄、env.py、baseline migration 0001_baseline_schema 已建立。
 baseline 由 sql/001-012 的最終狀態（pg_dump --schema-only）整合而成。
 fresh DB 用 alembic upgrade head 建出完整四層 schema；既有 DB 用 alembic stamp head 標記，不重跑、不動資料。
 sql/001-012 保留為歷史紀錄；後續 schema 變更改用新的 alembic revision，不再新增 sql/ 檔。
-backend image 與獨立 migrate service 待 Docker 階段建立（migrate container 執行 alembic upgrade head）。
+backend image、固定五個 service 與一次性 migration 命令待 Docker 階段建立；不再建立獨立 migrate service。
 ```
 
 ---
 
 ## 3.3 專利分類樹（概念與導流）
 
-`classifier-worker` 的分類能力，除了規則分類與 Claude 單標籤分類外，另規劃一套**多維度技術分類樹**，用來把專利依技術概念自動歸類、可動態成長。整體架構只記概念，細節見獨立設計檔。
+單一 `worker` 的分群能力，除了規則分類與 Claude 單標籤分類外，另規劃一套**多維度技術分類樹**，用來把專利依技術概念自動歸類、可動態成長。整體架構只記概念，細節見獨立設計檔。
 
 概念要點：
 
@@ -463,7 +443,7 @@ Box 為主、LLM 為輔：LLM 抽片語+分維度，box embedding 學階層(is-a
 Claude 不直接接前端，也不直接碰資料庫，而是包在後端的 AI Service 裡。
 
 ```text
-Docker app-runner / Worker
+Backend / Worker
     ↓
 AI Service
     ↓
@@ -551,16 +531,22 @@ derived table / view / materialized view 是查詢加速與報表用，不取代
 
 ```text
 1. 建立 Docker Compose
+   - nginx
    - frontend
    - backend
+   - worker
    - postgres
-   - migrate
+   - 固定五個 service，不新增 Redis 或 migrate service
 
-2. 建立 Docker 掛載式 Python 執行入口
+2. 建立系統入口與 Job 執行邊界
+   - nginx 唯一對外入口
+   - backend API / 驗證 / Workspace / Job 建立與查詢
+   - worker 分群 / 報表 / Embedding / 案件比對
+   - PostgreSQL Job queue / 狀態 / 結果
    - container health check
    - DB connection
    - config / env
-   - migration 執行邊界
+   - 一次性 --rm migration 執行邊界
 
 3. 建立 PostgreSQL schema / Alembic migration
    - raw_layer
@@ -584,6 +570,8 @@ derived table / view / materialized view 是查詢加速與報表用，不取代
    - 專利權人名稱顯示對照
    - 公司 alias 對照
    - 使用者端與報表顯示標準化後專利權人名稱
+   - 報表統計以正規化公司名稱 group by
+   - 匯入後掃描未對照公司，必要時由 Claude Code CLI + Skills + Playwright MCP 查 WIPS 標準專利權人代碼並補入對照表
    - 不改寫 patent_people / raw_records 的原始公司名稱值
 
 7. 做主權項 / 獨立項侵權比對第一版
@@ -615,7 +603,7 @@ derived table / view / materialized view 是查詢加速與報表用，不取代
 ```
 一句話總結：
 
-> 本工具以 PostgreSQL 作為輕量正式資料庫，正式使用時透過 Docker 掛載專案、資料與輸出目錄，由 Python app-runner / worker 執行匯入、清理、比對、統計與匯出；資料正式入庫後，優先支援公司名稱顯示對照、主權項與獨立項侵權比對、匯入/匯出追溯與 AI chat 輔助分析；報表與 PostgreSQL SQL 統計保留為衍生輸出能力，最後由 HTML 前端操作並輸出 Excel / PPT / 最終報告。
+> 本工具正式部署固定使用 nginx、frontend、backend、worker、postgres 五個 Docker Compose 容器：Nginx 是唯一系統入口，Backend 負責 API、驗證、Workspace 與 Job 建立／查詢，Worker 統一執行分群、報表、Embedding 與案件比對，PostgreSQL 保存正式資料、Job 狀態與可追溯結果；不再增加 Redis、migrate 或拆分型 worker 容器。
 
 
 
@@ -629,4 +617,27 @@ derived table / view / materialized view 是查詢加速與報表用，不取代
 
 
 
+
+## 2026-07-17 最終定案：專利權人正規化使用兩個 MCP
+
+最終架構採兩個 MCP 並行，不把 Playwright 瀏覽器操作硬塞進 Central Patent MCP Server。
+
+```text
+Claude Code
+├─ Central Patent MCP Server
+│  ├─ clustering tools
+│  ├─ reporting tools
+│  └─ assignee normalization DB tools
+│
+└─ Playwright MCP
+   └─ WIPS browser automation
+```
+
+分工固定如下：
+
+- `Central Patent MCP Server`：負責資料庫與業務工具，包括掃描未正規化公司、讀取唯一一張專利權人/公司對照表、建立待補全任務、寫入對照表、提供報表使用的正規化公司名稱。
+- `Playwright MCP`：只負責瀏覽器自動化，包括開啟 WIPS、搜尋公司名稱、展開標準申請人結果、讀取 WIPS 畫面資料。
+- `Claude Code`：負責協調兩個 MCP，將 Playwright MCP 讀到的 WIPS 結果整理成固定 schema，再交給 Central Patent MCP Server 寫入資料庫。
+
+資料庫對照表原則：DB 內只能有一張專利權人/公司對照表。原有專利的公司、申請人、專利權人、受讓人等來源欄位值不動；報表統計透過這張對照表取得 `normalized_company_name` 後再 group by。
 

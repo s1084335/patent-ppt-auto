@@ -124,6 +124,8 @@ def run_reports(analysis_id: int) -> dict[str, Any]:
             output_count = 0
             try:
                 for report_name in sorted(REPORT_DEFINITIONS):
+                    # 家族層級報表由引擎把快照轉譯成「選中專利所屬家族」的家族
+                    # 集合（完整佈局），所以全部報表定義都能吃 patent_ids。
                     result = run_report(report_name, patent_ids=patent_ids)
                     cur.execute(
                         """
@@ -152,7 +154,11 @@ def run_reports(analysis_id: int) -> dict[str, Any]:
                 conn.commit()
                 raise
 
-    return {"analysis_id": analysis_id, "status": "completed", "output_count": output_count}
+    return {
+        "analysis_id": analysis_id,
+        "status": "completed",
+        "output_count": output_count,
+    }
 
 
 def main() -> None:

@@ -10,7 +10,9 @@
 
 services:
   postgres:
-    image: postgres:18
+    # PostgreSQL 18 with pgvector preinstalled; required by migration 0004
+    # for core_layer.patent_embeddings.embedding_vector VECTOR(768).
+    image: pgvector/pgvector:0.8.5-pg18-trixie
     container_name: patent-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-patent_ppt}
@@ -19,7 +21,7 @@ services:
     ports:
       - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
-      # postgres:18 image keeps PGDATA under /var/lib/postgresql (new 18+ layout)
+      # PostgreSQL 18 images keep PGDATA under /var/lib/postgresql (new 18+ layout).
       - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-patent_ppt}"]

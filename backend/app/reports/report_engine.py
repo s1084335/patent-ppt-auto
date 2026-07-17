@@ -16,6 +16,28 @@ def quote_ident(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+# aggregate 型報表可用的額外聚合函式白名單（ReportDefinition.aggregates 的第一欄）。
+# value 是 SQL 模板：{col} 會代入 quote 過的來源欄名。
+AGGREGATE_FUNCTIONS = {
+    "sum": "COALESCE(SUM({col}), 0)::bigint",
+    "count": "COUNT({col})::int",  # 非空列數：用來區分「彙總=0」與「根本無資料」
+    "count_distinct": "COUNT(DISTINCT {col})::int",
+    "avg": "AVG({col})::numeric(12,2)",
+    "max": "MAX({col})",
+}
+
+
+def build_aggregate_columns(definition: ReportDefinition) -> str:
+    """把 definition.aggregates 組成 SELECT 片段（含前置逗號），無聚合時回空字串。"""
+    parts: list[str] = []
+    for func, column, alias in definition.aggregates:
+        template = AGGREGATE_FUNCTIONS.get(func)
+        if template is None:
+            raise ValueError(f"Unsupported aggregate function: {func} (report {definition.name})")
+        parts.append(f"{template.format(col=quote_ident(column))} AS {quote_ident(alias)}")
+    return (", " + ", ".join(parts)) if parts else ""
+
+
 def qualified_table_name(table_name: str) -> str:
     return ".".join(quote_ident(part) for part in table_name.split("."))
 
@@ -80,6 +102,7 @@ def build_order_clause(definition: ReportDefinition) -> str:
     parts = []
     allowed_outputs = {output_alias(column) for column in definition.columns}
     allowed_outputs.add("patent_count")
+    allowed_outputs.update(alias for _func, _column, alias in definition.aggregates)
     for column, direction in definition.default_order:
         direction_sql = "DESC" if direction.lower() == "desc" else "ASC"
         if column in allowed_outputs:
@@ -89,20 +112,61 @@ def build_order_clause(definition: ReportDefinition) -> str:
     return " ORDER BY " + ", ".join(parts)
 
 
+# 家族層級報表的 patent→家族轉譯：家族 id 產生規則必須與 transforms/family_layout
+# 一致——WIPS同族ID 去空白後為空 → 'P{patent_id}' 單件家族（_surrogate_family_id）。
+# refresh 寫入家族兩表的 family_id 用同一規則，這裡以 SQL 復刻；兩邊同步由
+# tests/test_report_engine_family.py 釘住。（BTRIM 只去半形空白，與 Python strip()
+# 對罕見全形空白略有差異；同族ID 實際值為代碼字串，不受影響。）
+FAMILY_SCOPE_SOURCE_TABLE = "derived_layer.report_patent_base"
+FAMILY_ID_EXPRESSION = "COALESCE(NULLIF(BTRIM(\"WIPS同族ID\"::text), ''), 'P' || patent_id::text)"
+
+
+def build_family_scope_clause(
+    filters: dict[str, Any] | None,
+    patent_ids: list[Any] | None,
+) -> tuple[str, dict[str, Any]]:
+    """把 patent 層 filters／快照轉譯成家族集合條件（家族層級報表用）。
+
+    口徑＝「選中專利所屬的家族」的完整佈局：filters/patent_ids 先在
+    report_patent_base 圈出家族集合，家族表再以 family_id IN (...) 過濾；
+    選中家族的所有列（全體成員的貢獻）都保留，佈局不缺國。
+    """
+    filter_clause, params = build_filter_clause(filters)
+    parts = [filter_clause] if filter_clause else []
+    if patent_ids is not None:
+        parts.append("patent_id = ANY(%(patent_ids)s)")
+        params["patent_ids"] = list(patent_ids)
+    where_sql = " WHERE " + " AND ".join(parts) if parts else ""
+    subquery = (
+        f"SELECT DISTINCT {FAMILY_ID_EXPRESSION} "
+        f"FROM {qualified_table_name(FAMILY_SCOPE_SOURCE_TABLE)}{where_sql}"
+    )
+    return f'"family_id" IN ({subquery})', params
+
+
 def build_report_sql(
     definition: ReportDefinition,
     filters: dict[str, Any] | None,
     limit: int | None,
     patent_ids: list[Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    filter_clause, params = build_filter_clause(filters)
     blank_clause = build_exclude_blank_clause(definition.exclude_blank_columns)
-    patent_ids_clause = ""
-    if patent_ids is not None:
-        # Restrict to an explicit patent set snapshot (used by app_layer analyses).
-        patent_ids_clause = "patent_id = ANY(%(patent_ids)s)"
-        params["patent_ids"] = list(patent_ids)
-    where_parts = [part for part in (filter_clause, blank_clause, patent_ids_clause) if part]
+    if definition.supports_patent_ids:
+        filter_clause, params = build_filter_clause(filters)
+        patent_ids_clause = ""
+        if patent_ids is not None:
+            # Restrict to an explicit patent set snapshot (used by app_layer analyses).
+            patent_ids_clause = "patent_id = ANY(%(patent_ids)s)"
+            params["patent_ids"] = list(patent_ids)
+        where_parts = [part for part in (filter_clause, blank_clause, patent_ids_clause) if part]
+    else:
+        # 家族層級報表：來源表沒有 patent 層欄位，filters/快照轉譯成家族集合條件
+        # （不帶篩選＝全庫，維持既有行為）。
+        family_clause = ""
+        params = {}
+        if filters or patent_ids is not None:
+            family_clause, params = build_family_scope_clause(filters, patent_ids)
+        where_parts = [part for part in (family_clause, blank_clause) if part]
     where_sql = " WHERE " + " AND ".join(where_parts) if where_parts else ""
     table_sql = qualified_table_name(definition.source_table)
 
@@ -112,7 +176,8 @@ def build_report_sql(
         )
         group_columns = ", ".join(quote_ident(column) for column in definition.group_by)
         sql = (
-            f"SELECT {select_columns}, COUNT({quote_ident(definition.count_column)})::int AS patent_count "
+            f"SELECT {select_columns}, COUNT({quote_ident(definition.count_column)})::int AS patent_count"
+            f"{build_aggregate_columns(definition)} "
             f"FROM {table_sql}"
             f"{where_sql} "
             f"GROUP BY {group_columns}"
@@ -144,27 +209,77 @@ def run_report(
         raise ValueError(f"Unknown report: {report_name}")
 
     try:
-        import psycopg
         from psycopg.rows import dict_row
     except ImportError as exc:
         raise RuntimeError("psycopg is required for report execution. Install psycopg[binary].") from exc
 
-    from backend.app.db.connection import get_connection_kwargs
+    from backend.app.db.connection import get_pool
 
     sql, params = build_report_sql(definition, filters, limit, patent_ids)
-    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
-        with conn.cursor() as cur:
+    # 走連線池借還：報表查詢是高頻路徑（前端手動＋LLM 工具呼叫都進這裡），
+    # 每次開關新連線在反覆使用下會撞連線數上限。
+    with get_pool().connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
 
     return {
         "report_name": definition.name,
         "label": definition.label,
+        "label_zh": definition.label_zh,
         "report_type": definition.report_type,
         "filters": filters or {},
         "row_count": len(rows),
         "rows": rows,
     }
+
+
+def run_reports_batch(
+    report_names: list[str],
+    filters: dict[str, Any] | None = None,
+    limit: int | None = None,
+    patent_ids: list[Any] | None = None,
+) -> dict[str, Any]:
+    """一次執行多張報表——報表引擎的對外調用契約。
+
+    這個簽名就是之後包裝（前端 API、MCP reporting tools）共用的入口：
+        report_names  要跑的報表 key（REPORT_DEFINITIONS 的鍵）
+        filters       資料範圍（ALLOWED_FILTER_COLUMNS 白名單）
+        limit         各報表列數上限（None 用各報表預設）
+        patent_ids    analysis 快照的專利集合（None＝不限）
+
+    家族層級報表收到 filters/patent_ids 時由引擎轉譯成「選中專利所屬家族」的
+    家族集合（完整佈局、含家族全體成員），並附 note 說明口徑（見
+    build_family_scope_clause）。
+
+    回傳 {report_name: {label_zh, label, report_type, rows, row_count} 或
+          {skipped_reason}}，未知的報表名也以 skipped_reason 回報。
+    """
+    results: dict[str, Any] = {}
+    for name in report_names:
+        definition = REPORT_DEFINITIONS.get(name)
+        if definition is None:
+            results[name] = {"skipped_reason": f"unknown report: {name}"}
+            continue
+        note: str | None = None
+        if (filters or patent_ids is not None) and not definition.supports_patent_ids:
+            # 家族層級報表：filters/快照經引擎轉譯成家族集合，口徑以註記現形。
+            note = "家族層級口徑：篩選／快照圈定家族集合，佈局計入家族全體成員（可能含篩選外的國家）"
+        try:
+            report = run_report(name, filters=filters or None, limit=limit, patent_ids=patent_ids)
+        except ValueError as exc:
+            results[name] = {"label_zh": definition.label_zh, "skipped_reason": str(exc)}
+            continue
+        results[name] = {
+            "label_zh": report["label_zh"],
+            "label": report["label"],
+            "report_type": report["report_type"],
+            "row_count": report["row_count"],
+            "rows": report["rows"],
+        }
+        if note:
+            results[name]["note"] = note
+    return results
 
 
 def parse_json_arg(value: str | None) -> dict[str, Any] | None:

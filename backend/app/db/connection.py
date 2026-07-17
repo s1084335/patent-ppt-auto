@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import os
+import threading
 
 
 def get_database_url() -> str:
@@ -37,3 +38,27 @@ def get_connection_kwargs() -> dict[str, str | int]:
     if password:
         kwargs["password"] = password
     return kwargs
+
+
+# 連線池（lazy 單例）：高頻查詢路徑（報表引擎/前端/LLM 工具呼叫）用池借還，
+# 避免每個請求都開關連線。單次型 CLI（refresh/import）維持直連即可。
+_pool = None
+_pool_lock = threading.Lock()
+
+
+def get_pool():
+    """取得全域 psycopg 連線池（首次呼叫時建立）。"""
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                from psycopg.conninfo import make_conninfo
+                from psycopg_pool import ConnectionPool
+
+                _pool = ConnectionPool(
+                    conninfo=make_conninfo(**get_connection_kwargs()),
+                    min_size=1,
+                    max_size=5,
+                    open=True,
+                )
+    return _pool

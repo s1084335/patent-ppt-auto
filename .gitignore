@@ -3,12 +3,18 @@
 __pycache__/
 *.py[cod]
 .env
+.env.*
+!.env.example
+.auth/
 
 # 自動產生／暫存，不進版控
 backups/
 .tmp_import_tests/
 tmp/
 output/
+
+# 本機模型檔很大，不進版控；容器 build/deploy 另行提供模型目錄
+backend/models/
 
 # 分類樹 v0 歸檔：腳本與設計文件進版控，可重生的大產出不進
 # （AutoPhrase repo snapshot 可從官方重下、片語與共現產出可重跑）

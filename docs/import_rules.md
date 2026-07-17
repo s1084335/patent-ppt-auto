@@ -1,3 +1,20 @@
+﻿# 2026-07-17 專利權人正規化原則
+
+匯入流程不得改寫原有專利中的申請人、專利權人、受讓人等來源欄位值。原始專利資料照原樣入庫；公司名稱正規化只透過獨立的專利權人/公司對照表處理。
+
+流程口徑：
+
+```text
+原始專利資料照原樣入庫
+→ 匯入後掃描公司/專利權人名稱
+→ 用專利權人對照表嘗試正規化
+→ 找不到對照時建立補全任務
+→ Claude Code CLI + Skills + Playwright MCP 查 WIPS 標準專利權人代碼
+→ 將申請人代碼 / 公司名稱 / 別稱寫入專利權人對照表
+→ 報表統計以正規化公司名稱計算
+```
+
+專利權人對照表格式沿用 `docs/reference/專利權人代碼對照表_合併.xlsx`，核心欄位為 `申請人代碼`、`公司名稱`、`別稱`。後續公司排名、專利權人排名、公司×國家矩陣、研發能量等報表，都以正規化公司名稱 group by；找不到對照時才 fallback 原始名稱並標記待補全。
 # 專利資料匯入規則
 
 最後更新：2026-07-02
@@ -177,8 +194,8 @@ WIPS 識別欄位：
 匯入一列時，依序用下列非空欄位查找既有 patents：
 1. 授权公告号 -> patents."授權公告號"
 2. 审查的公告号 -> patents."審查的公告號"
-3. 未审查的公开号 -> patents."未審查的公開號"
-4. 申请号 -> patents."申請號"；此項會同時比對相容的 country_code / database_name，降低跨資料庫誤合併。
+3. 未审查的公开号 -> patents."未審查的公開號(轉換後)"
+4. 申请号 -> patents."申請號(轉換後)"；此項會同時比對相容的 country_code / database_name，降低跨資料庫誤合併。
 
 如果四個識別欄位都空白：
 dedupe_key = WIPS_ROW|source_file_id|row_number
@@ -192,6 +209,9 @@ dedupe_key 只用於來源追蹤與除錯，不作為專利合併的唯一判準
 审查的公告号 保存為 patents."審查的公告號"。
 未审查的公开号 保存為 patents."未審查的公開號"。
 申请号 保存為 patents."申請號"。
+patents."未審查的公開號(轉換後)" 與 patents."申請號(轉換後)" 為 generated columns，不由 importer 直接寫入。
+country_code=TW 時，四位西元年前綴減 1911；非 TW 時轉換後值等於原值。
+dedupe 與後續功能一律讀取轉換後欄位，原值只供 WIPS 來源追溯。
 ```
 
 ## 重複資料與差異解決規則
@@ -407,3 +427,27 @@ patent_attributes
 Orig. CPC(Main) -> patent_attributes."Orig. CPC(Main)"
 Curr. IPC(All) -> patent_attributes."Curr. IPC(All)"
 ```
+
+
+## 2026-07-17 最終定案：專利權人正規化使用兩個 MCP
+
+最終架構採兩個 MCP 並行，不把 Playwright 瀏覽器操作硬塞進 Central Patent MCP Server。
+
+```text
+Claude Code
+├─ Central Patent MCP Server
+│  ├─ clustering tools
+│  ├─ reporting tools
+│  └─ assignee normalization DB tools
+│
+└─ Playwright MCP
+   └─ WIPS browser automation
+```
+
+分工固定如下：
+
+- `Central Patent MCP Server`：負責資料庫與業務工具，包括掃描未正規化公司、讀取唯一一張專利權人/公司對照表、建立待補全任務、寫入對照表、提供報表使用的正規化公司名稱。
+- `Playwright MCP`：只負責瀏覽器自動化，包括開啟 WIPS、搜尋公司名稱、展開標準申請人結果、讀取 WIPS 畫面資料。
+- `Claude Code`：負責協調兩個 MCP，將 Playwright MCP 讀到的 WIPS 結果整理成固定 schema，再交給 Central Patent MCP Server 寫入資料庫。
+
+資料庫對照表原則：DB 內只能有一張專利權人/公司對照表。原有專利的公司、申請人、專利權人、受讓人等來源欄位值不動；報表統計透過這張對照表取得 `normalized_company_name` 後再 group by。

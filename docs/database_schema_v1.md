@@ -50,9 +50,13 @@ WIPS identifier lookup 使用：
 ```text
 授權公告號 -> patents."授權公告號"
 審查的公告號 -> patents."審查的公告號"
-未審查的公開號 -> patents."未審查的公開號"
-申請號 -> patents."申請號"
+未審查的公開號 -> patents."未審查的公開號(轉換後)"
+申請號 -> patents."申請號(轉換後)"
 ```
+
+`patents."未審查的公開號"` 與 `patents."申請號"` 保存 WIPS 原值；緊鄰的
+`(轉換後)` generated columns 是所有 dedupe、embedding、報表與前端下游使用值。
+TW 四位西元年前綴減 1911，非 TW 的轉換後值等於原值。
 
 查找優先序：
 

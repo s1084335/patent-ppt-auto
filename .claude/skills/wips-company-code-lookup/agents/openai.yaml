@@ -1,0 +1,4 @@
+interface:
+  display_name: "WIPS 公司代碼檢索"
+  short_description: "協調 Playwright 與 Central Patent MCP 完成 WIPS 公司代碼查重寫入"
+  default_prompt: "使用 $wips-company-code-lookup 檢索 WIPS 公司代碼，先預覽重複判定，再交由 Central Patent MCP 寫入。"

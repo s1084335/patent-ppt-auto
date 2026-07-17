@@ -47,6 +47,30 @@ COUNTRY_CENTROIDS: dict[str, tuple[float, float]] = {
 # Regional / supranational patent authorities: no single-country choropleth geometry.
 NON_COUNTRY_AUTHORITIES: set[str] = {"EP", "WO", "EA", "OA", "AP", "GC", "BX", "IB"}
 
+# 區域專利局的地區座標（lon, lat）：受理局分布做不到國家級展開時，
+# 至少在地圖上把該「地區」標出來（2026-07-15 使用者定案）。
+# WO/IB（PCT 國際申請）沒有地域，不標點、改在圖面下方註記。
+REGIONAL_AUTHORITY_CENTROIDS: dict[str, tuple[float, float]] = {
+    "EP": (10, 50),   # 歐洲專利局 EPO
+    "EA": (65, 55),   # 歐亞專利局 EAPO
+    "AP": (30, -8),   # ARIPO（非洲地區工業產權組織）
+    "OA": (2, 10),    # OAPI（非洲智慧財產權組織）
+    "GC": (48, 24),   # GCC 海灣專利局
+    "BX": (5, 51),    # Benelux 比荷盧
+}
+
+# 區域局/無地域代碼的顯示名稱（hover 與註記用）。
+REGIONAL_AUTHORITY_NAMES: dict[str, str] = {
+    "EP": "歐洲專利局 EPO",
+    "EA": "歐亞專利局 EAPO",
+    "AP": "ARIPO 非洲地區工業產權組織",
+    "OA": "OAPI 非洲智慧財產權組織",
+    "GC": "GCC 海灣專利局",
+    "BX": "Benelux 比荷盧",
+    "WO": "PCT 國際申請",
+    "IB": "PCT 國際局",
+}
+
 DEFAULT_BASENAME = "country_map"
 MAP_TITLE = "Patent Jurisdiction Distribution"
 
@@ -66,6 +90,7 @@ def build_country_choropleth(
     out_dir: Path,
     basename: str = DEFAULT_BASENAME,
     static: bool = True,
+    title: str = MAP_TITLE,
 ) -> dict[str, Any]:
     """Render a choropleth for country_distribution rows.
 
@@ -85,14 +110,24 @@ def build_country_choropleth(
     label_lats: list[float] = []
     label_texts: list[str] = []
     missing_centroid: list[str] = []
+    regional_marks: list[tuple[str, int]] = []
+    no_geo_notes: list[str] = []
     for row in rows:
         code = row.get("country_code")
         count = int(row.get("patent_count") or 0)
         iso3 = to_iso3(code)
         key = "" if code is None else str(code).strip().upper()
         if iso3 is None:
-            reason = "regional_authority" if key in NON_COUNTRY_AUTHORITIES else "unmapped_code"
-            skipped.append({"country_code": key, "patent_count": count, "reason": reason})
+            # 區域專利局：無單國幾何可上色，但有地區座標 → 用區域標記畫在地圖上。
+            if key in REGIONAL_AUTHORITY_CENTROIDS:
+                regional_marks.append((key, count))
+                continue
+            # WO/IB 等無地域代碼：不畫點，落圖面下方註記，仍列 skipped 供追溯。
+            if key in NON_COUNTRY_AUTHORITIES:
+                no_geo_notes.append(f"{key}（{REGIONAL_AUTHORITY_NAMES.get(key, key)}）{count} 件")
+                skipped.append({"country_code": key, "patent_count": count, "reason": "no_geography"})
+                continue
+            skipped.append({"country_code": key, "patent_count": count, "reason": "unmapped_code"})
             continue
         locations.append(iso3)
         values.append(count)
@@ -115,7 +150,7 @@ def build_country_choropleth(
         locationmode="ISO-3",
         color_continuous_scale="Blues",
         labels={"color": "Patents", "locations": "Country"},
-        title=MAP_TITLE,
+        title=title,
     )
     # Only countries with data are filled; give them a dark outline so a light
     # blue (small count) stays distinct from the white "no data" land.
@@ -151,8 +186,32 @@ def build_country_choropleth(
             showlegend=False,
         )
 
+    # 區域專利局標記：橘色菱形＋「代碼 件數」，標在該局轄區位置——
+    # 國家級展不開（如受理局口徑的 EP），至少讓地圖呈現「這個地區有佈局」。
+    if regional_marks:
+        fig.add_scattergeo(
+            lon=[REGIONAL_AUTHORITY_CENTROIDS[code][0] for code, _ in regional_marks],
+            lat=[REGIONAL_AUTHORITY_CENTROIDS[code][1] for code, _ in regional_marks],
+            text=[f"{code} {count}" for code, count in regional_marks],
+            mode="markers+text",
+            marker={"size": 34, "color": "#F59E0B", "opacity": 0.85, "symbol": "diamond",
+                    "line": {"color": "#92400E", "width": 1.5}},
+            textfont={"color": "#451A03", "size": 11, "family": "Arial"},
+            textposition="middle center",
+            hovertext=[f"{REGIONAL_AUTHORITY_NAMES.get(code, code)}: {count} patents" for code, count in regional_marks],
+            hoverinfo="text",
+            showlegend=False,
+        )
+    # 無地域代碼（WO/IB＝PCT）畫不上地圖，直接註記在圖面下方。
+    if no_geo_notes:
+        fig.add_annotation(
+            text="無地域代碼：" + "、".join(no_geo_notes),
+            xref="paper", yref="paper", x=0.01, y=-0.04, showarrow=False,
+            font={"size": 11, "color": "#6B7280"}, align="left",
+        )
+
     fig.update_layout(
-        margin={"r": 20, "t": 60, "l": 20, "b": 20},
+        margin={"r": 20, "t": 60, "l": 20, "b": 40},
         coloraxis_colorbar={"title": "Patents"},
         paper_bgcolor="white",
     )
@@ -180,5 +239,6 @@ def build_country_choropleth(
         "drawn": len(locations),
         "labeled": len(label_lons),
         "label_missing_centroid": missing_centroid,
+        "regional_marked": [{"country_code": code, "patent_count": count} for code, count in regional_marks],
         "skipped": skipped,
     }

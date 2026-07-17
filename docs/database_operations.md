@@ -91,10 +91,11 @@ volumes:
 scripts/db_backup.ps1
 ```
 
-預設輸出：
+輸出檔名：
 
 ```text
-backups/patent_ppt_YYYYMMDD_HHMMSS.dump
+backups/patent_ppt_full_YYYYMMDD_HHMMSS.dump
+backups/patent_ppt_schema_YYYYMMDD_HHMMSS.dump
 ```
 
 執行：
@@ -104,10 +105,23 @@ cd "D:\力山\專案\專利_ppt自動"
 .\scripts\db_backup.ps1
 ```
 
+測試只保留資料庫架構、欄位、索引與 constraint，不保留資料值：
+
+```powershell
+.\scripts\db_backup.ps1 -SchemaOnly
+```
+
 備份格式：
 
 ```text
 pg_dump custom format (-F c)
+```
+
+備份模式：
+
+```text
+預設：full backup，保留 schema 與資料值，正式備份使用這個模式。
+-SchemaOnly：schema-only backup，只保留架構，不保留資料值，供測試或架構快照使用。
 ```
 
 建議規則：
@@ -115,7 +129,9 @@ pg_dump custom format (-F c)
 ```text
 每次執行 sql/005_six_table_schema.sql 前，必須先備份。
 每次正式大量匯入前，必須先備份。
-至少保留最近 7 份備份。
+正式備份必須使用預設 full backup。
+測試架構快照可使用 -SchemaOnly。
+至少保留最近 7 份正式備份。
 ```
 
 ## 還原

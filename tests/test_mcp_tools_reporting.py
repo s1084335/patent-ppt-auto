@@ -1,0 +1,155 @@
+"""MCP reporting tools（純函式層）的單元測試。
+
+引擎呼叫以 mock 取代驗接線；get_data_status 走真 DB smoke（連不到就 skip）。
+"""
+from __future__ import annotations
+
+import unittest
+from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import Decimal
+from pathlib import Path
+from unittest import mock
+
+from backend.app.mcp_server import tools_reporting
+from backend.app.mcp_server._shared import json_safe
+from backend.app.reports.report_definitions import REPORT_DEFINITIONS
+
+
+class JsonSafeTests(unittest.TestCase):
+    """DB／dataclass／Path 常見型別必須轉成 JSON 原生型別。"""
+
+    def test_scalar_passthrough(self):
+        for value in (None, True, 3, 2.5, "x"):
+            self.assertEqual(json_safe(value), value)
+
+    def test_decimal_becomes_float(self):
+        self.assertEqual(json_safe(Decimal("12.50")), 12.5)
+
+    def test_dates_become_iso_strings(self):
+        self.assertEqual(json_safe(date(2026, 7, 16)), "2026-07-16")
+        self.assertEqual(json_safe(datetime(2026, 7, 16, 9, 30)), "2026-07-16T09:30:00")
+
+    def test_path_becomes_string(self):
+        self.assertEqual(json_safe(Path("a") / "b"), str(Path("a") / "b"))
+
+    def test_containers_recursive(self):
+        value = {"k": (Decimal("1"), [date(2026, 1, 1)]), 5: "v"}
+        self.assertEqual(json_safe(value), {"k": [1.0, ["2026-01-01"]], "5": "v"})
+
+    def test_dataclass_becomes_dict(self):
+        @dataclass
+        class Row:
+            name: str
+            amount: Decimal
+
+        self.assertEqual(json_safe(Row("a", Decimal("2"))), {"name": "a", "amount": 2.0})
+
+    def test_unknown_type_falls_back_to_str(self):
+        class Odd:
+            def __str__(self):
+                return "odd!"
+
+        self.assertEqual(json_safe(Odd()), "odd!")
+
+
+class ListReportsTests(unittest.TestCase):
+    def test_catalog_covers_all_definitions(self):
+        catalog = tools_reporting.list_reports()
+        names = [item["name"] for item in catalog["reports"]]
+        self.assertEqual(sorted(names), sorted(REPORT_DEFINITIONS))
+        for item in catalog["reports"]:
+            self.assertIn("label_zh", item)
+            self.assertIn("report_type", item)
+            self.assertIn(item["filter_mode"], ("patent_level", "family_translated"))
+        by_name = {item["name"]: item for item in catalog["reports"]}
+        self.assertEqual(by_name["family_country_layout"]["filter_mode"], "family_translated")
+        self.assertEqual(by_name["application_trend"]["filter_mode"], "patent_level")
+
+    def test_filter_whitelist_included(self):
+        catalog = tools_reporting.list_reports()
+        self.assertIn("country_code", catalog["allowed_filter_columns"])
+        self.assertEqual(catalog["allowed_filter_columns"], sorted(catalog["allowed_filter_columns"]))
+
+
+class RunReportAnalysisTests(unittest.TestCase):
+    """驗證輸入檢查與對引擎的接線（引擎本體另有 tests）。"""
+
+    def test_empty_report_names_raises(self):
+        with self.assertRaises(ValueError):
+            tools_reporting.run_report_analysis([])
+
+    def test_unknown_report_name_raises(self):
+        with self.assertRaisesRegex(ValueError, "no_such_report"):
+            tools_reporting.run_report_analysis(["no_such_report"])
+
+    def test_data_only_skips_charts(self):
+        with mock.patch.object(tools_reporting, "run_reports_batch", return_value={"application_trend": {"rows": []}}) as batch, \
+                mock.patch.object(tools_reporting, "run_chart_trial") as charts:
+            result = tools_reporting.run_report_analysis(
+                ["application_trend"], filters={"country_code": "US"}, limit=10, with_charts=False,
+            )
+        batch.assert_called_once_with(["application_trend"], filters={"country_code": "US"}, limit=10, patent_ids=None)
+        charts.assert_not_called()
+        self.assertNotIn("charts", result)
+        self.assertEqual(result["parameters"]["row_limit"], 10)
+
+    def test_charts_wiring_and_shape(self):
+        chart_result = {
+            "output_dir": "out/report_trial_x",
+            "files": ["annual_trend.svg", "report_data.json", "index.html"],
+            "sections_rendered": ["annual_trend", "application_growth"],
+        }
+        with mock.patch.object(tools_reporting, "run_reports_batch", return_value={}) as batch, \
+                mock.patch.object(tools_reporting, "run_chart_trial", return_value=chart_result) as charts:
+            result = tools_reporting.run_report_analysis(["application_trend"])
+        charts.assert_called_once_with(analysis_id=None, report_names=["application_trend"], filters=None)
+        self.assertEqual(result["charts"]["output_dir"], "out/report_trial_x")
+        self.assertTrue(result["charts"]["index_html"].endswith("index.html"))
+        self.assertEqual(result["charts"]["sections_rendered"], ["annual_trend", "application_growth"])
+        # 預設 limit 保護 context。
+        batch.assert_called_once_with(
+            ["application_trend"], filters=None, limit=tools_reporting.DEFAULT_ROW_LIMIT, patent_ids=None,
+        )
+
+    def test_analysis_snapshot_shared_by_data_and_charts(self):
+        with mock.patch.object(tools_reporting, "fetch_analysis_patent_ids", return_value=[1, 2]) as fetch, \
+                mock.patch.object(tools_reporting, "run_reports_batch", return_value={}) as batch, \
+                mock.patch.object(tools_reporting, "run_chart_trial", return_value={
+                    "output_dir": "o", "files": [], "sections_rendered": [], "export_count": 3,
+                }):
+            result = tools_reporting.run_report_analysis(["application_trend"], analysis_id=7)
+        fetch.assert_called_once_with(7)
+        self.assertEqual(batch.call_args.kwargs["patent_ids"], [1, 2])
+        self.assertEqual(result["charts"]["export_count"], 3)
+
+
+class DataStatusSmokeTests(unittest.TestCase):
+    """真 DB smoke：連得到開發庫（PGPORT=5433）才跑，連不到就 skip。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import psycopg
+        from dotenv import load_dotenv
+
+        from backend.app.db.connection import get_connection_kwargs
+
+        project_root = Path(__file__).resolve().parents[1]
+        load_dotenv(project_root / ".env", override=False)
+        try:
+            with psycopg.connect(**get_connection_kwargs(), connect_timeout=3):
+                pass
+        except Exception as exc:  # noqa: BLE001 - 任何連線失敗都代表環境沒 DB
+            raise unittest.SkipTest(f"DB unreachable: {exc}")
+
+    def test_status_shape(self):
+        status = tools_reporting.get_data_status()
+        self.assertIn(status["status"], ("ok", "warning"))
+        self.assertIn("patents", status["row_counts"])
+        self.assertIn("report_patent_base", status["row_counts"])
+        self.assertIsInstance(status["warnings"], list)
+        self.assertIn("port", status["database"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>專利主題分類</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand-block">
+      <strong>專利主題分類</strong>
+      <span id="workspaceMeta">選擇 workspace</span>
+    </div>
+    <div class="header-actions">
+      <label class="workspace-select">
+        <span>Workspace</span>
+        <select id="workspaceSelect" aria-label="選擇 workspace"></select>
+      </label>
+      <button id="refreshButton" class="icon-button" title="重新整理" aria-label="重新整理">↻</button>
+    </div>
+  </header>
+
+  <main class="app-shell">
+    <aside class="taxonomy-panel">
+      <div class="panel-heading">
+        <div>
+          <h1>分類標籤</h1>
+          <p id="sourceStatus">尚無分群結果</p>
+        </div>
+        <div class="panel-actions">
+          <button id="incrementalButton" class="secondary-button">更新分群</button>
+          <button id="mergeModeButton" class="secondary-button">合併主題</button>
+        </div>
+      </div>
+
+      <div class="source-tabs" role="tablist">
+        <button class="source-tab active" data-source="wips_independent_claims" role="tab">技術</button>
+        <button class="source-tab" data-source="effect_summary" role="tab">功效</button>
+      </div>
+
+      <section id="candidatePanel" class="candidate-panel hidden" aria-live="polite"></section>
+
+      <div class="filter-toolbar">
+        <span id="filterCount">全部主題</span>
+        <button id="clearFilterButton" class="text-button">清除篩選</button>
+      </div>
+      <div id="topicList" class="topic-list"></div>
+
+      <div id="mergeTray" class="merge-tray hidden">
+        <div>
+          <strong>合併選取主題</strong>
+          <span id="mergeSelection">請選擇兩個主題</span>
+        </div>
+        <div id="mergeSuggestions" class="merge-suggestions"></div>
+        <input id="mergeLabel" type="text" maxlength="120" placeholder="合併後名稱（可留空）">
+        <button id="confirmMergeButton" class="primary-button" disabled>確認合併</button>
+        <div class="merge-history-heading">合併紀錄</div>
+        <div id="mergeHistory" class="merge-history"></div>
+      </div>
+    </aside>
+
+    <section class="content-panel">
+      <div class="content-toolbar">
+        <div>
+          <h2>專利列表</h2>
+          <span id="resultCount">0 件</span>
+        </div>
+        <label class="search-box">
+          <span aria-hidden="true">⌕</span>
+          <input id="searchInput" type="search" placeholder="搜尋專利號或標題">
+        </label>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>專利號</th>
+              <th>標題</th>
+              <th>技術主題</th>
+              <th>功效主題</th>
+              <th>國別</th>
+            </tr>
+          </thead>
+          <tbody id="patentRows"></tbody>
+        </table>
+        <div id="emptyState" class="empty-state hidden">目前條件沒有符合的專利</div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>
