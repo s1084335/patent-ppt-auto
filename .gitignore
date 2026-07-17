@@ -16,6 +16,14 @@ output/
 # 本機模型檔很大，不進版控；容器 build/deploy 另行提供模型目錄
 backend/models/
 
+# WIPS 原始匯出可從 WIPS 重下、分群模型產出可重跑，體積大不進版控
+# （data/mappings/ 為人工維護的對照表，仍需進版控）
+data/raw/
+data/model_artifacts/
+
+# 檔案結構探查產出，可重跑
+*.inspect.ndjson
+
 # 分類樹 v0 歸檔：腳本與設計文件進版控，可重生的大產出不進
 # （AutoPhrase repo snapshot 可從官方重下、片語與共現產出可重跑）
 archive/taxonomy-v0/taxonomy/autophrase/AutoPhrase/
