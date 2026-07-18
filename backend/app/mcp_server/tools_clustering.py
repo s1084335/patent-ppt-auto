@@ -1,4 +1,4 @@
-"""Patent MCP Server — clustering tools（純函式層，輕量六支）。
+"""Patent MCP Server — clustering tools（純函式層，輕量七支）。
 
 包 backend.app.clustering.workspace_service 的唯讀 payload／輕量寫回介面，
 供 Claude Code 做主題標籤、摘要與分群結果解讀。重負載操作（calibrate／
@@ -59,6 +59,24 @@ def get_workspace_dashboard(workspace_id: int) -> dict[str, Any]:
 def get_candidate_review_payload(run_id: int) -> dict[str, Any]:
     """取 calibrate 產生的候選主題數方案（k 掃描結果），供 Claude 產生候選說明。"""
     return json_safe(workspace_service.candidate_review_payload(int(run_id)))
+
+
+def apply_candidate_explanations(
+    run_id: int,
+    explanations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """寫回 Claude 對候選主題數方案的差異說明（只存說明，不代使用者選案）。
+
+    explanations：[{candidate_id, explanation}, ...]；空白說明或超過硬上限
+    會被拒絕。回傳 requested_count/updated_count，兩者不一致代表有
+    candidate_id 不屬於此 run。候選定案仍由使用者在前端 finalize。
+    """
+    return json_safe(
+        workspace_service.apply_candidate_explanations(
+            run_id=int(run_id),
+            explanations=explanations,
+        )
+    )
 
 
 def get_topic_labeling_payload(

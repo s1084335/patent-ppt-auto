@@ -43,6 +43,18 @@ class WiringTests(unittest.TestCase):
             tools_clustering.get_topic_labeling_payload(1, "effect_summary", topic_ids=[])
         fn.assert_called_once_with(workspace_id=1, source_field="effect_summary", topic_ids=None)
 
+    def test_apply_candidate_explanations_wiring(self):
+        explanations = [{"candidate_id": 1, "explanation": "保守方案主題較少，適合概覽。"}]
+        with mock.patch.object(
+            tools_clustering.workspace_service,
+            "apply_candidate_explanations",
+            return_value={"requested_count": 1, "updated_count": 1},
+        ) as fn:
+            result = tools_clustering.apply_candidate_explanations("4", explanations)
+        fn.assert_called_once_with(run_id=4, explanations=explanations)
+        self.assertEqual(result["requested_count"], 1)
+        self.assertEqual(result["updated_count"], 1)
+
     def test_apply_labels_wiring(self):
         labels = [{"topic_id": 2, "label": "傳動結構", "summary": "…"}]
         with mock.patch.object(

@@ -13,7 +13,11 @@ from pydantic import BaseModel, Field
 
 from backend.app.api.jobs import job_to_dict
 from backend.app.db import job_repository
-from backend.app.reports.report_definitions import ALLOWED_FILTER_COLUMNS, REPORT_DEFINITIONS
+from backend.app.reports.report_definitions import (
+    ALLOWED_FILTER_COLUMNS,
+    REPORT_DEFINITIONS,
+    allowed_filter_columns_for_report,
+)
 
 
 router = APIRouter(tags=["reports"])
@@ -44,6 +48,19 @@ def create_report(request: ReportRequest) -> dict[str, Any]:
                 status_code=422,
                 detail=f"filters use non-whitelisted columns: {', '.join(bad_columns)}",
             )
+        for report_name in request.report_names:
+            definition = REPORT_DEFINITIONS[report_name]
+            invalid_for_report = sorted(
+                set(request.filters) - allowed_filter_columns_for_report(definition)
+            )
+            if invalid_for_report:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"filters not supported by report {report_name}: "
+                        f"{', '.join(invalid_for_report)}"
+                    ),
+                )
 
     payload: dict[str, Any] = {"report_names": list(request.report_names)}
     if request.filters is not None:

@@ -9,6 +9,7 @@ from backend.app.reports.report_definitions import (
     ALLOWED_FILTER_COLUMNS,
     REPORT_DEFINITIONS,
     ReportDefinition,
+    allowed_filter_columns_for_report,
 )
 
 
@@ -46,15 +47,20 @@ def output_alias(column: str) -> str:
     return column
 
 
-def build_filter_clause(filters: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
+def build_filter_clause(
+    filters: dict[str, Any] | None,
+    allowed_columns: set[str] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """依允許欄位建立 WHERE 條件；allowed_columns 未給時沿用全域白名單。"""
     if not filters:
         return "", {}
 
+    usable_columns = allowed_columns or ALLOWED_FILTER_COLUMNS
     clauses = []
     params: dict[str, Any] = {}
     index = 0
     for column, value in filters.items():
-        if column not in ALLOWED_FILTER_COLUMNS:
+        if column not in usable_columns:
             raise ValueError(f"Unsupported report filter column: {column}")
         column_sql = quote_ident(column)
         if isinstance(value, dict):
@@ -152,7 +158,10 @@ def build_report_sql(
 ) -> tuple[str, dict[str, Any]]:
     blank_clause = build_exclude_blank_clause(definition.exclude_blank_columns)
     if definition.supports_patent_ids:
-        filter_clause, params = build_filter_clause(filters)
+        filter_clause, params = build_filter_clause(
+            filters,
+            allowed_filter_columns_for_report(definition),
+        )
         patent_ids_clause = ""
         if patent_ids is not None:
             # Restrict to an explicit patent set snapshot (used by app_layer analyses).

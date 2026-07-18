@@ -46,10 +46,11 @@ mcp.tool()(tools_reporting.list_reports)
 mcp.tool()(tools_reporting.run_report_analysis)
 mcp.tool()(tools_reporting.get_data_status)
 
-# ── clustering tools（分群引擎，輕量六支）───────────────────────
+# ── clustering tools（分群引擎，輕量七支）───────────────────────
 mcp.tool()(tools_clustering.list_workspaces)
 mcp.tool()(tools_clustering.get_workspace_dashboard)
 mcp.tool()(tools_clustering.get_candidate_review_payload)
+mcp.tool()(tools_clustering.apply_candidate_explanations)
 mcp.tool()(tools_clustering.get_topic_labeling_payload)
 mcp.tool()(tools_clustering.apply_topic_labels)
 mcp.tool()(tools_clustering.get_merge_history)

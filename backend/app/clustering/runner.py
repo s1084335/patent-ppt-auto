@@ -836,6 +836,13 @@ def parse_args() -> argparse.Namespace:
     apply_labels.add_argument("--source-field", default=SOURCE_FIELD_WIPS_INDEPENDENT_CLAIMS)
     apply_labels.add_argument("--input-json", type=Path, required=True)
     apply_labels.add_argument("--updated-by", default="claude-cli")
+
+    backfill = subparsers.add_parser(
+        "backfill-representatives",
+        help="backfill representative patents of old topics up to the 15-doc limit",
+    )
+    backfill.add_argument("--workspace-id", type=int, required=True)
+    backfill.add_argument("--source-field", default=SOURCE_FIELD_WIPS_INDEPENDENT_CLAIMS)
     return parser.parse_args()
 
 
@@ -903,6 +910,15 @@ def main() -> None:
             source_field=args.source_field,
             labels=labels,
             updated_by=args.updated_by,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    elif args.command == "backfill-representatives":
+        from .workspace_service import backfill_representative_patents
+
+        result = backfill_representative_patents(
+            workspace_id=args.workspace_id,
+            source_field=args.source_field,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return

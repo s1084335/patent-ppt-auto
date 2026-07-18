@@ -106,8 +106,21 @@ def create_finalize(run_id: int, request: FinalizeRequest) -> dict[str, Any]:
         exists = conn.execute(
             "SELECT 1 FROM derived_layer.topic_runs WHERE run_id = %s", (run_id,)
         ).fetchone()
+        candidate = conn.execute(
+            """
+            SELECT 1
+            FROM derived_layer.topic_candidates
+            WHERE run_id = %s AND candidate_id = %s
+            """,
+            (run_id, request.candidate_id),
+        ).fetchone()
     if exists is None:
         raise HTTPException(status_code=404, detail=f"run {run_id} not found")
+    if candidate is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"candidate {request.candidate_id} does not belong to run {run_id}",
+        )
     return _create_clustering_job(
         "clustering_finalize",
         {

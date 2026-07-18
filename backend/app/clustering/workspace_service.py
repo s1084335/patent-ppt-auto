@@ -25,6 +25,27 @@ from .sources import get_source_spec, source_fields
 
 LLM_REPRESENTATIVE_DOC_LIMIT = 15
 
+# 傳給 LLM 的代表文件筆數（2026-07-17 使用者定案：由 15 改 10）。
+# DB 仍儲存最多 LLM_REPRESENTATIVE_DOC_LIMIT 筆，payload 只取前 10 筆傳輸。
+LLM_PAYLOAD_DOC_LIMIT = 10
+
+# LLM 產出的建議字數（寫進 instruction）與 apply 端硬上限（2 倍建議上限）。
+# 超過硬上限視為 LLM 未遵循指示，直接 raise 讓呼叫端重生，不靜默截斷。
+LABEL_SUGGESTED_RANGE = "4 到 8"
+SUMMARY_SUGGESTED_RANGE = "20 到 40"
+EXPLANATION_SUGGESTED_RANGE = "25 到 40"
+LABEL_MAX_CHARS = 16
+SUMMARY_MAX_CHARS = 80
+EXPLANATION_MAX_CHARS = 80
+
+# 每筆代表文本的截斷長度：10 筆 × 800 字 ≈ 單一 topic 8K 字，
+# 控制 topic_labeling_payload 整包大小；需要更完整全文時用 topic_ids 分批取。
+EXCERPT_CHAR_LIMIT = 800
+
+# 本路徑只允許 AI 產出（llm）與程式後備（fallback）；manual 僅能由
+# 前端 rename endpoint 寫入，避免 AI 通道把標籤自我升級成人工定案。
+APPLY_LABEL_SOURCES = ("llm", "fallback")
+
 
 @dataclass(frozen=True)
 class IncrementalSummary:
@@ -189,7 +210,8 @@ def candidate_review_payload(run_id: int) -> dict[str, Any]:
         "source_label": spec.label_zh,
         "document_count": int(run["input_doc_count"]),
         "instruction": (
-            "請用繁體中文簡短說明三種候選方案差異；score 只能作排序輔助，"
+            f"請用繁體中文為每個候選方案寫一段 {EXPLANATION_SUGGESTED_RANGE} 個中文字的差異說明"
+            f"（硬上限 {EXPLANATION_MAX_CHARS} 字，超過會被拒收）；score 只能作排序輔助，"
             "不可替使用者直接定案。請回傳 explanations 陣列，每筆包含 "
             "candidate_id 與 explanation，供系統寫回 topic_candidates.llm_explanation。"
         ),
@@ -216,24 +238,30 @@ def apply_candidate_explanations(
     run_id: int,
     explanations: list[dict[str, Any]],
 ) -> dict[str, int]:
-    """? Claude Code ???????????? topic_candidates?
+    """把 Claude Code 產生的候選方案說明寫回 topic_candidates.llm_explanation。
 
-    ??????????????????????????????
-    finalize_top_level??????????? candidate_id?
+    只保存說明文字，不代使用者選定候選方案；候選定案仍由使用者透過
+    finalize_top_level 指定 candidate_id。空白說明、缺 candidate_id 或超過
+    硬上限一律 raise（與 API 端 pydantic 驗證同一口徑），不靜默跳過；
+    回傳 requested_count 與 updated_count，兩者不一致代表有 candidate_id
+    不屬於此 run。
     """
     if not explanations:
-        return {"updated_count": 0}
+        raise ValueError("explanations must not be empty")
 
     rows: list[tuple[str, int, int]] = []
     for item in explanations:
+        if item.get("candidate_id") is None:
+            raise ValueError("each explanation requires candidate_id")
         candidate_id = int(item["candidate_id"])
         explanation = str(item.get("explanation") or item.get("llm_explanation") or "").strip()
         if not explanation:
-            continue
+            raise ValueError(f"candidate {candidate_id} explanation must not be empty")
+        if len(explanation) > EXPLANATION_MAX_CHARS:
+            raise ValueError(
+                f"candidate {candidate_id} explanation exceeds {EXPLANATION_MAX_CHARS} chars"
+            )
         rows.append((explanation, run_id, candidate_id))
-
-    if not rows:
-        return {"updated_count": 0}
 
     updated_count = 0
     with psycopg.connect(**get_connection_kwargs()) as conn:
@@ -249,7 +277,7 @@ def apply_candidate_explanations(
                     row,
                 )
                 updated_count += cur.rowcount
-    return {"updated_count": updated_count}
+    return {"requested_count": len(rows), "updated_count": updated_count}
 
 def topic_labeling_payload(
     *,
@@ -293,7 +321,7 @@ def topic_labeling_payload(
                 patent_ids = [
                     int(value)
                     for value in topic["representative_patent_ids_json"]
-                ][:LLM_REPRESENTATIVE_DOC_LIMIT]
+                ][:LLM_PAYLOAD_DOC_LIMIT]
                 excerpts = _fetch_source_excerpts(cur, spec.source_column, patent_ids)
                 payload_topics.append(
                     {
@@ -308,8 +336,11 @@ def topic_labeling_payload(
         "source_field": source_field,
         "source_label": spec.label_zh,
         "instruction": (
-            "請只根據每個 topic 的前 15 筆代表性專利文件產生 topic_id、label、summary；"
-            "不要依賴 keywords。label 建議 8 到 14 個中文字，summary 建議 50 到 100 個中文字。"
+            f"請只根據每個 topic 的前 {LLM_PAYLOAD_DOC_LIMIT} 筆代表性專利文件產生 "
+            "topic_id、label、summary；不要依賴 keywords。"
+            f"label 建議 {LABEL_SUGGESTED_RANGE} 個中文字（硬上限 {LABEL_MAX_CHARS} 字），"
+            f"summary 建議 {SUMMARY_SUGGESTED_RANGE} 個中文字（硬上限 {SUMMARY_MAX_CHARS} 字），"
+            f"超過硬上限會被拒收。{spec.naming_hint}"
         ),
         "topics": payload_topics,
     }
@@ -322,7 +353,12 @@ def apply_topic_labels(
     labels: list[dict[str, Any]],
     updated_by: str = "claude-cli",
 ) -> dict[str, int]:
-    """寫入 Claude CLI 或人工流程產出的 topic label/summary。"""
+    """寫入 Claude CLI 或批次流程產出的 topic label/summary。
+
+    source 只接受 llm/fallback（預設 llm，符合 0010 topics_label_source_check）；
+    manual 只能走前端 rename endpoint。label/summary 超過硬上限直接 raise，
+    要求 LLM 重生，不靜默截斷。
+    """
     if not labels:
         return {"updated_count": 0}
 
@@ -331,13 +367,26 @@ def apply_topic_labels(
         topic_id = int(item["topic_id"])
         label = str(item["label"]).strip()
         summary = str(item.get("summary") or "").strip()
+        source = str(item.get("source") or "llm")
         if not label:
             raise ValueError(f"topic {topic_id} label must not be empty")
+        if len(label) > LABEL_MAX_CHARS:
+            raise ValueError(
+                f"topic {topic_id} label exceeds {LABEL_MAX_CHARS} chars"
+            )
+        if len(summary) > SUMMARY_MAX_CHARS:
+            raise ValueError(
+                f"topic {topic_id} summary exceeds {SUMMARY_MAX_CHARS} chars"
+            )
+        if source not in APPLY_LABEL_SOURCES:
+            raise ValueError(
+                f"topic {topic_id} source must be one of {APPLY_LABEL_SOURCES}"
+            )
         rows.append(
             (
                 label,
                 summary,
-                str(item.get("source") or "claude_cli"),
+                source,
                 Jsonb({"updated_by": updated_by}),
                 topic_id,
                 workspace_id,
@@ -366,6 +415,83 @@ def apply_topic_labels(
             )
             updated_count = cur.rowcount
     return {"updated_count": int(updated_count)}
+
+
+def backfill_representative_patents(
+    *,
+    workspace_id: int,
+    source_field: str,
+) -> dict[str, int]:
+    """把舊 run 產生、少於目前上限的代表專利清單補到 15 筆。
+
+    舊 finalize 只存 5 筆代表專利，與新 instruction 的「前 15 筆」不一致。
+    這裡依 is_current assignment 的 distance_to_centroid 由小到大重取前
+    LLM_REPRESENTATIVE_DOC_LIMIT 筆（合併鏈解析到 root topic），只更新
+    active model topics 的 representative_patent_ids_json，不動 assignment
+    與 label；已達上限的 topic 不重寫。
+    """
+    get_source_spec(source_field)
+    root_by_patent = _resolved_topic_by_patent(
+        workspace_id=workspace_id, source_field=source_field
+    )
+    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
+        assignment_rows = conn.execute(
+            """
+            SELECT patent_id, distance_to_centroid
+            FROM derived_layer.topic_assignments
+            WHERE workspace_id = %s AND source_field = %s AND is_current
+            """,
+            (workspace_id, source_field),
+        ).fetchall()
+        topic_rows = conn.execute(
+            """
+            SELECT topic_id, representative_patent_ids_json
+            FROM derived_layer.topics
+            WHERE workspace_id = %s AND source_field = %s
+              AND topic_kind = 'model' AND status = 'active'
+            """,
+            (workspace_id, source_field),
+        ).fetchall()
+
+    # 依 root topic 聚集 (distance, patent_id)，distance 缺值排最後。
+    ranked_by_topic: dict[int, list[tuple[float, int]]] = {}
+    for row in assignment_rows:
+        patent_id = int(row["patent_id"])
+        root_topic_id = root_by_patent.get(patent_id)
+        if root_topic_id is None:
+            continue
+        distance = (
+            float(row["distance_to_centroid"])
+            if row["distance_to_centroid"] is not None
+            else math.inf
+        )
+        ranked_by_topic.setdefault(root_topic_id, []).append((distance, patent_id))
+
+    updates: list[tuple[Jsonb, int]] = []
+    for row in topic_rows:
+        topic_id = int(row["topic_id"])
+        existing = [int(value) for value in row["representative_patent_ids_json"]]
+        if len(existing) >= LLM_REPRESENTATIVE_DOC_LIMIT:
+            continue
+        ranked = sorted(ranked_by_topic.get(topic_id, []))
+        selected = [patent_id for _, patent_id in ranked[:LLM_REPRESENTATIVE_DOC_LIMIT]]
+        if not selected or selected == existing:
+            continue
+        updates.append((Jsonb(selected), topic_id))
+
+    if updates:
+        with psycopg.connect(**get_connection_kwargs()) as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    UPDATE derived_layer.topics
+                    SET representative_patent_ids_json = %s, updated_at = now()
+                    WHERE topic_id = %s AND topic_kind = 'model' AND status = 'active'
+                    """,
+                    updates,
+                )
+    return {"topic_count": len(topic_rows), "updated_count": len(updates)}
+
 
 def incremental_workspace(
     *,
@@ -853,7 +979,7 @@ def refresh_topic_counts(*, workspace_id: int, source_field: str) -> None:
 
 
 def _fetch_source_excerpts(cur: Any, source_column: str, patent_ids: list[int]) -> list[str]:
-    """讀取代表性文本並限制長度，控制 LLM 請求大小。"""
+    """讀取代表性文本並依 EXCERPT_CHAR_LIMIT 截斷，控制 LLM 請求大小。"""
     if not patent_ids:
         return []
     cur.execute(
@@ -866,7 +992,7 @@ def _fetch_source_excerpts(cur: Any, source_column: str, patent_ids: list[int]) 
         (patent_ids,),
     )
     return [
-        str(row["source_text"])[:1400]
+        str(row["source_text"])[:EXCERPT_CHAR_LIMIT]
         for row in cur.fetchall()
         if row["source_text"]
     ]

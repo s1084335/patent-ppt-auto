@@ -152,6 +152,7 @@ h1, h2 { margin: 0; font-size: 16px; line-height: 1.35; }
 }
 .candidate-option:first-of-type { border-top: 0; }
 .candidate-option input { margin-top: 3px; }
+.candidate-option.readonly > span:first-child { color: var(--teal-dark); font-weight: 700; }
 .candidate-option strong { font-size: 13px; }
 .candidate-option p { margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .metric-row { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 5px; color: #46545f; font-size: 10px; }

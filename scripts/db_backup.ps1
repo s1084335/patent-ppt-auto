@@ -3,7 +3,7 @@ param(
     [string]$Database = "patent_ppt",
     [string]$User = "postgres",
     [string]$HostName = "localhost",
-    [int]$Port = 5432,
+    [int]$Port = 5433,
     [string]$PgBin = "D:\PostgreSQL\18\bin",
     [string]$BackupDir = "backups",
     [switch]$SchemaOnly

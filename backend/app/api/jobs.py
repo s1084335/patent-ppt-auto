@@ -1,9 +1,9 @@
-"""Job 相關 API：health、ready 與單筆工作查詢。
+"""Job 狀態 API。
 
-health＝liveness（程式活著即回，不碰 DB）；ready＝readiness（檢查 DB 可連並
-回報 worker 心跳新鮮度，DB 不通回 503）；GET /jobs/{id} 由 job_repository 讀狀態。
-建立工作的 endpoint 在 E3（clustering／reports）另加。
+提供 liveness、readiness 與 job 查詢。readiness 會分辨：
+資料庫連線或連線設定錯誤，以及 DB 可連但 worker heartbeat 查詢失敗。
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -20,7 +20,7 @@ router = APIRouter(tags=["jobs"])
 
 
 def job_to_dict(job: job_repository.ProcessingJob) -> dict[str, Any]:
-    """把 ProcessingJob 轉成 API 回傳格式（jobs/clustering/reports 共用）。"""
+    """把 ProcessingJob 轉成 API 回傳格式，供 jobs/clustering/reports 共用。"""
     return {
         "job_id": job.job_id,
         "job_type": job.job_type,
@@ -37,21 +37,27 @@ def job_to_dict(job: job_repository.ProcessingJob) -> dict[str, Any]:
 
 @router.get("/health")
 def health() -> dict[str, str]:
-    """liveness：程式存活即回 ok，不連 DB。"""
+    """liveness：只確認應用程式進程可回應，不碰 DB。"""
     return {"status": "ok"}
 
 
 @router.get("/ready")
 def ready() -> dict[str, Any]:
-    """readiness：DB 可連才算 ready（不通回 503），並附 worker 心跳新鮮度。
-
-    worker 健康以「running job 的心跳」推斷：無 running job 時無法確認 worker
-    是否在跑（idle），但只要 DB 通、backend 就能收工作，故不因此判 not_ready。
-    """
-    kwargs = get_connection_kwargs()
-    worker: dict[str, Any]
+    """readiness：確認 DB 可連，並檢查 running jobs 的 heartbeat 狀態。"""
     try:
-        with psycopg.connect(**kwargs, connect_timeout=3) as conn:
+        kwargs = get_connection_kwargs()
+        conn = psycopg.connect(**kwargs, connect_timeout=3)
+    except Exception as exc:  # noqa: BLE001 - 連線參數或連線失敗都歸類成 DB not ready
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "not_ready",
+                "database": {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+            },
+        ) from exc
+
+    try:
+        with conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
                 cur.execute(
@@ -68,12 +74,13 @@ def ready() -> dict[str, Any]:
                     (settings.WORKER_HEARTBEAT_TIMEOUT_SECONDS,),
                 )
                 row = cur.fetchone()
-    except Exception as exc:  # noqa: BLE001 - DB 不通即 not ready
+    except Exception as exc:  # noqa: BLE001 - DB 可連但 readiness 查詢或 schema 有問題
         raise HTTPException(
             status_code=503,
             detail={
                 "status": "not_ready",
-                "database": {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                "database": {"ok": True, "port": kwargs.get("port")},
+                "worker": {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
             },
         ) from exc
 
@@ -83,7 +90,6 @@ def ready() -> dict[str, Any]:
         "stale_running_jobs": stale,
         "latest_heartbeat_age_seconds": int(latest_age) if latest_age is not None else None,
         "heartbeat_timeout_seconds": settings.WORKER_HEARTBEAT_TIMEOUT_SECONDS,
-        # 有 running job 但全部心跳逾時＝worker 可能失聯。
         "healthy": running == 0 or stale < running,
     }
     return {
@@ -95,7 +101,7 @@ def ready() -> dict[str, Any]:
 
 @router.get("/jobs/{job_id}")
 def get_job(job_id: int) -> dict[str, Any]:
-    """查詢單筆工作的狀態、進度、階段與結果；不存在回 404。"""
+    """依 job_id 查詢單一工作；不存在時回 404。"""
     job = job_repository.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found")

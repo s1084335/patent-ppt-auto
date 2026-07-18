@@ -1,9 +1,9 @@
-"""backend 統一設定：唯一載入 .env 的地方。
+"""後端共用設定。
 
-原則（patent-backend-worker-plan.md）：容器只讀環境變數，本機開發才載入專案
-.env；不得讓各模組各自呼叫 load_dotenv()，避免誤連到 localhost:5432 的空殼庫。
-其他模組要設定值一律 import 這裡。
+此檔在 FastAPI 與 worker 匯入時都會載入，因此環境變數解析必須保守：
+格式錯誤不應讓整個 backend 在 import 階段起不來。
 """
+
 from __future__ import annotations
 
 import os
@@ -11,15 +11,21 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# backend/app/settings.py → 專案根為 parents[2]。
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# 本機開發載入 .env；override=False 讓容器已注入的環境變數優先，容器內無 .env 時為 no-op。
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
-# API 版本前綴。
-API_V1_PREFIX = "/api/v1"
+def get_int_env(name: str, default: int) -> int:
+    """讀取整數環境變數；格式錯誤時回退預設值，避免 import 階段中斷服務。"""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
-# worker 心跳逾時門檻（秒）：/ready 用它判斷 running job 是否 stale、worker 是否可能失聯。
-WORKER_HEARTBEAT_TIMEOUT_SECONDS = int(os.getenv("WORKER_HEARTBEAT_TIMEOUT_SECONDS", "120"))
+
+API_V1_PREFIX = "/api/v1"
+WORKER_HEARTBEAT_TIMEOUT_SECONDS = get_int_env("WORKER_HEARTBEAT_TIMEOUT_SECONDS", 120)

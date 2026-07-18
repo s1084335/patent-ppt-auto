@@ -86,11 +86,34 @@ class JobRepositoryTests(unittest.TestCase):
         key = "_verify_idem_key_1"
         a = jr.create_job("report_generate", _make_payload(), idempotency_key=key)
         b = jr.create_job("report_generate", _make_payload(), idempotency_key=key)
-        self.assertEqual(a.job_id, b.job_id)  # 不建第二筆
-        # 確認 DB 真的只有一筆
+        self.assertEqual(a.job_id, b.job_id)
         rows = jr.list_jobs(limit=100)
         same_key = [j for j in rows if j.job_id == a.job_id]
         self.assertEqual(len(same_key), 1)
+
+    def test_idempotency_terminal_same_request_returns_existing(self):
+        key = "_verify_idem_key_terminal"
+        job = jr.create_job("report_generate", _make_payload(), idempotency_key=key)
+        client = jr.WorkerQueueClient()
+        claimed = client.claim_next_job(worker_id="w-idem-terminal")
+        self.assertEqual(claimed.job_id, job.job_id)
+        client.complete_job(
+            job_id=claimed.job_id,
+            worker_id="w-idem-terminal",
+            result_json={"ok": True},
+        )
+        retried = jr.create_job("report_generate", _make_payload(), idempotency_key=key)
+        self.assertEqual(retried.job_id, job.job_id)
+
+    def test_idempotency_same_key_different_fingerprint_creates_new_job(self):
+        key = "_verify_idem_key_fingerprint"
+        a = jr.create_job("report_generate", _make_payload(report="a"), idempotency_key=key)
+        b = jr.create_job("report_generate", _make_payload(report="b"), idempotency_key=key)
+        self.assertNotEqual(a.job_id, b.job_id)
+
+    def test_list_jobs_rejects_negative_limit(self):
+        with self.assertRaises(ValueError):
+            jr.list_jobs(limit=-1)
 
     def test_list_filters(self):
         jr.create_job("clustering_calibrate", _make_payload(), workspace_id=self.ws_id)

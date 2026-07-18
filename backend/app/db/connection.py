@@ -4,13 +4,27 @@ import os
 import threading
 
 
+DEFAULT_PGPORT = "5433"
+"""本機開發預設連到 Docker PostgreSQL 對外 port；容器內部署用環境變數覆蓋。"""
+
+
+def _get_pgport() -> int:
+    """讀取 PGPORT；格式錯誤時丟出可讀錯誤，讓 /ready 可清楚回報設定問題。"""
+    raw = os.getenv("PGPORT", DEFAULT_PGPORT)
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"PGPORT must be an integer, got {raw!r}") from exc
+
+
 def get_database_url() -> str:
+    """組出 psycopg 可用的連線字串，優先使用 DATABASE_URL。"""
     database_url = os.getenv("DATABASE_URL")
     if database_url:
         return database_url
 
     host = os.getenv("PGHOST", "localhost")
-    port = os.getenv("PGPORT", "5432")
+    port = _get_pgport()
     dbname = os.getenv("PGDATABASE", "patent_ppt")
     user = os.getenv("PGUSER", "postgres")
     password = os.getenv("PGPASSWORD")
@@ -19,7 +33,9 @@ def get_database_url() -> str:
         return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
     return f"postgresql://{user}@{host}:{port}/{dbname}"
 
+
 def get_connection_kwargs() -> dict[str, str | int]:
+    """回傳 psycopg.connect 參數；本機預設走 localhost:5433。"""
     database_url = os.getenv("DATABASE_URL")
     if database_url:
         return {
@@ -29,7 +45,7 @@ def get_connection_kwargs() -> dict[str, str | int]:
 
     kwargs: dict[str, str | int] = {
         "host": os.getenv("PGHOST", "localhost"),
-        "port": int(os.getenv("PGPORT", "5432")),
+        "port": _get_pgport(),
         "dbname": os.getenv("PGDATABASE", "patent_ppt"),
         "user": os.getenv("PGUSER", "postgres"),
         "options": os.getenv("PGOPTIONS", "-c search_path=core_layer,raw_layer,public"),

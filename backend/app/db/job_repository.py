@@ -13,6 +13,8 @@ correctness-critical 的原子領取與逾時回收 SQL 由 schema 擁有者（C
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -21,7 +23,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from backend.app.db.connection import get_connection_kwargs
+from backend.app.db.connection import get_connection_kwargs, get_pool
 
 
 # 合法工作類型（DB 不設 job_type check，由此白名單於 backend 建立時驗證）。
@@ -42,6 +44,44 @@ _SELECT_COLUMNS = (
     "job_id, job_type, status, workspace_id, payload_json, result_json, "
     "progress_percent, current_stage, attempt_count, max_attempts"
 )
+
+
+def _request_fingerprint(
+    *,
+    job_type: str,
+    payload: dict[str, Any],
+    workspace_id: int | None,
+    max_attempts: int,
+) -> str:
+    """依請求內容產生穩定指紋，讓 idempotency key 可區分不同請求。"""
+    canonical = {
+        "job_type": job_type,
+        "payload": payload,
+        "workspace_id": workspace_id,
+        "max_attempts": max_attempts,
+    }
+    data = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+def _effective_idempotency_key(
+    *,
+    idempotency_key: str | None,
+    job_type: str,
+    payload: dict[str, Any],
+    workspace_id: int | None,
+    max_attempts: int,
+) -> str | None:
+    """把使用者 key 與請求指紋合成實際入庫 key；未帶 key 時維持 NULL。"""
+    if idempotency_key is None:
+        return None
+    fingerprint = _request_fingerprint(
+        job_type=job_type,
+        payload=payload,
+        workspace_id=workspace_id,
+        max_attempts=max_attempts,
+    )
+    return f"{idempotency_key}:{fingerprint}"
 
 
 @dataclass(frozen=True)
@@ -96,9 +136,18 @@ def create_job(
         raise ValueError(f"unsupported job_type: {job_type}")
     if max_attempts < 1:
         raise ValueError("max_attempts must be >= 1")
-    payload_json = Jsonb(payload or {})
-    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
-        with conn.cursor() as cur:
+    payload_dict = payload or {}
+    effective_idempotency_key = _effective_idempotency_key(
+        idempotency_key=idempotency_key,
+        job_type=job_type,
+        payload=payload_dict,
+        workspace_id=workspace_id,
+        max_attempts=max_attempts,
+    )
+    payload_json = Jsonb(payload_dict)
+    # backend 面向函式借用連線池（API 熱路徑）；per-cursor row_factory 不外洩到池。
+    with get_pool().connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 f"""
                 INSERT INTO app_layer.processing_jobs
@@ -108,7 +157,7 @@ def create_job(
                 DO NOTHING
                 RETURNING {_SELECT_COLUMNS}
                 """,
-                (job_type, payload_json, workspace_id, idempotency_key, max_attempts),
+                (job_type, payload_json, workspace_id, effective_idempotency_key, max_attempts),
             )
             row = cur.fetchone()
             if row is None:
@@ -116,7 +165,7 @@ def create_job(
                 cur.execute(
                     f"SELECT {_SELECT_COLUMNS} FROM app_layer.processing_jobs "
                     "WHERE idempotency_key = %s",
-                    (idempotency_key,),
+                    (effective_idempotency_key,),
                 )
                 row = cur.fetchone()
         conn.commit()
@@ -125,8 +174,8 @@ def create_job(
 
 def get_job(job_id: int) -> ProcessingJob | None:
     """依 job_id 取單筆工作；不存在回 None。"""
-    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
-        with conn.cursor() as cur:
+    with get_pool().connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 f"SELECT {_SELECT_COLUMNS} FROM app_layer.processing_jobs WHERE job_id = %s",
                 (job_id,),
@@ -142,6 +191,8 @@ def list_jobs(
     limit: int = 50,
 ) -> list[ProcessingJob]:
     """列出工作（新到舊），可依 workspace 或狀態過濾。"""
+    if limit < 1:
+        raise ValueError("limit must be >= 1")
     conditions: list[str] = []
     params: list[Any] = []
     if workspace_id is not None:
@@ -152,8 +203,8 @@ def list_jobs(
         params.append(status)
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     params.append(int(limit))
-    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
-        with conn.cursor() as cur:
+    with get_pool().connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 f"SELECT {_SELECT_COLUMNS} FROM app_layer.processing_jobs "
                 f"{where} ORDER BY created_at DESC, job_id DESC LIMIT %s",
@@ -169,8 +220,8 @@ def cancel_job(job_id: int) -> ProcessingJob | None:
     running 中的 worker 因 status 不再是 running 而無法覆寫。已是終態則不動、
     回傳現況。
     """
-    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
-        with conn.cursor() as cur:
+    with get_pool().connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 f"""
                 UPDATE app_layer.processing_jobs

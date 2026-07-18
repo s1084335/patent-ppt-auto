@@ -107,12 +107,16 @@ class AddWorkspacePatentsRequest(BaseModel):
 
 
 class TopicLabelItem(BaseModel):
-    """Claude CLI 或人工流程回寫的 topic label/summary。"""
+    """Claude CLI 或批次流程回寫的 topic label/summary。
+
+    source 預設 llm（0010 constraint 只允許 llm/manual/fallback），
+    字數硬上限由 workspace_service 統一驗證。
+    """
 
     topic_id: int
     label: str = Field(min_length=1, max_length=120)
     summary: str = Field(default="", max_length=1000)
-    source: str = Field(default="claude_cli", max_length=60)
+    source: str = Field(default="llm", max_length=60)
 
 
 class ApplyTopicLabelsRequest(BaseModel):

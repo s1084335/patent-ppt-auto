@@ -11,7 +11,7 @@ Create Date: 2026-07-17
 """
 from __future__ import annotations
 
-from alembic import op
+from alembic import context, op
 
 from backend.app.db.schema_comments import emit, emit_clear
 
@@ -22,13 +22,46 @@ branch_labels = None
 depends_on = None
 
 
-def upgrade() -> None:
-    """對 PG 套用所有表/欄註解（內容來自 schema_comments.COMMENTS）。"""
-    for statement in emit("postgresql"):
+def _existing_object_columns() -> dict[str, set[str]]:
+    """回傳目前 DB 內各 schema.table → 欄位集合（含 view，view 欄位也在
+    information_schema.columns）。用來把 COMMENTS 過濾成「此 migration 時點
+    確實存在」的物件，避免引用未來 migration 才建立的 table/column 而失敗。
+    """
+    rows = op.get_bind().exec_driver_sql(
+        "SELECT table_schema, table_name, column_name "
+        "FROM information_schema.columns "
+        "WHERE table_schema IN ('app_layer','derived_layer','core_layer','raw_layer')"
+    ).fetchall()
+    existing: dict[str, set[str]] = {}
+    for schema, table, column in rows:
+        existing.setdefault(f"{schema}.{table}", set()).add(column)
+    return existing
+
+
+def _apply(statements_fn) -> None:
+    """套用註解 DDL。線上模式只對已存在物件下註解；離線 SQL 產生模式無法內省，
+    退回產出全部（以撰寫當時 schema 為準）。"""
+    if context.is_offline_mode():
+        for statement in statements_fn(include=None):
+            op.execute(statement)
+        return
+    existing = _existing_object_columns()
+
+    def include(qualified: str, column: str | None) -> bool:
+        columns = existing.get(qualified)
+        if columns is None:
+            return False
+        return column is None or column in columns
+
+    for statement in statements_fn(include=include):
         op.execute(statement)
+
+
+def upgrade() -> None:
+    """對 PG 套用表/欄註解，僅限此時點已存在的物件（內容來自 COMMENTS）。"""
+    _apply(lambda *, include: emit("postgresql", include=include))
 
 
 def downgrade() -> None:
-    """移除本 migration 加入的所有註解（設回 NULL）。"""
-    for statement in emit_clear("postgresql"):
-        op.execute(statement)
+    """移除本 migration 加入的註解（設回 NULL），僅限已存在物件。"""
+    _apply(lambda *, include: emit_clear("postgresql", include=include))

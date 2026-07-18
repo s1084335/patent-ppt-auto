@@ -23,9 +23,12 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = None
+DEFAULT_PGPORT = "5433"
+"""本機 migration 預設連到 Docker PostgreSQL 對外 port。"""
 
 
 def _force_psycopg3(url: str) -> str:
+    """把一般 PostgreSQL URL 轉成 SQLAlchemy psycopg v3 driver。"""
     if url.startswith("postgresql+"):
         return url
     if url.startswith("postgresql://"):
@@ -36,6 +39,7 @@ def _force_psycopg3(url: str) -> str:
 
 
 def build_url() -> URL | str:
+    """依 DATABASE_URL 或 PG* 環境變數建立 Alembic 連線 URL。"""
     database_url = os.getenv("DATABASE_URL")
     if database_url:
         return _force_psycopg3(database_url)
@@ -44,12 +48,13 @@ def build_url() -> URL | str:
         username=os.getenv("PGUSER", "postgres"),
         password=os.getenv("PGPASSWORD"),
         host=os.getenv("PGHOST", "localhost"),
-        port=int(os.getenv("PGPORT", "5432")),
+        port=int(os.getenv("PGPORT", DEFAULT_PGPORT)),
         database=os.getenv("PGDATABASE", "patent_ppt"),
     )
 
 
 def run_migrations_offline() -> None:
+    """產生離線 migration SQL，不直接連線資料庫。"""
     url = build_url()
     context.configure(
         url=url.render_as_string(hide_password=False) if isinstance(url, URL) else url,
@@ -62,6 +67,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    """直接連線資料庫並套用 Alembic migration。"""
     engine = create_engine(build_url(), poolclass=pool.NullPool)
     with engine.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)

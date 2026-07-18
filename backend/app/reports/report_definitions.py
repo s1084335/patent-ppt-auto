@@ -20,6 +20,7 @@ class ReportDefinition:
     # 來源表沒有 patent_id 欄（如家族×國家表）時設 False：
     # run_report 收到 patent_ids 會 fail loud，analysis_runner 會跳過此報表。
     supports_patent_ids: bool = True
+    allowed_filter_columns: tuple[str, ...] = ()
     # aggregate 型報表的額外聚合欄：(函式, 來源欄, 輸出別名)。
     # 函式白名單見 report_engine.AGGREGATE_FUNCTIONS（sum / count_distinct / avg / max）。
     # 例：(("sum", "(F1)引用文獻數", "cited_total"),) → COALESCE(SUM("(F1)引用文獻數"), 0) AS cited_total
@@ -39,6 +40,15 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         group_by=("application_year",),
         default_order=(("application_year", "asc"),),
         exclude_blank_columns=("application_year",),
+        allowed_filter_columns=(
+            "patent_id",
+            "application_year",
+            "country_code",
+            "Curr. IPC(Main)",
+            "Curr. CPC(Main)",
+            "applicant_display_name",
+            "current_assignee_display_name",
+        ),
     ),
     "publication_trend": ReportDefinition(
         name="publication_trend",
@@ -50,6 +60,15 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         group_by=("publication_year",),
         default_order=(("publication_year", "asc"),),
         exclude_blank_columns=("publication_year",),
+        allowed_filter_columns=(
+            "patent_id",
+            "publication_year",
+            "country_code",
+            "Curr. IPC(Main)",
+            "Curr. CPC(Main)",
+            "applicant_display_name",
+            "current_assignee_display_name",
+        ),
     ),
     "country_distribution": ReportDefinition(
         name="country_distribution",
@@ -233,3 +252,10 @@ ALLOWED_FILTER_COLUMNS = {
     "applicant_display_name",
     "current_assignee_display_name",
 }
+
+
+def allowed_filter_columns_for_report(definition: ReportDefinition) -> set[str]:
+    """回傳單一報表可接受的 filter 欄位，供 API 與 report engine 共用。"""
+    if definition.allowed_filter_columns:
+        return set(definition.allowed_filter_columns)
+    return set(ALLOWED_FILTER_COLUMNS)

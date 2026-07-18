@@ -5,14 +5,17 @@ payload 標記 _verify 並清除。
 """
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from dotenv import load_dotenv
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
 from backend.app.db import job_repository as jr
+from backend.app.db.connection import get_database_url
 
 
 PREFIX = "/api/v1"
@@ -73,6 +76,20 @@ class ReadyAndJobTests(unittest.TestCase):
         self.assertTrue(body["database"]["ok"])
         self.assertIn("running_jobs", body["worker"])
         self.assertIn("healthy", body["worker"])
+
+    def test_ready_bad_pgport_reports_database_not_ready(self):
+        with patch.dict(os.environ, {"PGPORT": "not-an-int", "DATABASE_URL": ""}):
+            resp = client.get(f"{PREFIX}/ready")
+        self.assertEqual(resp.status_code, 503)
+        detail = resp.json()["detail"]
+        self.assertEqual(detail["status"], "not_ready")
+        self.assertFalse(detail["database"]["ok"])
+        self.assertIn("PGPORT must be an integer", detail["database"]["error"])
+
+    def test_get_database_url_rejects_bad_pgport(self):
+        with patch.dict(os.environ, {"PGPORT": "not-an-int", "DATABASE_URL": ""}):
+            with self.assertRaisesRegex(ValueError, "PGPORT must be an integer"):
+                get_database_url()
 
     def test_get_job_roundtrip(self):
         job = jr.create_job("clustering_calibrate", {VERIFY_KEY: True})

@@ -131,13 +131,37 @@ function renderCandidates() {
     document.querySelector("#calibrateButton").addEventListener("click", calibrateCurrentSource);
     return;
   }
+  const names = { conservative: "保守", balanced: "平衡", detailed: "細分" };
   if (run.status !== "needs_review" || !run.candidates.length) {
-    elements.candidatePanel.classList.add("hidden");
     const status = run.status === "completed" ? "模型已定案" : `模型狀態：${run.status}`;
     elements.sourceStatus.textContent = status;
+    // 已定案 run 仍以唯讀方式顯示候選方案與回填的 AI 說明；
+    // 正式時序為 calibrate → CLI 寫回說明 → 使用者選案，但說明也可能事後補寫。
+    if (run.status === "completed" && run.candidates.length) {
+      elements.candidatePanel.classList.remove("hidden");
+      elements.candidatePanel.innerHTML = `
+        <h3>候選方案（已定案，僅供查看）</h3>
+        ${run.candidates.map((item) => `
+          <div class="candidate-option readonly">
+            <span>${item.is_selected ? "✓" : ""}</span>
+            <span>
+              <strong>${names[item.candidate_type] || item.candidate_type} · ${item.candidate_k} 個主題${item.is_selected ? "（已選用）" : ""}</strong>
+              <p>${escapeHtml(item.llm_explanation || "候選說明尚未產生")}</p>
+              <span class="metric-row">
+                <span>c_v ${formatMetric(item.coherence)}</span>
+                <span>diversity ${formatMetric(item.diversity)}</span>
+                <span>balance ${formatMetric(item.balance)}</span>
+              </span>
+            </span>
+            <span>${formatMetric(item.score)}</span>
+          </div>
+        `).join("")}
+      `;
+    } else {
+      elements.candidatePanel.classList.add("hidden");
+    }
     return;
   }
-  const names = { conservative: "保守", balanced: "平衡", detailed: "細分" };
   elements.sourceStatus.textContent = `${run.input_doc_count} 篇 · 等待選擇方案`;
   elements.candidatePanel.classList.remove("hidden");
   elements.candidatePanel.innerHTML = `

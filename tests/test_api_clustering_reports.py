@@ -40,8 +40,8 @@ class ClusteringReportsApiTests(unittest.TestCase):
                     "SELECT workspace_id FROM app_layer.workspaces ORDER BY workspace_id LIMIT 1"
                 ).fetchone()
                 run = conn.execute(
-                    "SELECT run_id FROM derived_layer.topic_candidates "
-                    "GROUP BY run_id ORDER BY run_id LIMIT 1"
+                    "SELECT run_id, candidate_id FROM derived_layer.topic_candidates "
+                    "ORDER BY run_id, candidate_id LIMIT 1"
                 ).fetchone()
         except Exception as exc:  # noqa: BLE001
             raise unittest.SkipTest(f"DB unreachable: {exc}")
@@ -49,6 +49,7 @@ class ClusteringReportsApiTests(unittest.TestCase):
             raise unittest.SkipTest("no workspace to test against")
         cls.ws_id = int(ws[0])
         cls.run_id = int(run[0]) if run else None
+        cls.candidate_id = int(run[1]) if run else None
 
     def setUp(self):
         self._created: list[int] = []
@@ -120,14 +121,23 @@ class ClusteringReportsApiTests(unittest.TestCase):
         resp = self._track(
             client.post(
                 f"{PREFIX}/clustering/runs/{self.run_id}/finalize",
-                json={"candidate_id": 1, "selected_by": "tester"},
+                json={"candidate_id": self.candidate_id, "selected_by": "tester"},
             )
         )
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertEqual(body["job_type"], "clustering_finalize")
         self.assertEqual(body["payload"]["run_id"], self.run_id)
-        self.assertEqual(body["payload"]["candidate_id"], 1)
+        self.assertEqual(body["payload"]["candidate_id"], self.candidate_id)
+
+    def test_finalize_candidate_not_in_run_422(self):
+        if self.run_id is None:
+            self.skipTest("no run with candidates")
+        resp = client.post(
+            f"{PREFIX}/clustering/runs/{self.run_id}/finalize",
+            json={"candidate_id": -1, "selected_by": "tester"},
+        )
+        self.assertEqual(resp.status_code, 422)
 
     def test_finalize_unknown_run_404(self):
         resp = client.post(
@@ -169,6 +179,13 @@ class ClusteringReportsApiTests(unittest.TestCase):
         resp = client.post(
             f"{PREFIX}/reports",
             json={"report_names": ["application_trend"], "filters": {"not_a_column": 1}},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_report_filter_not_supported_by_report_422(self):
+        resp = client.post(
+            f"{PREFIX}/reports",
+            json={"report_names": ["application_trend"], "filters": {"publication_year": 2024}},
         )
         self.assertEqual(resp.status_code, 422)
 

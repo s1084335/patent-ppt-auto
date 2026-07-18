@@ -15,6 +15,7 @@ emitter，`COMMENTS` 內容一字不改。
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 
@@ -358,8 +359,17 @@ def _emit_mssql(qualified: str, column: str | None, text: str) -> str:
     return ", ".join(parts)
 
 
-def emit(dialect: str) -> list[str]:
-    """依目標資料庫產生所有註解 DDL；內容來自 COMMENTS，兩庫共用。"""
+def emit(
+    dialect: str,
+    *,
+    include: "Callable[[str, str | None], bool] | None" = None,
+) -> list[str]:
+    """依目標資料庫產生所有註解 DDL；內容來自 COMMENTS，兩庫共用。
+
+    include：可選過濾器 `(qualified, column_or_None) -> bool`，回 False 者略過。
+    供歷史 migration 只對「當下已存在的物件」下註解，避免引用尚未建立（未來
+    migration 才建）的 table/column 而失敗。
+    """
     if dialect not in ("postgresql", "mssql"):
         raise ValueError(f"unsupported dialect: {dialect}")
     emitter = _emit_pg if dialect == "postgresql" else _emit_mssql
@@ -367,6 +377,8 @@ def emit(dialect: str) -> list[str]:
     for qualified, cols in COMMENTS.items():
         for name, text in cols.items():
             column = None if name == "__table__" else name
+            if include is not None and not include(qualified, column):
+                continue
             statements.append(emitter(qualified, column, text))
     return statements
 
@@ -394,16 +406,23 @@ def _emit_mssql_clear(qualified: str, column: str | None) -> str:
     return ", ".join(parts)
 
 
-def emit_clear(dialect: str) -> list[str]:
-    """產生移除所有註解的 DDL（供 migration downgrade）。"""
+def emit_clear(
+    dialect: str,
+    *,
+    include: "Callable[[str, str | None], bool] | None" = None,
+) -> list[str]:
+    """產生移除所有註解的 DDL（供 migration downgrade）。include 同 emit。"""
     if dialect not in ("postgresql", "mssql"):
         raise ValueError(f"unsupported dialect: {dialect}")
     emitter = _emit_pg_clear if dialect == "postgresql" else _emit_mssql_clear
-    return [
-        emitter(qualified, None if name == "__table__" else name)
-        for qualified, cols in COMMENTS.items()
-        for name in cols
-    ]
+    statements: list[str] = []
+    for qualified, cols in COMMENTS.items():
+        for name in cols:
+            column = None if name == "__table__" else name
+            if include is not None and not include(qualified, column):
+                continue
+            statements.append(emitter(qualified, column))
+    return statements
 
 
 def validate_against_db(conn: Any) -> dict[str, list[str]]:
