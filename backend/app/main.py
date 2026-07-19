@@ -8,9 +8,10 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from backend.app import settings
-from backend.app.api import clustering, jobs, reports
+from backend.app.api import clustering, jobs, reports, workspaces
 
 app = FastAPI(title="Patent Backend", version="0.1.0")
 app.include_router(jobs.router, prefix=settings.API_V1_PREFIX)
 app.include_router(clustering.router, prefix=settings.API_V1_PREFIX)
 app.include_router(reports.router, prefix=settings.API_V1_PREFIX)
+app.include_router(workspaces.router, prefix=settings.API_V1_PREFIX)
