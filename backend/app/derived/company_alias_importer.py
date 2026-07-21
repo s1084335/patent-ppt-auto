@@ -117,6 +117,74 @@ def import_company_aliases(path: Path, dry_run: bool = False) -> dict[str, Any]:
     return summary
 
 
+def register_known_code_variants(
+    pairs: list[tuple[str | None, str | None]],
+    source_label: str = "variant_intake",
+    connect_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """已知 WIPS code 的新名稱變體補入唯一對照表，沿用既有正規化公司名稱。
+
+    規則（2026-07-21 報表收尾定案）：
+    - code 在 company_aliases 對到唯一「公司名稱」→ 新變體補一列別稱，公司名稱沿用既有值；
+      既有別稱（normalize 後相同）跳過。
+    - code 不在表中（unknown_code）或對到多個公司名稱（conflicting_code）→ 進 manual_review，
+      不自行合併、不寫表。
+    - 只寫 derived_layer.company_aliases；不碰 raw/core 原始專利值。
+    """
+    try:
+        import psycopg
+    except ImportError as exc:
+        raise RuntimeError("psycopg is required for database import. Install psycopg[binary].") from exc
+
+    from backend.app.db.connection import get_connection_kwargs
+
+    inserted = 0
+    skipped = 0
+    manual: list[dict[str, str]] = []
+    with psycopg.connect(**(connect_kwargs or get_connection_kwargs())) as conn:
+        rows = conn.execute(
+            'SELECT "申請人代碼", "公司名稱", "別稱" FROM derived_layer.company_aliases '
+            'WHERE "申請人代碼" IS NOT NULL'
+        ).fetchall()
+        # code → 既有公司名稱集合／normalize 後別稱集合
+        names_by_code: dict[str, set[str]] = {}
+        aliases_by_code: dict[str, set[str]] = {}
+        for code, name, alias in rows:
+            names_by_code.setdefault(code, set()).add(name)
+            norm = normalize_lookup(alias)
+            if norm:
+                aliases_by_code.setdefault(code, set()).add(norm)
+
+        for raw_code, raw_variant in pairs:
+            code = clean_text(raw_code)
+            variant = clean_text(raw_variant)
+            if not code or not variant:
+                continue
+            names = names_by_code.get(code)
+            if names is None:
+                manual.append({"company_code": code, "alias_name": variant, "reason": "unknown_code"})
+                continue
+            if len(names) > 1:
+                manual.append({"company_code": code, "alias_name": variant, "reason": "conflicting_code"})
+                continue
+            norm_variant = normalize_lookup(variant)
+            if norm_variant in aliases_by_code.get(code, set()):
+                skipped += 1
+                continue
+            canonical_name = next(iter(names))  # 唯一既有正規化公司名稱，直接沿用
+            conn.execute(
+                'INSERT INTO derived_layer.company_aliases ("申請人代碼", "公司名稱", "別稱", source_file) '
+                "VALUES (%s, %s, %s, %s) "
+                'ON CONFLICT ("申請人代碼", "公司名稱", "別稱") DO NOTHING',
+                (code, canonical_name, variant, source_label),
+            )
+            aliases_by_code.setdefault(code, set()).add(norm_variant)
+            inserted += 1
+        conn.commit()
+
+    return {"inserted": inserted, "skipped_existing": skipped, "manual_review": manual}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Import company alias table into derived_layer.company_aliases.")
     parser.add_argument("path", type=Path, help="Path to company alias CSV/XLSX.")

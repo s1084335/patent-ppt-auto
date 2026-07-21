@@ -30,15 +30,16 @@ SELECT
 FROM derived_layer.report_patent_base
 """
 
+# 0021 起 report_family_country/quality 為 derived_layer 相容 VIEW；重建寫回實體表 legacy_0021.*，讀取仍走 VIEW。
 INSERT_COUNTRY_SQL = """
-INSERT INTO derived_layer.report_family_country (
+INSERT INTO legacy_0021.report_family_country (
     family_id, country_code, direct_patent_count, via_ep_count,
     family_incomplete, is_surrogate_family
 ) VALUES (%s, %s, %s, %s, %s, %s)
 """
 
 INSERT_QUALITY_SQL = """
-INSERT INTO derived_layer.report_family_quality (
+INSERT INTO legacy_0021.report_family_quality (
     family_id, is_surrogate_family, member_rows, expected_counts_raw,
     family_incomplete, incomplete_detail_json,
     unknown_status_count, pending_status_count,
@@ -68,8 +69,8 @@ def refresh_report_family_country() -> dict[str, Any]:
         # TRUNCATE + INSERT 包在同一 transaction（psycopg 預設不 autocommit），
         # 中斷時整批回滾，不會留下半套結果。
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE derived_layer.report_family_country;")
-            cur.execute("TRUNCATE TABLE derived_layer.report_family_quality;")
+            cur.execute("TRUNCATE TABLE legacy_0021.report_family_country;")
+            cur.execute("TRUNCATE TABLE legacy_0021.report_family_quality;")
             cur.executemany(
                 INSERT_COUNTRY_SQL,
                 [

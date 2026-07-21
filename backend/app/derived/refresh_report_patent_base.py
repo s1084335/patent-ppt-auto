@@ -5,21 +5,22 @@ import json
 from typing import Any
 
 
+# 0021 起 derived_layer.report_patent_base 為相容 VIEW；重建須寫回實體表 legacy_0021.report_patent_base，
+# 讀取端（報表引擎）仍走 derived_layer VIEW。VIEW 無法 TRUNCATE，故此處目標為 legacy_0021。
 REFRESH_SQL = """
-TRUNCATE TABLE derived_layer.report_patent_base;
+TRUNCATE TABLE legacy_0021.report_patent_base;
 
 WITH source_one AS (
     SELECT DISTINCT ON (ps.patent_id)
         ps.patent_id,
-        ps.dedupe_key,
         ps.raw_record_id
     FROM core_layer.patent_sources ps
-    ORDER BY ps.patent_id, ps.id DESC
+    -- patent_sources.id 已移除，改用 raw_record_id DESC 取最新來源（raw_record_id 隨匯入遞增）
+    ORDER BY ps.patent_id, ps.raw_record_id DESC
 ),
 base AS (
     SELECT
         p.id AS patent_id,
-        so.dedupe_key,
         p."授權公告號",
         p."審查的公告號",
         p."未審查的公開號",
@@ -71,7 +72,7 @@ base AS (
         FROM core_layer.patent_attributes pa2
         WHERE pa2.patent_id = p.id
           AND NULLIF(BTRIM(pa2."WIPS同族各國家文獻數量(申請為準)"), '') IS NOT NULL
-        ORDER BY pa2.raw_record_id DESC NULLS LAST, pa2.id DESC
+        ORDER BY pa2.raw_record_id DESC NULLS LAST
         LIMIT 1
     ) fam ON true
 ),
@@ -101,9 +102,8 @@ owner_code_names AS (
     WHERE NULLIF(BTRIM(pp."標準當前專利權人代碼[US,JP,KR,CN,CA,AU]"), '') IS NOT NULL
     GROUP BY NULLIF(BTRIM(pp."標準當前專利權人代碼[US,JP,KR,CN,CA,AU]"), '')
 )
-INSERT INTO derived_layer.report_patent_base (
+INSERT INTO legacy_0021.report_patent_base (
     patent_id,
-    dedupe_key,
     "授權公告號",
     "審查的公告號",
     "未審查的公開號",
@@ -141,7 +141,6 @@ INSERT INTO derived_layer.report_patent_base (
 )
 SELECT
     b.patent_id,
-    b.dedupe_key,
     b."授權公告號",
     b."審查的公告號",
     b."未審查的公開號",

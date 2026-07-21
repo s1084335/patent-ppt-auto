@@ -140,7 +140,6 @@ COMMENTS: dict[str, dict[str, str]] = {
     "derived_layer.report_patent_base": {
         "__table__": "報表底表：一列一專利、攤平報表所需欄位；多數統計報表以此為來源，需 refresh 重建",
         "patent_id": "專利編號（對應核心專利主表）",
-        "dedupe_key": "去重鍵，跨匯入合併同一專利用",
         "授權公告號": "各國授權公告號",
         "審查的公告號": "核准/審查公告號",
         "未審查的公開號": "早期公開號",
@@ -299,7 +298,7 @@ COMMENTS: dict[str, dict[str, str]] = {
         "__table__": "專利人物/公司欄位：申請人、發明人、專利權人、受讓人及其代碼與國別",
     },
     "core_layer.patent_sources": {
-        "__table__": "專利與原始匯入紀錄的來源對應，含去重鍵",
+        "__table__": "專利與原始匯入紀錄的來源對應；主鍵 (patent_id, raw_record_id)，不用 surrogate id 或 dedupe_key",
     },
     "core_layer.patent_attributes": {
         "__table__": "專利屬性快照：引用數、發明人數、家族數量、EPC 生效/失效國等隨匯入變動的欄位",
