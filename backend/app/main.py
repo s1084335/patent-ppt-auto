@@ -5,13 +5,23 @@
 """
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from backend.app import settings
-from backend.app.api import clustering, jobs, reports, workspaces
+from backend.app.api import clustering, imports, jobs, reports, topics, workspaces
+from backend.app.repositories.topic_repository import TopicRepositoryUnavailableError
 
 app = FastAPI(title="Patent Backend", version="0.1.0")
 app.include_router(jobs.router, prefix=settings.API_V1_PREFIX)
 app.include_router(clustering.router, prefix=settings.API_V1_PREFIX)
 app.include_router(reports.router, prefix=settings.API_V1_PREFIX)
 app.include_router(workspaces.router, prefix=settings.API_V1_PREFIX)
+app.include_router(imports.router, prefix=settings.API_V1_PREFIX)
+app.include_router(topics.router, prefix=settings.API_V1_PREFIX)
+
+
+@app.exception_handler(TopicRepositoryUnavailableError)
+async def topic_repo_unavailable_handler(request: Request, exc: TopicRepositoryUnavailableError):
+    """Repository 未配置時回傳 503。"""
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
