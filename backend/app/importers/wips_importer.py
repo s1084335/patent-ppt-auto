@@ -22,6 +22,7 @@ from backend.app.mappings.wips import (
     SOURCE_SYSTEM,
     canonical_field_name,
 )
+from backend.app.derived.company_alias_importer import register_known_code_variants
 from backend.app.transforms.dates import parse_date, year_from_date
 from backend.app.transforms.text import clean_long_text, clean_text, value_to_text
 from backend.app.transforms.patent_numbers import (
@@ -48,6 +49,44 @@ PATENT_IDENTIFIER_LOOKUP_ORDER = (
 )
 PEOPLE_FIELDS = tuple(dict.fromkeys(field for fields in PEOPLE_GROUPS.values() for field in fields.values()))
 CONFLICT_RESOLUTION_STRATEGY = "incoming_source_priority"
+
+# CLI importer 支援的全部來源副檔名（含 .mdb）；與 load_source_rows 的分派一致。
+# Web 上傳/worker 另有較窄白名單（不含 .mdb）於 importers.import_paths.WEB_IMPORT_SUFFIXES。
+SUPPORTED_IMPORT_SUFFIXES = (".xlsx", ".csv", ".txt", ".xml", ".mdb")
+
+# update_patent_empty_fields 的 (欄位, 參數名) 對照：用來組 WHERE guard，區分 no-op 與實際補值。
+# 必須與該函式 SET 子句的 COALESCE 欄位/參數完全一致。
+_UPDATE_COLUMN_PARAMS: tuple[tuple[str, str], ...] = (
+    ('"授權公告號"', "授權公告號"),
+    ('"審查的公告號"', "審查的公告號"),
+    ('"未審查的公開號"', "未審查的公開號"),
+    ('"申請號"', "申請號"),
+    ("country_code", "country_code"),
+    ("database_name", "database_name"),
+    ("document_kind", "document_kind"),
+    ("patent_type", "patent_type"),
+    ("publication_date", "publication_date"),
+    ("publication_year", "publication_year"),
+    ("application_date", "application_date"),
+    ("application_year", "application_year"),
+    ("title", "title"),
+    ("title_original", "title_original"),
+    ("abstract", "abstract"),
+    ('"權利要求的項數"', "claim_count"),
+    ('"所有權利要求[JP,KR,CN]"', "all_claims"),
+    ('"主權項"', "main_claim"),
+    ('"主權項(原文)"', "main_claim_original"),
+    ('"獨立項數量[KR,JP,US,CN,EP,IN]"', "independent_claim_count"),
+    ('"獨立項[KR,JP,US,CN,EP,IN]"', "independent_claims"),
+    ('"獨立項(原文)[KR,JP,CN,EP]"', "independent_claims_original"),
+    ('"效果 摘要[US,EP,PCT,JP,KR,CN,TW]"', "effect_summary"),
+    ('"Orig. CPC(Main)"', "orig_cpc_main"),
+    ('"Orig. IPC(Main)"', "orig_ipc_main"),
+    ('"Curr. CPC(Main)"', "curr_cpc_main"),
+    ('"Curr. IPC(Main)"', "curr_ipc_main"),
+    ("legal_status", "legal_status"),
+    ('"WIPS同族ID"', "WIPS同族ID"),
+)
 
 
 def file_sha256(path: Path) -> str:
@@ -298,7 +337,6 @@ def normalize_record(raw: dict[str, Any]) -> dict[str, Any]:
     patent["publication_year"] = year_from_date(publication_date)
     patent["application_date"] = application_date
     patent["application_year"] = year_from_date(application_date)
-    patent["dedupe_key"] = build_dedupe_key(canonical_raw)
 
     return {
         "patent": patent,
@@ -313,25 +351,6 @@ def first_parsed_date(raw: dict[str, Any], fields: list[str]) -> Any:
         if parsed:
             return parsed
     return None
-
-
-def build_dedupe_key(raw: dict[str, Any]) -> str | None:
-    country_code = clean_text(raw.get("国家代码"))
-    identifiers = {field: clean_text(raw.get(field)) for field in IDENTIFIER_SOURCE_FIELDS}
-    identifiers[UNEXAMINED_PUBLICATION_NUMBER_FIELD] = transform_patent_number(
-        country_code,
-        identifiers[UNEXAMINED_PUBLICATION_NUMBER_FIELD],
-    )
-    identifiers[APPLICATION_NUMBER_FIELD] = transform_patent_number(
-        country_code,
-        identifiers[APPLICATION_NUMBER_FIELD],
-    )
-    if not any(identifiers.values()):
-        return None
-    return (
-        "WIPS_IDENTIFIERS|"
-        + "|".join(f"{field}={identifiers[field] or ''}" for field in IDENTIFIER_SOURCE_FIELDS)
-    )
 
 
 def canonicalize_record(raw: dict[str, Any]) -> dict[str, Any]:
@@ -393,76 +412,86 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
 
     from backend.app.db.connection import get_connection_kwargs
 
+    # 匯入計數；整段在單一 connection／transaction 內，任一步拋錯由 with 區塊 rollback（不 commit）。
+    # inserted=新建 patent；matched_existing=識別號命中既有；updated⊆matched_existing（真的補了 NULL 欄）。
+    stats = {"inserted": 0, "matched_existing": 0, "updated": 0}
+    # 匯入列的 (申請人代表碼, 名稱) 供已知 code 變體即時補入；於 commit 後統一註冊（該函式自管連線）
+    variant_pairs: list[tuple[str | None, str | None]] = []
     with psycopg.connect(**get_connection_kwargs()) as conn:
         with conn.cursor() as cur:
-            existing_source_file_id = find_existing_source_file(cur, file_hash)
-            if existing_source_file_id:
+            if find_existing_raw_import(cur, file_hash):
+                # 同 source_system+source_file_hash 已匯入過（metadata 在 raw_records）：整檔跳過。
                 summary["status"] = "skipped_duplicate_file"
-                summary["existing_source_file_id"] = existing_source_file_id
+                summary["inserted"] = 0
+                summary["matched_existing"] = 0
+                summary["updated"] = 0
+                summary["skipped"] = summary["records"]
                 return summary
-            source_file_id = insert_source_file(cur, path, summary)
             for raw, item in zip(records, normalized):
-                raw_record_id = insert_raw_record(cur, source_file_id, selected_source, raw)
-                if not item["patent"]["dedupe_key"]:
-                    item["patent"]["dedupe_key"] = f"WIPS_ROW|{source_file_id}|{raw['_row_number']}"
-                patent_id = upsert_patent(cur, item["patent"], source_file_id, raw_record_id)
-                insert_patent_source(cur, patent_id, raw_record_id, source_file_id, item["patent"]["dedupe_key"])
-                replace_people(cur, patent_id, source_file_id, raw_record_id, item["people"])
-                replace_attributes(cur, patent_id, source_file_id, raw_record_id, item["attributes"])
+                raw_record_id = insert_raw_record(cur, selected_source, raw, file_hash)
+                # 去重只靠專利號查找（upsert_patent→find_existing_patent_id）；不再產生 dedupe_key，
+                # 無專利號列由 find_existing 回 None 而各自新建，靠 raw_record_id 保持獨立與追溯。
+                patent_id = upsert_patent(cur, item["patent"], raw_record_id, stats)
+                insert_patent_source(cur, patent_id, raw_record_id)
+                replace_people(cur, patent_id, raw_record_id, item["people"])
+                replace_attributes(cur, patent_id, raw_record_id, item["attributes"])
+                people = item["people"]
+                variant_pairs.append((people.get("申请人代表码"), people.get("申请人")))
+                variant_pairs.append((people.get("申请人代表码"), people.get("标准化申请人")))
         conn.commit()
+    # 匯入成功：每列一次 upsert，inserted+matched_existing=records、skipped=0；updated 為其中確有補值者。
+    summary["inserted"] = stats["inserted"]
+    summary["matched_existing"] = stats["matched_existing"]
+    summary["updated"] = stats["updated"]
+    summary["skipped"] = 0
     summary["status"] = "imported"
+    # 報表定案 #3 接線：已知 WIPS code 的新名稱變體即時補入唯一對照表（unknown/conflicting 進 manual）。
+    summary["alias_variants"] = register_known_code_variants(
+        variant_pairs, source_label=f"import:{path.name}")
     return summary
 
 
-def insert_source_file(cur, path: Path, summary: dict[str, Any]) -> int:
-    cur.execute(
-        """
-        INSERT INTO source_files (
-            source_system, file_name, file_path, file_hash, record_count
-        )
-        VALUES (%s, %s, %s, %s, %s)
-        RETURNING id
-        """,
-        (
-            SOURCE_SYSTEM,
-            path.name,
-            str(path),
-            summary["file_hash"],
-            summary["records"],
-        ),
-    )
-    return cur.fetchone()[0]
+def find_existing_raw_import(cur, file_hash: str) -> bool:
+    """同 source_system＋source_file_hash 是否已匯入過。
 
-
-def find_existing_source_file(cur, file_hash: str) -> int | None:
+    0019 後 source_files 表移除、來源 metadata（source_system/source_file_hash/imported_at）
+    併入 raw_records；整檔冪等改查 raw_records。
+    """
     cur.execute(
-        """
-        SELECT id
-        FROM source_files
-        WHERE source_system = %s AND file_hash = %s
-        ORDER BY imported_at, id
-        LIMIT 1
-        """,
+        "SELECT 1 FROM raw_records WHERE source_system = %s AND source_file_hash = %s LIMIT 1",
         (SOURCE_SYSTEM, file_hash),
     )
-    row = cur.fetchone()
-    return row[0] if row else None
+    return cur.fetchone() is not None
 
 
-def insert_raw_record(cur, source_file_id: int, sheet_name: str, raw: dict[str, Any]) -> int:
+def insert_raw_record(cur, sheet_name: str, raw: dict[str, Any], file_hash: str) -> int:
+    """寫 raw_records；來源 metadata 直接落本表（0019 後 schema）。"""
     raw_json = {key: value_to_text(value) for key, value in raw.items() if key != "_row_number"}
     cur.execute(
         """
-        INSERT INTO raw_records (source_file_id, sheet_name, row_number, raw_data)
-        VALUES (%s, %s, %s, %s::jsonb)
+        INSERT INTO raw_records
+            (sheet_name, row_number, raw_data, source_system, source_file_hash, imported_at)
+        VALUES (%s, %s, %s::jsonb, %s, %s, now())
         RETURNING id
         """,
-        (source_file_id, sheet_name, raw["_row_number"], json.dumps(raw_json, ensure_ascii=False)),
+        (sheet_name, raw["_row_number"], json.dumps(raw_json, ensure_ascii=False),
+         SOURCE_SYSTEM, file_hash),
     )
     return cur.fetchone()[0]
 
 
-def upsert_patent(cur, patent: dict[str, Any], source_file_id: int, raw_record_id: int) -> int:
+def upsert_patent(
+    cur,
+    patent: dict[str, Any],
+    raw_record_id: int,
+    stats: dict[str, int] | None = None,
+) -> int:
+    """依識別號 upsert 一筆 patent；命中既有走 update、否則 insert。
+
+    傳入 stats 時累加：insert 路徑 stats["inserted"]；識別號命中既有一律 stats["matched_existing"]，
+    其中真的把某欄由 NULL 補成非 NULL（update_patent_empty_fields 回 True）才另計 stats["updated"]。
+    不改既有 mapping 與 COALESCE 去重/更新政策。
+    """
     patent_params = {
         **patent,
         "claim_count": patent.get("權利要求的項數"),
@@ -480,7 +509,11 @@ def upsert_patent(cur, patent: dict[str, Any], source_file_id: int, raw_record_i
     }
     patent_id = find_existing_patent_id(cur, patent)
     if patent_id:
-        update_patent_empty_fields(cur, patent_id, patent_params)
+        changed = update_patent_empty_fields(cur, patent_id, patent_params)
+        if stats is not None:
+            stats["matched_existing"] = stats.get("matched_existing", 0) + 1
+            if changed:
+                stats["updated"] = stats.get("updated", 0) + 1
         return patent_id
 
     cur.execute(
@@ -511,6 +544,8 @@ def upsert_patent(cur, patent: dict[str, Any], source_file_id: int, raw_record_i
         patent_params,
     )
     patent_id = cur.fetchone()[0]
+    if stats is not None:
+        stats["inserted"] = stats.get("inserted", 0) + 1
     return patent_id
 
 
@@ -563,9 +598,23 @@ def find_existing_patent_id(cur, patent: dict[str, Any]) -> int | None:
     return existing[0] if existing else None
 
 
-def update_patent_empty_fields(cur, patent_id: int, patent_params: dict[str, Any]) -> None:
+def update_patent_empty_fields(cur, patent_id: int, patent_params: dict[str, Any]) -> bool:
+    """只把既有 NULL 欄位補成新來源非 NULL 值（COALESCE 政策不變，不覆蓋既有非空值）。
+
+    WHERE guard 讓「沒有任何 NULL 欄可補」時完全不更新；回傳是否真的補了至少一個欄位
+    （cur.rowcount>0），供匯入統計區分 matched_existing 與 updated（no-op 不算 updated）。
+    """
+    # guard：任一「既有欄為 NULL 且新值非 NULL」才需要更新；否則 UPDATE 命中 0 列。
+    # 參數包在 COALESCE(欄, %(p)s) 內讓 PostgreSQL 由欄位推參數型別：
+    # 裸寫 %(p)s IS NOT NULL 屬無型別語境，psycopg3 server-side binding 會拋
+    # AmbiguousParameter（regression：tests/test_wips_importer_empty_update.py）。
+    # 語意不變：欄為 NULL 時 COALESCE(欄, p) IS NOT NULL ⇔ p IS NOT NULL。
+    guard = " OR ".join(
+        f"({column} IS NULL AND COALESCE({column}, %({param})s) IS NOT NULL)"
+        for column, param in _UPDATE_COLUMN_PARAMS
+    )
     cur.execute(
-        """
+        f"""
         UPDATE patents
         SET
             "授權公告號" = COALESCE("授權公告號", %(授權公告號)s),
@@ -600,24 +649,30 @@ def update_patent_empty_fields(cur, patent_id: int, patent_params: dict[str, Any
             "Curr. IPC(Main)" = COALESCE("Curr. IPC(Main)", %(curr_ipc_main)s),
             legal_status = COALESCE(legal_status, %(legal_status)s),
             "WIPS同族ID" = COALESCE("WIPS同族ID", %(WIPS同族ID)s)
-        WHERE id = %(patent_id)s
+        WHERE id = %(patent_id)s AND ({guard})
         """,
         {**patent_params, "patent_id": patent_id},
     )
+    return cur.rowcount > 0
 
 
-def insert_patent_source(cur, patent_id: int, raw_record_id: int, source_file_id: int, dedupe_key: str) -> None:
+def insert_patent_source(cur, patent_id: int, raw_record_id: int) -> None:
+    """寫入專利↔raw_record 來源對應。
+
+    0021 patent_sources 僅 (patent_id, raw_record_id)（source_file_id 已隨 source_files 移除）；
+    (patent_id, raw_record_id) 為主鍵，重覆對應以 ON CONFLICT DO NOTHING 略過。
+    """
     cur.execute(
         """
-        INSERT INTO patent_sources (patent_id, raw_record_id, source_file_id, dedupe_key)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO patent_sources (patent_id, raw_record_id)
+        VALUES (%s, %s)
         ON CONFLICT (patent_id, raw_record_id) DO NOTHING
         """,
-        (patent_id, raw_record_id, source_file_id, dedupe_key),
+        (patent_id, raw_record_id),
     )
 
 
-def replace_people(cur, patent_id: int, source_file_id: int, raw_record_id: int, people: dict[str, Any]) -> None:
+def replace_people(cur, patent_id: int, raw_record_id: int, people: dict[str, Any]) -> None:
     quoted_columns = ",\n            ".join(f'"{PEOPLE_FIELD_COLUMNS[field]}"' for field in PEOPLE_FIELDS)
     placeholders = ", ".join(["%s"] * (len(PEOPLE_FIELDS) + 1))
     update_assignments = ",\n            ".join(
@@ -640,21 +695,20 @@ def replace_people(cur, patent_id: int, source_file_id: int, raw_record_id: int,
     )
 
 
-def replace_attributes(cur, patent_id: int, source_file_id: int, raw_record_id: int, attributes: dict[str, Any]) -> None:
+def replace_attributes(cur, patent_id: int, raw_record_id: int, attributes: dict[str, Any]) -> None:
     cur.execute("DELETE FROM patent_attributes WHERE patent_id = %s AND raw_record_id = %s", (patent_id, raw_record_id))
     quoted_columns = ",\n            ".join(f'"{column}"' for column in ATTRIBUTE_FIELD_COLUMNS.values())
-    placeholders = ", ".join(["%s"] * (len(ATTRIBUTE_FIELDS) + 3))
+    placeholders = ", ".join(["%s"] * (len(ATTRIBUTE_FIELDS) + 2))
     cur.execute(
         f"""
         INSERT INTO patent_attributes (
-            patent_id, source_file_id, raw_record_id,
+            patent_id, raw_record_id,
             {quoted_columns}
         )
         VALUES ({placeholders})
         """,
         (
             patent_id,
-            source_file_id,
             raw_record_id,
             *(attributes.get(field) for field in ATTRIBUTE_FIELDS),
         ),

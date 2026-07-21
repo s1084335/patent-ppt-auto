@@ -22,8 +22,8 @@ class WipsPatentNumberNormalizationTests(unittest.TestCase):
         self.assertEqual(patent["未審查的公開號(轉換後)"], "11519621")
         self.assertEqual(patent["申請號"], "2024132600")
         self.assertEqual(patent["申請號(轉換後)"], "113132600")
-        self.assertIn("未审查的公开号=11519621", patent["dedupe_key"])
-        self.assertIn("申请号=113132600", patent["dedupe_key"])
+        # 去重改用轉換後專利號查找（見上方轉換後欄位）；不再產生 dedupe_key。
+        self.assertNotIn("dedupe_key", patent)
 
     def test_non_taiwan_transformed_columns_equal_original_values(self) -> None:
         """非 TW 仍填轉換後欄，讓所有下游固定讀同一組欄位。"""
