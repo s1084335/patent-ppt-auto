@@ -240,10 +240,10 @@ Layer 3：衍生查詢與分析層 Derived / Analytics Layer
 定位：
 
 ```text
-derived_layer 同時承擔通用報表基礎資料與單次分析結果保存。
+derived_layer 同時承擔通用報表基礎資料與版本化結果保存。
 report_patent_base 提供可重複使用、可查詢、可重算的乾淨專利寬表。
-analysis_table 保存每次實際報告或分析任務的專案範圍、篩選條件、選入專利集合、統計結果，以及可專利性/侵權比對結果。
-每次報告選取的專利範圍不同，報告範圍與結果寫入 analysis_table，不覆蓋 report_patent_base。
+版本化結果固定每件專利一列，使用既定專利號對齊，以 workspace 名稱與輸入 fingerprint 識別版本，不新增無業務用途的流水 id。
+同一 workspace 新增專利時建立新版本列，不覆蓋舊數據；總量 scope 也必須跟進。
 derived_layer 可由 Raw / Core / relation layer 重算，不取代原始資料與核心資料。
 ```
 
@@ -251,7 +251,7 @@ derived_layer 可由 Raw / Core / relation layer 重算，不取代原始資料�
 
 ```text
 report_patent_base            報表與分析共用的乾淨專利寬表
-analysis_table                單次分析專案、篩選條件、選入專利集合、統計結果與比對結果
+versioned_patent_snapshot     每件專利一列的總量／workspace 報表數據與永久版本
 ```
 
 `report_patent_base` 預計整合：
@@ -288,11 +288,11 @@ Layer 3 不作為原始資料來源。
 Layer 3 可建立公司名稱顯示映射、處理專利家族去重/不去重查詢口徑，也可以用 PostgreSQL SQL / views / materialized views 為報表拆 IPC / CPC、整理引用、彙總申請人、計算競爭力指標。
 公司名稱標準化只用於報表統計與使用者端顯示，不回寫或覆蓋 Core Layer 的原始公司/專利權人欄位值。
 報表統計的公司維度應以專利權人/公司對照表解析出的正規化公司名稱計算；若找不到對照，才 fallback 到原始公司名稱並標記為待補全。
-analysis_table 可保存單次報告的篩選條件、選入專利集合、最終統計結果或可專利性/侵權比對結果。
-analysis_table 不得覆蓋 Raw / Core 的原始資料。
-analysis_table 的專利集合應可追溯回 derived_layer.report_patent_base 與 core_layer.patents。
-不同報告使用不同分析範圍時，應建立不同 analysis record / patent set。
-統計結果可重算，但輸出報告時仍需保存當次使用的範圍、條件與結果快照。
+版本化 snapshot 不得覆蓋 Raw / Core 的原始資料，並以專利號追溯回 report_patent_base 與 core_layer.patents。
+業務時間只保留兩欄：最早來源檔匯入時間與最終報告／PDF 匯出時間；中間分群、報表不保存進出時間。
+報表值必須落到對應專利列；固定欄位或 JSON 欄位的最小 schema 另行確認，不得把 scope 聚合值重複灌進每件專利列。
+版本永久保存；PPT 第一版只比較數據差異，不比較 AI 文案。
+舊分群／報表紀錄表先保留但停止新增不必要的中間歷程；新版驗收前不移除。中間運算失敗只在 processing_jobs 保存最終狀態與錯誤，不另建事件表。
 Layer 3 的表、view、materialized view 需等侵權比對與使用者端流程確認後再建立。
 ```
 
@@ -308,8 +308,8 @@ Worker Claim Comparison Job
 Worker Report Job
 Dashboard / HTML 前端查詢
 AI chat 區塊
-Excel Exporter
 PPT / Report Exporter
+案件比對 PDF Exporter
 AI Service 報告文字生成入口
 ```
 
@@ -326,7 +326,7 @@ Layer 4 邊界：
 ```text
 資料庫容器只提供 PostgreSQL 與 SQL 查詢能力。
 正式 API 與查詢由 backend 實作；分群、報表、Embedding、案件比對由單一 worker 實作；frontend 經 nginx 使用系統功能。
-PPT / HTML / Excel / Power BI / 最終報告輸出讀取 Derived / Analytics 查詢結果，不直接改 Raw Layer，輸出動作必須留下 audit record。
+PPT／報表與案件比對 PDF 讀取 Derived / Analytics 結果，不直接改 Raw Layer。檔案統一放 `data/report_artifacts/`：PPT／報表放 `ppt/`，案件比對 PDF 放 `comparison/`。
 Claude AI Service 只能透過後端服務讀取整理後資料、比對結果或報表結果，不直接操作資料庫 schema。
 ```
 
@@ -337,9 +337,9 @@ core_layer / relation_layer
     ↓
 derived_layer.report_patent_base
     ↓
-derived_layer.analysis_table
+derived_layer.versioned_patent_snapshot
     ↓
-PPT / HTML / Excel / Power BI
+data/report_artifacts/ppt/ 或 data/report_artifacts/comparison/
 ```
 
 現階段結論：
@@ -458,6 +458,12 @@ Claude 主要支援後端已整理好的專利資料、PostgreSQL 統計結果�
 
 Claude 不負責資料匯入、資料清理、去重、SQL 寫入、正式判定、報表統計、PPT / Excel / 最終報告檔案產生。
 
+### 4.1 案件比對兩階段架構
+
+案件比對與報表／PPT 獨立，分成兩個人工閘門階段。第一階段由 Claude 讀取所有權利要求（後備為獨立項＋從屬項），辨識全部獨立項、從屬引用鏈、技術要素與關鍵 Claim 用語，輸出專利理解稿；使用者核准後，第二階段才把已核准理解與產品文字、照片及結構圖逐要素比對。後端固定執行 all-elements rule，使用者覆核後由專用 exporter 產生案件比對 PDF。
+
+圖片不是全量處理。只有 Claim 結構關係不清楚時，Worker 才從專利 PDF 產生 contact sheet，由 Claude 建議相關頁／圖並由使用者確認。所有資產集中在 `data/patent_assets/<patent_number>/<pdf_sha256>/`；DB 只保存最終選用圖片的相對路徑。
+
 AI 輸出必須採用固定 JSON schema。分類任務可使用下列格式，例如：
 
 ```json
@@ -470,7 +476,7 @@ AI 輸出必須採用固定 JSON schema。分類任務可使用下列格式，�
 }
 ```
 
-後端必須驗證 `category_key` 是否存在、信心分數是否合理、欄位是否完整，以及是否需要人工確認。侵權比對任務也必須以結構化結果回傳，並區分主權項比對與獨立項比對；AI chat 顯示的回答只能引用後端允許的資料範圍與比對結果，不得直接修改正式資料。分類樹調整不能由 AI 自動修改正式分類表，只能先產生 `classification_suggestions`，再經人工確認與版本化處理。
+後端必須驗證 `category_key` 是否存在、信心分數是否合理、欄位是否完整，以及是否需要人工確認。案件比對任務也必須以結構化結果回傳，先完成專利理解人工核准，再區分各獨立項與其從屬分支逐要素比對；AI chat 顯示的回答只能引用後端允許的資料範圍與比對結果，不得直接修改正式資料。分類樹調整不能由 AI 自動修改正式分類表，只能先產生 `classification_suggestions`，再經人工確認與版本化處理。
 
 ---
 

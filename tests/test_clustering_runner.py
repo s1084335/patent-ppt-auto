@@ -3,11 +3,15 @@ from __future__ import annotations
 import unittest
 
 from backend.app.clustering.runner import (
+    ClusteringCorpus,
     KScanResult,
     attach_k_scan_scores,
+    calculate_assignment_centroid_distances,
+    select_calibration_references,
     select_candidate_profiles,
     top_level_k_values,
 )
+from backend.app.clustering.model import EmbeddingMatrix
 
 
 class TopLevelClusteringRunnerTests(unittest.TestCase):
@@ -59,6 +63,67 @@ class TopLevelClusteringRunnerTests(unittest.TestCase):
         self.assertGreater(stronger.score, weaker.score)
         self.assertGreaterEqual(weaker.score, 0.0)
         self.assertLessEqual(stronger.score, 1.0)
+
+    def test_candidate_references_are_deterministic_bounded_and_cover_topics(self) -> None:
+        """每個 topic 保存 c-TF-IDF 前 10 筆參照，且排除未分類文件。"""
+        patent_ids = list(range(100, 125))
+        documents = [f"independent claim {patent_id}" for patent_id in patent_ids]
+        topics = [0] * 12 + [1] * 12 + [-1]
+        vectors = [[float(index), 0.0] for index in range(len(patent_ids))]
+        matrix = EmbeddingMatrix(
+            row_numbers=patent_ids,
+            patent_numbers=[f"P-{patent_id}" for patent_id in patent_ids],
+            vectors=vectors,
+        )
+        corpus = ClusteringCorpus(
+            patent_ids=patent_ids,
+            documents=documents,
+            matrix=matrix,
+            embedding_model="test-model",
+            model_version="1",
+            preprocessing_version="1",
+        )
+        representative_doc_indices = {0: list(range(10)), 1: list(range(12, 22))}
+
+        first = select_calibration_references(
+            corpus=corpus,
+            topics=topics,
+            representative_doc_indices=representative_doc_indices,
+        )
+        second = select_calibration_references(
+            corpus=corpus,
+            topics=topics,
+            representative_doc_indices=representative_doc_indices,
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), 20)
+        self.assertEqual({item["model_topic_id"] for item in first}, {0, 1})
+        self.assertNotIn(124, {item["patent_id"] for item in first})
+        self.assertEqual(
+            [item["rank"] for item in first if item["model_topic_id"] == 0],
+            list(range(1, 11)),
+        )
+        self.assertTrue(all("document" not in item for item in first))
+        self.assertTrue(all("keywords" not in item for item in first))
+        self.assertTrue(all(item["text_hash"] for item in first))
+
+    def test_k_scan_dict_hides_internal_references_by_default(self) -> None:
+        """metrics 與 job result 不應攜帶內部代表文件參照。"""
+        result = self._result(k=10)
+        result.references = [{"patent_id": 1, "text_hash": "hash"}]
+        self.assertNotIn("references", result.to_dict())
+        self.assertIn("references", result.to_dict(include_references=True))
+
+    def test_assignment_distances_remain_available_after_ctfidf_selection(self) -> None:
+        """finalize 仍須保存 centroid 距離，但不可拿它取代 c-TF-IDF 代表文檔。"""
+        distances = calculate_assignment_centroid_distances(
+            vectors=[[0.0, 0.0], [2.0, 0.0], [10.0, 0.0], [12.0, 0.0], [99.0, 0.0]],
+            topics=[0, 0, 1, 1, -1],
+        )
+
+        self.assertEqual(distances[:4], [1.0, 1.0, 1.0, 1.0])
+        self.assertEqual(distances[4], float("inf"))
 
     @staticmethod
     def _result(

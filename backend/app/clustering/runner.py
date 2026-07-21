@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 import logging
 import math
@@ -22,13 +22,14 @@ from backend.app.db.connection import get_connection_kwargs
 from .model import (
     EmbeddingMatrix,
     ModelConfig,
+    REPRESENTATIVE_DOC_LIMIT_FOR_LLM,
     ReducedEmbeddingMatrix,
     fit_bertopic,
     fit_incremental_pca,
     reduce_with_incremental_pca,
     topic_cv_coherence_per_topic,
 )
-from .artifacts import WorkspaceTopicArtifact, artifact_path, save_artifact
+from .artifacts import WorkspaceTopicArtifact, artifact_key, artifact_path, save_artifact
 from .preprocessing import clean_patent_text, sha256_text
 from .sources import SOURCE_FIELD_TECHNICAL, get_source_spec
 
@@ -38,7 +39,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SOURCE_FIELD_WIPS_INDEPENDENT_CLAIMS = SOURCE_FIELD_TECHNICAL
 PCA_COMPONENTS = 100
 MIN_CLUSTERING_DOCUMENTS = 50
-REPRESENTATIVE_DOC_LIMIT_FOR_LLM = 15
+CANDIDATE_REFERENCE_PARAMETER_KEY = "_representative_document_references"
 
 # CLI 直接執行時載入專案 .env；容器正式部署仍可用環境變數覆蓋。
 load_dotenv(PROJECT_ROOT / ".env", override=False)
@@ -68,10 +69,14 @@ class KScanResult:
     small_topic_ratio: float
     elapsed_seconds: float
     score: float = 0.0
+    references: list[dict[str, Any]] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, Any]:
-        """轉成 DB metrics JSON 與 CLI 輸出的字典。"""
-        return asdict(self)
+    def to_dict(self, *, include_references: bool = False) -> dict[str, Any]:
+        """轉成 DB metrics JSON 與 CLI 輸出的字典，預設不輸出內部代表文件參照。"""
+        payload = asdict(self)
+        if not include_references:
+            payload.pop("references", None)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -82,7 +87,7 @@ class CandidateProfile:
     result: KScanResult
 
     def to_dict(self) -> dict[str, Any]:
-        """輸出候選類型與完整 k 指標。"""
+        """輸出候選類型與完整 k 指標，但不把內部代表文件參照重複塞進 summary。"""
         return {"candidate_type": self.candidate_type, **self.result.to_dict()}
 
 
@@ -275,6 +280,11 @@ def scan_top_level_k(
             balance=float(result.metrics["balance"]),
             small_topic_ratio=float(result.metrics["small_topic_ratio"]),
             elapsed_seconds=float(result.elapsed_seconds or 0.0),
+            references=select_calibration_references(
+                corpus=corpus,
+                topics=[int(topic) for topic in result.topics],
+                representative_doc_indices=result.representative_doc_indices,
+            ),
         )
         LOGGER.info(
             "第一層候選完成：k=%d coherence=%.4f diversity=%.4f balance=%.4f",
@@ -286,6 +296,79 @@ def scan_top_level_k(
         results.append(scan_result)
     attach_k_scan_scores(results)
     return results
+
+
+def select_calibration_references(
+    *,
+    corpus: ClusteringCorpus,
+    topics: list[int],
+    representative_doc_indices: dict[int, list[int]],
+    per_topic_limit: int = REPRESENTATIVE_DOC_LIMIT_FOR_LLM,
+) -> list[dict[str, Any]]:
+    """把 BERTopic 每個 topic 的 c-TF-IDF 前 N 筆轉成可追溯專利參照。"""
+    document_count = len(corpus.documents)
+    if not (
+        document_count
+        == len(corpus.patent_ids)
+        == len(corpus.matrix.patent_numbers)
+        == len(topics)
+    ):
+        raise ValueError("candidate reference inputs must have the same length")
+    if per_topic_limit < 1:
+        raise ValueError("candidate per-topic reference limit must be positive")
+
+    assigned_topic_ids = sorted({topic_id for topic_id in topics if topic_id != -1})
+    if set(representative_doc_indices) != set(assigned_topic_ids):
+        raise ValueError("representative document topics do not match candidate assignments")
+
+    references: list[dict[str, Any]] = []
+    used_indexes: set[int] = set()
+    for topic_id in assigned_topic_ids:
+        for rank, index in enumerate(
+            representative_doc_indices[topic_id][:per_topic_limit], start=1
+        ):
+            if index < 0 or index >= document_count:
+                raise ValueError(f"representative document index out of range: {index}")
+            if topics[index] != topic_id:
+                raise ValueError("representative document does not belong to its topic")
+            if index in used_indexes:
+                raise ValueError("representative document index appears in multiple topics")
+            used_indexes.add(index)
+            references.append(
+                {
+                    "patent_id": int(corpus.patent_ids[index]),
+                    "patent_number": corpus.matrix.patent_numbers[index],
+                    "model_topic_id": int(topic_id),
+                    "rank": rank,
+                    "text_hash": sha256_text(corpus.documents[index]),
+                }
+            )
+    return references
+
+
+def calculate_assignment_centroid_distances(
+    *,
+    vectors: list[list[float]],
+    topics: list[int],
+) -> list[float]:
+    """計算 assignment 診斷用 centroid 距離，不參與代表文檔選取。"""
+    matrix = np.asarray(vectors, dtype=float)
+    if len(matrix) != len(topics):
+        raise ValueError("reduced vectors and topic assignments must have the same length")
+
+    topic_ids = sorted(topic_id for topic_id in set(topics) if topic_id != -1)
+    centers = {
+        topic_id: matrix[
+            [index for index, assigned in enumerate(topics) if assigned == topic_id]
+        ].mean(axis=0)
+        for topic_id in topic_ids
+    }
+    return [
+        float(np.linalg.norm(matrix[index] - centers[topic_id]))
+        if topic_id != -1
+        else math.inf
+        for index, topic_id in enumerate(topics)
+    ]
 
 
 def attach_k_scan_scores(results: list[KScanResult]) -> None:
@@ -449,11 +532,16 @@ def finalize_top_level(
             scheme_name=f"PCA{PCA_COMPONENTS}D-k{selected_k}",
             config=config,
         )
+        model_key = artifact_key(
+            workspace_id=int(workspace_id),
+            source_field=source_field,
+            run_id=run_id,
+        )
         model_path = artifact_path(
             workspace_id=int(workspace_id),
             source_field=source_field,
             run_id=run_id,
-        ).resolve()
+        )
         model_hash = save_artifact(
             WorkspaceTopicArtifact(
                 workspace_id=int(workspace_id),
@@ -476,7 +564,7 @@ def finalize_top_level(
             reduced_matrix=reduced_matrix,
             result=result,
             selected_score=float(candidate_row["score"]),
-            model_path=model_path,
+            model_artifact_key=model_key,
             model_hash=model_hash,
         )
     except Exception as exc:
@@ -528,6 +616,7 @@ def _persist_calibration(
                                 "small_topic_ratio": item.small_topic_ratio,
                                 "topic_count": item.topic_count,
                                 "elapsed_seconds": item.elapsed_seconds,
+                                CANDIDATE_REFERENCE_PARAMETER_KEY: item.references,
                             }
                         ),
                     ),
@@ -580,7 +669,7 @@ def _persist_final_topics(
     reduced_matrix: ReducedEmbeddingMatrix,
     result: Any,
     selected_score: float,
-    model_path: Path,
+    model_artifact_key: str,
     model_hash: str,
 ) -> tuple[int, int]:
     """保存 workspace 永久 topics、原始 assignments 與可重用 artifact。"""
@@ -595,17 +684,11 @@ def _persist_final_topics(
         topics=topics,
         top_terms=top_terms,
     )
-    vectors = np.asarray(reduced_matrix.vectors, dtype=float)
-    # BERTopic 可能依頻率重排 topic ID，不能直接拿它索引 KMeans 原始 centroid。
-    centers = {
-        topic_id: vectors[[index for index, assigned in enumerate(topics) if assigned == topic_id]].mean(axis=0)
-        for topic_id in topic_ids
-    }
-    distances = [
-        float(np.linalg.norm(vectors[index] - centers[topic_id])) if topic_id != -1 else math.inf
-        for index, topic_id in enumerate(topics)
-    ]
-
+    # 代表文檔改由 c-TF-IDF 選取；centroid 距離只保留給 assignment 診斷與後續排序。
+    distances = calculate_assignment_centroid_distances(
+        vectors=reduced_matrix.vectors,
+        topics=topics,
+    )
     db_topic_ids: dict[int, int] = {}
     with psycopg.connect(**get_connection_kwargs()) as conn:
         with conn.cursor() as cur:
@@ -649,10 +732,10 @@ def _persist_final_topics(
 
             for position, topic_id in enumerate(topic_ids, start=1):
                 indexes = [index for index, assigned in enumerate(topics) if assigned == topic_id]
-                representative_indexes = sorted(
-                    indexes,
-                    key=lambda index: distances[index],
-                )[:REPRESENTATIVE_DOC_LIMIT_FOR_LLM]
+                representative_indexes = result.representative_doc_indices.get(topic_id)
+                if not representative_indexes:
+                    raise ValueError(f"topic {topic_id} has no c-TF-IDF representative documents")
+                representative_indexes = representative_indexes[:REPRESENTATIVE_DOC_LIMIT_FOR_LLM]
                 keywords = [
                     {"term": term, "weight": float(weight)}
                     for term, weight in (result.topic_model.get_topic(topic_id) or [])[:10]
@@ -744,7 +827,7 @@ def _persist_final_topics(
                 (
                     len(topic_ids),
                     Jsonb({"selected_result": {**result.metrics, "score": selected_score}}),
-                    str(model_path),
+                    model_artifact_key,
                     model_hash,
                     run_id,
                 ),

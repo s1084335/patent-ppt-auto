@@ -1,8 +1,7 @@
-# 侵權比對（Claim Comparison）設計 — 第一版草案
+# 案件比對（Claim Comparison）第一版定案流程
 
-狀態：設計稿，待使用者審核後排實作（2026-07-15，尚未寫任何程式）。
-定位：架構總結（`patent_tool_architecture_summary.md`）的最優先目標；
-本文件把「主權項/獨立項侵權比對」落成可實作的流程、資料模型與 LLM 邊界。
+狀態：產品流程已於 2026-07-20 定案；實體 DB schema、PDF 版型與第一版資料規模仍待使用者確認。
+定位：獨立於報表／PPT 的案件比對 PDF 產線。本文件是案件比對流程、輸入、人工閘門、圖片資產與 LLM 邊界的依據。
 
 > 免責定位：本功能是專利工程師的**輔助工具**，輸出是要素對照與差異說明草稿；
 > 侵權與否的判定一律由人工做成，系統與 LLM 都不輸出法律結論。
@@ -17,13 +16,13 @@
   每個 claim 拆成要素（elements），逐要素標記 對應/疑似對應/未對應/資訊不足，附證據與說明。
 - 後端以 **all-elements rule** 彙總：任一要素「未對應」→ 該 claim 整體標「不落入（初判）」；
   全要素「對應」→「落入風險（初判）」；含「疑似/資訊不足」→「需人工」。彙總是規則，不是 LLM 判定。
-- 結果進 analysis 框架保存，可匯出成報告素材（後接 PPT exporter）。
+- 結果進 analysis 框架保存，經人工覆核後由案件比對 PDF exporter 產生可對外交付的獨立文件；不依賴報表或 PPT 流程。
 
 不做什麼（第一版明確排除）：
 
 - 不做均等論（doctrine of equivalents）的自動判定——「疑似對應」只是提示人工去看。
 - 不做 file wrapper / 禁反言、有效性分析。
-- 不自動抓產品資料（比對標的由使用者提供文字）。
+- 不自動抓產品資料（比對標的由使用者提供文字、條列特徵、照片與結構圖）。
 - 不做全庫自動掃描（成本不可控），一次比對是「一個標的 × 使用者選定的專利集合」。
 
 ## 2. 比對模式與輸入
@@ -37,30 +36,29 @@
 
 輸入來源：
 
-- **專利側**：`derived_layer.report_patent_base."比對用權利要求"`
-  （已是 `COALESCE(獨立項, 主權項, 所有權利要求)`，refresh 時算好）。
-  比對範圍記錄 `claim_source`：實際取到的是哪一欄（獨立項/主權項/所有權利要求），報告需標示。
-- **專利集合**：沿用 app_layer 快照——`analysis_runs.analysis_type='infringement'`、
-  `selected_patent_ids_json`（與報表同一套 filters → patent_ids 機制，可追溯）。
-- **標的側**：使用者輸入的特徵描述，存進 `analysis_runs.parameters_json`
-  （`target_name`、`target_description`、可選的條列 `target_features[]`）。
+- **專利側**：所有種類專利都優先讀完整「所有權利要求」；後備才使用「獨立項＋從屬項」。不得再使用舊的 `COALESCE(獨立項, 主權項, 所有權利要求)` 順序。資料不足時標記缺口，不得只用主權項假裝完整。
+- **權利範圍**：先辨識全部獨立項與從屬引用鏈；有幾項獨立項就分析幾項。獨立項任一必要要素不成立時，其分支從屬項可依 all-elements rule 推論不成立；獨立項成立或不確定時，才分析從屬項新增限制。
+- **專利文字邊界**：Claim 理解只使用權利要求欄位，不從專利說明書抽取文字。結構關係不清楚時才按需從專利 PDF 抽圖。
+- **專利集合**：由使用者明確選定，業務追溯以既定專利號機制對齊。
+- **標的側**：`target_name`、`target_description`、條列 `target_features[]`，以及使用者提供的產品照片、結構圖或 CAD 圖。
 
 ## 3. 流程（pipeline）
 
 ```text
-① 取 claim 文本        report_patent_base.比對用權利要求（快照內每件專利）
-② claim 切分           複用 backend/app/clustering/preprocessing.split_claim_segments()
-                       （claim 編號偵測已在分群前處理實作並驗證過 407 筆）
-③ 要素拆解（LLM）      每條 claim → elements[]（前言/要素逐項，保留原文 span）
-④ 逐要素比對（LLM）    每個 element × 標的描述 → verdict + evidence + explanation
-⑤ 規則彙總（後端）     all-elements rule → claim 級初判；claim 級 → 專利級彙總
-⑥ 人工覆核             前端逐要素確認/改判，覆核紀錄另存，不覆蓋 AI 原始輸出
-⑦ 輸出                 claim chart（表）＋ 風險摘要（LLM 草稿）→ 報告/PPT 素材
+① 選定專利             使用者明確選擇要理解與比對的專利
+② 取得權利要求         所有權利要求優先；後備為獨立項＋從屬項
+③ Claude 專利理解      辨識全部獨立項、從屬引用鏈、技術要素與關鍵 Claim 用語
+④ 使用者理解閘門       顯示專利理解稿；使用者修改或核准，未核准不得進產品比對
+⑤ 按需抽圖             只對結構關係不清楚的要素從 PDF 選頁、裁圖並由使用者確認
+⑥ 輸入產品資料         文字、條列特徵、照片、結構圖或 CAD 圖
+⑦ 逐要素比對           Claude 產 verdict、專利證據、產品證據與 explanation 草稿
+⑧ 規則彙總             後端依 all-elements rule 產 Claim／專利級結果
+⑨ 人工覆核             使用者確認或改判；不得覆蓋 AI 原始輸出
+⑩ 獨立 PDF 輸出        摘要、權利範圍、產品說明、Claim 解釋、分析、結論與 Claim Chart
 ```
 
-- ③④ 每次呼叫都記錄 `prompt_version`、`model`、輸入 hash、原始回應——與分群引擎的
-  LLM 追溯要求一致。
-- ④ 的 verdict 枚舉：`met`（字面對應）/ `arguably_met`(疑似，含均等提示) / `not_met` / `insufficient_info`。
+- 專利理解稿必須先由使用者核准；核准內容以 Claim 文字 hash 鎖定，原文改變即重新確認。
+- verdict 枚舉：`met`（對應）/ `arguably_met`（有爭議）/ `not_met`（未對應）/ `insufficient_info`（資料不足）。
 - 語言：claim 可能是中/英/日/韓（獨立項欄是 KR,JP,US,CN,EP,IN）。第一版不翻譯，
   LLM 直接跨語比對，輸出說明用繁體中文；`insufficient_info` 涵蓋「語言無法確認」情況。
 
@@ -71,55 +69,38 @@
 - 輸出固定 JSON schema，後端驗證：verdict 在枚舉內、每要素有 evidence 引文、
   element 原文 span 必須真的出現在 claim 文本裡（防幻覺，字串驗證）、缺欄位就 reject 重試。
 - 逐要素比對每則輸出附 `confidence` 與 `needs_review`；低信心自動標人工。
+- all-elements rule 固定為：任一必要要素 `not_met` → 該 Claim 不成立；全部 `met` → 可能成立；含 `arguably_met` 或 `insufficient_info` → 需人工確認。規則由程式執行，不交給 Claude 自由判斷。
 
-## 5. 資料模型（草案，migration 0006）
+## 5. 資料與圖片保存原則
 
-第一版最小落地：沿用 `analysis_outputs`（`output_type='claim_comparison'`，result_json）即可跑通；
-正式表在確認流程後建，草案如下：
-
-```text
-app_layer.claim_comparison_runs      -- 一次比對任務（FK analysis_id）
-    run_id, analysis_id, target_name, target_description,
-    mode ('product_vs_patent'|'patent_vs_patent'), prompt_version, model,
-    status, created_at, completed_at
-
-derived_layer.claim_elements         -- 要素拆解結果（可跨 run 重用，以 claim 文本 hash 為鍵）
-    element_id, patent_id, claim_number, claim_source, claim_text_hash,
-    element_index, element_text, is_preamble, prompt_version, model
-
-app_layer.claim_element_findings     -- 逐要素比對結果
-    finding_id, run_id, element_id, verdict, confidence,
-    evidence_text, explanation, needs_review,
-    review_status ('unreviewed'|'confirmed'|'overridden'), reviewer_verdict, reviewed_at
-
-app_layer.claim_comparison_summary   -- claim/專利級彙總（規則算出，可重算）
-    run_id, patent_id, claim_number, claim_verdict, patent_verdict, summary_text
-```
-
-原則不變：AI 原始輸出與人工覆核分欄保存；彙總可由 findings 重算；不動核心表。
+- 舊草案的多張 `claim_*` 表、`run_id`、`element_id`、`finding_id` 與中間處理時間設計已被 2026-07-20 最小追溯原則取代；正式 migration 前另行展示最小 schema。
+- 業務對齊使用專利號；AI 原始理解／比對與人工覆核分欄保存；彙總可由 findings 重算；不動 Raw/Core 原始資料。
+- 圖片只在必要時抽取，全部集中於 `data/patent_assets/<patent_number>/<pdf_sha256>/`，不得散落到 `output`、`tmp`、`data/raw` 或 workspace 目錄。
+- DB 只保存最終選用圖片的相對路徑陣列，例如 `figure_paths_json`；不保存圖片 hash、頁碼、圖號、理由、狀態、時間或 binary。
+- `source.pdf`、contact sheet、完整頁與裁切圖均留在上述專利資產目錄；不同 workspace 共用同一份專利資產。
 
 ## 6. 與現有系統的接點
 
-- **analysis 框架**：`create-analysis --type infringement` 已有 CLI 參數，快照機制直接複用。
-- **報表引擎**：統計型引擎不適合（需要 AI 逐件呼叫），比對走獨立 runner
-  （`backend/app/comparison/` 新模組），輸出仍登錄 `analysis_outputs`/`export_runs` 保持追溯一致。
+- **獨立流程**：案件比對不依賴報表、PPT 或分群；分群只能協助使用者選件。
+- **獨立輸出線**：統計型報表引擎不適合（需要 AI 逐件呼叫），比對走獨立 runner
+  （`backend/app/comparison/` 新模組），結果依待確認的最小 comparison schema 保存，並由專用 PDF exporter 產檔。
 - **claim 切分**：`split_claim_segments()` 從 clustering.preprocessing 抽出共用
   （或 comparison 模組直接 import，避免複製邏輯）。
-- **狀態欄**：比對前可用 `legal_status` 正規化（`mappings/legal_status.py`）過濾——
-  對死掉的專利做 FTO 沒有意義，預設只比 alive，可由參數放寬。
-- **PPT**：claim chart 是 PPT exporter 的第一個表格型素材；風險摘要是文字型素材。
+- **PDF**：claim chart、逐要素證據、人工覆核結果與風險摘要組成案件比對 PDF；此輸出不經報表或 PPT exporter。
+
+Claim Chart 固定包含：Claim／要素原文、Claim 解釋、專利證據、產品證據、verdict 與說明。第一版 PDF 章節固定為：案件與標的、權利範圍、產品說明、Claim 解釋、各獨立項分析、必要時的從屬項分析、風險摘要、結論及 Claim Chart 附錄。
 
 ## 7. 成本與批次控制
 
-- 一次 run 的 LLM 呼叫量 ≈ 專利數 ×（1 次拆解 + 要素數次比對，比對可整條 claim 一次批走）。
+- 一次案件任務的 LLM 呼叫量 ≈ 專利數 ×（1 次拆解 + 要素數次比對，比對可整條 claim 一次批走）。
 - 要素拆解結果以 `claim_text_hash` 快取重用：同一 claim 不重拆。
-- run 參數提供 `max_patents` 上限與 dry-run（只估算呼叫量不真呼叫）。
+- 任務參數提供 `max_patents` 上限與 dry-run（只估算呼叫量不真呼叫）。
 
 ## 8. 開放問題（待使用者定案）
 
-1. **LLM 供應商與 API**：Claude API（架構文件原定）/ 公司內部 LLM？API key 管理方式？
-2. **模式 A 的標的輸入格式**：自由文字就好，還是要求條列特徵（條列可讓逐要素比對更準）？
-3. **比對範圍**：只比獨立項（比對用權利要求現況）夠不夠？要不要引入附屬項（所有權利要求欄只有 JP,KR,CN 有值）？
-4. **一次 run 的規模預期**：通常幾件專利？（影響是否需要佇列/斷點續跑）
-5. **claim chart 的 PPT 版型**：一 claim 一頁？一專利一頁？（影響 exporter 素材切法）
-6. **正式表 vs JSON**：第一版直接建 0006 正式表，還是先用 analysis_outputs JSON 跑通再定表？
+1. 完整「所有權利要求」與從屬項文字／引用關係要由哪一個匯入來源提供；目前 932 筆 DB 的所有權利要求皆空，現有 407 Excel 只有獨立項文字與從屬項數量。
+2. 產品資料是否強制使用條列 `target_features[]`，或允許只交自由文字。
+3. 一次案件通常選幾件專利，作為 job 批次、暫停續跑與前端分頁依據。
+4. PDF 版型採一件專利一節，或一個獨立 Claim 一節。
+5. 最小 comparison schema 採單一版本化寬表，或採一個 header＋一個 JSON detail 的輕量結構。
+6. PDF 產生套件與中文字型；新增依賴前須由使用者確認。

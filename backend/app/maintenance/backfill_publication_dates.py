@@ -19,7 +19,8 @@ JOIN core_layer.patent_sources ps ON ps.patent_id = p.id
 JOIN raw_layer.raw_records rr ON rr.id = ps.raw_record_id
 WHERE p.publication_date IS NULL
    OR p.publication_year IS NULL
-ORDER BY p.id, ps.id DESC
+-- patent_sources.id 已移除；改用 raw_record_id DESC 取最新來源列
+ORDER BY p.id, ps.raw_record_id DESC
 """
 
 UPDATE_SQL = """

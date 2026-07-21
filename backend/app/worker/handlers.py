@@ -11,6 +11,13 @@ from typing import Any, Callable
 from backend.app.clustering.runner import calibrate_top_level, finalize_top_level
 from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL, get_source_spec
 from backend.app.clustering.workspace_service import incremental_workspace
+from backend.app.importers.import_paths import (
+    WEB_IMPORT_SUFFIXES,
+    is_within_imports_root,
+    remove_import_dir,
+)
+from backend.app.importers.wips_importer import file_sha256, import_wips_file
+from backend.app.reports.report_definitions import DEFAULT_REPORT_NAMES
 from backend.app.reports.report_engine import run_reports_batch
 
 from .job_context import JobContext
@@ -106,9 +113,13 @@ def handle_clustering_incremental(payload: dict[str, Any], context: JobContext) 
 def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
     """執行報表引擎批次查詢，將報表 JSON 回寫到 processing_jobs。"""
     context.heartbeat("report_generate_started", 10)
-    report_names = payload.get("report_names")
-    if not isinstance(report_names, list) or not report_names:
-        raise ValueError("report_generate requires non-empty report_names")
+    report_names_payload = payload.get("report_names")
+    if report_names_payload is None or report_names_payload == []:
+        report_names = list(DEFAULT_REPORT_NAMES)
+    elif isinstance(report_names_payload, list):
+        report_names = report_names_payload
+    else:
+        raise ValueError("report_generate report_names must be a list when provided")
     result = run_reports_batch(
         [str(name) for name in report_names],
         filters=payload.get("filters"),
@@ -119,11 +130,45 @@ def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict
     return _json_safe(result)
 
 
+def handle_patent_import(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """匯入上傳的 WIPS 來源檔；複用 import_wips_file()，不重寫 mapping/去重。
+
+    匯入前重新驗證受控檔案：位於 imports root、存在且為 regular file、副檔名在 Web 白名單、
+    實際 SHA-256 等於 payload.file_hash；任一失敗直接 raise 讓 job failed，不進 importer。
+    import_wips_file 內為單一 transaction（重複檔回 skipped_duplicate_file、錯誤整批 rollback）。
+    重複檔時安全刪除本次上傳目錄；成功匯入則保留（source_files.file_path 需追溯）。
+    """
+    context.heartbeat("patent_import_started", 5)
+    raw_path = payload.get("path")
+    if not raw_path:
+        raise ValueError("patent_import requires payload.path")
+    path = Path(raw_path)
+    if not is_within_imports_root(path):
+        raise ValueError(f"patent_import path escapes imports root: {raw_path}")
+    if not path.is_file():
+        raise ValueError(f"patent_import file missing or not a regular file: {raw_path}")
+    if path.suffix.lower() not in WEB_IMPORT_SUFFIXES:
+        raise ValueError(f"patent_import unsupported format for worker: {path.suffix}")
+    expected_hash = str(payload.get("file_hash") or "")
+    if not expected_hash or file_sha256(path) != expected_hash:
+        raise ValueError("patent_import file hash mismatch")
+
+    # 大檔匯入可能久，背景 keeper 只補 heartbeat，不影響匯入結果。
+    with context.keepalive("patent_import_running", 20, interval_seconds=_heartbeat_interval(payload)):
+        summary = import_wips_file(path)
+    if summary.get("status") == "skipped_duplicate_file":
+        # 重複檔不需保留這份上傳副本；只刪本次上傳目錄（remove_import_dir 會確認位於 imports root）。
+        remove_import_dir(path.parent)
+    context.heartbeat("patent_import_completed", 95)
+    return _json_safe(summary)
+
+
 HANDLERS: dict[str, Handler] = {
     "clustering_calibrate": handle_clustering_calibrate,
     "clustering_finalize": handle_clustering_finalize,
     "clustering_incremental": handle_clustering_incremental,
     "report_generate": handle_report_generate,
+    "patent_import": handle_patent_import,
 }
 
 

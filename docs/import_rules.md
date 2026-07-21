@@ -1,5 +1,7 @@
 ﻿# 2026-07-17 專利權人正規化原則
 
+2026-07-20 更新：正規化改採庫內證據式 Python worker，不再使用 CLI、Playwright 或外部 WIPS 查詢。
+
 匯入流程不得改寫原有專利中的申請人、專利權人、受讓人等來源欄位值。原始專利資料照原樣入庫；公司名稱正規化只透過獨立的專利權人/公司對照表處理。
 
 流程口徑：
@@ -8,9 +10,9 @@
 原始專利資料照原樣入庫
 → 匯入後掃描公司/專利權人名稱
 → 用專利權人對照表嘗試正規化
-→ 找不到對照時建立補全任務
-→ Claude Code CLI + Skills + Playwright MCP 查 WIPS 標準專利權人代碼
-→ 將申請人代碼 / 公司名稱 / 別稱寫入專利權人對照表
+→ 以現有專利的標準名稱與非空公司代碼聚合別稱
+→ 無衝突結果寫入申請人代碼 / 公司名稱 / 別稱對照表
+→ 相似名稱或代碼衝突只輸出人工確認候選
 → 報表統計以正規化公司名稱計算
 ```
 
@@ -198,8 +200,11 @@ WIPS 識別欄位：
 4. 申请号 -> patents."申請號(轉換後)"；此項會同時比對相容的 country_code / database_name，降低跨資料庫誤合併。
 
 如果四個識別欄位都空白：
-dedupe_key = WIPS_ROW|source_file_id|row_number
+該列不與任何既有專利合併，各自新建，靠 raw_record_id 保持獨立與追溯。
 ```
+
+去重只用上述專利號查找順序；不再產生或寫入 dedupe_key（core layer 精簡定案），patent_sources
+以 (patent_id, raw_record_id) 為主鍵，report_patent_base 不再帶 dedupe_key。
 
 注意：
 
@@ -429,25 +434,13 @@ Curr. IPC(All) -> patent_attributes."Curr. IPC(All)"
 ```
 
 
-## 2026-07-17 最終定案：專利權人正規化使用兩個 MCP
+## 2026-07-20 最終定案：庫內證據式公司正規化
 
-最終架構採兩個 MCP 並行，不把 Playwright 瀏覽器操作硬塞進 Central Patent MCP Server。
+不使用 Claude Code CLI、Playwright MCP 或外部 WIPS 查詢。專利匯入後由 Python worker 讀取現有專利的申請人、標準化申請人、專利權人、受讓人及既有 WIPS 代碼。
 
-```text
-Claude Code
-├─ Central Patent MCP Server
-│  ├─ clustering tools
-│  ├─ reporting tools
-│  └─ assignee normalization DB tools
-│
-└─ Playwright MCP
-   └─ WIPS browser automation
-```
-
-分工固定如下：
-
-- `Central Patent MCP Server`：負責資料庫與業務工具，包括掃描未正規化公司、讀取唯一一張專利權人/公司對照表、建立待補全任務、寫入對照表、提供報表使用的正規化公司名稱。
-- `Playwright MCP`：只負責瀏覽器自動化，包括開啟 WIPS、搜尋公司名稱、展開標準申請人結果、讀取 WIPS 畫面資料。
-- `Claude Code`：負責協調兩個 MCP，將 Playwright MCP 讀到的 WIPS 結果整理成固定 schema，再交給 Central Patent MCP Server 寫入資料庫。
-
-資料庫對照表原則：DB 內只能有一張專利權人/公司對照表。原有專利的公司、申請人、專利權人、受讓人等來源欄位值不動；報表統計透過這張對照表取得 `normalized_company_name` 後再 group by。
+- 相同非空代碼且標準名稱無衝突：自動把名稱變體加入唯一公司對照表。
+- 正規化後別稱已存在：直接沿用既有標準公司名稱。
+- 無代碼相似名稱或代碼／名稱衝突：只輸出人工確認候選，不自動合併。
+- 候選沿用 `workflow_outputs` JSON；不建立公司正規化任務表。
+- DB 內仍只有一張公司對照表，格式維持 `申請人代碼`、`公司名稱`、`別稱`。
+- 原始申請人、專利權人、受讓人值不動；報表透過 display name 使用正規化公司名稱，未確認者 fallback 原始名稱。

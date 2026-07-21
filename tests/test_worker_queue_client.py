@@ -9,6 +9,7 @@ from unittest import mock
 from backend.app.worker import handlers
 from backend.app.worker import runner
 from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL
+from backend.app.reports.report_definitions import DEFAULT_REPORT_NAMES
 from backend.app.worker.job_context import JobCancelledError, JobContext
 from backend.app.worker.queue_client import ProcessingJob, TERMINAL_STATUSES
 from backend.app.worker.runner import build_parser
@@ -45,7 +46,8 @@ class HandlerContractTests(unittest.TestCase):
     """驗證 worker 支援的 job_type 與 JSON 安全轉換。"""
 
     def test_required_handler_keys(self):
-        """確認第一版 worker 只支援定案的四種 job type。"""
+        """確認 worker 只支援定案的 job type（2026-07-21 補 patent_import——匯入線 handler
+        已上線但本契約集合漏更新，OpenCode 批 G 前置檢查抓到）。"""
         self.assertEqual(
             set(handlers.HANDLERS),
             {
@@ -53,6 +55,7 @@ class HandlerContractTests(unittest.TestCase):
                 "clustering_finalize",
                 "clustering_incremental",
                 "report_generate",
+                "patent_import",
             },
         )
 
@@ -95,6 +98,54 @@ class HandlerContractTests(unittest.TestCase):
                 {"workspace_id": 2, "source_field": "technical"},
                 context,
             )
+
+    def test_report_generate_missing_names_uses_default_reports(self):
+        """確認 worker 缺少 report_names 時使用固定預設報表名單。"""
+        context = mock.Mock()
+        context.heartbeat.return_value = None
+        with mock.patch.object(handlers, "run_reports_batch", return_value={"ok": True}) as patched:
+            result = handlers.handle_report_generate({}, context)
+        patched.assert_called_once_with(
+            list(DEFAULT_REPORT_NAMES), filters=None, limit=None, patent_ids=None
+        )
+        self.assertEqual(result, {"ok": True})
+
+    def test_report_generate_null_names_uses_default_reports(self):
+        """確認 worker 收到 null report_names 時使用固定預設報表名單。"""
+        context = mock.Mock()
+        context.heartbeat.return_value = None
+        with mock.patch.object(handlers, "run_reports_batch", return_value={}) as patched:
+            handlers.handle_report_generate({"report_names": None}, context)
+        patched.assert_called_once_with(
+            list(DEFAULT_REPORT_NAMES), filters=None, limit=None, patent_ids=None
+        )
+
+    def test_report_generate_empty_names_uses_default_reports(self):
+        """確認 worker 收到空 report_names 時使用固定預設報表名單。"""
+        context = mock.Mock()
+        context.heartbeat.return_value = None
+        with mock.patch.object(handlers, "run_reports_batch", return_value={}) as patched:
+            handlers.handle_report_generate({"report_names": []}, context)
+        patched.assert_called_once_with(
+            list(DEFAULT_REPORT_NAMES), filters=None, limit=None, patent_ids=None
+        )
+
+    def test_report_generate_explicit_subset_is_preserved(self):
+        """確認 worker 明確報表子集合不會被預設名單覆蓋。"""
+        context = mock.Mock()
+        context.heartbeat.return_value = None
+        with mock.patch.object(handlers, "run_reports_batch", return_value={}) as patched:
+            handlers.handle_report_generate({"report_names": ["application_trend"]}, context)
+        patched.assert_called_once_with(
+            ["application_trend"], filters=None, limit=None, patent_ids=None
+        )
+
+    def test_report_generate_non_list_names_still_rejected(self):
+        """確認 worker 仍拒絕非 list 型別的 report_names。"""
+        context = mock.Mock()
+        context.heartbeat.return_value = None
+        with self.assertRaises(ValueError):
+            handlers.handle_report_generate({"report_names": "application_trend"}, context)
 
 
 class RunnerCliTests(unittest.TestCase):

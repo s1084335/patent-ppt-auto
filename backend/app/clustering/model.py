@@ -25,7 +25,7 @@ from backend.app.transforms.patent_numbers import (
 PATENT_SBERTA_MODEL = "AI-Growth-Lab/PatentSBERTa"
 PATENT_SBERTA_VECTOR_DIM = 768
 PATENT_SBERTA_MAX_SEQ_LENGTH = 512
-REPRESENTATIVE_DOC_LIMIT_FOR_LLM = 15
+REPRESENTATIVE_DOC_LIMIT_FOR_LLM = 10
 _COHERENCE_TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9_+/\-]*")
 PATENT_NUMBER_PRIORITY = (
     ("grant_publication_number", "授權公告號"),
@@ -159,6 +159,7 @@ class TopicModelRunResult:
     assignments: list[TopicAssignment]
     topic_info: list[dict[str, Any]]
     representative_docs: dict[int, list[str]]
+    representative_doc_indices: dict[int, list[int]]
     metrics: dict[str, float]
     score: float | None = None
     elapsed_seconds: float | None = None
@@ -530,20 +531,75 @@ def fit_bertopic(
             strict=True,
         )
     ]
-    metrics = evaluate_topic_model(documents, topics=[int(topic) for topic in topics], topic_model=topic_model)
+    topic_ids = [int(topic) for topic in topics]
+    metrics = evaluate_topic_model(documents, topics=topic_ids, topic_model=topic_model)
+    representative_doc_indices = rank_ctfidf_representative_documents(
+        topic_model=topic_model,
+        documents=documents,
+        topics=topic_ids,
+        limit=REPRESENTATIVE_DOC_LIMIT_FOR_LLM,
+    )
     return TopicModelRunResult(
         scheme_name=scheme_name,
         topic_model=topic_model,
-        topics=[int(topic) for topic in topics],
+        topics=topic_ids,
         assignments=assignments,
         topic_info=topic_model.get_topic_info().to_dict(orient="records"),
         representative_docs={
-            int(topic_id): docs[:REPRESENTATIVE_DOC_LIMIT_FOR_LLM]
-            for topic_id, docs in topic_model.get_representative_docs().items()
+            topic_id: [documents[index] for index in indexes]
+            for topic_id, indexes in representative_doc_indices.items()
         },
+        representative_doc_indices=representative_doc_indices,
         metrics=metrics,
         elapsed_seconds=time.perf_counter() - started_at,
     )
+
+
+def rank_ctfidf_representative_documents(
+    *,
+    topic_model: Any,
+    documents: list[str],
+    topics: list[int],
+    limit: int = REPRESENTATIVE_DOC_LIMIT_FOR_LLM,
+) -> dict[int, list[int]]:
+    """依文件與 topic c-TF-IDF 向量的 cosine similarity 取每題前 N 筆。
+
+    BERTopic 預設只保留少量 representative docs，且不公開原始列索引；此處沿用
+    BERTopic 的 c-TF-IDF 選取原理，但保留 corpus index，讓後續可穩定追溯 patent_id。
+    """
+    if len(documents) != len(topics):
+        raise ValueError("documents and topics must have the same length")
+    if limit < 1:
+        raise ValueError("representative document limit must be positive")
+
+    try:
+        from sklearn.metrics.pairwise import cosine_similarity
+    except ImportError as exc:
+        raise RuntimeError("scikit-learn is required to rank representative documents") from exc
+
+    model_topic_ids = sorted(int(topic_id) for topic_id in topic_model.get_topics())
+    topic_row = {topic_id: row for row, topic_id in enumerate(model_topic_ids)}
+    assigned_topic_ids = sorted({topic_id for topic_id in topics if topic_id != -1})
+    missing = [topic_id for topic_id in assigned_topic_ids if topic_id not in topic_row]
+    if missing:
+        raise ValueError(f"BERTopic c-TF-IDF rows missing assigned topics: {missing}")
+
+    ranked: dict[int, list[int]] = {}
+    for topic_id in assigned_topic_ids:
+        indexes = [index for index, assigned in enumerate(topics) if assigned == topic_id]
+        selected_documents = [documents[index] for index in indexes]
+        bow = topic_model.vectorizer_model.transform(selected_documents)
+        document_ctfidf = topic_model.ctfidf_model.transform(bow)
+        similarities = cosine_similarity(
+            document_ctfidf,
+            topic_model.c_tf_idf_[topic_row[topic_id] : topic_row[topic_id] + 1],
+        ).ravel()
+        ordered = sorted(
+            range(len(indexes)),
+            key=lambda local_index: (-float(similarities[local_index]), indexes[local_index]),
+        )
+        ranked[topic_id] = [indexes[local_index] for local_index in ordered[:limit]]
+    return ranked
 
 
 def partial_fit_bertopic(
@@ -651,6 +707,7 @@ def attach_ranking_scores(results: list[TopicModelRunResult]) -> list[TopicModel
                 assignments=result.assignments,
                 topic_info=result.topic_info,
                 representative_docs=result.representative_docs,
+                representative_doc_indices=result.representative_doc_indices,
                 metrics=result.metrics,
                 score=float(score),
                 elapsed_seconds=result.elapsed_seconds,

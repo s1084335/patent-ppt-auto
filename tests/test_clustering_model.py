@@ -2,12 +2,55 @@
 
 import unittest
 
+import numpy as np
+
 from backend.app.clustering.model import (
     ModelConfig,
     format_patent_number,
+    rank_ctfidf_representative_documents,
     resolve_patent_number,
     weighted_mean_vectors,
 )
+
+
+class _DocumentVectorizer:
+    """以測試文件名稱回傳預先配置的文件向量。"""
+
+    def __init__(self, vectors: dict[str, list[float]]) -> None:
+        """保存文件至向量的測試映射。"""
+        self.vectors = vectors
+
+    def transform(self, documents: list[str]) -> np.ndarray:
+        """依輸入順序建立測試向量矩陣。"""
+        return np.asarray([self.vectors[document] for document in documents], dtype=float)
+
+
+class _IdentityCtfidf:
+    """測試用 c-TF-IDF transformer，保留輸入向量。"""
+
+    @staticmethod
+    def transform(matrix: np.ndarray) -> np.ndarray:
+        """直接回傳文件向量，隔離排序邏輯。"""
+        return matrix
+
+
+class _TopicModelStub:
+    """提供代表文件排序所需的最小 BERTopic 介面。"""
+
+    def __init__(
+        self,
+        *,
+        document_vectors: dict[str, list[float]],
+        topic_vectors: list[list[float]],
+    ) -> None:
+        """建立固定 topic 與文件 c-TF-IDF 向量。"""
+        self.vectorizer_model = _DocumentVectorizer(document_vectors)
+        self.ctfidf_model = _IdentityCtfidf()
+        self.c_tf_idf_ = np.asarray(topic_vectors, dtype=float)
+
+    def get_topics(self) -> dict[int, list[tuple[str, float]]]:
+        """依 c-TF-IDF row 數回傳連續 topic ID。"""
+        return {topic_id: [] for topic_id in range(len(self.c_tf_idf_))}
 
 
 class ClusteringModelContractTests(unittest.TestCase):
@@ -78,6 +121,45 @@ class ClusteringModelContractTests(unittest.TestCase):
         )
 
         self.assertEqual(result, [0.75, 0.25])
+
+    def test_ctfidf_representatives_are_ranked_per_topic_and_limited_to_ten(self) -> None:
+        """每個 topic 應各自依 c-TF-IDF cosine similarity 取前 10 筆。"""
+        documents = [f"topic0-{index}" for index in range(12)] + [
+            f"topic1-{index}" for index in range(12)
+        ]
+        document_vectors = {
+            document: ([index + 1.0, 1.0] if index < 12 else [1.0, index - 11.0])
+            for index, document in enumerate(documents)
+        }
+        topic_model = _TopicModelStub(
+            document_vectors=document_vectors,
+            topic_vectors=[[1.0, 0.0], [0.0, 1.0]],
+        )
+
+        result = rank_ctfidf_representative_documents(
+            topic_model=topic_model,
+            documents=documents,
+            topics=[0] * 12 + [1] * 12,
+        )
+
+        self.assertEqual(result[0], list(range(11, 1, -1)))
+        self.assertEqual(result[1], list(range(23, 13, -1)))
+
+    def test_ctfidf_representatives_keep_distinct_indexes_for_duplicate_text(self) -> None:
+        """重複文字仍須保留不同 corpus index，並以原列順序穩定解決同分。"""
+        documents = ["same independent claim"] * 12
+        topic_model = _TopicModelStub(
+            document_vectors={"same independent claim": [1.0, 0.0]},
+            topic_vectors=[[1.0, 0.0]],
+        )
+
+        result = rank_ctfidf_representative_documents(
+            topic_model=topic_model,
+            documents=documents,
+            topics=[0] * 12,
+        )
+
+        self.assertEqual(result[0], list(range(10)))
 
 if __name__ == "__main__":
     unittest.main()
