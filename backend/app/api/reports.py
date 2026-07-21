@@ -15,6 +15,7 @@ from backend.app.api.jobs import job_to_dict
 from backend.app.db import job_repository
 from backend.app.reports.report_definitions import (
     ALLOWED_FILTER_COLUMNS,
+    DEFAULT_REPORT_NAMES,
     REPORT_DEFINITIONS,
     allowed_filter_columns_for_report,
 )
@@ -26,7 +27,7 @@ router = APIRouter(tags=["reports"])
 class ReportRequest(BaseModel):
     """建立報表產生工作。"""
 
-    report_names: list[str] = Field(min_length=1)
+    report_names: list[str] | None = None
     filters: dict[str, Any] | None = None
     limit: int | None = Field(default=None, ge=1)
     patent_ids: list[int] | None = None
@@ -36,7 +37,8 @@ class ReportRequest(BaseModel):
 @router.post("/reports")
 def create_report(request: ReportRequest) -> dict[str, Any]:
     """建立報表產生工作；未知報表名或篩選欄回 422。"""
-    unknown = sorted(set(request.report_names) - set(REPORT_DEFINITIONS))
+    report_names = request.report_names or list(DEFAULT_REPORT_NAMES)
+    unknown = sorted(set(report_names) - set(REPORT_DEFINITIONS))
     if unknown:
         raise HTTPException(
             status_code=422, detail=f"unknown report_names: {', '.join(unknown)}"
@@ -48,7 +50,7 @@ def create_report(request: ReportRequest) -> dict[str, Any]:
                 status_code=422,
                 detail=f"filters use non-whitelisted columns: {', '.join(bad_columns)}",
             )
-        for report_name in request.report_names:
+        for report_name in report_names:
             definition = REPORT_DEFINITIONS[report_name]
             invalid_for_report = sorted(
                 set(request.filters) - allowed_filter_columns_for_report(definition)
@@ -62,7 +64,7 @@ def create_report(request: ReportRequest) -> dict[str, Any]:
                     ),
                 )
 
-    payload: dict[str, Any] = {"report_names": list(request.report_names)}
+    payload: dict[str, Any] = {"report_names": list(report_names)}
     if request.filters is not None:
         payload["filters"] = request.filters
     if request.limit is not None:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+
+
 import hashlib
 import html
 import json
@@ -11,6 +13,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from backend.app.reports.cluster_analytics import (
+    build_opportunity_matrix,
+    build_pain_point_matrix,
+    build_topic_effect_table,
+)
 from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 from backend.app.reports.report_engine import parse_json_arg, run_report
 
@@ -21,7 +28,7 @@ def _app_layer_connect():
 
     from backend.app.db.connection import get_connection_kwargs
 
-    return psycopg.connect(**get_connection_kwargs(), row_factory=dict_row)
+    return psycopg.connect(**get_connection_kwargs(), row_factory=dict_row, connect_timeout=15)
 
 
 def fetch_analysis_patent_ids(analysis_id: int) -> list[int]:
@@ -48,22 +55,33 @@ def export_type_for(filename: str) -> str:
         return "report_html"
     if lower.endswith(".svg"):
         return "chart_svg"
+
+
     if lower.endswith(".json"):
         return "report_data"
     return "file"
 
 
-def record_exports(analysis_id: int, run_dir: Path, files: list[str], parameters: dict[str, Any]) -> int:
+def record_exports(
+    analysis_id: int,
+    run_dir: Path,
+    files: list[str],
+    parameters: dict[str, Any],
+    file_metadata: dict[str, dict[str, Any]] | None = None,
+) -> int:
     """Write one app_layer.export_runs row per produced file (path + sha256)."""
     from psycopg.types.json import Jsonb
 
     inserted = 0
+    file_metadata = file_metadata or {}
     with _app_layer_connect() as conn:
         with conn.cursor() as cur:
             for filename in files:
                 file_path = run_dir / filename
                 if not file_path.exists():
                     continue
+                file_parameters = dict(parameters)
+                file_parameters["artifact"] = file_metadata.get(filename, {})
                 cur.execute(
                     """
                     INSERT INTO app_layer.export_runs
@@ -75,7 +93,7 @@ def record_exports(analysis_id: int, run_dir: Path, files: list[str], parameters
                         export_type_for(filename),
                         str(file_path),
                         sha256_file(file_path),
-                        Jsonb(parameters),
+                        Jsonb(file_parameters),
                     ),
                 )
                 inserted += 1
@@ -101,6 +119,98 @@ def xml_text(value: Any) -> str:
 
 def write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+
+
+
+def patent_snapshot_metadata(patent_ids: list[int] | None) -> dict[str, Any]:
+    """產生 workspace/analysis 快照 metadata；不把大量專利 ID 重複塞進每列報表。"""
+    if patent_ids is None:
+        return {"scope": "full_database", "patent_ids_count": None, "patent_ids_sha256": None}
+    normalized = [int(value) for value in patent_ids]
+    digest_source = ",".join(str(value) for value in normalized).encode("utf-8")
+    return {
+        "scope": "patent_ids_snapshot",
+        "patent_ids_count": len(normalized),
+        "patent_ids_sha256": hashlib.sha256(digest_source).hexdigest(),
+    }
+
+
+
+
+CHART_FILE_REPORTS: dict[str, list[str]] = {
+    "annual_trend.svg": ["application_trend", "publication_trend"],
+    "jurisdiction_distribution.svg": ["country_distribution"],
+    "family_country_distribution.svg": ["family_country_layout"],
+    "ipc_main_distribution_L4.svg": ["ipc_main_distribution"],
+    "ipc_main_distribution_L5.svg": ["ipc_main_distribution"],
+    "cpc_main_distribution_L4.svg": ["cpc_main_distribution"],
+    "cpc_main_distribution_L5.svg": ["cpc_main_distribution"],
+    "applicant_ranking.svg": ["applicant_ranking"],
+    "owner_ranking.svg": ["owner_ranking"],
+    "recent_assignee_ranking.svg": ["recent_assignee_ranking"],
+    "applicant_country_matrix.svg": ["applicant_country_distribution"],
+    "applicant_year_matrix.svg": ["applicant_year_matrix"],
+    "applicant_year_matrix_more.svg": ["applicant_year_matrix"],
+    "owner_year_matrix.svg": ["owner_year_matrix"],
+    "owner_year_matrix_more.svg": ["owner_year_matrix"],
+    "lifecycle.svg": ["lifecycle"],
+    "application_growth.svg": ["application_trend"],
+    "family_quality.json": ["family_quality_detail"],
+    "opportunity_quadrant.svg": ["cluster_analytics"],
+    "pain_point_quadrant.svg": ["cluster_analytics"],
+    "cluster_topic_table.html": ["cluster_analytics"],
+}
+
+
+def report_names_for_artifact(filename: str) -> list[str]:
+    """推回單一 artifact 對應的 report key。"""
+    # .csv 分支保留：歷史 report_trial manifest 可能還含 .csv 路徑，
+    # 若移除會使這些 manifest 的 artifact 無法對應回正確 report key；
+    # 新版不再輸出 CSV，但保留此分支不影響行為且避免舊 manifest 讀取異常。
+    if filename.endswith(".csv"):
+        return [filename[:-4]]
+    if filename == "report_data.json":
+        return ["all_fetched_reports"]
+    return CHART_FILE_REPORTS.get(filename, [])
+
+
+def build_artifact_manifest(
+    run_dir: Path,
+    files: list[str],
+    *,
+    generated_at: str,
+    version: str,
+    report_names: list[str],
+    filters: dict[str, Any] | None,
+    analysis_id: int | None,
+    patent_ids: list[int] | None,
+) -> dict[str, Any]:
+    """建立 artifact manifest；DB 只需記檔案路徑與 hash，完整追溯留在此 JSON。"""
+    snapshot = patent_snapshot_metadata(patent_ids)
+    base = {
+        "generated_at": generated_at,
+        "version": version,
+        "analysis_id": analysis_id,
+        "filters": filters or None,
+        "report_names": report_names,
+        **snapshot,
+    }
+    artifacts: list[dict[str, Any]] = []
+    for filename in files:
+        path = run_dir / filename
+        if not path.exists():
+            continue
+        artifact_report_names = report_names_for_artifact(filename)
+        artifacts.append({
+            **base,
+            "file": filename,
+            "artifact_type": export_type_for(filename),
+            "report_name": artifact_report_names[0] if len(artifact_report_names) == 1 else None,
+            "report_names": artifact_report_names,
+            "sha256": sha256_file(path),
+        })
+    return {"metadata": base, "artifacts": artifacts}
 
 
 def scale(value: float, old_min: float, old_max: float, new_min: float, new_max: float) -> float:
@@ -189,6 +299,62 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
         svg.append(f'<text x="{left - 12}" y="{y + 20}" text-anchor="end" font-size="13" fill="{COLOR_TEXT}">{label[:42]}</text>')
         svg.append(f'<rect x="{left}" y="{y + 6}" width="{bar_w:.1f}" height="18" rx="2" fill="{color}"/>')
         svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{y + 20}" font-size="13" fill="{COLOR_TEXT}">{value}</text>')
+    svg.append("</svg>")
+    path.write_text("\n".join(svg), encoding="utf-8")
+
+
+def render_segmented_bar_chart(
+    path: Path,
+    title: str,
+    rows: list[dict[str, Any]],
+    label_key: str,
+    total_key: str,
+    segment_key: str,
+    segment_label: str,
+    limit: int = 20,
+) -> None:
+    """分段長條圖：總長代表 total_key，著色區段代表 segment_key。"""
+    data = rows[:limit]
+    width = 980
+    row_h = 50
+    top = 90
+    left = 310
+    right = 40
+    bottom = 34
+    height = top + bottom + max(1, len(data)) * row_h
+    plot_w = width - left - right
+    max_value = max([int(row.get(total_key) or 0) for row in data] + [1])
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        '<rect width="100%" height="100%" fill="white"/>',
+        f'<text x="28" y="36" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<rect x="28" y="56" width="12" height="12" fill="#CBD5E1"/><text x="46" y="67" font-size="13" fill="{COLOR_TEXT}">全部專利</text>',
+        f'<rect x="126" y="56" width="12" height="12" fill="{COLOR_APPLICATION}"/><text x="144" y="67" font-size="13" fill="{COLOR_TEXT}">{xml_text(segment_label)}</text>',
+    ]
+    for index, row in enumerate(data):
+        y = top + index * row_h
+        label = xml_text(row.get(label_key))
+        assignee_names = [
+            name.strip()
+            for name in str(row.get("recent_assignee_display_names") or "").split("; ")
+            if name.strip()
+        ]
+        assignee_note = ""
+        if assignee_names:
+            shown = assignee_names[:3]
+            extra = len(assignee_names) - len(shown)
+            assignee_note = "最新受讓人：" + "；".join(shown) + (f" +{extra}" if extra > 0 else "")
+        total = int(row.get(total_key) or 0)
+        segment = min(int(row.get(segment_key) or 0), total)
+        total_w = scale(total, 0, max_value, 0, plot_w)
+        segment_w = scale(segment, 0, max_value, 0, plot_w)
+        segment_x = left + max(total_w - segment_w, 0)
+        svg.append(f'<text x="{left - 12}" y="{y + 20}" text-anchor="end" font-size="13" fill="{COLOR_TEXT}">{label[:42]}</text>')
+        svg.append(f'<rect class="bar-total" x="{left}" y="{y + 5}" width="{total_w:.1f}" height="20" rx="2" fill="#CBD5E1"/>')
+        svg.append(f'<rect class="bar-segment" x="{segment_x:.1f}" y="{y + 5}" width="{segment_w:.1f}" height="20" rx="2" fill="{COLOR_APPLICATION}"/>')
+        svg.append(f'<text x="{left + total_w + 8:.1f}" y="{y + 20}" font-size="13" fill="{COLOR_TEXT}">{segment} / {total}</text>')
+        if assignee_note:
+            svg.append(f'<text x="{left}" y="{y + 41}" font-size="12" fill="#6B7280">{xml_text(assignee_note[:90])}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -507,6 +673,105 @@ def render_matrix_chart(
     return {"rows_drawn": len(top_rows), "rows_total": len(row_totals), "cols": cols}
 
 
+def year_bubble_matrix_layout(
+    rows: list[dict[str, Any]],
+    row_key: str,
+    year_key: str = "application_year",
+    value_key: str = "patent_count",
+    row_limit: int = 20,
+) -> dict[str, Any]:
+    """年度矩陣泡泡圖版面資料：依公司總量取前 20，缺值視為 0。"""
+    totals: dict[str, int] = {}
+    values: dict[tuple[str, int], int] = {}
+    years: set[int] = set()
+    for row in rows:
+        company = str(row.get(row_key) or "")
+        year_value = row.get(year_key)
+        if not company or year_value is None:
+            continue
+        year = int(year_value)
+        value = int(row.get(value_key) or 0)
+        years.add(year)
+        values[(company, year)] = values.get((company, year), 0) + value
+        totals[company] = totals.get(company, 0) + value
+    top_rows = [name for name, _ in sorted(totals.items(), key=lambda item: (-item[1], item[0]))[:row_limit]]
+    ordered_years = sorted(years)[-25:]
+    max_value = max([values.get((company, year), 0) for company in top_rows for year in ordered_years] + [1])
+    return {"top_rows": top_rows, "years": ordered_years, "values": values, "max_value": max_value, "rows_total": len(totals)}
+
+
+YEAR_BUBBLE_COLOR_BANDS: tuple[tuple[float, str, str], ...] = (
+    (0.25, "#93C5FD", "低"),
+    (0.50, "#14B8A6", "中"),
+    (0.75, "#F59E0B", "高"),
+    (1.00, "#DC2626", "最高"),
+)
+
+
+def year_bubble_color(value: int, max_value: int) -> tuple[str, str]:
+    """依全體前 20 家的共同尺度回傳明顯色階，確保上下兩區可直接比較。"""
+    ratio = value / max(max_value, 1)
+    for upper_bound, color, label in YEAR_BUBBLE_COLOR_BANDS:
+        if ratio <= upper_bound:
+            return color, label
+    return YEAR_BUBBLE_COLOR_BANDS[-1][1], YEAR_BUBBLE_COLOR_BANDS[-1][2]
+
+
+def render_year_bubble_matrix_chart(
+    path: Path,
+    title: str,
+    layout: dict[str, Any],
+    row_names: list[str],
+    *,
+    year_key_label: str = "application_year",
+) -> None:
+    """年度 × 公司泡泡矩陣；0 件不畫泡泡，tooltip 保留公司、年份、件數。"""
+    years: list[int] = layout["years"]
+    values: dict[tuple[str, int], int] = layout["values"]
+    max_value = int(layout["max_value"] or 1)
+    left, top, cell_w, row_h = 340, 125, 82, 56
+    width = left + max(1, len(years)) * cell_w + 34
+    height = top + max(1, len(row_names)) * row_h + 34
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
+        '<rect width="100%" height="100%" fill="white"/>',
+        f'<text x="16" y="28" font-size="18" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text x="16" y="50" font-size="12" fill="#6B7280">X = {xml_text(year_key_label)}, bubble = patent_count</text>',
+        '<text x="16" y="90" font-size="12" font-weight="600" fill="#374151">件數色階</text>',
+    ]
+    legend_x = 82
+    for _upper_bound, color, label in YEAR_BUBBLE_COLOR_BANDS:
+        parts.append(f'<circle cx="{legend_x}" cy="86" r="9" fill="{color}"/>')
+        parts.append(f'<text x="{legend_x + 10}" y="90" font-size="11" fill="#4B5563">{label}</text>')
+        legend_x += 54
+    for col_index, year in enumerate(years):
+        x = left + col_index * cell_w + cell_w / 2
+        parts.append(f'<text x="{x:.1f}" y="{top - 14}" font-size="17" text-anchor="middle" fill="{COLOR_TEXT}">{year}</text>')
+    for row_index, company in enumerate(row_names):
+        y = top + row_index * row_h
+        display = company if len(company) <= 20 else company[:19] + "…"
+        parts.append(f'<text x="{left - 10}" y="{y + 20}" font-size="17" text-anchor="end" fill="{COLOR_TEXT}">{xml_text(display)}</text>')
+        for col_index, year in enumerate(years):
+            value = values.get((company, year), 0)
+            if value <= 0:
+                continue
+            x = left + col_index * cell_w + cell_w / 2
+            radius = 9 + 19 * math.sqrt(value / max_value)
+            fill, color_band = year_bubble_color(value, max_value)
+            value_font_size = 12 if value < 10 else 11 if value < 100 else 9 if value < 1000 else 8
+            parts.append(
+                f'<circle cx="{x:.1f}" cy="{y + 16:.1f}" r="{radius:.1f}" fill="{fill}" '
+                f'data-value-band="{color_band}" stroke="#374151" stroke-width="1.1">'
+                f'<title>{xml_text(company)} / {year} / {value}</title></circle>'
+            )
+            parts.append(
+                f'<text x="{x:.1f}" y="{y + 20:.1f}" font-size="{value_font_size}" font-weight="700" '
+                f'text-anchor="middle" fill="#FFFFFF" pointer-events="none">{value}</text>'
+            )
+    parts.append("</svg>")
+    path.write_text("\n".join(parts), encoding="utf-8")
+
+
 def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -> None:
     """生命週期軌跡圖：X=申請人家數、Y=件數，依年份連線（技術生命週期判讀用）。"""
     width, height = 980, 620
@@ -563,21 +828,160 @@ def render_chart_embed(file: str) -> str:
     return f'<a class="chart-fallback" href="{xml_text(file)}">{xml_text(file)}</a>'
 
 
-def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> None:
-    """Generic report index with per-section level/variant toggles.
+DATA_COLUMN_LABELS: dict[str, str] = {
+    "patent_count": "專利件數",
+    "applicant_count": "申請人家數",
+    "application_year": "申請年份",
+    "publication_year": "公開年份",
+    "applicant_display_name": "申請人",
+    "current_assignee_display_name": "專利權人",
+    "recent_assignee_display_name": "最新受讓人",
+    "inventor_count": "發明人數",
+    "family_size": "專利家族規模",
+    "ipc_main_group_symbol": "IPC 主群組",
+    "cpc_main_group_symbol": "CPC 主群組",
+    "jurisdiction": "專利局",
+    "country": "國家",
+    "applicant_country": "申請人國籍",
+    "pub_date": "公開日",
+    "topic_code": "主題代碼",
+    "label": "主題標籤",
+    "source_field": "來源欄位",
+    "top_applicants": "前三大申請人",
+    "leading_applicant_count": "龍頭涉入(家)",
+    "leading_applicants_involved": "龍頭涉入名單",
+    "doc_count": "專利件數",
+    "applicant_names": "申請人",
+    "top3_applicants": "前三大申請人",
+    "patent_count_median": "專利件數中位數",
+    "applicant_count_median": "申請人家數中位數",
+}
 
-    Each section: {"title", "variants": [{"label", "file"}, ...], "links"?, "note"?}.
-    A section with more than one variant renders toggle buttons; the first
-    variant shows by default and buttons swap the visible chart. This layout is
-    chart-agnostic, so any report with multiple variants (IPC/CPC 4/5 階, or
-    future multi-variant charts) reuses the same toggle behaviour.
+
+def _read_narratives(run_dir: Path, version: str) -> dict[str, Any]:
+    """Read narratives.json; return dict keyed by report name or empty on failure."""
+    nf = run_dir / "narratives.json"
+    if not nf.exists():
+        return {}
+    import json
+    try:
+        narr = json.loads(nf.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if narr.get("based_on_version") != version:
+        return {"_expired": True}
+    return narr.get("reports", {})
+
+
+# 數據卡顯示時排除的欄（rows 本身保留該鍵供分段/入庫；只影響顯示）。
+# cluster_topic_table：source_field 原始欄名不出現在使用者介面（2026-07-21 定案，
+# 技術/功效已由統計表分段標題表達）。
+DATA_TABLE_EXCLUDED_COLUMNS: dict[str, tuple[str, ...]] = {
+    "cluster_topic_table": ("source_field",),
+}
+
+# 總計列可加總的欄（加總有意義＝件數類）；其餘一律「—」——applicant_count 跨主題
+# distinct 不可加、龍頭涉入(家) 是各主題自己的 distinct 數、年份加總無意義（2026-07-21）。
+DATA_TABLE_SUMMABLE_COLUMNS = ("patent_count", "doc_count", "recent_assignee_count")
+
+
+def _humanize_cell(value: Any) -> str:
+    """數據卡儲存格人類化（2026-07-21 使用者回饋：嚴禁 raw repr）。
+
+    list[dict 含 name/count]→「名稱 數字」分號連接；list[str]→頓號連接；
+    空 list／None／空 dict→「—」；dict→「key: value」逗號連接（保底）。
+    """
+    if value is None or (isinstance(value, (list, dict)) and not value):
+        return "—"
+    if isinstance(value, list):
+        if all(isinstance(item, dict) for item in value):
+            if all("name" in item for item in value):
+                return "；".join(
+                    f'{item["name"]} {item["count"]}' if "count" in item else str(item["name"])
+                    for item in value
+                )
+            return "；".join(_humanize_cell(item) for item in value)
+        return "、".join(str(item) for item in value)
+    if isinstance(value, dict):
+        return ", ".join(f"{k}: {v}" for k, v in value.items())
+    return str(value)
+
+
+def _data_table_html(rows: list[dict[str, Any]], report_name: str) -> str:
+    """數據區：最多 20 筆＋總計列；不提供全量展開（2026-07-21 使用者補充——
+    不讓人看百筆數據），超出只註記共幾列；完整 rows 由 DB／report_data.json 保存。"""
+    if not rows:
+        return '<p class="data-empty">無資料</p>'
+    excluded = DATA_TABLE_EXCLUDED_COLUMNS.get(report_name, ())
+    columns = [c for c in rows[0].keys() if c not in excluded]
+    header = "".join(f"<th>{xml_text(DATA_COLUMN_LABELS.get(c, c))}</th>" for c in columns)
+    body_rows = []
+    for r in rows[:20]:
+        cells = "".join(f"<td>{xml_text(_humanize_cell(r.get(c, '')))}</td>" for c in columns)
+        body_rows.append(f"<tr>{cells}</tr>")
+    # Totals row（class 放 td：列本身維持素 <tr>，與一般資料列同構）；
+    # 只對加總有意義的欄出值，其餘「—」避免誤導。
+    total_cells = []
+    for c in columns:
+        if c in DATA_TABLE_SUMMABLE_COLUMNS and any(str(r.get(c, "")).isdigit() for r in rows):
+            total = sum(int(r.get(c, 0)) for r in rows if str(r.get(c, "")).isdigit())
+            total_cells.append(f'<td class="totals-cell"><strong>{total}</strong></td>')
+        else:
+            total_cells.append('<td class="totals-cell"><strong>—</strong></td>')
+    body_rows.append(f"<tr>{''.join(total_cells)}</tr>")
+    table = f'<table><thead><tr>{header}</tr></thead><tbody>{"".join(body_rows)}</tbody></table>'
+    if len(rows) > 20:
+        # 2026-07-21 定案修正：排名類「保存」也只留前 20（長尾不落庫），完整可由引擎重算
+        table += f'<p class="data-note">顯示前 20 列｜總列數 {len(rows)}（入庫同前 20，完整可重算）</p>'
+    return f'<div class="data-table-wrap">{table}</div>'
+
+
+def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> None:
+    """Card-style report index with data table, chart, and explanation.
+
+    Sections order is fixed by SECTION_SPECS. Each card shows:
+    1. Data table (first 20 rows + totals, expandable)
+    2. Chart (SVG embed)
+    3. Explanation (from narratives.json, or placeholder)
     """
     meta = meta or {}
+    run_dir = path.parent
+    version = run_dir.name if run_dir.name else ""
+    narratives = _read_narratives(run_dir, version)
+    narr_expired = narratives.pop("_expired", False)
+
     blocks: list[str] = []
     for index, section in enumerate(sections):
         variants = section.get("variants", [])
         if not variants:
             continue
+        title = section.get("title", "")
+        report_name = section.get("report_key", variants[0]["file"].replace(".svg", "").replace(".html", ""))
+
+        # 1. Data table
+        report_data_json = run_dir / "report_data.json"
+        rows = []
+        if report_data_json.exists():
+            import json
+            try:
+                rd = json.loads(report_data_json.read_text(encoding="utf-8"))
+                report_rows = rd.get("reports", {}).get(report_name, {}).get("rows", [])
+                if not report_rows:
+                    report_rows = rd.get("family_reports", {}).get(report_name, {}).get("rows", [])
+                if not report_rows:
+                    # 第三 fallback：chart_rows（如 cluster_topic_table 這類非報表引擎
+                    # 產出的列）；chart_rows 值可能是 dict（矩陣中繼資料），只收 list。
+                    chart_rows_entry = rd.get("chart_rows", {}).get(report_name, [])
+                    if isinstance(chart_rows_entry, list):
+                        report_rows = chart_rows_entry
+                rows = report_rows
+            except (json.JSONDecodeError, OSError):
+                rows = []
+
+        data_html = _data_table_html(rows, report_name)
+
+        # 2. Chart panels（多 variant 出切換鈕；2026-07-21 三次修正：IPC/CPC 恢復
+        # L4/L5 toggle，stacked 佈局取消，全部 section 回歸同一 toggle 行為）
         group_id = f"sec{index}"
         buttons = ""
         if len(variants) > 1:
@@ -592,7 +996,30 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             f'{render_chart_embed(variant["file"])}</div>'
             for v_i, variant in enumerate(variants)
         )
-        note = f'<p class="section-note">{xml_text(section["note"])}</p>' if section.get("note") else ""
+        more_variants = section.get("more_variants", [])
+        more_html = ""
+        if more_variants:
+            more_panels = "".join(
+                f'<div class="chart-panel" id="{group_id}-more-{v_i}">{render_chart_embed(variant["file"])}</div>'
+                for v_i, variant in enumerate(more_variants)
+            )
+            more_label = xml_text(section.get("more_label", "＋查看全部（第 11～20 名）"))
+            more_html = (
+                f'<button type="button" class="expand-btn" data-expand-target="{group_id}-more" '
+                f'data-label="{more_label}">{more_label}</button>'
+                f'<div class="chart-more" id="{group_id}-more" hidden>{more_panels}</div>'
+            )
+
+        # 3. Explanation
+        if narr_expired:
+            expl_html = '<div class="explanation expired">⚠️ 解讀版本過期</div>'
+        else:
+            entry = narratives.get(report_name, {})
+            if entry and entry.get("text"):
+                expl_html = f'<div class="explanation"><p>{xml_text(entry["text"])}</p></div>'
+            else:
+                expl_html = '<div class="explanation pending">⏳ 待解讀</div>'
+
         links = section.get("links", [])
         link_html = ""
         if links:
@@ -601,10 +1028,15 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
                 for link in links
             )
             link_html = f'<div class="section-links">{items}</div>'
+        note = f'<p class="section-note">{xml_text(section["note"])}</p>' if section.get("note") else ""
+
         blocks.append(
             f'<section class="report-section">'
-            f'<div class="section-head"><h2>{xml_text(section.get("title", ""))}</h2>{link_html}</div>'
-            f'{buttons}{note}<div class="chart-stage">{panels}</div>'
+            f'<div class="section-head"><h2>{xml_text(title)}</h2>{link_html}</div>'
+            f'{note}'
+            f'<div class="card-data">{data_html}</div>'
+            f'{buttons}<div class="chart-stage">{panels}{more_html}</div>'
+            f'<div class="card-explanation">{expl_html}</div>'
             f'</section>'
         )
 
@@ -630,10 +1062,19 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     .section-link {{ color: #2563EB; text-decoration: none; margin-left: 12px; }}
     .section-link:hover {{ text-decoration: underline; }}
     .section-note {{ color: #6B7280; font-size: 13px; margin: 0 0 12px; }}
+    .data-table-wrap {{ overflow-x: auto; margin: 0 0 14px; }}
+    .data-table-wrap table {{ border-collapse: collapse; font-size: 12px; width: 100%; }}
+    .data-table-wrap th {{ background: #F1F5F9; padding: 6px 8px; text-align: left; font-weight: 600; white-space: nowrap; border: 1px solid #E2E8F0; }}
+    .data-table-wrap td {{ padding: 4px 8px; border: 1px solid #F1F5F9; white-space: nowrap; }}
+    .data-table-wrap td.totals-cell {{ border-top: 2px solid #CBD5E1; font-weight: 600; background: #F8FAFC; }}
+    .data-table-wrap details {{ margin-top: 8px; }}
+    .data-table-wrap summary {{ cursor: pointer; font-size: 13px; color: #2563EB; }}
     .toggle-bar {{ display: inline-flex; gap: 4px; padding: 4px; background: #F1F5F9; border-radius: 9px; margin: 0 0 14px; }}
     .toggle-btn {{ border: none; background: transparent; color: #334155; font-size: 14px; font-weight: 600; padding: 7px 16px; border-radius: 7px; cursor: pointer; }}
     .toggle-btn:hover {{ background: #E2E8F0; }}
     .toggle-btn.active {{ background: #2563EB; color: #FFFFFF; }}
+    .expand-btn {{ border: 1px solid #CBD5E1; background: #FFFFFF; color: #2563EB; font-size: 14px; font-weight: 600; padding: 8px 14px; border-radius: 8px; cursor: pointer; margin: 12px 0; }}
+    .expand-btn:hover {{ background: #EFF6FF; }}
     .chart-stage {{ width: 100%; overflow-x: auto; }}
     .chart-media {{ max-width: 100%; height: auto; display: block; }}
     .chart-frame {{ width: 100%; height: 620px; border: 1px solid #E5E7EB; border-radius: 8px; }}
@@ -657,6 +1098,15 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
         }});
       }});
     }});
+    document.querySelectorAll('.expand-btn').forEach(function (btn) {{
+      btn.addEventListener('click', function () {{
+        var target = document.getElementById(btn.getAttribute('data-expand-target'));
+        if (!target) return;
+        var show = target.hidden;
+        target.hidden = !show;
+        btn.textContent = show ? '－收合' : btn.getAttribute('data-label');
+      }});
+    }});
   </script>
 </body>
 </html>
@@ -675,7 +1125,78 @@ CLASSIFICATION_LEVEL_LABELS = {4: "Level 4 (Subclass)", 5: "Level 5 (Main Group)
 # ---------------------------------------------------------------------------
 
 # 排名類報表出圖時套 ranking_limit（其餘報表用各自定義的預設列數）。
-RANKING_LIMIT_REPORTS = ("applicant_ranking", "owner_ranking")
+RANKING_LIMIT_REPORTS = ("applicant_ranking", "owner_ranking", "recent_assignee_ranking")
+
+# ---------------------------------------------------------------------------
+# 入庫截取（2026-07-21 定案修正）：排名類「保存」也只留前 20、年度序列只留最新
+# 25 年——長尾不落庫（report_data.json／analysis_outputs 不膨脹），完整排名／
+# 序列可隨時由引擎自 raw/core 重算；聚合摘要（總計、中位數、rows_total）照存。
+# 例外：正式主題相關數據（cluster_topic_table 等）不截。
+# ---------------------------------------------------------------------------
+PERSIST_RANKING_ROWS = 20   # 排名類入庫列數上限
+PERSIST_YEAR_SPAN = 25      # 年度序列入庫年份數上限（取最新）
+
+# 排名類報表：入庫 rows 截前 20（含 IPC/CPC 分布與公司×國家交叉）
+PERSIST_TOP20_REPORTS = (
+    "applicant_ranking", "owner_ranking", "recent_assignee_ranking",
+    "applicant_country_distribution", "ipc_main_distribution", "cpc_main_distribution",
+)
+# 年度序列報表：入庫只留最新 25 年（value＝該報表的年份欄位名）
+PERSIST_YEAR_KEYS = {
+    "application_trend": "application_year",
+    "publication_trend": "publication_year",
+    "applicant_year_matrix": "application_year",
+    "owner_year_matrix": "application_year",
+}
+# chart_rows 中需截前 20 的鍵（IPC/CPC 各階聚合列）
+_CHART_ROWS_TOP20_PREFIXES = ("ipc_main_distribution_L", "cpc_main_distribution_L")
+
+
+def _latest_years_rows(rows: list[dict[str, Any]], year_key: str, span: int = PERSIST_YEAR_SPAN) -> list[dict[str, Any]]:
+    """保留最新 span 個年份的 rows（年度序列入庫截取用；年份缺值列一併剔除）。"""
+    years = sorted({int(r[year_key]) for r in rows if r.get(year_key) is not None})
+    keep = set(years[-span:])
+    return [r for r in rows if r.get(year_key) is not None and int(r[year_key]) in keep]
+
+
+def truncate_rows_for_persistence(
+    reports: dict[str, dict[str, Any]],
+    chart_rows: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any], dict[str, int]]:
+    """report_data.json 落檔前的入庫截取；不改動輸入（圖表已渲染完，只影響保存）。
+
+    回傳 (reports_out, chart_rows_out, chart_rows_total)：
+    - 排名類報表 rows[:20]、年度序列報表留最新 25 年，皆附 rows_total（截取前總數）。
+    - chart_rows：IPC/CPC 各階前 20、年增率序列最新 25 年，截取前總數收進 chart_rows_total；
+      主題類（cluster_topic_table／機會板／痛點板）與其餘鍵原樣保存。
+    """
+    reports_out: dict[str, dict[str, Any]] = {}
+    for name, report in reports.items():
+        rows = report.get("rows", [])
+        if name in PERSIST_TOP20_REPORTS:
+            reports_out[name] = {**report, "rows": rows[:PERSIST_RANKING_ROWS], "rows_total": len(rows)}
+        elif name in PERSIST_YEAR_KEYS:
+            reports_out[name] = {
+                **report,
+                "rows": _latest_years_rows(rows, PERSIST_YEAR_KEYS[name]),
+                "rows_total": len(rows),
+            }
+        else:
+            reports_out[name] = report
+
+    chart_rows_out: dict[str, Any] = {}
+    chart_rows_total: dict[str, int] = {}
+    for key, value in chart_rows.items():
+        if isinstance(value, list) and key.startswith(_CHART_ROWS_TOP20_PREFIXES):
+            chart_rows_total[key] = len(value)
+            chart_rows_out[key] = value[:PERSIST_RANKING_ROWS]
+        elif key == "application_growth" and isinstance(value, list):
+            # 年增率序列的年份鍵為 "year"（compute_yoy_growth 輸出形狀）
+            chart_rows_total[key] = len(value)
+            chart_rows_out[key] = _latest_years_rows(value, "year")
+        else:
+            chart_rows_out[key] = value
+    return reports_out, chart_rows_out, chart_rows_total
 
 
 @dataclass
@@ -696,6 +1217,9 @@ class ChartContext:
     sections: list[dict[str, Any]] = field(default_factory=list)
     chart_rows: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)  # map / family_map（有渲染該 section 才有）
+    # 分群分析資料（由呼叫端注入，不含 DB SQL）。
+    # 結構：{topics, assignments, normalized_applicants, pain_data?, top_applicants_ws?}
+    cluster_data: dict[str, Any] | None = None
     _report_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def report(self, name: str) -> dict[str, Any]:
@@ -727,15 +1251,23 @@ def _build_trend_section(ctx: ChartContext) -> None:
 
 
 def _build_country_map_section(ctx: ChartContext) -> None:
-    """專利受理局分布：choropleth 地圖＋泡泡圖。"""
+    """專利受理局分布：第一版改用長條圖，口徑仍走 country_code。"""
     report = ctx.report("country_distribution")
-    map_result = render_jurisdiction_map(ctx.run_dir, report["rows"], title=report["label_zh"])
-    ctx.sections.append(map_result["section"])
-    ctx.meta["map"] = map_result["meta"]
+    render_bar_chart(
+        ctx.run_dir / "jurisdiction_distribution.svg",
+        report["label_zh"],
+        report["rows"],
+        "country_code",
+    )
+    ctx.sections.append({
+        "title": report["label_zh"],
+        "variants": [{"label": "Bar", "file": "jurisdiction_distribution.svg"}],
+        "note": "專利受理局分布以 country_code group by，與全庫或 workspace patent_ids 快照共用同一報表定義。",
+    })
 
 
 def _build_family_layout_section(ctx: ChartContext) -> None:
-    """國家佈局（現有保護口徑）：家族×國家報表。
+    """國家佈局（現有保護口徑）：家族×國家報表，第一版用長條圖。
 
     filters/快照經引擎轉譯成「選中專利所屬家族」的家族集合，佈局計入家族
     全體成員；不帶篩選＝全庫。
@@ -756,23 +1288,25 @@ def _build_family_layout_section(ctx: ChartContext) -> None:
     ]
     if ctx.analysis_id is not None or ctx.filters:
         family_notes.append("家族集合依篩選／快照圈定；佈局計入家族全體成員，可能含篩選外的國家。")
-    family_map_result = render_jurisdiction_map(
-        ctx.run_dir,
+    render_bar_chart(
+        ctx.run_dir / "family_country_distribution.svg",
+        family_report["label_zh"],
         family_report["rows"],
-        basename="family_country_map",
-        bubble_filename="family_country_bubble.svg",
-        title=family_report["label_zh"],
-        extra_notes=family_notes,
+        "country_code",
     )
-    ctx.sections.append(family_map_result["section"])
-    ctx.sections[-1].setdefault("links", []).append({"label": "家族品質明細 JSON", "file": "family_quality.json"})
+    ctx.sections.append({
+        "title": family_report["label_zh"],
+        "variants": [{"label": "Bar", "file": "family_country_distribution.svg"}],
+        "links": [{"label": "家族品質明細 JSON", "file": "family_quality.json"}],
+        "note": " ".join(family_notes),
+    })
     write_json(ctx.run_dir / "family_quality.json", {"report": quality_report["report_name"], "rows": quality_rows})
-    ctx.meta["family_map"] = family_map_result["meta"]
 
 def _build_classification_section(
     ctx: ChartContext, report_key: str, source_column: str, levels: tuple[int, ...]
 ) -> None:
-    """IPC/CPC 分布共用：每個階層一個 variant（4 階=subclass、5 階=main group）。"""
+    """IPC/CPC 分布共用：每階一個 variant，L4/L5 切換鈕對照（2026-07-21 三次修正定版——
+    兩階對照是核心價值；「不收合」只指不用查看全部式展開鈕，不禁 toggle）；每階各截前 20。"""
     report = ctx.report(report_key)
     variants: list[dict[str, str]] = []
     for level in levels:
@@ -781,9 +1315,19 @@ def _build_classification_section(
         ctx.chart_rows[chart_key] = rows
         filename = f"{chart_key}.svg"
         level_label = CLASSIFICATION_LEVEL_LABELS.get(level, f"Level {level}")
-        render_bar_chart(ctx.run_dir / filename, f'{report["label_zh"]} - {level_label}', rows, source_column)
+        # 排名全域規則＝前 20 名（render_bar_chart 預設 limit=20）
+        render_bar_chart(
+            ctx.run_dir / filename,
+            f'{report["label_zh"]} - {level_label}',
+            rows,
+            source_column,
+        )
         variants.append({"label": f"{level} 階 · {level_label.split('(')[-1].rstrip(')')}", "file": filename})
-    ctx.sections.append({"title": report["label_zh"], "variants": variants, "note": "4 階=subclass，5 階=main group；可用切換鈕比較。"})
+    ctx.sections.append({
+        "title": report["label_zh"],
+        "variants": variants,
+        "note": "4 階=subclass 總覽，5 階=main group 細分；可用切換鈕對照，每階各取前 20。",
+    })
 
 
 def _build_ipc_section(ctx: ChartContext) -> None:
@@ -796,14 +1340,100 @@ def _build_cpc_section(ctx: ChartContext) -> None:
 
 def _build_applicant_ranking_section(ctx: ChartContext) -> None:
     report = ctx.report("applicant_ranking")
-    render_bar_chart(ctx.run_dir / "applicant_ranking.svg", report["label_zh"], report["rows"], "applicant_display_name")
-    ctx.sections.append({"title": report["label_zh"], "variants": [{"label": "Applicants", "file": "applicant_ranking.svg"}]})
+    render_segmented_bar_chart(
+        ctx.run_dir / "applicant_ranking.svg",
+        report["label_zh"],
+        report["rows"],
+        "applicant_display_name",
+        total_key="patent_count",
+        segment_key="recent_assignee_count",
+        segment_label="有最新受讓人",
+    )
+    ctx.sections.append({
+        "title": report["label_zh"],
+        "variants": [{"label": "Applicants", "file": "applicant_ranking.svg"}],
+        "note": "總長＝申請人全部專利；藍色區段＝其中 recent_assignee_display_name 非空的專利。CSV/JSON 保留受讓人公司明細欄。",
+    })
 
 
 def _build_owner_ranking_section(ctx: ChartContext) -> None:
     report = ctx.report("owner_ranking")
     render_bar_chart(ctx.run_dir / "owner_ranking.svg", report["label_zh"], report["rows"], "current_assignee_display_name")
     ctx.sections.append({"title": report["label_zh"], "variants": [{"label": "Assignees", "file": "owner_ranking.svg"}]})
+
+
+def _build_recent_assignee_ranking_section(ctx: ChartContext) -> None:
+    """最新受讓人公司排名，受讓人公司名稱必須直接出現在圖表上。"""
+    report = ctx.report("recent_assignee_ranking")
+    render_bar_chart(
+        ctx.run_dir / "recent_assignee_ranking.svg",
+        report["label_zh"],
+        report["rows"],
+        "recent_assignee_display_name",
+    )
+    ctx.sections.append({
+        "title": report["label_zh"],
+        "variants": [{"label": "Recent assignees", "file": "recent_assignee_ranking.svg"}],
+        "note": "只統計 recent_assignee_display_name 非空的專利；原申請人與原始欄位值不改寫。",
+    })
+
+
+def _build_applicant_year_matrix_section(ctx: ChartContext) -> None:
+    """申請人 × 申請年份泡泡矩陣。"""
+    report = ctx.report("applicant_year_matrix")
+    layout = year_bubble_matrix_layout(report["rows"], "applicant_display_name")
+    top_rows = layout["top_rows"]
+    render_year_bubble_matrix_chart(
+        ctx.run_dir / "applicant_year_matrix.svg",
+        report["label_zh"],
+        layout,
+        top_rows[:10],
+    )
+    more_variants = []
+    if len(top_rows) > 10:
+        render_year_bubble_matrix_chart(
+            ctx.run_dir / "applicant_year_matrix_more.svg",
+            f'{report["label_zh"]}（第 11～20 名）',
+            layout,
+            top_rows[10:20],
+        )
+        more_variants.append({"label": "11-20", "file": "applicant_year_matrix_more.svg"})
+    ctx.sections.append({
+        "title": report["label_zh"],
+        "variants": [{"label": "Top 10", "file": "applicant_year_matrix.svg"}],
+        "more_variants": more_variants,
+        "more_label": "＋查看全部（第 11～20 名）",
+        "note": f"縱軸為申請人公司，橫軸為申請年份，泡泡大小＝patent_count；依公司跨年度總量排序，預設顯示前 {min(10, len(top_rows))} / {layout['rows_total']} 家。CSV/JSON 保留完整 rows。",
+    })
+
+
+def _build_owner_year_matrix_section(ctx: ChartContext) -> None:
+    """專利權人 × 申請年份泡泡矩陣。"""
+    report = ctx.report("owner_year_matrix")
+    layout = year_bubble_matrix_layout(report["rows"], "current_assignee_display_name")
+    top_rows = layout["top_rows"]
+    render_year_bubble_matrix_chart(
+        ctx.run_dir / "owner_year_matrix.svg",
+        report["label_zh"],
+        layout,
+        top_rows[:10],
+    )
+    more_variants = []
+    if len(top_rows) > 10:
+        render_year_bubble_matrix_chart(
+            ctx.run_dir / "owner_year_matrix_more.svg",
+            f'{report["label_zh"]}（第 11～20 名）',
+            layout,
+            top_rows[10:20],
+        )
+        more_variants.append({"label": "11-20", "file": "owner_year_matrix_more.svg"})
+    ctx.sections.append({
+        "title": report["label_zh"],
+        "variants": [{"label": "Top 10", "file": "owner_year_matrix.svg"}],
+        "more_variants": more_variants,
+        "more_label": "＋查看全部（第 11～20 名）",
+        "note": f"縱軸為專利權人公司，橫軸為申請年份，泡泡大小＝patent_count；依公司跨年度總量排序，預設顯示前 {min(10, len(top_rows))} / {layout['rows_total']} 家。CSV/JSON 保留完整 rows。",
+    })
 
 
 def _build_applicant_country_section(ctx: ChartContext) -> None:
@@ -832,57 +1462,6 @@ def _build_applicant_country_section(ctx: ChartContext) -> None:
     })
 
 
-def _build_top_cited_section(ctx: ChartContext) -> None:
-    """高被引用專利排名：detail rows 先組顯示標籤（號碼＋申請人）再畫長條。"""
-    report = ctx.report("top_cited_patents")
-    cited_rows = [
-        {
-            **row,
-            "cite_label": f'{row.get("授權公告號") or row.get("未審查的公開號(轉換後)") or row["patent_id"]}'
-                          f'（{str(row.get("applicant_display_name") or "?")[:14]}）',
-        }
-        for row in report["rows"]
-    ]
-    render_bar_chart(
-        ctx.run_dir / "top_cited_patents.svg",
-        report["label_zh"],
-        cited_rows,
-        "cite_label",
-        value_key="(F1)引用文獻數",
-    )
-    ctx.sections.append({
-        "title": report["label_zh"],
-        "variants": [{"label": "Top Cited", "file": "top_cited_patents.svg"}],
-        "note": "被引用數（F1）是資料下載時點的快照；無引用欄的批次（精簡匯出）不在排名內。",
-    })
-
-
-def _build_rd_energy_section(ctx: ChartContext) -> None:
-    """企業研發能量氣泡圖：cited_rows=0 代表整批無引用資料（精簡匯出），不畫進圖、在 note 現形。"""
-    report = ctx.report("company_rd_energy")
-    energy_rows = report["rows"]
-    energy_plot = [r for r in energy_rows if int(r.get("cited_rows") or 0) > 0]
-    energy_skipped = [r for r in energy_rows if int(r.get("cited_rows") or 0) == 0]
-    render_bubble_chart(
-        ctx.run_dir / "company_rd_energy.svg",
-        report["label_zh"],
-        energy_plot,
-        x_key="cited_total",
-        y_key="patent_count",
-        size_key="inventor_total",
-        label_key="applicant_display_name",
-    )
-    energy_note = "X＝被引用總數（下載時點快照）、Y＝申請量、泡泡＝發明人數合計。"
-    if energy_skipped:
-        skipped_names = "、".join(str(r["applicant_display_name"])[:20] for r in energy_skipped[:5])
-        energy_note += f" 無引用資料（精簡匯出批）未入圖 {len(energy_skipped)} 家：{skipped_names}{'…' if len(energy_skipped) > 5 else ''}。"
-    ctx.sections.append({
-        "title": report["label_zh"],
-        "variants": [{"label": "Bubble", "file": "company_rd_energy.svg"}],
-        "note": energy_note,
-    })
-
-
 def _build_lifecycle_section(ctx: ChartContext) -> None:
     """生命週期軌跡圖：年度 × 申請人家數 vs 件數。"""
     report = ctx.report("lifecycle")
@@ -908,6 +1487,510 @@ def _build_growth_section(ctx: ChartContext) -> None:
     ctx.chart_rows["application_growth"] = growth_rows
 
 
+# 主題來源段名／檔名後綴（2026-07-21 定案：技術、功效不混；原始欄名不進使用者介面）
+SOURCE_SEGMENT_LABELS = {"wips_independent_claims": "技術主題", "effect_summary": "功效分類"}
+SOURCE_SEGMENT_SLUGS = {"wips_independent_claims": "tech", "effect_summary": "effect"}
+
+
+def _source_segments(rows: list[dict[str, Any]]) -> list[tuple[str, str, list[dict[str, Any]]]]:
+    """依 source_field 分段（技術先、功效後、未知來源殿後），回傳 [(source_field, 段名, rows)]。"""
+    order = {"wips_independent_claims": 0, "effect_summary": 1}
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        groups.setdefault(str(r.get("source_field", "")), []).append(r)
+    return [
+        (sf, SOURCE_SEGMENT_LABELS.get(sf, "其他分類"), members)
+        for sf, members in sorted(groups.items(), key=lambda kv: (order.get(kv[0], 9), kv[0]))
+    ]
+
+
+def render_cluster_topic_table_html(
+    path: Path,
+    title: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    """主題／功效統計表：依 source_field 分段各自一張表（技術、功效不混；
+    Source Field 欄不顯示，段標題已表達來源）。只有一種來源時只出現該段。"""
+    parts = [
+        '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">',
+        '<style>',
+        'body{font-family:"Microsoft JhengHei","Segoe UI",Arial,sans-serif;margin:16px;color:#111827}',
+        'table{border-collapse:collapse;width:100%;font-size:13px;margin:0 0 18px}',
+        'th,td{text-align:left;padding:6px 10px;border-bottom:1px solid #E5E7EB}',
+        'th{background:#F1F5F9;font-weight:600;position:sticky;top:0}',
+        'tr:hover{background:#F8FAFC}',
+        'h3{font-size:15px;margin:14px 0 8px}',
+        '.num{text-align:right;font-variant-numeric:tabular-nums}',
+        '</style></head><body>',
+        f'<h2 style="font-size:18px;margin:0 0 12px">{xml_text(title)}</h2>',
+    ]
+    header = (
+        '<table><thead><tr>'
+        '<th>Topic Code</th><th>Label</th>'
+        '<th class="num">專利件數</th><th class="num">申請人家數</th>'
+        '<th class="num">龍頭涉入(家)</th>'
+        '<th>前三大申請人</th>'
+        '</tr></thead><tbody>'
+    )
+    for _sf, segment_label, seg_rows in _source_segments(rows):
+        parts.append(f'<h3>{xml_text(segment_label)}</h3>')
+        parts.append(header)
+        for r in sorted(seg_rows, key=lambda item: -item["patent_count"]):
+            top3_str = "；".join(
+                f'{a["name"]} ({a["count"]})' for a in (r.get("top_applicants") or [])
+            )
+            parts.append(
+                f'<tr>'
+                f'<td>{xml_text(r["topic_code"])}</td>'
+                f'<td>{xml_text(r["label"])}</td>'
+                f'<td class="num">{r["patent_count"]}</td>'
+                f'<td class="num">{r.get("applicant_count", 0)}</td>'
+                f'<td class="num">{r.get("leading_applicant_count", 0)}</td>'
+                f'<td>{xml_text(top3_str)}</td>'
+                f'</tr>'
+            )
+        parts.append("</tbody></table>")
+    parts.append("</body></html>")
+    path.write_text("\n".join(parts), encoding="utf-8")
+
+
+def _qlabel(px: float, py: float, p_med: float, a_med: float) -> tuple[str, str]:
+    """Return (battle_label, action_tip) for opportunity quadrant."""
+    if px >= p_med and py >= a_med:
+        return "必守核心戰場", "迴避設計"
+    if px < p_med and py >= a_med:
+        return "新興戰場（競爭者已進場）", "值得追"
+    if px < p_med and py < a_med:
+        return "待釐清領域", "需使用者痛點調查"
+    return "單一玩家壟斷型", "注意依賴風險"
+
+
+# ---------------------------------------------------------------------------
+# 板狀象限圖（2026-07-21 二次修正）：照範例頁 6/7 的板狀佈局取代散點座標式。
+# 主題以 chip 小卡在格內流式換行排列（行高固定、同列 x 依序遞增），
+# 「結構上不可能重疊」由排列演算法保證，非靠事後碰撞檢查。
+# ---------------------------------------------------------------------------
+
+# chip 佈局常數（機會板／痛點板共用）
+_CHIP_FONT = 12      # chip 文字字級（px）
+_CHIP_H = 24         # chip 高度＝行高（固定）
+_CHIP_PAD_X = 9      # chip 內左右留白
+_CHIP_GAP_X = 8      # 同列 chip 間距
+_CHIP_GAP_Y = 8      # 列與列間距
+
+# 龍頭涉入三級色（沿用散點版 tier_colors）
+_TIER_COLORS = {"lead≥2": "#DC2626", "lead=1": "#F59E0B", "lead=0": "#9CA3AF"}
+
+
+def _tier_key(leading_count: int) -> str:
+    """龍頭涉入數 → 三級色 key（≥2家／1家／0家）。"""
+    return "lead≥2" if leading_count >= 2 else "lead=1" if leading_count == 1 else "lead=0"
+
+
+def _est_text_width(text: str, font_size: float) -> float:
+    """估算文字像素寬：CJK≈font_size px、ASCII／半形≈0.55×font_size（chip 定寬用）。"""
+    return sum(font_size if ord(ch) > 0xFF else font_size * 0.55 for ch in text)
+
+
+def _chip_text_color(hex_fill: str) -> str:
+    """依 chip 底色亮度自動對比字色：亮底配深字、暗底配白字。"""
+    r = int(hex_fill[1:3], 16)
+    g = int(hex_fill[3:5], 16)
+    b = int(hex_fill[5:7], 16)
+    luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+    return "#111827" if luminance > 0.6 else "#FFFFFF"
+
+
+def _fit_chip_text(text: str, area_w: float) -> tuple[str, float]:
+    """算 chip 寬；文字超過格寬時截字加「…」，回傳（顯示文字, chip 寬）。"""
+    max_text_w = area_w - 2 * _CHIP_PAD_X
+    if _est_text_width(text, _CHIP_FONT) <= max_text_w:
+        return text, _est_text_width(text, _CHIP_FONT) + 2 * _CHIP_PAD_X
+    clipped = text
+    while len(clipped) > 1 and _est_text_width(clipped + "…", _CHIP_FONT) > max_text_w:
+        clipped = clipped[:-1]
+    clipped += "…"
+    return clipped, min(_est_text_width(clipped, _CHIP_FONT) + 2 * _CHIP_PAD_X, area_w)
+
+
+def _flow_chips(chips: list[dict[str, Any]], area_w: float) -> tuple[list[dict[str, Any]], float]:
+    """把 chips 流式排進寬 area_w 的格內（相對座標），回傳（定位清單, 內容總高）。
+
+    同列 chip x 依序遞增（前一顆右緣＋間距），放不下就換行、行高固定，
+    因此同列 chip 的 x 區間必不相交——結構性防重疊。
+    """
+    placed: list[dict[str, Any]] = []
+    x = 0.0
+    y = 0.0
+    for chip in chips:
+        display, w = _fit_chip_text(chip["text"], area_w)
+        if x > 0 and x + w > area_w:
+            x = 0.0
+            y += _CHIP_H + _CHIP_GAP_Y
+        placed.append({**chip, "display": display, "x": x, "y": y, "w": w})
+        x += w + _CHIP_GAP_X
+    total_h = (y + _CHIP_H) if placed else 0.0
+    return placed, total_h
+
+
+def _chip_svg(chip: dict[str, Any], abs_x: float, abs_y: float, attrs: str) -> list[str]:
+    """輸出單一 chip（圓角矩形＋自動對比文字＋tooltip）；attrs＝data-* 識別屬性。
+
+    rect 屬性順序固定為 class → data-* → x/y/width/height，測試以 regex 依此取回。
+    """
+    fill = chip["fill"]
+    return [
+        f'<rect class="chip" {attrs} x="{abs_x:.1f}" y="{abs_y:.1f}" width="{chip["w"]:.1f}" '
+        f'height="{_CHIP_H}" rx="6" fill="{fill}">'
+        f'<title>{xml_text(chip.get("tooltip", chip["text"]))}</title></rect>',
+        f'<text x="{abs_x + _CHIP_PAD_X:.1f}" y="{abs_y + 16.5:.1f}" font-size="{_CHIP_FONT}" '
+        f'fill="{_chip_text_color(fill)}">{xml_text(chip["display"])}</text>',
+    ]
+
+
+def render_opportunity_quadrant_svg(
+    path: Path,
+    title: str,
+    data: dict[str, Any],
+) -> None:
+    """機會評估板（板狀佈局）：2×2 格依中位數門檻分格。
+
+    每格 header＝密度/廣度標籤＋戰場語言→行動指引（文案沿用 _qlabel 唯一來源，
+    色沿用 qcolors）；格內主題畫 chip「label 件/家」，chip 底色＝龍頭涉入三級。
+    軸為語意方向標籤（無數值刻度）；空格顯示「本案無此類」；格高依 chip 行數自動長高。
+    """
+    rows = data.get("rows", [])
+    p_med = float(data.get("patent_count_median", 0))
+    a_med = float(data.get("applicant_count_median", 0))
+
+    width = 1120
+    margin_l, margin_r = 64, 24
+    cell_gap = 14
+    cell_w = (width - margin_l - margin_r - cell_gap) / 2
+    inner_pad = 12
+    area_w = cell_w - 2 * inner_pad
+
+    qcolors = {"q1": "#10B981", "q2": "#3B82F6", "q3": "#9CA3AF", "q4": "#F59E0B"}
+    density_tags = {"q1": "高密度 · 高廣度", "q2": "低密度 · 高廣度",
+                    "q3": "低密度 · 低廣度", "q4": "高密度 · 低廣度"}
+    # 以象限代表點反查 _qlabel，戰場語言＋行動指引不在此重複定義
+    probes = {"q1": (1.0, 1.0), "q2": (0.0, 1.0), "q3": (0.0, 0.0), "q4": (1.0, 0.0)}
+
+    # 依中位數分格：X＝專利件數（密度）、Y＝申請人家數（廣度）
+    cell_rows: dict[str, list[dict[str, Any]]] = {q: [] for q in qcolors}
+    for r in sorted(rows, key=lambda item: -int(item["patent_count"])):
+        hi_x = float(r["patent_count"]) >= p_med
+        hi_y = float(r["applicant_count"]) >= a_med
+        q = "q1" if (hi_x and hi_y) else "q2" if hi_y else "q4" if hi_x else "q3"
+        cell_rows[q].append(r)
+
+    header_h = 44  # 格 header：密度標籤行＋戰場語言行
+    placed: dict[str, tuple[list[dict[str, Any]], float]] = {}
+    for q, members in cell_rows.items():
+        chips = []
+        for r in members:
+            label = str(r.get("label") or r.get("topic_code", ""))
+            lc = int(r.get("leading_applicant_count", 0))
+            involved = "、".join(r.get("leading_applicants_involved") or [])
+            tooltip = f'{label} / {int(r["patent_count"])}件 {int(r["applicant_count"])}家'
+            if involved:
+                tooltip += f"｜龍頭：{involved}"
+            chips.append({
+                "text": f'{label} {int(r["patent_count"])}/{int(r["applicant_count"])}',
+                "fill": _TIER_COLORS[_tier_key(lc)],
+                "topic": str(r.get("topic_code", "")),
+                "tooltip": tooltip,
+            })
+        placed[q] = _flow_chips(chips, area_w)
+
+    def _cell_h(q: str) -> float:
+        """格內容高＝header＋chips（空格留 placeholder 行高）＋底留白。"""
+        chips_h = placed[q][1]
+        return header_h + (chips_h if chips_h else 20.0) + inner_pad
+
+    top_row_h = max(_cell_h("q2"), _cell_h("q1"), 96.0)
+    bot_row_h = max(_cell_h("q3"), _cell_h("q4"), 96.0)
+    grid_top = 104.0
+    grid_bottom = grid_top + top_row_h + cell_gap + bot_row_h
+    height = int(grid_bottom + 64)
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
+        '<rect width="100%" height="100%" fill="white"/>',
+        f'<text x="{margin_l}" y="34" font-size="20" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        # Y 軸口徑防呆註（沿用散點版文案）
+        f'<text x="{margin_l}" y="56" font-size="11" fill="#9CA3AF">※ 純專利訊號(申請人家數)＝衡量競爭者是否已進場，不等於產品核心度</text>',
+        # 圖例：色＝龍頭涉入三級｜數字＝件/家
+        f'<text x="{margin_l}" y="86" font-size="12" font-weight="600" fill="{COLOR_TEXT}">色＝龍頭涉入｜數字＝件/家</text>',
+    ]
+    legend_x = margin_l + 200
+    for key, desc in [("lead≥2", "龍頭涉入≥2家"), ("lead=1", "龍頭涉入1家"), ("lead=0", "無龍頭涉入")]:
+        parts.append(f'<rect x="{legend_x}" y="{76}" width="12" height="12" fill="{_TIER_COLORS[key]}" rx="2"/>')
+        parts.append(f'<text x="{legend_x + 18}" y="87" font-size="11" fill="{COLOR_TEXT}">{xml_text(desc)}</text>')
+        legend_x += 130
+
+    cell_pos = {
+        "q2": (margin_l, grid_top, top_row_h),
+        "q1": (margin_l + cell_w + cell_gap, grid_top, top_row_h),
+        "q3": (margin_l, grid_top + top_row_h + cell_gap, bot_row_h),
+        "q4": (margin_l + cell_w + cell_gap, grid_top + top_row_h + cell_gap, bot_row_h),
+    }
+    for q, (cx, cy, ch) in cell_pos.items():
+        battle, action = _qlabel(*probes[q], 0.5, 0.5)
+        parts.append(
+            f'<rect x="{cx:.1f}" y="{cy:.1f}" width="{cell_w:.1f}" height="{ch:.1f}" rx="10" '
+            f'fill="{qcolors[q]}" fill-opacity="0.07" stroke="#E5E7EB"/>')
+        parts.append(
+            f'<text x="{cx + inner_pad:.1f}" y="{cy + 18:.1f}" font-size="11" fill="#6B7280">{xml_text(density_tags[q])}</text>')
+        parts.append(
+            f'<text x="{cx + inner_pad:.1f}" y="{cy + 37:.1f}" font-size="13" font-weight="600" '
+            f'fill="{qcolors[q]}">{xml_text(f"{battle} → {action}")}</text>')
+        chips, _chips_h = placed[q]
+        if chips:
+            for chip in chips:
+                parts.extend(_chip_svg(
+                    chip, cx + inner_pad + chip["x"], cy + header_h + chip["y"],
+                    f'data-cell="{q}" data-topic="{xml_text(chip["topic"])}"'))
+        else:
+            parts.append(
+                f'<text x="{cx + inner_pad:.1f}" y="{cy + header_h + 14:.1f}" font-size="12" '
+                f'fill="#9CA3AF" font-style="italic">本案無此類</text>')
+
+    # 語意方向軸標籤（無數值刻度）
+    mid_x = margin_l + (width - margin_l - margin_r) / 2
+    parts.append(
+        f'<text x="{mid_x:.0f}" y="{grid_bottom + 26:.0f}" text-anchor="middle" font-size="13" '
+        f'fill="{COLOR_TEXT}">低密度  ←  專利密度(件數)  →  高密度</text>')
+    mid_y = grid_top + (grid_bottom - grid_top) / 2
+    parts.append(
+        f'<text x="26" y="{mid_y:.0f}" text-anchor="middle" font-size="13" fill="{COLOR_TEXT}" '
+        f'transform="rotate(-90,26,{mid_y:.0f})">低  ←  申請人家數(廣度)  →  高</text>')
+    # 腳註 FTO 聲明（沿用）
+    parts.append(
+        f'<text x="{margin_l}" y="{grid_bottom + 48:.0f}" font-size="11" fill="#9CA3AF">'
+        f'本分析非侵權迴避(FTO)結論｜資料依公開專利資訊整理</text>')
+
+    parts.append("</svg>")
+    path.write_text("\n".join(parts), encoding="utf-8")
+
+
+def render_pain_point_quadrant_svg(
+    path: Path,
+    title: str,
+    data: dict[str, Any],
+) -> None:
+    """痛點交叉驗證板（板狀佈局）。
+
+    列帶＝痛點 高／中（中線帶）／低／待調查（灰帶，unknown 全集中此帶、不落低）；
+    欄＝密度 低/高（共用機會板同一 X 中位數）。chip＝「label 件數」、底色＝嚴重度色。
+    四角象限名照範例頁 7：研發優先缺口★＝低密度×高痛點（散點版左右錯置，板狀版修正）。
+    """
+    rows = data.get("rows", [])
+    x_med = float(data.get("x_median", 0))
+
+    width = 1120
+    margin_l, margin_r = 24, 24
+    label_w = 104  # 左側帶標籤欄寬
+    board_x = margin_l + label_w
+    col_gap = 14
+    col_w = (width - board_x - margin_r - col_gap) / 2
+    inner_pad = 12
+    area_w = col_w - 2 * inner_pad
+
+    band_order = ("high", "medium", "low", "unknown")
+    band_labels = {"high": "痛點 高", "medium": "中（中線帶）", "low": "低", "unknown": "待調查（灰帶）"}
+    band_bg = {"high": "#FEF2F2", "medium": "#FFFBEB", "low": "#F0FDF4", "unknown": "#F3F4F6"}
+    chip_fill = {"high": "#EF4444", "medium": "#EAB308", "low": "#10B981", "unknown": "#D1D5DB"}
+    corner_names = {
+        ("high", "lo"): "研發優先缺口★",
+        ("high", "hi"): "必守核心→迴避設計",
+        ("low", "lo"): "nice-to-have→防禦即可",
+        ("low", "hi"): "競爭者已過度投入→選擇性",
+    }
+
+    # 依嚴重度分帶、依 X 中位數分欄；非法／缺 severity 一律進待調查灰帶（不落低）
+    cells: dict[tuple[str, str], list[dict[str, Any]]] = {
+        (band, col): [] for band in band_order for col in ("lo", "hi")}
+    for r in sorted(rows, key=lambda item: -int(item["patent_count"])):
+        sev = str(r.get("severity", "unknown"))
+        if sev not in band_labels:
+            sev = "unknown"
+        col = "hi" if float(r["patent_count"]) >= x_med else "lo"
+        cells[(sev, col)].append(r)
+
+    placed: dict[tuple[str, str], tuple[list[dict[str, Any]], float]] = {}
+    for key, members in cells.items():
+        chips = []
+        for r in members:
+            label = str(r.get("label") or r.get("topic_code", ""))
+            tooltip = f'{label} / {int(r["patent_count"])}件 / {key[0]}'
+            if r.get("basis"):
+                tooltip += f'｜依據：{r["basis"]}'
+            chips.append({
+                "text": f'{label} {int(r["patent_count"])}',
+                "fill": chip_fill[key[0]],
+                "topic": str(r.get("topic_code", "")),
+                "tooltip": tooltip,
+            })
+        placed[key] = _flow_chips(chips, area_w)
+
+    corner_h = 24  # 有象限名的格，chips 前多留一行
+    def _cell_h(key: tuple[str, str]) -> float:
+        """格內容高＝（象限名行）＋chips＋上下留白。"""
+        head = corner_h if key in corner_names else 8.0
+        chips_h = placed[key][1]
+        return head + chips_h + inner_pad + 8.0
+
+    grid_top = 116.0
+    band_gap = 10.0
+    band_tops: dict[str, float] = {}
+    band_hs: dict[str, float] = {}
+    y_cursor = grid_top
+    for band in band_order:
+        h = max(_cell_h((band, "lo")), _cell_h((band, "hi")), 60.0)
+        band_tops[band] = y_cursor
+        band_hs[band] = h
+        y_cursor += h + band_gap
+    grid_bottom = y_cursor - band_gap
+    height = int(grid_bottom + 70)
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
+        '<rect width="100%" height="100%" fill="white"/>',
+        f'<text x="{margin_l}" y="34" font-size="20" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        # 副標銜接句（沿用散點版文案）
+        f'<text x="{margin_l}" y="54" font-size="13" fill="#6B7280">把機會矩陣「待釐清領域」一軸用公開痛點初步補上（數字＝專利件數）</text>',
+    ]
+    # 圖例：嚴重度四級色（沿用 severity 色；unknown 顯示為待調查灰）
+    legend_x = margin_l
+    for band in band_order:
+        legend_label = "待調查" if band == "unknown" else {"high": "高", "medium": "中", "low": "低"}[band]
+        parts.append(f'<rect x="{legend_x}" y="70" width="12" height="12" fill="{chip_fill[band]}" rx="2"/>')
+        parts.append(f'<text x="{legend_x + 18}" y="81" font-size="11" fill="{COLOR_TEXT}">{xml_text(legend_label)}</text>')
+        legend_x += 84
+    # 欄 header：密度 低/高
+    col_x = {"lo": board_x, "hi": board_x + col_w + col_gap}
+    parts.append(f'<text x="{col_x["lo"] + col_w / 2:.0f}" y="{grid_top - 8:.0f}" text-anchor="middle" font-size="12" fill="#6B7280">低密度</text>')
+    parts.append(f'<text x="{col_x["hi"] + col_w / 2:.0f}" y="{grid_top - 8:.0f}" text-anchor="middle" font-size="12" fill="#6B7280">高密度</text>')
+
+    for band in band_order:
+        by = band_tops[band]
+        bh = band_hs[band]
+        parts.append(
+            f'<rect x="{board_x:.1f}" y="{by:.1f}" width="{width - board_x - margin_r:.1f}" '
+            f'height="{bh:.1f}" rx="8" fill="{band_bg[band]}" stroke="#E5E7EB"/>')
+        parts.append(
+            f'<text x="{board_x - 10:.1f}" y="{by + bh / 2 + 4:.1f}" text-anchor="end" '
+            f'font-size="12" fill="#374151">{xml_text(band_labels[band])}</text>')
+        # 欄分隔虛線
+        sep_x = board_x + col_w + col_gap / 2
+        parts.append(
+            f'<line x1="{sep_x:.1f}" y1="{by:.1f}" x2="{sep_x:.1f}" y2="{by + bh:.1f}" '
+            f'stroke="#D1D5DB" stroke-width="1" stroke-dasharray="4,4"/>')
+        for col in ("lo", "hi"):
+            cx = col_x[col]
+            head = corner_h if (band, col) in corner_names else 8.0
+            if (band, col) in corner_names:
+                parts.append(
+                    f'<text x="{cx + inner_pad:.1f}" y="{by + 17:.1f}" font-size="12" '
+                    f'font-weight="600" fill="#6B7280">{xml_text(corner_names[(band, col)])}</text>')
+            for chip in placed[(band, col)][0]:
+                parts.extend(_chip_svg(
+                    chip, cx + inner_pad + chip["x"], by + head + chip["y"],
+                    f'data-band="{band}" data-col="{col}" data-topic="{xml_text(chip["topic"])}"'))
+
+    # 語意方向軸標籤（沿用文案）＋腳註（FTO＋痛點待調查聲明沿用）
+    mid_x = board_x + (width - board_x - margin_r) / 2
+    parts.append(
+        f'<text x="{mid_x:.0f}" y="{grid_bottom + 26:.0f}" text-anchor="middle" font-size="13" '
+        f'fill="{COLOR_TEXT}">低  ← 專利件數 (patent_count) →  高</text>')
+    pain_note = "｜痛點為待調查狀態" if any(
+        str(r.get("severity", "unknown")) not in ("high", "medium", "low") or r.get("severity") == "unknown"
+        for r in rows) else ""
+    parts.append(
+        f'<text x="{margin_l}" y="{grid_bottom + 48:.0f}" font-size="11" fill="#9CA3AF">'
+        f'本分析非侵權迴避(FTO)結論{pain_note}</text>')
+
+    parts.append("</svg>")
+    path.write_text("\n".join(parts), encoding="utf-8")
+
+
+def _build_cluster_analytics_section(ctx: ChartContext) -> None:
+    """分群分析：主題／功效統計表、機會矩陣、痛點矩陣。
+
+    資料由 ctx.cluster_data 注入（repository adapter 層填入），
+    cluster_data 為 None 時靜默跳過，不影響既有報表流程。
+    """
+    data = ctx.cluster_data
+    if data is None:
+        return
+
+    topic_rows = build_topic_effect_table(
+        data["topics"], data["assignments"], data["normalized_applicants"]
+    )
+
+    # 2026-07-21 定案：技術、功效不混——依 source_field 分段，矩陣板每來源各一組
+    # （中位數門檻按段各自計算，不跨來源混算）；單一來源維持原檔名與原 tab 名。
+    segments = _source_segments(topic_rows)
+    multi_source = len(segments) > 1
+    variants: list[dict[str, str]] = [{"label": "主題統計表", "file": "cluster_topic_table.html"}]
+    segment_matrices: list[tuple[str, str, dict[str, Any], dict[str, Any]]] = []
+    leading_by_topic: dict[str, dict[str, Any]] = {}
+    for sf, segment_label, seg_rows in segments:
+        opp_matrix = build_opportunity_matrix(seg_rows, data.get("top_applicants_ws", []))
+        pain_matrix = build_pain_point_matrix(
+            seg_rows, data.get("pain_data", []), opp_matrix["patent_count_median"]
+        )
+        segment_matrices.append((sf, segment_label, opp_matrix, pain_matrix))
+        leading_by_topic.update({r["topic_code"]: r for r in opp_matrix["rows"]})
+
+    # 顯示規格（2026-07-21）：把機會矩陣算出的龍頭涉入（leading_applicant_count／
+    # leading_applicants_involved）依 topic_code 併回主題統計列，統計表與數據區共用。
+    for row in topic_rows:
+        opp_row = leading_by_topic.get(row["topic_code"], {})
+        row["leading_applicant_count"] = opp_row.get("leading_applicant_count", 0)
+        row["leading_applicants_involved"] = opp_row.get("leading_applicants_involved", [])
+
+    render_cluster_topic_table_html(
+        ctx.run_dir / "cluster_topic_table.html",
+        "主題／功效分類統計",
+        topic_rows,
+    )
+    ctx.chart_rows["cluster_topic_table"] = topic_rows
+
+    for sf, segment_label, opp_matrix, pain_matrix in segment_matrices:
+        # 檔名後綴：多來源時帶 slug（tech/effect），單一來源維持原檔名（相容既有契約）
+        slug = SOURCE_SEGMENT_SLUGS.get(sf, "other")
+        suffix = f"_{slug}" if multi_source else ""
+        tab_suffix = f"——{segment_label}" if multi_source else ""
+        opp_file = f"opportunity_quadrant{suffix}.svg"
+        pain_file = f"pain_point_quadrant{suffix}.svg"
+        render_opportunity_quadrant_svg(
+            ctx.run_dir / opp_file, f"機會四象限分析——{segment_label}", opp_matrix)
+        render_pain_point_quadrant_svg(
+            ctx.run_dir / pain_file, f"痛點四象限分析——{segment_label}", pain_matrix)
+        variants.append({"label": f"機會矩陣{tab_suffix}", "file": opp_file})
+        variants.append({"label": f"痛點矩陣{tab_suffix}", "file": pain_file})
+        ctx.chart_rows[f"opportunity_quadrant{suffix}"] = opp_matrix
+        ctx.chart_rows[f"pain_point_quadrant{suffix}"] = pain_matrix
+
+    note = (
+        "主題統計表包含所有正式主題（含未分類），技術主題與功效分類分段不混表；"
+        "機會板／痛點板採板狀佈局（chip 流式排列，結構上不重疊）、每個來源各一組——"
+        "機會板 2×2 格依該段專利件數與申請人家數中位數分高低，chip 色＝龍頭涉入三級；"
+        "痛點板列帶＝嚴重度（高／中線帶／低／待調查灰帶，unknown 不落低）、"
+        "欄＝密度低/高（共用同段機會板件數中位數）。"
+    )
+    # 顯示規格（2026-07-21 二次修正）：板狀佈局完成，象限圖回歸 index——
+    # cluster 卡片＝主題統計表＋各來源機會/痛點矩陣 tabs。
+    ctx.sections.append({
+        "title": "分群分析",
+        "report_key": "cluster_topic_table",  # 數據區從 chart_rows 取主題統計列
+        "variants": variants,
+        "note": note,
+    })
+
+
 @dataclass(frozen=True)
 class SectionSpec:
     """一個圖表 section 的宣告：依賴哪些報表、由哪個 builder 渲染。"""
@@ -926,15 +2009,16 @@ SECTION_SPECS: tuple[SectionSpec, ...] = (
     SectionSpec("family_layout", ("family_country_layout", "family_quality_detail"), _build_family_layout_section),
     SectionSpec("ipc", ("ipc_main_distribution",), _build_ipc_section),
     SectionSpec("cpc", ("cpc_main_distribution",), _build_cpc_section),
+    SectionSpec("recent_assignee_ranking", ("recent_assignee_ranking",), _build_recent_assignee_ranking_section),
     SectionSpec("applicant_ranking", ("applicant_ranking",), _build_applicant_ranking_section),
     SectionSpec("owner_ranking", ("owner_ranking",), _build_owner_ranking_section),
+    SectionSpec("applicant_year_matrix", ("applicant_year_matrix",), _build_applicant_year_matrix_section),
+    SectionSpec("owner_year_matrix", ("owner_year_matrix",), _build_owner_year_matrix_section),
     SectionSpec("applicant_country", ("applicant_country_distribution",), _build_applicant_country_section),
-    SectionSpec("top_cited", ("top_cited_patents",), _build_top_cited_section),
-    SectionSpec("rd_energy", ("company_rd_energy",), _build_rd_energy_section),
     SectionSpec("lifecycle", ("lifecycle",), _build_lifecycle_section),
     SectionSpec("application_growth", ("application_trend",), _build_growth_section),
+    SectionSpec("cluster_analytics", ("cluster_analytics",), _build_cluster_analytics_section),
 )
-
 
 def resolve_sections(report_names: Sequence[str] | None) -> tuple[SectionSpec, ...]:
     """把要出的報表名轉成要渲染的 sections；None＝全部。未知報表名 fail loud。"""
@@ -966,12 +2050,13 @@ def _create_run_dir(output_dir: Path, prefix: str) -> Path:
 
 def run_chart_trial(
     output_dir: Path = DEFAULT_OUTPUT_DIR,
-    ranking_limit: int = 100,
+    ranking_limit: int = 20,
     ipc_levels: tuple[int, ...] = (4, 5),
     cpc_levels: tuple[int, ...] = (4, 5),
     analysis_id: int | None = None,
     report_names: Sequence[str] | None = None,
     filters: dict[str, Any] | None = None,
+    cluster_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """渲染報表圖組（MCP reporting tools 與 CLI 共用的出圖入口）。
 
@@ -979,7 +2064,12 @@ def run_chart_trial(
     sections（選擇性出圖）。analysis_id 給了用該 analysis 的專利快照出圖，並把
     每個產出檔登錄 app_layer.export_runs；filters 讓 patent 層報表與數據端同
     口徑（家族層報表一律全庫口徑，note 現形）。
+
+    cluster_data 由呼叫端注入（見 compute_and_save_cluster_analysis 的回傳值），
+    驅動分群分析區塊（主題統計表、機會矩陣、痛點矩陣）；為 None 時該區塊靜默跳過。
     """
+    if output_dir is None:
+        output_dir = DEFAULT_OUTPUT_DIR
     specs = resolve_sections(report_names)
     patent_ids = fetch_analysis_patent_ids(analysis_id) if analysis_id is not None else None
     prefix = f"analysis_{analysis_id}_" if analysis_id is not None else "report_trial_"
@@ -993,30 +2083,45 @@ def run_chart_trial(
         patent_ids=patent_ids,
         filters=filters or None,
         analysis_id=analysis_id,
+        cluster_data=cluster_data,
     )
     for spec in specs:
         spec.build(ctx)
 
     fetched = ctx.fetched_reports()
+    generated_at = datetime.now().isoformat(timespec="seconds")
+    version = run_dir.name
+    selected_report_names = sorted(fetched)
     parameters = {
         "ranking_limit": ranking_limit,
         "ipc_levels": list(ctx.ipc_levels),
         "cpc_levels": list(ctx.cpc_levels),
         "reports_selected": sorted(set(report_names)) if report_names is not None else "all",
         "filters": filters or None,
+        "generated_at": generated_at,
+        "version": version,
+        "analysis_id": analysis_id,
+        "has_cluster_analytics": cluster_data is not None,
+        **patent_snapshot_metadata(patent_ids),
     }
 
+    # 入庫截取（2026-07-21 定案修正）：排名類前 20、年度序列最新 25 年；
+    # 圖表已渲染完成，截取只影響落檔，不影響本次輸出的 SVG。
+    persist_reports, persist_chart_rows, chart_rows_total = truncate_rows_for_persistence(
+        fetched, ctx.chart_rows
+    )
     write_json(
         run_dir / "report_data.json",
         {
             "parameters": parameters,
             "reports": {
-                name: report for name, report in fetched.items() if REPORT_DEFINITIONS[name].supports_patent_ids
+                name: report for name, report in persist_reports.items() if REPORT_DEFINITIONS[name].supports_patent_ids
             },
             "family_reports": {
-                name: report for name, report in fetched.items() if not REPORT_DEFINITIONS[name].supports_patent_ids
+                name: report for name, report in persist_reports.items() if not REPORT_DEFINITIONS[name].supports_patent_ids
             },
-            "chart_rows": ctx.chart_rows,
+            "chart_rows": persist_chart_rows,
+            "chart_rows_total": chart_rows_total,
             **ctx.meta,
         },
     )
@@ -1034,10 +2139,28 @@ def run_chart_trial(
     files: list[str] = []
     for section in ctx.sections:
         files.extend(variant["file"] for variant in section.get("variants", []))
+        files.extend(variant["file"] for variant in section.get("more_variants", []))
         files.extend(link["file"] for link in section.get("links", []))
     files += ["report_data.json", "index.html"]
     # De-duplicate while keeping order (a file may appear as both variant and link).
     files = list(dict.fromkeys(files))
+    manifest = build_artifact_manifest(
+        run_dir,
+        files,
+        generated_at=generated_at,
+        version=version,
+        report_names=selected_report_names,
+        filters=filters,
+        analysis_id=analysis_id,
+        patent_ids=patent_ids,
+    )
+    write_json(run_dir / "artifact_manifest.json", manifest)
+    files.append("artifact_manifest.json")
+    files = list(dict.fromkeys(files))
+    file_metadata = {
+        item["file"]: item
+        for item in manifest["artifacts"]
+    }
 
     result: dict[str, Any] = {
         "status": "ok",
@@ -1047,11 +2170,14 @@ def run_chart_trial(
         "cpc_levels": list(ctx.cpc_levels),
         "sections_rendered": [spec.key for spec in specs],
         "files": files,
+        "version": version,
+        "generated_at": generated_at,
+        "artifact_manifest": "artifact_manifest.json",
         **ctx.meta,
     }
 
     if analysis_id is not None:
-        export_count = record_exports(analysis_id, run_dir, files, parameters)
+        export_count = record_exports(analysis_id, run_dir, files, parameters, file_metadata)
         result["analysis_id"] = analysis_id
         result["export_count"] = export_count
 
@@ -1118,7 +2244,7 @@ def render_jurisdiction_map(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render first-pass report charts into output directory.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--ranking-limit", type=int, default=100, help="Top N limit for applicant and current assignee ranking charts.")
+    parser.add_argument("--ranking-limit", type=int, default=20, help="Top N limit for applicant and current assignee ranking charts.")
     parser.add_argument("--ipc-levels", type=int, nargs="+", choices=(4, 5), default=[4, 5], help="IPC classification levels to render (4=subclass, 5=main group). Defaults to both.")
     parser.add_argument("--cpc-levels", type=int, nargs="+", choices=(4, 5), default=[4, 5], help="CPC classification levels to render (4=subclass, 5=main group). Defaults to both.")
     parser.add_argument("--analysis-id", type=int, help="Bind charts to an app_layer analysis: use its patent snapshot and record files into export_runs.")

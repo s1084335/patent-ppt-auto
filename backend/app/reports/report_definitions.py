@@ -129,6 +129,10 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         source_table=REPORT_SOURCE_TABLE,
         columns=("applicant_display_name",),
         group_by=("applicant_display_name",),
+        aggregates=(
+            ("count_nonblank", "recent_assignee_display_name", "recent_assignee_count"),
+            ("string_agg_distinct_nonblank", "recent_assignee_display_name", "recent_assignee_display_names"),
+        ),
         default_order=(("patent_count", "desc"), ("applicant_display_name", "asc")),
         default_limit=100,
         exclude_blank_columns=("applicant_display_name",),
@@ -145,47 +149,47 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         default_limit=100,
         exclude_blank_columns=("current_assignee_display_name",),
     ),
-    # 高被引用專利排名：被引用數（F1，下載當下快照）由高至低。
-    # 精簡匯出批（無引用欄）的列被 exclude_blank 排除，不會以 0 混入排名。
-    "top_cited_patents": ReportDefinition(
-        name="top_cited_patents",
-        report_type="detail",
-        label="Top Cited Patents",
-        label_zh="高被引用專利排名",
-        source_table=REPORT_SOURCE_TABLE,
-        columns=(
-            "patent_id",
-            "授權公告號",
-            "未審查的公開號(轉換後)",
-            "title",
-            "application_year",
-            "applicant_display_name",
-            "(F1)引用文獻數",
-        ),
-        default_order=(("(F1)引用文獻數", "desc"), ("patent_id", "asc")),
-        default_limit=50,
-        exclude_blank_columns=("(F1)引用文獻數",),
-    ),
-    # 企業研發能量：每家公司的 申請量（patent_count）×Σ被引用數×Σ發明人數，
-    # 供氣泡圖使用（X=被引用、Y=申請量、泡泡=發明人數）。
-    "company_rd_energy": ReportDefinition(
-        name="company_rd_energy",
+    "recent_assignee_ranking": ReportDefinition(
+        name="recent_assignee_ranking",
         report_type="aggregate",
-        label="Company R&D Energy",
-        label_zh="企業研發能量",
+        label="Recent Assignee Ranking",
+        label_zh="最新受讓人排名",
         source_table=REPORT_SOURCE_TABLE,
-        columns=("applicant_display_name",),
-        group_by=("applicant_display_name",),
-        aggregates=(
-            ("sum", "(F1)引用文獻數", "cited_total"),
-            ("sum", "發明人數", "inventor_total"),
-            # 有引用資料的列數：=0 代表該公司整批來自精簡匯出（無引用欄），
-            # 圖表端應標「無資料」而非畫在 X=0。
-            ("count", "(F1)引用文獻數", "cited_rows"),
+        columns=("recent_assignee_display_name",),
+        group_by=("recent_assignee_display_name",),
+        default_order=(("patent_count", "desc"), ("recent_assignee_display_name", "asc")),
+        default_limit=100,
+        exclude_blank_columns=("recent_assignee_display_name",),
+    ),
+    "applicant_year_matrix": ReportDefinition(
+        name="applicant_year_matrix",
+        report_type="aggregate",
+        label="Applicant Year Matrix",
+        label_zh="申請人年度專利分布矩陣",
+        source_table=REPORT_SOURCE_TABLE,
+        columns=("applicant_display_name", "application_year"),
+        group_by=("applicant_display_name", "application_year"),
+        default_order=(
+            ("patent_count", "desc"),
+            ("applicant_display_name", "asc"),
+            ("application_year", "asc"),
         ),
-        default_order=(("patent_count", "desc"), ("applicant_display_name", "asc")),
-        default_limit=30,
-        exclude_blank_columns=("applicant_display_name",),
+        exclude_blank_columns=("applicant_display_name", "application_year"),
+    ),
+    "owner_year_matrix": ReportDefinition(
+        name="owner_year_matrix",
+        report_type="aggregate",
+        label="Owner Year Matrix",
+        label_zh="專利權人年度布局矩陣",
+        source_table=REPORT_SOURCE_TABLE,
+        columns=("current_assignee_display_name", "application_year"),
+        group_by=("current_assignee_display_name", "application_year"),
+        default_order=(
+            ("patent_count", "desc"),
+            ("current_assignee_display_name", "asc"),
+            ("application_year", "asc"),
+        ),
+        exclude_blank_columns=("current_assignee_display_name", "application_year"),
     ),
     # 生命週期：年度 × 申請人家數 vs 件數（技術生命週期判讀的標準圖）。
     "lifecycle": ReportDefinition(
@@ -241,6 +245,9 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
 }
 
 
+DEFAULT_REPORT_NAMES: tuple[str, ...] = tuple(REPORT_DEFINITIONS)
+
+
 ALLOWED_FILTER_COLUMNS = {
     "patent_id",
     "application_year",
@@ -251,6 +258,7 @@ ALLOWED_FILTER_COLUMNS = {
     "Curr. CPC(Main)",
     "applicant_display_name",
     "current_assignee_display_name",
+    "recent_assignee_display_name",
 }
 
 

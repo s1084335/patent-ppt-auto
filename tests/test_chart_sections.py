@@ -5,6 +5,9 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,10 +33,37 @@ def fake_report(name: str, rows: list[dict]) -> dict:
 class SectionRegistryTests(unittest.TestCase):
     """registry 完整性與 resolve_sections 的選擇規則。"""
 
+    def test_removed_reports_have_no_sections_or_artifact_mapping(self):
+        """已移出的 report keys 不得再有 section、SVG artifact mapping。"""
+        removed = {"recent_assignee_year_matrix", "top_cited_patents", "company_rd_energy"}
+        covered = {name for spec in chart_runner.SECTION_SPECS for name in spec.reports}
+        artifact_reports = {
+            name
+            for report_names in chart_runner.CHART_FILE_REPORTS.values()
+            for name in report_names
+        }
+        self.assertFalse(removed & covered)
+        self.assertFalse(removed & artifact_reports)
+        self.assertNotIn("recent_assignee_year_matrix.svg", chart_runner.CHART_FILE_REPORTS)
+        for report_name in removed:
+            with self.assertRaises(ValueError):
+                chart_runner.resolve_sections([report_name])
+
+    def test_deprecated_builders_removed_from_production_file(self):
+        """top_cited_patents/company_rd_energy 的 chart builders 只能留在 archive。"""
+        source = Path(chart_runner.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("def _build_top_cited_section", source)
+        self.assertNotIn("def _build_rd_energy_section", source)
+        self.assertNotIn('"top_cited_patents"', source)
+        self.assertNotIn('"company_rd_energy"', source)
+
     def test_registry_covers_all_report_definitions(self):
         # 新報表加進引擎卻沒掛 section 時，這裡會 fail——強制選擇性出圖不漏報表。
         covered = {name for spec in chart_runner.SECTION_SPECS for name in spec.reports}
-        self.assertEqual(covered, set(REPORT_DEFINITIONS))
+        self.assertTrue(covered.issuperset(set(REPORT_DEFINITIONS)),
+                        "所有 REPORT_DEFINITIONS 必須有對應 section")
+        self.assertIn("cluster_analytics", covered,
+                      "cluster_analytics 為無對應報表的特殊 section")
 
     def test_resolve_none_returns_all_sections(self):
         self.assertEqual(chart_runner.resolve_sections(None), chart_runner.SECTION_SPECS)
@@ -46,6 +76,17 @@ class SectionRegistryTests(unittest.TestCase):
         # 申請趨勢同時驅動雙線趨勢圖與年增率折線兩個 sections。
         keys = [spec.key for spec in chart_runner.resolve_sections(["application_trend"])]
         self.assertEqual(keys, ["annual_trend", "application_growth"])
+
+    def test_recent_assignee_ranking_starts_company_analysis_block(self):
+        keys = [
+            spec.key
+            for spec in chart_runner.resolve_sections([
+                "applicant_ranking",
+                "owner_ranking",
+                "recent_assignee_ranking",
+            ])
+        ]
+        self.assertEqual(keys, ["recent_assignee_ranking", "applicant_ranking", "owner_ranking"])
 
     def test_resolve_family_reports_share_one_section(self):
         keys = [spec.key for spec in chart_runner.resolve_sections(["family_quality_detail"])]
@@ -83,6 +124,11 @@ class MatrixChartTests(unittest.TestCase):
         keys = [s.key for s in chart_runner.resolve_sections(["applicant_country_distribution"])]
         self.assertEqual(keys, ["applicant_country"])
 
+    def test_owner_year_matrix_section_and_artifact_mapping(self):
+        keys = [s.key for s in chart_runner.resolve_sections(["owner_year_matrix"])]
+        self.assertEqual(keys, ["owner_year_matrix"])
+        self.assertEqual(chart_runner.CHART_FILE_REPORTS["owner_year_matrix.svg"], ["owner_year_matrix"])
+
     def test_matrix_top_limit_and_per_company_cells(self):
         rows = []
         for i in range(25):
@@ -101,6 +147,477 @@ class MatrixChartTests(unittest.TestCase):
         self.assertNotIn("Co24", svg)   # 第 21 名之後被截掉
         self.assertIn(">100<", svg)     # 儲存格是單一公司的值（未跨公司加總）
         self.assertNotIn(">2290<", svg)  # 不出現全欄加總值——確保沒混算
+
+
+class OpportunityQuadrantLegendTests(unittest.TestCase):
+    """regression（2026-07-21）：「單一玩家壟斷型」曾因圖例探針座標錯置重複三次。
+    2026-07-21 板狀改版註記：battle 標籤從散點圖例（■ 列）改為 2×2 格 header，
+    斷言改為四個戰場語言在全圖各出現恰一次（空格也有 header，恆為四格四次）。"""
+
+    def test_quadrant_color_legend_four_distinct(self):
+        data = {
+            "rows": [
+                {"topic_code": "T01", "label": "散熱防塵", "patent_count": 11,
+                 "applicant_count": 6, "leading_applicant_count": 2, "top_applicants": []},
+                {"topic_code": "T02", "label": "速度控制", "patent_count": 45,
+                 "applicant_count": 9, "leading_applicant_count": 1, "top_applicants": []},
+            ],
+            "patent_count_median": 20.0,
+            "applicant_count_median": 5.0,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "opportunity.svg"
+            chart_runner.render_opportunity_quadrant_svg(path, "機會四象限分析", data)
+            svg = path.read_text(encoding="utf-8")
+        for battle in ("必守核心戰場", "新興戰場（競爭者已進場）", "待釐清領域", "單一玩家壟斷型"):
+            self.assertEqual(svg.count(battle), 1,
+                             f"戰場語言「{battle}」應恰出現一次（格 header），實得 {svg.count(battle)}")
+        # chip 文字用中文 label 非 code，格式「label 件/家」
+        self.assertIn("散熱防塵 11/6", svg)
+        self.assertNotIn(">T01 ", svg)
+
+
+class DisplaySpecTests(unittest.TestCase):
+    """2026-07-21 顯示規格（report-requirements.md「顯示規格」節）逐條契約。"""
+
+    @staticmethod
+    def _fake_ctx(tmp: str, reports: dict | None = None, ipc_levels=(4, 5)):
+        """最小 ctx 替身：cluster/classification/year-matrix builder 只用這些屬性。"""
+        from types import SimpleNamespace
+
+        def report(key):
+            return reports[key]
+
+        return SimpleNamespace(
+            run_dir=Path(tmp), chart_rows={}, sections=[], report=report,
+            cluster_data=None, ipc_levels=ipc_levels, cpc_levels=ipc_levels)
+
+    def test_data_table_max_20_rows_no_full_expand(self):
+        """數據區最多 20 筆＋總計列；不提供全量展開（2026-07-21 使用者補充），只註記共幾列。
+        註記文案同步「保存前 20」定案（2026-07-21）：入庫同前 20、完整可由引擎重算。"""
+        rows = [{"applicant_display_name": f"Co{i}", "patent_count": i} for i in range(25)]
+        html = chart_runner._data_table_html(rows, "applicant_ranking")
+        self.assertEqual(html.count("<tr>") - 1, 20 + 1,  # header 不算、含總計列
+                         "數據區最多 20 筆＋總計列")
+        self.assertNotIn("<details>", html, "不得提供顯示全部展開")
+        self.assertIn("入庫同前 20，完整可重算", html)
+        self.assertIn("總列數 25", html)  # 註記共幾列
+
+    def test_cluster_card_three_tabs_board(self):
+        """2026-07-21 二次修正（規格變更註記）：原 test_cluster_card_table_only_no_quadrant
+        斷言「只留統計表、象限圖暫停展示」；板狀佈局完成後象限圖回歸 index——
+        cluster 卡片＝三 tabs（主題統計表＋機會矩陣＋痛點矩陣）；topic rows 仍帶龍頭涉入。"""
+        data = {
+            "topics": [{"topic_code": "T01", "label": "散熱防塵", "source_field": "wips_independent_claims"}],
+            "assignments": [{"topic_code": "T01", "patent_id": 1}],
+            "normalized_applicants": [{"patent_id": 1, "applicant_name": "TSMC"}],
+            "top_applicants_ws": ["TSMC"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._fake_ctx(tmp)
+            ctx.cluster_data = data
+            chart_runner._build_cluster_analytics_section(ctx)
+            section = ctx.sections[0]
+            files = [v["file"] for v in section["variants"]]
+            labels = [v["label"] for v in section["variants"]]
+            self.assertEqual(
+                files,
+                ["cluster_topic_table.html", "opportunity_quadrant.svg", "pain_point_quadrant.svg"],
+                "板圖回歸：卡片應為統計表＋機會板＋痛點板三 tabs")
+            self.assertEqual(labels, ["主題統計表", "機會矩陣", "痛點矩陣"])
+            table_html = (Path(tmp) / "cluster_topic_table.html").read_text(encoding="utf-8")
+        self.assertIn("龍頭涉入", table_html, "統計表缺龍頭涉入欄")
+        self.assertEqual(ctx.chart_rows["cluster_topic_table"][0].get("leading_applicant_count"), 1)
+
+    def test_classification_toggle_top20(self):
+        """IPC/CPC 三次修正沿革（2026-07-21）：①初版 L4/L5 toggle 全列→②二次修正誤解
+        「不收合」為 stacked 堆疊不切換＋每階 20→③三次修正定版：**恢復 L4/L5 切換鈕**
+        （兩階對照是核心價值；「不收合」只指不用查看全部式展開，不禁 toggle），每階仍各截前 20。"""
+        rows = [{"Curr. IPC(Main)": f"A{i:02d}B {i}/00", "patent_count": 30 - i} for i in range(25)]
+        reports = {"ipc_main_distribution": {"label_zh": "IPC 分布", "rows": rows}}
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._fake_ctx(tmp, reports, ipc_levels=(4, 5))
+            chart_runner._build_ipc_section(ctx)
+            section = ctx.sections[0]
+            svg_l4 = (Path(tmp) / "ipc_main_distribution_L4.svg").read_text(encoding="utf-8")
+            svg_l5 = (Path(tmp) / "ipc_main_distribution_L5.svg").read_text(encoding="utf-8")
+        self.assertFalse(section.get("stacked"), "stacked 取消：恢復 toggle 切換")
+        self.assertEqual(len(section["variants"]), 2, "L4/L5 兩 variants＝render_index 出切換鈕")
+        for level, svg in (("L4", svg_l4), ("L5", svg_l5)):
+            drawn = svg.count('rx="2"')  # 每列一個 bar rect
+            self.assertEqual(drawn, 20, f"IPC/CPC {level} 應截前 20 名，實得 {drawn}")
+
+    def test_year_matrix_expand_label_wips_style(self):
+        rows = [{"applicant_display_name": f"Co{i:02d}", "application_year": 2020, "patent_count": 30 - i}
+                for i in range(15)]
+        reports = {"applicant_year_matrix": {"label_zh": "申請人年度矩陣", "rows": rows}}
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._fake_ctx(tmp, reports)
+            chart_runner._build_applicant_year_matrix_section(ctx)
+            section = ctx.sections[0]
+        self.assertTrue(str(section.get("more_label", "")).startswith("＋查看全部"),
+                        f"收合鈕應為 WIPS 式「＋查看全部」，實得 {section.get('more_label')!r}")
+
+    def test_ranking_limit_default_20(self):
+        import inspect
+
+        sig = inspect.signature(chart_runner.run_chart_trial)
+        self.assertEqual(sig.parameters["ranking_limit"].default, 20,
+                         "排名數據輸出預設應為前 20 名")
+
+    def test_year_axis_capped_25(self):
+        rows = [{"applicant_display_name": "Co", "application_year": 1990 + i, "patent_count": 1}
+                for i in range(30)]
+        layout = chart_runner.year_bubble_matrix_layout(rows, "applicant_display_name")
+        self.assertEqual(len(layout["years"]), 25, "年份軸最多最新 25 年")
+        self.assertEqual(layout["years"][-1], 2019)
+
+    def test_segmented_bar_blue_segment_right_aligned(self):
+        rows = [{"applicant_display_name": "Co", "patent_count": 10, "recent_assignee_count": 4}]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "seg.svg"
+            chart_runner.render_segmented_bar_chart(
+                path, "t", rows, "applicant_display_name",
+                total_key="patent_count", segment_key="recent_assignee_count", segment_label="s")
+            svg = path.read_text(encoding="utf-8")
+        total = re.search(r'class="bar-total" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"', svg)
+        seg = re.search(r'class="bar-segment" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"', svg)
+        self.assertIsNotNone(total); self.assertIsNotNone(seg)
+        total_end = float(total.group(1)) + float(total.group(2))
+        seg_end = float(seg.group(1)) + float(seg.group(2))
+        self.assertAlmostEqual(total_end, seg_end, delta=0.5, msg="藍色區段應靠灰色總量長條右端")
+
+
+class BoardQuadrantTests(unittest.TestCase):
+    """2026-07-21 二次修正：象限圖改板狀佈局（照範例頁 6/7）。
+    斷言：chip 恰一次且落正確格、同列 chip x 區間不相交（結構性防重疊）、
+    空格 placeholder、痛點 unknown 全在灰帶不落低、圖例三級色。"""
+
+    # chip rect 屬性順序由 renderer 固定輸出，直接以 regex 取回
+    _OPP_CHIP = re.compile(
+        r'<rect class="chip" data-cell="(q[1-4])" data-topic="([^"]+)" '
+        r'x="([\d.]+)" y="([\d.]+)" width="([\d.]+)"')
+    _PAIN_CHIP = re.compile(
+        r'<rect class="chip" data-band="(\w+)" data-col="(lo|hi)" data-topic="([^"]+)" '
+        r'x="([\d.]+)" y="([\d.]+)" width="([\d.]+)"')
+
+    @staticmethod
+    def _assert_no_overlap(testcase, groups):
+        """同一格（group key）內 y 相同的 chip，x 區間必須兩兩不相交。"""
+        for key, chips in groups.items():
+            by_row: dict[float, list[tuple[float, float]]] = {}
+            for x, y, w in chips:
+                by_row.setdefault(y, []).append((x, x + w))
+            for y, spans in by_row.items():
+                spans.sort()
+                for (s1, e1), (s2, e2) in zip(spans, spans[1:]):
+                    testcase.assertLessEqual(
+                        e1, s2 + 0.01, f"格 {key} 同列 y={y} chip 重疊：{spans}")
+
+    def _opp_data(self):
+        # q1（高密度×高廣度）塞 6 個 8 字 CJK label 強迫換行；q4 留空驗 placeholder
+        q1 = [
+            ("T11", "踏板履帶組裝機構", 45, 9, 3), ("T12", "鋸切支撐調整機構", 40, 8, 2),
+            ("T13", "磁磚切割導水平台", 38, 7, 1), ("T14", "跑步機升降架體組", 30, 6, 1),
+            ("T15", "橢圓機阻力調節器", 25, 5, 0), ("T16", "過載保護安全開關", 20, 5, 1),
+        ]
+        rows = [
+            {"topic_code": tc, "label": lb, "patent_count": p, "applicant_count": a,
+             "leading_applicant_count": lc, "top_applicants": []}
+            for tc, lb, p, a, lc in q1
+        ]
+        rows.append({"topic_code": "T21", "label": "散熱防塵", "patent_count": 11,
+                     "applicant_count": 6, "leading_applicant_count": 2, "top_applicants": []})
+        rows.append({"topic_code": "T31", "label": "外觀設計", "patent_count": 3,
+                     "applicant_count": 2, "leading_applicant_count": 0, "top_applicants": []})
+        return {"rows": rows, "patent_count_median": 20.0, "applicant_count_median": 5.0}
+
+    def test_opportunity_board_chips_once_correct_cell_no_overlap(self):
+        data = self._opp_data()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "opportunity.svg"
+            chart_runner.render_opportunity_quadrant_svg(path, "機會四象限分析", data)
+            svg = path.read_text(encoding="utf-8")
+        chips = self._OPP_CHIP.findall(svg)
+        # 每個主題 chip 恰一次
+        topics = [c[1] for c in chips]
+        self.assertEqual(sorted(topics), sorted(r["topic_code"] for r in data["rows"]),
+                         "每個主題應恰有一個 chip")
+        # 依中位數落正確格：q1=高密度高廣度、q2=低密度高廣度、q3=低密度低廣度
+        expected_cell = {r["topic_code"]: (
+            ("q1" if r["applicant_count"] >= 5 else "q4") if r["patent_count"] >= 20
+            else ("q2" if r["applicant_count"] >= 5 else "q3"))
+            for r in data["rows"]}
+        for cell, topic, *_ in chips:
+            self.assertEqual(cell, expected_cell[topic], f"{topic} 應落 {expected_cell[topic]}")
+        # 同格同列 x 區間不相交（q1 六個長 label 必換行，驗流式排列）
+        groups: dict[str, list[tuple[float, float, float]]] = {}
+        for cell, topic, x, y, w in chips:
+            groups.setdefault(cell, []).append((float(x), float(y), float(w)))
+        self.assertGreater(len({y for _, y, _ in groups["q1"]}), 1, "q1 應發生換行（多列）")
+        self._assert_no_overlap(self, groups)
+
+    def test_opportunity_board_empty_cell_placeholder_and_legend(self):
+        data = self._opp_data()  # q4 無主題
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "opportunity.svg"
+            chart_runner.render_opportunity_quadrant_svg(path, "機會四象限分析", data)
+            svg = path.read_text(encoding="utf-8")
+        self.assertIn("本案無此類", svg, "空格應顯示斜體說明")
+        self.assertIn("色＝龍頭涉入", svg, "圖例缺「色＝龍頭涉入｜數字＝件/家」")
+        for color in ("#DC2626", "#F59E0B", "#9CA3AF"):
+            self.assertIn(color, svg, f"圖例缺龍頭涉入三級色 {color}")
+
+    def test_pain_board_unknown_gray_band_not_low(self):
+        rows = [
+            {"topic_code": "P01", "label": "散熱防塵", "patent_count": 11, "severity": "high"},
+            {"topic_code": "P02", "label": "能源管理", "patent_count": 2, "severity": "high"},
+            {"topic_code": "P03", "label": "收納走線", "patent_count": 1, "severity": "medium"},
+            {"topic_code": "P04", "label": "照明裝置", "patent_count": 4, "severity": "low"},
+            {"topic_code": "P05", "label": "外觀設計", "patent_count": 11, "severity": "unknown"},
+            {"topic_code": "P06", "label": "轉向機構", "patent_count": 8, "severity": "unknown"},
+            {"topic_code": "P07", "label": "電控模組", "patent_count": 6, "severity": "unknown"},
+        ]
+        data = {"rows": rows, "x_median": 6.5}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pain.svg"
+            chart_runner.render_pain_point_quadrant_svg(path, "痛點四象限分析", data)
+            svg = path.read_text(encoding="utf-8")
+        chips = self._PAIN_CHIP.findall(svg)
+        self.assertEqual(sorted(c[2] for c in chips), sorted(r["topic_code"] for r in rows))
+        band_by_topic = {r["topic_code"]: r["severity"] for r in rows}
+        col_by_topic = {r["topic_code"]: ("hi" if r["patent_count"] >= 6.5 else "lo") for r in rows}
+        for band, col, topic, *_ in chips:
+            self.assertEqual(band, band_by_topic[topic], f"{topic} 應在 {band_by_topic[topic]} 帶")
+            self.assertNotEqual((band_by_topic[topic], band), ("unknown", "low"),
+                                "unknown 不得落低帶")
+            self.assertEqual(col, col_by_topic[topic], f"{topic} 密度欄應為 {col_by_topic[topic]}")
+        self.assertIn("待調查（灰帶）", svg, "缺獨立灰帶標示")
+        # 四角象限名沿用
+        for corner in ("研發優先缺口★", "必守核心→迴避設計", "nice-to-have→防禦即可", "競爭者已過度投入→選擇性"):
+            self.assertIn(corner, svg, f"缺象限名 {corner}")
+        groups: dict[tuple[str, str], list[tuple[float, float, float]]] = {}
+        for band, col, topic, x, y, w in chips:
+            groups.setdefault((band, col), []).append((float(x), float(y), float(w)))
+        self._assert_no_overlap(self, groups)
+
+
+class PersistenceTruncationTests(unittest.TestCase):
+    """2026-07-21 定案修正：排名類「保存」也只留前 20、年度序列保存只留最新 25 年，
+    主題相關數據不截（report-requirements.md「顯示規格」＋decisions.md 定案修正）。
+    驗 report_data.json 落檔內容，不驗顯示（顯示已由 DisplaySpecTests 覆蓋）。"""
+
+    @staticmethod
+    def _stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        if name in ("ipc_main_distribution", "cpc_main_distribution"):
+            rows = [{"Curr. IPC(Main)": f"A{i:02d}B {i}/00", "patent_count": 30 - i} for i in range(25)]
+        elif name in ("application_trend", "publication_trend"):
+            key = "application_year" if name == "application_trend" else "publication_year"
+            rows = [{key: 1990 + i, "patent_count": i + 1} for i in range(30)]  # 30 年
+        elif name == "applicant_year_matrix":
+            rows = [{"applicant_display_name": "Co", "application_year": 1990 + i, "patent_count": 1}
+                    for i in range(30)]
+        elif name == "applicant_country_distribution":
+            rows = [{"applicant_display_name": f"Co{i:02d}", "country_code": "US", "patent_count": 30 - i}
+                    for i in range(25)]
+        else:
+            rows = []
+        if limit:
+            rows = rows[:limit]
+        return fake_report(name, rows)
+
+    def _render(self, tmp, **kwargs):
+        with mock.patch.object(chart_runner, "run_report", self._stub_run_report):
+            result = chart_runner.run_chart_trial(output_dir=Path(tmp), **kwargs)
+        run_dir = Path(result["output_dir"])
+        return json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
+
+    def test_ranking_reports_persist_top20_with_rows_total(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rd = self._render(tmp, report_names=["ipc_main_distribution", "applicant_country_distribution"])
+        for name in ("ipc_main_distribution", "applicant_country_distribution"):
+            report = rd["reports"][name]
+            self.assertLessEqual(len(report["rows"]), 20, f"{name} 入庫 rows 應 ≤20")
+            self.assertEqual(report.get("rows_total"), 25, f"{name} 應保留截取前總數 rows_total")
+        # IPC chart_rows（L4/L5 各階）同樣前 20＋總數
+        for key in ("ipc_main_distribution_L4", "ipc_main_distribution_L5"):
+            self.assertLessEqual(len(rd["chart_rows"][key]), 20, f"{key} 入庫應 ≤20")
+            self.assertEqual(rd.get("chart_rows_total", {}).get(key), 25, f"{key} 缺 chart_rows_total")
+
+    def test_year_series_persist_latest_25_years(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rd = self._render(tmp, report_names=["application_trend", "applicant_year_matrix"])
+        for name, key in (("application_trend", "application_year"),
+                          ("publication_trend", "publication_year"),
+                          ("applicant_year_matrix", "application_year")):
+            years = {int(r[key]) for r in rd["reports"][name]["rows"]}
+            self.assertLessEqual(len(years), 25, f"{name} 入庫年份數應 ≤25")
+            self.assertEqual(min(years), 1995, f"{name} 應留最新 25 年（1995–2019）")
+            self.assertEqual(rd["reports"][name].get("rows_total"), 30)
+        # 年增率衍生序列（chart_rows，年份鍵為 "year"）同樣最新 25 年
+        growth_years = {int(r["year"]) for r in rd["chart_rows"]["application_growth"]}
+        self.assertLessEqual(len(growth_years), 25)
+        self.assertGreaterEqual(min(growth_years), 1995)
+
+    def test_topic_rows_not_truncated(self):
+        data = {
+            "topics": [{"topic_code": f"T{i:03d}", "label": f"主題{i}", "source_field": "wips_independent_claims"}
+                       for i in range(25)],
+            "assignments": [{"topic_code": f"T{i:03d}", "patent_id": i} for i in range(25)],
+            "normalized_applicants": [{"patent_id": i, "applicant_name": "TSMC"} for i in range(25)],
+            "top_applicants_ws": ["TSMC"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            rd = self._render(tmp, report_names=["cluster_analytics"], cluster_data=data)
+        self.assertEqual(len(rd["chart_rows"]["cluster_topic_table"]), 25,
+                         "主題相關數據不截（例外規則）")
+
+    def test_run_full_report_ranking_limit_default_20(self):
+        """run_full_report 是 analysis 入庫出圖入口，ranking_limit 預設同步 20。"""
+        import inspect
+
+        from backend.app.reports.cluster_data_loader import run_full_report
+
+        sig = inspect.signature(run_full_report)
+        self.assertEqual(sig.parameters["ranking_limit"].default, 20)
+
+
+class TopicSegmentTests(unittest.TestCase):
+    """2026-07-21 使用者定案：主題統計「技術、功效不要混」——技術主題（wips_independent_claims）
+    與功效分類（effect_summary）分段各自一張表；Source Field 原始欄名不出現在使用者介面；
+    矩陣板每個 source_field 各一組（單一來源維持原檔名）。"""
+
+    @staticmethod
+    def _fake_ctx(tmp: str):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            run_dir=Path(tmp), chart_rows={}, sections=[], report=None,
+            cluster_data=None, ipc_levels=(4, 5), cpc_levels=(4, 5))
+
+    _TWO_SOURCE_DATA = {
+        "topics": [
+            {"topic_code": "T001", "label": "散熱防塵", "source_field": "wips_independent_claims"},
+            {"topic_code": "T002", "label": "速度控制", "source_field": "wips_independent_claims"},
+            {"topic_code": "E001", "label": "降噪效果", "source_field": "effect_summary"},
+        ],
+        "assignments": [
+            {"topic_code": "T001", "patent_id": 1},
+            {"topic_code": "T002", "patent_id": 2},
+            {"topic_code": "E001", "patent_id": 3},
+        ],
+        "normalized_applicants": [
+            {"patent_id": 1, "applicant_name": "TSMC"},
+            {"patent_id": 2, "applicant_name": "UMC"},
+            {"patent_id": 3, "applicant_name": "TSMC"},
+        ],
+        "top_applicants_ws": ["TSMC"],
+    }
+
+    def test_table_two_segments_no_source_field_literal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._fake_ctx(tmp)
+            ctx.cluster_data = self._TWO_SOURCE_DATA
+            chart_runner._build_cluster_analytics_section(ctx)
+            table_html = (Path(tmp) / "cluster_topic_table.html").read_text(encoding="utf-8")
+        self.assertIn("<h3>技術主題</h3>", table_html)
+        self.assertIn("<h3>功效分類</h3>", table_html)
+        self.assertEqual(table_html.count("<table"), 2, "兩來源應各自一張表，不混同表")
+        for literal in ("Source Field", "wips_independent_claims", "effect_summary"):
+            self.assertNotIn(literal, table_html, f"原始欄名/欄值不得出現：{literal}")
+        # 技術段在前、功效段在後（以段標題 h3 判斷，避免誤中 h2 總標題字面）
+        self.assertLess(table_html.index("<h3>技術主題</h3>"), table_html.index("<h3>功效分類</h3>"))
+
+    def test_matrix_boards_per_source_with_segment_titles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._fake_ctx(tmp)
+            ctx.cluster_data = self._TWO_SOURCE_DATA
+            chart_runner._build_cluster_analytics_section(ctx)
+            files = [v["file"] for v in ctx.sections[0]["variants"]]
+            tech_opp = (Path(tmp) / "opportunity_quadrant_tech.svg").read_text(encoding="utf-8")
+            effect_opp = (Path(tmp) / "opportunity_quadrant_effect.svg").read_text(encoding="utf-8")
+            self.assertTrue((Path(tmp) / "pain_point_quadrant_tech.svg").exists())
+            self.assertTrue((Path(tmp) / "pain_point_quadrant_effect.svg").exists())
+        self.assertEqual(files[0], "cluster_topic_table.html")
+        self.assertEqual(len(files), 5, "兩來源＝統計表＋每來源機會/痛點各一，共 5 tabs")
+        for f in ("opportunity_quadrant_tech.svg", "pain_point_quadrant_tech.svg",
+                  "opportunity_quadrant_effect.svg", "pain_point_quadrant_effect.svg"):
+            self.assertIn(f, files)
+        self.assertIn("機會四象限分析——技術主題", tech_opp)
+        self.assertIn("機會四象限分析——功效分類", effect_opp)
+
+    def test_single_source_keeps_filenames_and_single_segment(self):
+        data = {
+            "topics": [{"topic_code": "T001", "label": "散熱防塵", "source_field": "wips_independent_claims"}],
+            "assignments": [{"topic_code": "T001", "patent_id": 1}],
+            "normalized_applicants": [{"patent_id": 1, "applicant_name": "TSMC"}],
+            "top_applicants_ws": ["TSMC"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._fake_ctx(tmp)
+            ctx.cluster_data = data
+            chart_runner._build_cluster_analytics_section(ctx)
+            files = [v["file"] for v in ctx.sections[0]["variants"]]
+            table_html = (Path(tmp) / "cluster_topic_table.html").read_text(encoding="utf-8")
+            opp = (Path(tmp) / "opportunity_quadrant.svg").read_text(encoding="utf-8")
+        self.assertEqual(files, ["cluster_topic_table.html", "opportunity_quadrant.svg", "pain_point_quadrant.svg"],
+                         "單一來源維持原檔名（與 three-tabs 契約一致）")
+        self.assertIn("<h3>技術主題</h3>", table_html)
+        # 只斷段標題（h2 總標題「主題／功效分類統計」本身含「功效分類」字面）
+        self.assertNotIn("<h3>功效分類</h3>", table_html, "只有一種來源時只出現該段")
+        self.assertIn("機會四象限分析——技術主題", opp, "板標題帶來源段名")
+
+    def test_data_card_excludes_source_field_column(self):
+        rows = [{"topic_code": "T001", "label": "散熱防塵", "source_field": "wips_independent_claims",
+                 "patent_count": 3, "applicant_count": 2, "top_applicants": [],
+                 "leading_applicant_count": 1, "leading_applicants_involved": ["TSMC"]}]
+        html = chart_runner._data_table_html(rows, "cluster_topic_table")
+        self.assertNotIn("wips_independent_claims", html, "數據卡不得出現 source_field 原始值")
+        self.assertNotIn("source_field", html, "數據卡不得出現 source_field 欄")
+        self.assertIn("主題代碼", html)  # 其餘欄照 DATA_COLUMN_LABELS 顯示
+
+
+class DataTableHumanizeTests(unittest.TestCase):
+    """2026-07-21 使用者截圖回饋：數據卡複雜值人類化（嚴禁 raw repr）＋
+    總計列只對加總有意義的欄出值（patent_count 類），其餘「—」避免誤導。"""
+
+    def test_list_of_dicts_renders_name_count_semicolon(self):
+        rows = [{"topic_code": "T1", "patent_count": 40,
+                 "top_applicants": [{"name": "力山工業", "count": 39},
+                                    {"name": "LOWE'S COMPANIES, INC.", "count": 1}]}]
+        html = chart_runner._data_table_html(rows, "cluster_topic_table")
+        self.assertIn("力山工業 39；LOWE", html, "list[dict] 應為「名稱 數字」分號連接")
+        self.assertNotIn("{&#x27;name&#x27;", html)
+        self.assertNotIn("[{", html, "不得輸出 raw repr")
+
+    def test_list_of_str_renders_dun_comma(self):
+        rows = [{"topic_code": "T1", "patent_count": 3,
+                 "leading_applicants_involved": ["力山工業", "客戶A"]}]
+        html = chart_runner._data_table_html(rows, "cluster_topic_table")
+        self.assertIn("力山工業、客戶A", html, "list[str] 應為頓號連接")
+        self.assertNotIn("[&#x27;", html)
+
+    def test_empty_list_and_none_render_dash(self):
+        rows = [{"topic_code": "T1", "patent_count": 3,
+                 "top_applicants": [], "leading_applicants_involved": None}]
+        html = chart_runner._data_table_html(rows, "cluster_topic_table")
+        self.assertNotIn("[]", html, "空 list 應顯示 —")
+        self.assertNotIn("None", html, "None 應顯示 —")
+
+    def test_totals_only_for_summable_columns(self):
+        rows = [
+            {"topic_code": "T1", "patent_count": 10, "applicant_count": 4,
+             "leading_applicant_count": 2, "application_year": 2020},
+            {"topic_code": "T2", "patent_count": 5, "applicant_count": 3,
+             "leading_applicant_count": 1, "application_year": 2021},
+        ]
+        html = chart_runner._data_table_html(rows, "cluster_topic_table")
+        totals = re.search(r"<tr><td class=\"totals-cell\">.*?</tr>", html, re.S).group(0)
+        cells = re.findall(r"<strong>(.*?)</strong>", totals)
+        # 欄序：topic_code, patent_count, applicant_count, leading_applicant_count, application_year
+        self.assertEqual(cells[1], "15", "patent_count 加總有意義，應出總計")
+        for idx, col in ((2, "applicant_count"), (3, "leading_applicant_count"), (4, "application_year")):
+            self.assertEqual(cells[idx], "—", f"{col} 加總無意義（distinct/年份），應顯示 —")
 
 
 class SelectiveRenderTests(unittest.TestCase):
@@ -136,7 +653,13 @@ class SelectiveRenderTests(unittest.TestCase):
             # 產出檔只有選中 sections 的圖＋固定兩檔。
             self.assertEqual(
                 sorted(result["files"]),
-                sorted(["annual_trend.svg", "application_growth.svg", "report_data.json", "index.html"]),
+                sorted([
+                    "annual_trend.svg",
+                    "application_growth.svg",
+                    "report_data.json",
+                    "index.html",
+                    "artifact_manifest.json",
+                ]),
             )
             run_dir = Path(result["output_dir"])
             for filename in result["files"]:
@@ -160,6 +683,198 @@ class SelectiveRenderTests(unittest.TestCase):
         # application_trend 被 annual_trend 與 application_growth 兩個 sections 依賴，
         # 但快取後只實際查一次 DB。
         self.assertEqual(calls.count("application_trend"), 1)
+
+    def test_manifest_hash_and_snapshot_metadata(self):
+        """小型 fixture 驗證 SVG、hash、filters 與 patent_ids 快照 metadata。"""
+
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+            self.assertEqual(patent_ids, [7, 9])
+            rows = {
+                "applicant_ranking": [
+                    {"applicant_display_name": "REXON", "patent_count": 2},
+                ],
+            }[name]
+            return fake_report(name, rows)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(chart_runner, "fetch_analysis_patent_ids", return_value=[7, 9]), \
+                    mock.patch.object(chart_runner, "run_report", stub_run_report), \
+                    mock.patch.object(chart_runner, "record_exports", return_value=0):
+                result = chart_runner.run_chart_trial(
+                    output_dir=Path(tmp),
+                    report_names=["applicant_ranking"],
+                    filters={"country_code": "TW"},
+                    analysis_id=5,
+                )
+
+            run_dir = Path(result["output_dir"])
+            svg_path = run_dir / "applicant_ranking.svg"
+            manifest_path = run_dir / "artifact_manifest.json"
+            self.assertTrue(svg_path.is_file())
+            self.assertTrue(manifest_path.is_file())
+
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            metadata = manifest["metadata"]
+            self.assertEqual(metadata["analysis_id"], 5)
+            self.assertEqual(metadata["filters"], {"country_code": "TW"})
+            self.assertEqual(metadata["scope"], "patent_ids_snapshot")
+            self.assertEqual(metadata["patent_ids_count"], 2)
+            self.assertEqual(metadata["patent_ids_sha256"], hashlib.sha256(b"7,9").hexdigest())
+            by_file = {item["file"]: item for item in manifest["artifacts"]}
+            self.assertEqual(by_file["applicant_ranking.svg"]["report_name"], "applicant_ranking")
+            self.assertEqual(by_file["applicant_ranking.svg"]["sha256"], chart_runner.sha256_file(svg_path))
+            self.assertIn("artifact_manifest.json", result["files"])
+
+    def test_applicant_ranking_outputs_transfer_segment_and_detail_fields(self):
+        """申請人排名圖表、JSON 保留最新受讓人統計與公司明細。"""
+
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+            self.assertEqual(name, "applicant_ranking")
+            return fake_report(name, [{
+                "applicant_display_name": "REXON",
+                "patent_count": 5,
+                "recent_assignee_count": 2,
+                "recent_assignee_display_names": "Acme; Beta",
+            }])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(chart_runner, "run_report", stub_run_report):
+                result = chart_runner.run_chart_trial(output_dir=Path(tmp), report_names=["applicant_ranking"])
+
+            run_dir = Path(result["output_dir"])
+            svg = (run_dir / "applicant_ranking.svg").read_text(encoding="utf-8")
+            report_data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
+
+        self.assertIn("有最新受讓人", svg)
+        self.assertIn("2 / 5", svg)
+        self.assertIn("Acme", svg)
+        self.assertIn("Beta", svg)
+        total_rect = re.search(r'<rect class="bar-total" x="([0-9.]+)"[^>]+width="([0-9.]+)"', svg)
+        segment_rect = re.search(r'<rect class="bar-segment" x="([0-9.]+)"[^>]+width="([0-9.]+)"', svg)
+        self.assertIsNotNone(total_rect)
+        self.assertIsNotNone(segment_rect)
+        self.assertGreater(float(segment_rect.group(1)), float(total_rect.group(1)))
+        self.assertLess(float(segment_rect.group(2)), float(total_rect.group(2)))
+        row = report_data["reports"]["applicant_ranking"]["rows"][0]
+        self.assertEqual(row["recent_assignee_count"], 2)
+        self.assertEqual(row["recent_assignee_display_names"], "Acme; Beta")
+
+    def test_owner_year_matrix_outputs_bubble_svg_json_and_expand_html(self):
+        """專利權人 × 年份矩陣使用泡泡圖，JSON 不因圖表前 20 家而裁切。"""
+
+        matrix_rows = [
+            {"current_assignee_display_name": f"Owner {index:02d}", "application_year": 2020, "patent_count": 30 - index}
+            for index in range(1, 23)
+        ]
+
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+            self.assertEqual(name, "owner_year_matrix")
+            return fake_report(name, matrix_rows)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(chart_runner, "run_report", stub_run_report):
+                result = chart_runner.run_chart_trial(output_dir=Path(tmp), report_names=["owner_year_matrix"])
+
+            run_dir = Path(result["output_dir"])
+            svg = (run_dir / "owner_year_matrix.svg").read_text(encoding="utf-8")
+            more_svg = (run_dir / "owner_year_matrix_more.svg").read_text(encoding="utf-8")
+            index_html = (run_dir / "index.html").read_text(encoding="utf-8")
+            report_data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result["sections_rendered"], ["owner_year_matrix"])
+        self.assertIn("owner_year_matrix.svg", result["files"])
+        self.assertIn("owner_year_matrix_more.svg", result["files"])
+        self.assertIn("<circle", svg)
+        self.assertIn("<title>Owner 01 / 2020 / 29</title>", svg)
+        self.assertIn(">29</text>", svg)
+        combined_svg = svg + more_svg
+        self.assertIn('#14B8A6', combined_svg)
+        self.assertIn('#F59E0B', combined_svg)
+        self.assertIn('#DC2626', combined_svg)
+        self.assertIn("件數色階", svg)
+        self.assertIn("Owner 10", svg)
+        self.assertNotIn("Owner 11", svg)
+        self.assertIn("Owner 11", more_svg)
+        self.assertIn("Owner 20", more_svg)
+        self.assertNotIn("Owner 21", more_svg)
+        # 2026-07-21 顯示規格：收合鈕文案改 WIPS 式「＋查看全部（第 11～20 名）」（原「顯示第 11～20 名」）
+        self.assertIn("＋查看全部（第 11～20 名）", index_html)
+        self.assertIn("data-expand-target", index_html)
+        self.assertIn("2020", svg)
+        rows = report_data["reports"]["owner_year_matrix"]["rows"]
+        self.assertEqual(len(rows), 22)
+        self.assertEqual(rows[0]["current_assignee_display_name"], "Owner 01")
+
+    def test_applicant_year_matrix_outputs_bubbles_and_keeps_full_rows(self):
+        matrix_rows = [
+            {"applicant_display_name": f"Applicant {index:02d}", "application_year": 2021, "patent_count": 25 - index}
+            for index in range(1, 23)
+        ]
+
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+            self.assertEqual(name, "applicant_year_matrix")
+            return fake_report(name, matrix_rows)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(chart_runner, "run_report", stub_run_report):
+                result = chart_runner.run_chart_trial(output_dir=Path(tmp), report_names=["applicant_year_matrix"])
+
+            run_dir = Path(result["output_dir"])
+            svg = (run_dir / "applicant_year_matrix.svg").read_text(encoding="utf-8")
+            more_svg = (run_dir / "applicant_year_matrix_more.svg").read_text(encoding="utf-8")
+            report_data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
+
+        self.assertIn("applicant_year_matrix_more.svg", result["files"])
+        self.assertIn("<circle", svg)
+        self.assertIn("<title>Applicant 01 / 2021 / 24</title>", svg)
+        self.assertIn("Applicant 10", svg)
+        self.assertNotIn("Applicant 11", svg)
+        self.assertIn("Applicant 11", more_svg)
+        self.assertNotIn("Applicant 21", more_svg)
+        self.assertEqual(len(report_data["reports"]["applicant_year_matrix"]["rows"]), 22)
+
+    def test_year_bubble_matrix_uses_latest_25_years_and_large_bubbles(self):
+        matrix_rows = [
+            {"current_assignee_display_name": "Owner A", "application_year": 2000 + index, "patent_count": index + 1}
+            for index in range(30)
+        ] + [
+            {"current_assignee_display_name": "Owner B", "application_year": 2000 + index, "patent_count": 1}
+            for index in range(30)
+        ]
+
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+            self.assertEqual(name, "owner_year_matrix")
+            return fake_report(name, matrix_rows)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(chart_runner, "run_report", stub_run_report):
+                result = chart_runner.run_chart_trial(output_dir=Path(tmp), report_names=["owner_year_matrix"])
+
+            run_dir = Path(result["output_dir"])
+            svg = (run_dir / "owner_year_matrix.svg").read_text(encoding="utf-8")
+            report_data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
+
+        self.assertIn("owner_year_matrix.svg", result["files"])
+        for year in range(2000, 2005):
+            self.assertNotIn(f">{year}<", svg)
+            self.assertNotIn(f"/ {year} /", svg)
+        for year in (2005, 2029):
+            self.assertIn(f">{year}<", svg)
+            self.assertIn(f"/ {year} /", svg)
+        radii = [float(value) for value in re.findall(r' r="([0-9.]+)"', svg)]
+        self.assertGreaterEqual(min(radii), 9.0)
+        self.assertGreaterEqual(max(radii), 27.0)
+        height = float(re.search(r'<svg[^>]+height="([0-9.]+)"', svg).group(1))
+        self.assertGreaterEqual(height, 125 + 2 * 56 + 34)
+        # 2026-07-21 定案修正（規格變更註記）：年度序列「保存」只留最新 25 年——
+        # fixture 30 年×2 家＝60 列，入庫截為 25 年×2 家＝50 列（原斷言 60）。
+        self.assertEqual(len(report_data["reports"]["owner_year_matrix"]["rows"]), 50)
+        self.assertEqual(report_data["reports"]["owner_year_matrix"]["rows_total"], 60)
+        # font-size 放大（年標籤用 17，公司名用 17）
+        self.assertIn('font-size="17"', svg)
+        # left margin 擴大（340 使 SVG 寬度擴大，原 width 約 250+NumYears*82+34）
+        svg_width = float(re.search(r'<svg[^>]+width="([0-9.]+)"', svg).group(1))
+        self.assertGreaterEqual(svg_width, 340 + 1 * 82 + 34)
 
 
 if __name__ == "__main__":

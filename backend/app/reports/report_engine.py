@@ -22,6 +22,8 @@ def quote_ident(identifier: str) -> str:
 AGGREGATE_FUNCTIONS = {
     "sum": "COALESCE(SUM({col}), 0)::bigint",
     "count": "COUNT({col})::int",  # 非空列數：用來區分「彙總=0」與「根本無資料」
+    "count_nonblank": "COUNT(*) FILTER (WHERE NULLIF(BTRIM({col}::text), '') IS NOT NULL)::int",
+    "string_agg_distinct_nonblank": "COALESCE(STRING_AGG(DISTINCT NULLIF(BTRIM({col}::text), ''), '; ' ORDER BY NULLIF(BTRIM({col}::text), '')) FILTER (WHERE NULLIF(BTRIM({col}::text), '') IS NOT NULL), '')",
     "count_distinct": "COUNT(DISTINCT {col})::int",
     "avg": "AVG({col})::numeric(12,2)",
     "max": "MAX({col})",
@@ -217,17 +219,13 @@ def run_report(
     if not definition:
         raise ValueError(f"Unknown report: {report_name}")
 
-    try:
-        from psycopg.rows import dict_row
-    except ImportError as exc:
-        raise RuntimeError("psycopg is required for report execution. Install psycopg[binary].") from exc
+    import psycopg
+    from psycopg.rows import dict_row
 
-    from backend.app.db.connection import get_pool
+    from backend.app.db.connection import get_connection_kwargs
 
     sql, params = build_report_sql(definition, filters, limit, patent_ids)
-    # 走連線池借還：報表查詢是高頻路徑（前端手動＋LLM 工具呼叫都進這裡），
-    # 每次開關新連線在反覆使用下會撞連線數上限。
-    with get_pool().connection() as conn:
+    with psycopg.connect(**get_connection_kwargs(), connect_timeout=15) as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import unittest
+import os
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -13,7 +14,7 @@ from unittest import mock
 
 from backend.app.mcp_server import tools_reporting
 from backend.app.mcp_server._shared import json_safe
-from backend.app.reports.report_definitions import REPORT_DEFINITIONS
+from backend.app.reports.report_definitions import DEFAULT_REPORT_NAMES, REPORT_DEFINITIONS
 
 
 class JsonSafeTests(unittest.TestCase):
@@ -54,10 +55,17 @@ class JsonSafeTests(unittest.TestCase):
 
 
 class ListReportsTests(unittest.TestCase):
+    def test_default_report_names_match_definitions(self):
+        """確認固定預設報表名單與定義順序完全一致。"""
+        self.assertIsInstance(DEFAULT_REPORT_NAMES, tuple)
+        self.assertEqual(len(DEFAULT_REPORT_NAMES), 14)
+        self.assertEqual(DEFAULT_REPORT_NAMES, tuple(REPORT_DEFINITIONS))
+
     def test_catalog_covers_all_definitions(self):
         catalog = tools_reporting.list_reports()
         names = [item["name"] for item in catalog["reports"]]
         self.assertEqual(sorted(names), sorted(REPORT_DEFINITIONS))
+        self.assertEqual(catalog["default_report_names"], list(DEFAULT_REPORT_NAMES))
         for item in catalog["reports"]:
             self.assertIn("label_zh", item)
             self.assertIn("report_type", item)
@@ -75,9 +83,47 @@ class ListReportsTests(unittest.TestCase):
 class RunReportAnalysisTests(unittest.TestCase):
     """驗證輸入檢查與對引擎的接線（引擎本體另有 tests）。"""
 
-    def test_empty_report_names_raises(self):
-        with self.assertRaises(ValueError):
-            tools_reporting.run_report_analysis([])
+    def test_none_report_names_uses_default_reports(self):
+        """確認 MCP 未指定 report_names 時會把完整預設名單交給 data 與 chart。"""
+        chart_result = {
+            "output_dir": "out/report_trial_default",
+            "files": [],
+            "sections_rendered": [],
+        }
+        with mock.patch.object(tools_reporting, "run_reports_batch", return_value={}) as batch, \
+                mock.patch.object(tools_reporting, "run_chart_trial", return_value=chart_result) as charts:
+            result = tools_reporting.run_report_analysis()
+        batch.assert_called_once_with(
+            list(DEFAULT_REPORT_NAMES),
+            filters=None,
+            limit=tools_reporting.DEFAULT_ROW_LIMIT,
+            patent_ids=None,
+        )
+        charts.assert_called_once_with(
+            analysis_id=None, report_names=list(DEFAULT_REPORT_NAMES), filters=None
+        )
+        self.assertEqual(result["parameters"]["report_names"], list(DEFAULT_REPORT_NAMES))
+
+    def test_empty_report_names_uses_default_reports(self):
+        """確認 MCP 傳入空 report_names 時會把完整預設名單交給 data 與 chart。"""
+        chart_result = {
+            "output_dir": "out/report_trial_default",
+            "files": [],
+            "sections_rendered": [],
+        }
+        with mock.patch.object(tools_reporting, "run_reports_batch", return_value={}) as batch, \
+                mock.patch.object(tools_reporting, "run_chart_trial", return_value=chart_result) as charts:
+            result = tools_reporting.run_report_analysis([])
+        batch.assert_called_once_with(
+            list(DEFAULT_REPORT_NAMES),
+            filters=None,
+            limit=tools_reporting.DEFAULT_ROW_LIMIT,
+            patent_ids=None,
+        )
+        charts.assert_called_once_with(
+            analysis_id=None, report_names=list(DEFAULT_REPORT_NAMES), filters=None
+        )
+        self.assertEqual(result["parameters"]["report_names"], list(DEFAULT_REPORT_NAMES))
 
     def test_unknown_report_name_raises(self):
         with self.assertRaisesRegex(ValueError, "no_such_report"):
@@ -124,8 +170,80 @@ class RunReportAnalysisTests(unittest.TestCase):
         self.assertEqual(result["charts"]["export_count"], 3)
 
 
+class _FakeCursor:
+    """模擬 get_data_status 需要的 cursor 行為。"""
+
+    def __init__(self):
+        self._rows = iter([(10,), (10,), (3,), (2,), (datetime(2026, 7, 20, 12, 0),)])
+        self.sql: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, sql):
+        self.sql.append(sql)
+
+    def fetchone(self):
+        return next(self._rows)
+
+
+class _FakeConnection:
+    """模擬 pool connection。"""
+
+    def __init__(self):
+        self.cursor_obj = _FakeCursor()
+
+    def cursor(self):
+        return self.cursor_obj
+
+
+class _FakeConnectionContext:
+    """模擬 get_pool().connection() context manager。"""
+
+    def __init__(self):
+        self.conn = _FakeConnection()
+
+    def __enter__(self):
+        return self.conn
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakePool:
+    """模擬 production pool，不連真 DB。"""
+
+    def __init__(self):
+        self.context = _FakeConnectionContext()
+
+    def connection(self):
+        return self.context
+
+
+class DataStatusUnitTests(unittest.TestCase):
+    """get_data_status 結構測試使用 mock，不連真 DB。"""
+
+    def test_status_shape_with_mocked_pool(self):
+        fake_pool = _FakePool()
+        with mock.patch.object(tools_reporting, "get_pool", return_value=fake_pool), mock.patch.object(
+            tools_reporting,
+            "get_connection_kwargs",
+            return_value={"host": "localhost", "port": 5433, "dbname": "patent"},
+        ):
+            status = tools_reporting.get_data_status()
+        self.assertEqual(status["status"], "ok")
+        self.assertEqual(status["database"]["port"], 5433)
+        self.assertEqual(status["row_counts"]["patents"], 10)
+        self.assertEqual(status["row_counts"]["report_patent_base"], 10)
+        self.assertIsInstance(status["warnings"], list)
+
+
+@unittest.skipUnless(os.environ.get("RUN_DB_TESTS") == "1", "set RUN_DB_TESTS=1 to run DB smoke")
 class DataStatusSmokeTests(unittest.TestCase):
-    """真 DB smoke：連得到開發庫（PGPORT=5433）才跑，連不到就 skip。"""
+    """真 DB smoke：僅 RUN_DB_TESTS=1 時跑；連不到就 skip。"""
 
     @classmethod
     def setUpClass(cls):

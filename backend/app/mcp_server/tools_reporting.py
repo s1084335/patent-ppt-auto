@@ -14,7 +14,11 @@ from typing import Any
 from backend.app.db.connection import get_connection_kwargs, get_pool
 from backend.app.mcp_server._shared import json_safe
 from backend.app.reports.chart_runner import fetch_analysis_patent_ids, run_chart_trial
-from backend.app.reports.report_definitions import ALLOWED_FILTER_COLUMNS, REPORT_DEFINITIONS
+from backend.app.reports.report_definitions import (
+    ALLOWED_FILTER_COLUMNS,
+    DEFAULT_REPORT_NAMES,
+    REPORT_DEFINITIONS,
+)
 from backend.app.reports.report_engine import run_reports_batch
 
 # 回傳給 client 的預設列數上限：保護 LLM context 不被 detail 報表灌爆。
@@ -38,6 +42,7 @@ def list_reports() -> dict[str, Any]:
     ]
     return {
         "reports": reports,
+        "default_report_names": list(DEFAULT_REPORT_NAMES),
         "allowed_filter_columns": sorted(ALLOWED_FILTER_COLUMNS),
         "notes": [
             "filters 只能用 allowed_filter_columns 的欄位；值可為單值（等值）、list（IN）"
@@ -50,7 +55,7 @@ def list_reports() -> dict[str, Any]:
 
 
 def run_report_analysis(
-    report_names: list[str],
+    report_names: list[str] | None = None,
     filters: dict[str, Any] | None = None,
     limit: int | None = DEFAULT_ROW_LIMIT,
     with_charts: bool = True,
@@ -58,7 +63,7 @@ def run_report_analysis(
 ) -> dict[str, Any]:
     """跑指定報表：回數據（JSON rows），並（預設）為同一批報表選擇性出圖。
 
-    - report_names：REPORT_DEFINITIONS 的 key（先用 list_reports 探索）；未知名稱直接報錯。
+    - report_names：REPORT_DEFINITIONS 的 key；None 或 [] 會使用固定預設報表組合。
     - filters：報表引擎白名單篩選；家族層級報表轉譯成「選中專利所屬家族」的
       完整佈局並附 note（不帶篩選＝全庫）。
     - limit：回傳 rows 的列數上限（預設 50，保護 context）；出圖與 report_data.json
@@ -69,20 +74,21 @@ def run_report_analysis(
     數據與圖表出自同一套報表定義與篩選條件，口徑一致；圖表檔案在回傳的
     charts.output_dir 下，index.html 是彙整頁。
     """
-    if not report_names:
-        raise ValueError("report_names 不可為空（先用 list_reports 查可用報表）")
-    unknown = sorted(set(report_names) - set(REPORT_DEFINITIONS))
+    selected_report_names = report_names or list(DEFAULT_REPORT_NAMES)
+    unknown = sorted(set(selected_report_names) - set(REPORT_DEFINITIONS))
     if unknown:
         raise ValueError(f"未知報表名：{', '.join(unknown)}（用 list_reports 查可用報表）")
 
     # analysis 快照只查一次，數據與圖表共用同一組 patent_ids 口徑。
     patent_ids = fetch_analysis_patent_ids(analysis_id) if analysis_id is not None else None
 
-    data = run_reports_batch(list(report_names), filters=filters, limit=limit, patent_ids=patent_ids)
+    data = run_reports_batch(
+        list(selected_report_names), filters=filters, limit=limit, patent_ids=patent_ids
+    )
     result: dict[str, Any] = {
         "reports": data,
         "parameters": {
-            "report_names": list(report_names),
+            "report_names": list(selected_report_names),
             "filters": filters or None,
             "row_limit": limit,
             "with_charts": with_charts,
@@ -93,7 +99,7 @@ def run_report_analysis(
     if with_charts:
         chart_result = run_chart_trial(
             analysis_id=analysis_id,
-            report_names=list(report_names),
+            report_names=list(selected_report_names),
             filters=filters,
         )
         charts: dict[str, Any] = {
