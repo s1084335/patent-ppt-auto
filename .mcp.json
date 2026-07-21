@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "patent": {
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "-m",
+        "backend.app.mcp_server.server"
+      ]
+    }
+  }
+}

@@ -1,0 +1,4 @@
+# Optional GPU deployment overlay. Base Compose remains usable on CPU-only servers.
+services:
+  worker:
+    gpus: ${WORKER_GPUS:-all}

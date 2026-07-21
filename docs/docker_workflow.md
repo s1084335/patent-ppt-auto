@@ -1,41 +1,44 @@
 # Docker 工作流（現況與固定五容器目標）
 
-目前實作只有 postgres 容器；最終 Docker Compose 固定為 nginx、frontend、backend、worker、postgres 五個 service／container，不再增加其他常駐容器。本機工具目前透過 **localhost:5433** 連容器 DB（本機原生 PostgreSQL 18 佔 5432，兩者互不影響）。
+目前已進入 backend／worker 整合階段：基礎 Compose 包含 postgres、backend、worker；前端完成後再加入 nginx、frontend，最終固定五個常駐 service，不增加 Redis／Celery。本機預設透過 `127.0.0.1:5433` 連 DB、`127.0.0.1:8000` 連 backend；伺服器可由環境變數改綁定位址、port、image registry 與資料路徑。
 
 ## 檔案
 
 ```text
-docker-compose.yml   現有 postgres；目標固定 nginx/frontend/backend/worker/postgres
+Dockerfile           backend／worker 共用 image，包含本機 PatentSBERTa
+docker-compose.yml   postgres／backend／worker 基礎服務
+docker-compose.gpu.yml  worker 的可選 GPU overlay
+.dockerignore        排除 secrets、資料、輸出與開發快取
 .env.example         範本（.env 不進版控）
-alembic/             schema 管理（屬於未來 backend image，過渡期由本機執行）
+alembic/             schema 管理，透過 backend image 一次性執行
 ```
 
 ## 啟動
 
 ```powershell
 cd D:\力山\專案\專利_ppt自動
-# 首次：Copy-Item .env.example .env 並填 POSTGRES_PASSWORD
-docker compose up -d postgres
-docker inspect --format '{{.State.Health.Status}}' patent-postgres   # healthy 才算好
+# 首次：Copy-Item .env.example .env 並填正式密碼與部署路徑
+docker compose config
+docker compose up -d --build postgres backend worker
+docker compose ps
+
+# NVIDIA runtime 可用時，改用 GPU overlay
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 ```
 
-## 灌 / 升級 schema（過渡做法：本機 alembic → 容器）
+## 灌／升級 schema（一次性容器，不隨服務啟動）
 
 ```powershell
-$env:PGHOST="localhost"; $env:PGPORT="5433"; $env:PGDATABASE="patent_ppt"
-$env:PGUSER="postgres";  $env:PGPASSWORD="<.env 裡的 POSTGRES_PASSWORD>"
-.venv\Scripts\python.exe -m alembic upgrade head
-.venv\Scripts\python.exe -m alembic current    # 應為 0001_baseline_schema (head)
+docker compose run --rm backend alembic current
+docker compose run --rm backend alembic upgrade head
 ```
 
-backend image 建好後，改用 `docker compose run --rm backend alembic upgrade head`。migration 不建立 Compose service，完成後不留下第六個容器。
-
-資料庫更新／部署流程可自動執行此命令，但每次都是新建一次性 container，並非常駐服務或 `restart: always`。migration 失敗時必須停止更新，不啟動新版 backend／worker。
+目前 DB 已在 migration head；一般啟動不得自動執行 upgrade。只有正式部署包含新 migration 時才先執行一次性命令，失敗就停止更新，不啟動新版 backend／worker。
 
 ## 連線資訊（給後端 / 工具）
 
 ```text
-host: localhost（容器間則用服務名 postgres）
+host: 127.0.0.1（容器間固定用 Compose service 名 `postgres`）
 port: 5433（容器間 5432）
 db  : patent_ppt
 user: postgres
@@ -47,14 +50,19 @@ DBeaver：新增連線 → PostgreSQL → localhost:5433 / patent_ppt。
 ## 容器內查驗
 
 ```powershell
-docker exec patent-postgres psql -U postgres -d patent_ppt -c "\dt raw_layer.*"
-docker exec patent-postgres psql -U postgres -d patent_ppt -c "SELECT version_num FROM alembic_version;"
+docker compose exec postgres psql -U postgres -d patent_ppt -c "\dt raw_layer.*"
+docker compose exec postgres psql -U postgres -d patent_ppt -c "SELECT version_num FROM alembic_version;"
 ```
 
 ## 資料持久化
 
 - named volume `ppt_pgdata`（Docker 管理，不綁本機路徑）。
+- 分群模型檔存放於 `${DATA_HOST_PATH}/model_artifacts`，並掛載到容器的 `MODEL_ARTIFACT_ROOT`。
+- `derived_layer.topic_runs.model_artifact_path` 只存 `clustering/workspace_.../run_....pkl` 相對 key；實際位置由執行環境的 `MODEL_ARTIFACT_ROOT` 決定。
+- 本機 Python 預設使用專案 `data/model_artifacts`；正式伺服器可用 `DATA_HOST_PATH` 與 `CONTAINER_MODEL_ARTIFACT_ROOT` 調整掛載位置，不必修改 DB。
 - `docker compose down` 停容器**保留**資料；`docker compose down -v` 才會**刪除** volume。
+
+既有 DB 若保存 Windows 或 `/app/data/model_artifacts/...` 絕對路徑，讀取時會將 `model_artifacts` 後方的部分映射到目前 root；新 run 一律只寫相對 key。備份與還原時必須同時保存 PostgreSQL 與 `${DATA_HOST_PATH}/model_artifacts`。
 
 ## 已驗證狀態（2026-07-15）
 
