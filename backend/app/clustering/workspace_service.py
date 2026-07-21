@@ -6,7 +6,6 @@ import ast
 from dataclasses import asdict, dataclass
 import json
 import math
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -17,17 +16,28 @@ from psycopg.types.json import Jsonb
 
 from backend.app.db.connection import get_connection_kwargs
 
-from .artifacts import WorkspaceTopicArtifact, artifact_path, load_artifact, save_artifact
+from .artifacts import (
+    WorkspaceTopicArtifact,
+    artifact_key,
+    artifact_path,
+    load_artifact,
+    resolve_artifact_path,
+    save_artifact,
+)
 from .model import EmbeddingMatrix, ReducedEmbeddingMatrix, partial_fit_bertopic
-from .runner import ClusteringCorpus, load_clustering_corpus
+from .runner import (
+    CANDIDATE_REFERENCE_PARAMETER_KEY,
+    ClusteringCorpus,
+    load_clustering_corpus,
+)
+from .preprocessing import clean_patent_text, sha256_text
 from .sources import get_source_spec, source_fields
 
 
 LLM_REPRESENTATIVE_DOC_LIMIT = 15
 
-# 傳給 LLM 的代表文件筆數（2026-07-17 使用者定案：由 15 改 10）。
-# DB 仍儲存最多 LLM_REPRESENTATIVE_DOC_LIMIT 筆，payload 只取前 10 筆傳輸。
-LLM_PAYLOAD_DOC_LIMIT = 10
+# DB 保留較多代表專利供追蹤；正式 topic 標籤/摘要階段才給 LLM 前 5 筆全文。
+TOPIC_LABELING_DOC_LIMIT = 5
 
 # LLM 產出的建議字數（寫進 instruction）與 apply 端硬上限（2 倍建議上限）。
 # 超過硬上限視為 LLM 未遵循指示，直接 raise 讓呼叫端重生，不靜默截斷。
@@ -38,9 +48,6 @@ LABEL_MAX_CHARS = 16
 SUMMARY_MAX_CHARS = 80
 EXPLANATION_MAX_CHARS = 80
 
-# 每筆代表文本的截斷長度：10 筆 × 800 字 ≈ 單一 topic 8K 字，
-# 控制 topic_labeling_payload 整包大小；需要更完整全文時用 topic_ids 分批取。
-EXCERPT_CHAR_LIMIT = 800
 
 # 本路徑只允許 AI 產出（llm）與程式後備（fallback）；manual 僅能由
 # 前端 rename endpoint 寫入，避免 AI 通道把標籤自我升級成人工定案。
@@ -189,7 +196,12 @@ def demo_patent_ids(limit: int = 200) -> list[int]:
 
 
 def candidate_review_payload(run_id: int) -> dict[str, Any]:
-    """輸出候選主題數資料，供 Claude CLI 產生候選方案說明。"""
+    """輸出候選主題數的指標解釋 payload，不展開代表文檔全文。
+
+    主題數選擇階段以 coherence / diversity / balance / score 為主，
+    Claude CLI 只協助說明三組候選的取捨；代表文檔保留到
+    finalize 後的 topic_labeling_payload 使用。
+    """
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM derived_layer.topic_runs WHERE run_id = %s", (run_id,))
@@ -201,21 +213,14 @@ def candidate_review_payload(run_id: int) -> dict[str, Any]:
                 (run_id,),
             )
             rows = [dict(row) for row in cur.fetchall()]
+            spec = get_source_spec(str(run["source_field"]))
 
-    spec = get_source_spec(str(run["source_field"]))
-    return {
-        "run_id": int(run["run_id"]),
-        "workspace_id": int(run["workspace_id"]) if run["workspace_id"] is not None else None,
-        "source_field": str(run["source_field"]),
-        "source_label": spec.label_zh,
-        "document_count": int(run["input_doc_count"]),
-        "instruction": (
-            f"請用繁體中文為每個候選方案寫一段 {EXPLANATION_SUGGESTED_RANGE} 個中文字的差異說明"
-            f"（硬上限 {EXPLANATION_MAX_CHARS} 字，超過會被拒收）；score 只能作排序輔助，"
-            "不可替使用者直接定案。請回傳 explanations 陣列，每筆包含 "
-            "candidate_id 與 explanation，供系統寫回 topic_candidates.llm_explanation。"
-        ),
-        "candidates": [
+    candidate_payloads: list[dict[str, Any]] = []
+    for row in rows:
+        parameters = dict(row.get("parameters_json") or {})
+        # DB 仍保存 c-TF-IDF refs 供後續追蹤，但候選主題數說明不把 refs 或全文交給 LLM。
+        parameters.pop(CANDIDATE_REFERENCE_PARAMETER_KEY, None)
+        candidate_payloads.append(
             {
                 "candidate_id": int(row["candidate_id"]),
                 "candidate_type": row["candidate_type"],
@@ -224,13 +229,27 @@ def candidate_review_payload(run_id: int) -> dict[str, Any]:
                 "diversity": float(row["diversity"]),
                 "balance": float(row["balance"]),
                 "score": float(row["score"]),
-                "parameters": row["parameters_json"],
+                "parameters": parameters,
                 "existing_explanation": row.get("llm_explanation"),
             }
-            for row in rows
-        ],
-    }
+        )
 
+    return {
+        "run_id": int(run["run_id"]),
+        "workspace_id": int(run["workspace_id"]) if run["workspace_id"] is not None else None,
+        "source_field": str(run["source_field"]),
+        "source_label": spec.label_zh,
+        "document_count": int(run["input_doc_count"]),
+        "instruction": (
+            "請只根據三組候選的 coherence、diversity、balance、score、k 與資料量，"
+            "用一般使用者看得懂的方式說明各候選主題數的取捨。"
+            f"每組 explanation 建議 {EXPLANATION_SUGGESTED_RANGE} 字，"
+            f"不得超過 {EXPLANATION_MAX_CHARS} 字。"
+            "不要要求或引用代表文檔，回傳 explanations 陣列，"
+            "每筆包含 candidate_id 與 explanation，供系統寫回 topic_candidates.llm_explanation。"
+        ),
+        "candidates": candidate_payloads,
+    }
 
 
 def apply_candidate_explanations(
@@ -321,7 +340,7 @@ def topic_labeling_payload(
                 patent_ids = [
                     int(value)
                     for value in topic["representative_patent_ids_json"]
-                ][:LLM_PAYLOAD_DOC_LIMIT]
+                ][:TOPIC_LABELING_DOC_LIMIT]
                 excerpts = _fetch_source_excerpts(cur, spec.source_column, patent_ids)
                 payload_topics.append(
                     {
@@ -336,7 +355,7 @@ def topic_labeling_payload(
         "source_field": source_field,
         "source_label": spec.label_zh,
         "instruction": (
-            f"請只根據每個 topic 的前 {LLM_PAYLOAD_DOC_LIMIT} 筆代表性專利文件產生 "
+            f"請只根據每個 topic 的前 {TOPIC_LABELING_DOC_LIMIT} 筆代表性專利文件產生 "
             "topic_id、label、summary；不要依賴 keywords。"
             f"label 建議 {LABEL_SUGGESTED_RANGE} 個中文字（硬上限 {LABEL_MAX_CHARS} 字），"
             f"summary 建議 {SUMMARY_SUGGESTED_RANGE} 個中文字（硬上限 {SUMMARY_MAX_CHARS} 字），"
@@ -501,7 +520,7 @@ def incremental_workspace(
     """只處理尚無 assignment 的 workspace 新專利，更新既有 online artifact。"""
     latest = _latest_completed_run(workspace_id=workspace_id, source_field=source_field)
     artifact = load_artifact(
-        Path(str(latest["model_artifact_path"])),
+        resolve_artifact_path(str(latest["model_artifact_path"])),
         expected_hash=str(latest["model_artifact_hash"]),
     )
     with psycopg.connect(**get_connection_kwargs()) as conn:
@@ -556,15 +575,20 @@ def incremental_workspace(
         )
         artifact.run_id = run_id
         artifact.artifact_version = int(latest["artifact_version"]) + 1
+        next_key = artifact_key(
+            workspace_id=workspace_id,
+            source_field=source_field,
+            run_id=run_id,
+        )
         next_path = artifact_path(
             workspace_id=workspace_id,
             source_field=source_field,
             run_id=run_id,
-        ).resolve()
+        )
         next_hash = save_artifact(artifact, next_path)
         _complete_incremental_run(
             run_id=run_id,
-            artifact_path_value=next_path,
+            artifact_key_value=next_key,
             artifact_hash=next_hash,
             artifact_version=artifact.artifact_version,
             pca_updated=pca_updated,
@@ -595,7 +619,7 @@ def hierarchy_merge_suggestions(
     """使用 BERTopic 官方 hierarchical_topics，僅回傳可由使用者判斷的相近主題組。"""
     latest = _latest_completed_run(workspace_id=workspace_id, source_field=source_field)
     artifact = load_artifact(
-        Path(str(latest["model_artifact_path"])),
+        resolve_artifact_path(str(latest["model_artifact_path"])),
         expected_hash=str(latest["model_artifact_hash"]),
     )
     with psycopg.connect(**get_connection_kwargs()) as conn:
@@ -649,7 +673,7 @@ def merge_workspace_topics(
     )
     latest = _latest_completed_run(workspace_id=workspace_id, source_field=source_field)
     artifact = load_artifact(
-        Path(str(latest["model_artifact_path"])),
+        resolve_artifact_path(str(latest["model_artifact_path"])),
         expected_hash=str(latest["model_artifact_hash"]),
     )
     with psycopg.connect(**get_connection_kwargs()) as conn:
@@ -693,15 +717,20 @@ def merge_workspace_topics(
         )
         artifact.run_id = run_id
         artifact.artifact_version = int(latest["artifact_version"]) + 1
+        next_key = artifact_key(
+            workspace_id=workspace_id,
+            source_field=source_field,
+            run_id=run_id,
+        )
         next_path = artifact_path(
             workspace_id=workspace_id,
             source_field=source_field,
             run_id=run_id,
-        ).resolve()
+        )
         next_hash = save_artifact(artifact, next_path)
         _complete_merge_run(
             run_id=run_id,
-            path=next_path,
+            artifact_key_value=next_key,
             file_hash=next_hash,
             artifact_version=artifact.artifact_version,
         )
@@ -811,7 +840,7 @@ def unmerge_workspace_topics(
         source_field=source_field,
     )
     artifact = load_artifact(
-        Path(str(base_run["model_artifact_path"])),
+        resolve_artifact_path(str(base_run["model_artifact_path"])),
         expected_hash=str(base_run["model_artifact_hash"]),
     )
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
@@ -860,11 +889,16 @@ def unmerge_workspace_topics(
         )
         artifact.run_id = run_id
         artifact.artifact_version = int(latest["artifact_version"]) + 1
+        next_key = artifact_key(
+            workspace_id=workspace_id,
+            source_field=source_field,
+            run_id=run_id,
+        )
         next_path = artifact_path(
             workspace_id=workspace_id,
             source_field=source_field,
             run_id=run_id,
-        ).resolve()
+        )
         next_hash = save_artifact(artifact, next_path)
         _persist_unmerge(
             run_id=run_id,
@@ -875,7 +909,7 @@ def unmerge_workspace_topics(
             reverted_topic_id=reverted_topic_id,
             reverted_by=reverted_by,
             model_ids_by_topic=model_ids_by_topic,
-            path=next_path,
+            artifact_key_value=next_key,
             file_hash=next_hash,
             artifact_version=artifact.artifact_version,
         )
@@ -979,7 +1013,7 @@ def refresh_topic_counts(*, workspace_id: int, source_field: str) -> None:
 
 
 def _fetch_source_excerpts(cur: Any, source_column: str, patent_ids: list[int]) -> list[str]:
-    """讀取代表性文本並依 EXCERPT_CHAR_LIMIT 截斷，控制 LLM 請求大小。"""
+    """讀取代表性文本全文；正式標籤/摘要階段不截斷獨立項內容。"""
     if not patent_ids:
         return []
     cur.execute(
@@ -992,7 +1026,7 @@ def _fetch_source_excerpts(cur: Any, source_column: str, patent_ids: list[int]) 
         (patent_ids,),
     )
     return [
-        str(row["source_text"])[:EXCERPT_CHAR_LIMIT]
+        str(row["source_text"])
         for row in cur.fetchall()
         if row["source_text"]
     ]
@@ -1116,7 +1150,7 @@ def _persist_incremental_assignments(
 def _complete_incremental_run(
     *,
     run_id: int,
-    artifact_path_value: Path,
+    artifact_key_value: str,
     artifact_hash: str,
     artifact_version: int,
     pca_updated: bool,
@@ -1133,7 +1167,7 @@ def _complete_incremental_run(
             WHERE run_id = %s
             """,
             (
-                str(artifact_path_value),
+                artifact_key_value,
                 artifact_hash,
                 artifact_version,
                 Jsonb({"pca_updated": pca_updated}),
@@ -1318,7 +1352,7 @@ def _persist_topic_merge(
 
 
 def _complete_merge_run(
-    *, run_id: int, path: Path, file_hash: str, artifact_version: int
+    *, run_id: int, artifact_key_value: str, file_hash: str, artifact_version: int
 ) -> None:
     """完成 merge run 並保存新版 artifact。"""
     with psycopg.connect(**get_connection_kwargs()) as conn:
@@ -1330,7 +1364,7 @@ def _complete_merge_run(
                 completed_at=now(), updated_at=now()
             WHERE run_id=%s
             """,
-            (str(path), file_hash, artifact_version, run_id),
+            (artifact_key_value, file_hash, artifact_version, run_id),
         )
 
 
@@ -1552,7 +1586,7 @@ def _persist_unmerge(
     reverted_topic_id: int,
     reverted_by: str,
     model_ids_by_topic: dict[int, list[int]],
-    path: Path,
+    artifact_key_value: str,
     file_hash: str,
     artifact_version: int,
 ) -> None:
@@ -1625,7 +1659,7 @@ def _persist_unmerge(
                     completed_at = now(), updated_at = now()
                 WHERE run_id = %s AND status = 'running'
                 """,
-                (str(path), file_hash, artifact_version, run_id),
+                (artifact_key_value, file_hash, artifact_version, run_id),
             )
             if cur.rowcount != 1:
                 raise ValueError("unmerge run changed concurrently")

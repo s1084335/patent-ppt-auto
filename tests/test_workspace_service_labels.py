@@ -7,10 +7,13 @@ sources.py 的通道命名導向。驗證邏輯都在連 DB 之前執行，raise
 """
 from __future__ import annotations
 
+import json
 import unittest
 from unittest import mock
 
 from backend.app.clustering import workspace_service
+from backend.app.clustering.runner import CANDIDATE_REFERENCE_PARAMETER_KEY
+from backend.app.clustering.preprocessing import sha256_text
 from backend.app.clustering.sources import SOURCE_SPECS, get_source_spec
 
 
@@ -117,6 +120,87 @@ class ApplyCandidateExplanationsTests(unittest.TestCase):
         self.assertEqual(result, {"requested_count": 2, "updated_count": 2})
 
 
+class CandidateReviewPayloadTests(unittest.TestCase):
+    """候選說明 payload 只輸出主題數指標，不展開代表獨立項。"""
+
+    @staticmethod
+    def _run() -> dict[str, object]:
+        return {
+            "run_id": 4,
+            "workspace_id": 2,
+            "source_field": "wips_independent_claims",
+            "input_doc_count": 200,
+        }
+
+    @staticmethod
+    def _candidate(parameters: dict[str, object]) -> dict[str, object]:
+        return {
+            "candidate_id": 7,
+            "candidate_type": "conservative",
+            "candidate_k": 10,
+            "coherence": 0.6,
+            "diversity": 0.7,
+            "balance": 0.8,
+            "score": 0.9,
+            "parameters_json": parameters,
+            "llm_explanation": None,
+        }
+
+    def test_payload_uses_metrics_without_representative_documents(self) -> None:
+        """候選主題數選擇只交給 LLM 指標，不展開 refs 或文檔全文。"""
+        reference = {
+            "patent_id": 11,
+            "patent_number": "US11",
+            "model_topic_id": 3,
+            "rank": 1,
+            "text_hash": sha256_text("A cleaned independent claim."),
+        }
+        with mock.patch.object(workspace_service.psycopg, "connect") as connect:
+            cursor = _mock_cursor(connect)
+            cursor.fetchone.return_value = self._run()
+            cursor.fetchall.return_value = [
+                self._candidate({"topic_count": 1, CANDIDATE_REFERENCE_PARAMETER_KEY: [reference]})
+            ]
+            payload = workspace_service.candidate_review_payload(4)
+
+        candidate = payload["candidates"][0]
+        self.assertEqual(candidate["k"], 10)
+        self.assertEqual(candidate["coherence"], 0.6)
+        self.assertEqual(candidate["diversity"], 0.7)
+        self.assertEqual(candidate["balance"], 0.8)
+        self.assertEqual(candidate["score"], 0.9)
+        self.assertNotIn("topics", candidate)
+        self.assertNotIn(CANDIDATE_REFERENCE_PARAMETER_KEY, candidate["parameters"])
+        self.assertNotIn("representative_documents", json.dumps(payload, ensure_ascii=False))
+        self.assertIn("不要要求或引用代表文檔", payload["instruction"])
+
+    def test_old_candidate_without_references_can_still_explain_metrics(self) -> None:
+        """舊 run 沒有 refs 時仍可做主題數候選指標解釋。"""
+        with mock.patch.object(workspace_service.psycopg, "connect") as connect:
+            cursor = _mock_cursor(connect)
+            cursor.fetchone.return_value = self._run()
+            cursor.fetchall.return_value = [self._candidate({"topic_count": 10})]
+            payload = workspace_service.candidate_review_payload(4)
+
+        self.assertEqual(payload["candidates"][0]["parameters"], {"topic_count": 10})
+        self.assertNotIn("topics", payload["candidates"][0])
+
+
+class TopicLabelingPayloadTests(unittest.TestCase):
+    """topic 標籤/摘要階段才讀代表文件，且不截斷全文。"""
+
+    def test_fetch_source_excerpts_returns_full_text(self) -> None:
+        long_text = "claim-" * 500
+        cursor = mock.MagicMock()
+        cursor.fetchall.return_value = [{"source_text": long_text}]
+
+        result = workspace_service._fetch_source_excerpts(
+            cursor, "wips_independent_claims", [11]
+        )
+
+        self.assertEqual(result, [long_text])
+        self.assertGreater(len(result[0]), 800)
+
 class InstructionAndSourceSpecTests(unittest.TestCase):
     """instruction 字數定案與通道命名導向。"""
 
@@ -126,12 +210,12 @@ class InstructionAndSourceSpecTests(unittest.TestCase):
         self.assertGreaterEqual(workspace_service.SUMMARY_MAX_CHARS, 40)
         self.assertGreaterEqual(workspace_service.EXPLANATION_MAX_CHARS, 40)
 
-    def test_payload_doc_limit_is_ten_and_within_storage_limit(self):
-        """2026-07-17 使用者定案：傳給 LLM 10 筆；DB 儲存上限 15 筆不變。"""
-        self.assertEqual(workspace_service.LLM_PAYLOAD_DOC_LIMIT, 10)
+    def test_topic_labeling_doc_limit_is_five_and_within_storage_limit(self):
+        """正式 topic 標籤/摘要階段每主題讀前 5 筆，DB 仍可保存較多 refs。"""
+        self.assertEqual(workspace_service.TOPIC_LABELING_DOC_LIMIT, 5)
         self.assertEqual(workspace_service.LLM_REPRESENTATIVE_DOC_LIMIT, 15)
         self.assertLessEqual(
-            workspace_service.LLM_PAYLOAD_DOC_LIMIT,
+            workspace_service.TOPIC_LABELING_DOC_LIMIT,
             workspace_service.LLM_REPRESENTATIVE_DOC_LIMIT,
         )
 
