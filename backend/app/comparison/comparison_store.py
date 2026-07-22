@@ -136,6 +136,41 @@ class ComparisonStore:
         self._validate_claim_statuses(verdict)
         return self._outputs.append_output(run_id, OUTPUT_VERDICT, verdict)
 
+    def _approved_understanding(self, run_id: int) -> dict[str, Any]:
+        """取核准閘門所指向的 understanding 內容；有人工修訂則以修訂版為準。
+
+        引用鏈（獨立/從屬/parent）來自此稿，供 verdict 彙總合併。閘門已由 _assert_gate
+        保證存在且指向有效版本，故此處必得到內容。
+        """
+        approval = self._outputs.get_output(run_id, OUTPUT_APPROVAL)
+        approval_data = (approval or {}).get("data_json") or {}
+        # 人工修訂優先（核准時可含改寫後全文）；否則取核准的 understanding 原稿版本
+        revised = approval_data.get("revised_understanding")
+        if isinstance(revised, dict) and revised:
+            return revised
+        version = approval_data.get("understanding_version")
+        output = self._outputs.get_output(run_id, OUTPUT_UNDERSTANDING, version=version)
+        return (output or {}).get("data_json") or {}
+
+    def aggregate_and_save_verdict(self, run_id: int, element_analysis: dict[str, Any]) -> int:
+        """依核准理解稿引用鏈 + 逐要素四態，套 all-elements rule 產 claim 級彙總並存。
+
+        閘門未核准拒寫（save_verdict 內 _assert_gate）。彙總為程式確定性計算，AI 不參與。
+        回傳 verdict 版本號。
+        """
+        from backend.app.comparison.verdict_aggregation import aggregate_verdict
+
+        understanding = self._approved_understanding(run_id)
+        verdict = aggregate_verdict(understanding, element_analysis)
+        return self.save_verdict(run_id, verdict)
+
+    def get_latest_verdict(self, run_id: int) -> dict[str, Any] | None:
+        """回傳最新版 verdict 的 {version, data}；無則 None。供 GET 回填。"""
+        output = self._outputs.get_output(run_id, OUTPUT_VERDICT)
+        if output is None:
+            return None
+        return {"version": output["version"], "data": output.get("data_json")}
+
     def save_illustrations(self, run_id: int, figure_paths: list[str]) -> int:
         """存最終選用圖片相對路徑陣列（版本化不覆蓋）。
 

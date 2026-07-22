@@ -14,10 +14,13 @@ import json
 from typing import Any
 
 import psycopg
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from backend.app import settings
 from backend.app.comparison.comparison_store import ComparisonStore, GateNotApprovedError
+from backend.app.comparison.pdf_fetch import PdfNotPdfError
+from backend.app.comparison.specification_ingest import ingest_specification_pdf
 from backend.app.comparison.verdict import VerdictError
 from backend.app.db import job_repository as jr
 from backend.app.db.connection import get_connection_kwargs
@@ -149,6 +152,14 @@ def get_comparison(job_id: int):
     else:
         base["element_analysis_version"] = None
         base["element_analysis"] = None
+    # verdict：程式套 all-elements rule 後的 claim 級彙總（隨 element-analysis 自動產出）
+    verdict = store.get_latest_verdict(job_id)
+    if verdict is not None:
+        base["verdict_version"] = verdict["version"]
+        base["verdict"] = verdict["data"]
+    else:
+        base["verdict_version"] = None
+        base["verdict"] = None
     return base
 
 
@@ -278,6 +289,8 @@ def save_element_analysis(job_id: int, body: dict[str, Any]):
     store = ComparisonStore()
     try:
         version = store.save_element_analysis(job_id, body)
+        # 逐要素比對存妥後，程式確定性套 all-elements rule 產 claim 級彙總（AI 不參與判定）。
+        verdict_version = store.aggregate_and_save_verdict(job_id, body)
     except VerdictError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except GateNotApprovedError:
@@ -285,4 +298,73 @@ def save_element_analysis(job_id: int, body: dict[str, Any]):
             status_code=409,
             detail="understanding is not approved; cannot save element_analysis",
         )
-    return {"job_id": job_id, "output_type": "element_analysis", "version": version}
+    return {
+        "job_id": job_id,
+        "output_type": "element_analysis",
+        "version": version,
+        "verdict_version": verdict_version,
+    }
+
+
+@router.get("/{job_id}/reference-candidates")
+def get_reference_candidates(job_id: int, subject_patent_id: int, limit: int = 10):
+    """依被比對專利（subject）用 embeddings 找語意相近的比對來源（reference）候選。
+
+    subject_patent_id 為 query 參數；回相似候選清單（含 distance、專利號、標題），依相似度
+    排序。候選是否採為 reference 由使用者決定，本端點只提供候選。subject 無 embedding → 422。
+    """
+    _require_comparison_job(job_id)
+    from backend.app.comparison.reference_search import (
+        ReferenceSearchError,
+        find_reference_candidates,
+    )
+
+    try:
+        candidates = find_reference_candidates(subject_patent_id, limit=limit)
+    except ReferenceSearchError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"job_id": job_id, "subject_patent_id": subject_patent_id,
+            "candidates": candidates}
+
+
+@router.post("/{job_id}/specification")
+async def upload_specification(job_id: int, patent_number: str, request: Request):
+    """使用者上傳專利說明書 PDF → 只抽圖式頁 → 存 illustrations 相對路徑。
+
+    以 raw body 串流接收 PDF（比照 imports，不引入 multipart）；容量超過
+    MAX_IMPORT_UPLOAD_BYTES → 413；非 PDF → 422。落檔到 patent_assets 內容雜湊目錄
+    （來源改為上傳，取代失效的 WIPS 下載），偵測圖式頁只 render 圖式頁，DB 只存相對路徑。
+    illustrations 是報告素材、非判斷產出，不受理解閘門限制。
+    """
+    _require_comparison_job(job_id)
+    if not patent_number or not patent_number.strip():
+        raise HTTPException(status_code=422, detail="patent_number is required")
+
+    max_bytes = settings.MAX_IMPORT_UPLOAD_BYTES
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail=f"upload exceeds {max_bytes} bytes")
+        chunks.append(chunk)
+    if total == 0:
+        raise HTTPException(status_code=422, detail="empty upload body")
+    pdf_bytes = b"".join(chunks)
+
+    try:
+        result = ingest_specification_pdf(patent_number.strip(), pdf_bytes)
+    except PdfNotPdfError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    store = ComparisonStore()
+    illus_version = store.save_illustrations(job_id, result["figure_paths"])
+    return {
+        "job_id": job_id,
+        "output_type": "illustrations",
+        "version": illus_version,
+        "figure_pages": result["figure_pages"],
+        "figure_paths": result["figure_paths"],
+    }
