@@ -19,6 +19,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from backend.app.db.job_repository import JOB_TYPES
+
 from .handlers import dispatch_job
 from .job_context import JobCancelledError, JobContext
 from .queue_client import ProcessingJob, WorkerQueueClient
@@ -26,6 +28,8 @@ from .queue_client import ProcessingJob, WorkerQueueClient
 
 LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+AI_JOB_TYPES: tuple[str, ...] = ("ai:narrative",)
+DEFAULT_WORKER_JOB_TYPES: tuple[str, ...] = tuple(sorted(JOB_TYPES - set(AI_JOB_TYPES)))
 
 
 def load_local_env() -> None:
@@ -69,7 +73,7 @@ def run_once(*, worker_id: str, stale_after_seconds: int) -> dict[str, Any]:
     """領取並執行一筆工作；沒有 queued 工作時直接回傳 idle。"""
     store = WorkerQueueClient()
     stale = store.requeue_stale_jobs(stale_after_seconds=stale_after_seconds)
-    job = store.claim_next_job(worker_id=worker_id)
+    job = store.claim_next_job(worker_id=worker_id, job_types=DEFAULT_WORKER_JOB_TYPES)
     if job is None:
         return {"status": "idle", "stale": stale}
     LOGGER.info("job claimed: id=%s type=%s", job.job_id, job.job_type)

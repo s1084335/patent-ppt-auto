@@ -226,8 +226,23 @@ def cancel_job(job_id: int) -> ProcessingJob | None:
 class WorkerQueueClient:
     """worker 對 app_layer.workflow_runs 的所有寫入規則。"""
 
-    def claim_next_job(self, *, worker_id: str) -> ProcessingJob | None:
+    def claim_next_job(
+        self,
+        *,
+        worker_id: str,
+        job_types: tuple[str, ...] | list[str] | set[str] | None = None,
+    ) -> ProcessingJob | None:
         """FOR UPDATE SKIP LOCKED 原子領取下一筆 queued 工作（ORDER BY run_id 走 claim 索引）。"""
+        # job_types=None 保留舊行為；有指定時只 claim 該類任務。
+        job_type_filter = tuple(str(item) for item in (job_types or ()))
+        unknown_types = sorted(set(job_type_filter) - JOB_TYPES)
+        if unknown_types:
+            raise ValueError(f"unsupported job_types: {', '.join(unknown_types)}")
+        type_clause = "AND run_type = ANY(%s::text[])" if job_type_filter else ""
+        params: list[Any] = []
+        if job_type_filter:
+            params.append(list(job_type_filter))
+        params.append(worker_id)
         with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -235,6 +250,7 @@ class WorkerQueueClient:
                     WITH next_job AS (
                         SELECT run_id FROM app_layer.workflow_runs
                         WHERE status = 'queued'
+                          {type_clause}
                           AND COALESCE((worker_state_json->>'attempt_count')::int, 0)
                               < COALESCE((worker_state_json->>'max_attempts')::int, 3)
                         ORDER BY run_id
@@ -255,7 +271,55 @@ class WorkerQueueClient:
                     WHERE r.run_id = next_job.run_id
                     RETURNING {', '.join('r.' + c for c in _SELECT_COLUMNS.split(', '))}
                     """,
-                    (worker_id,))
+                    params)
+                row = cur.fetchone()
+        return ProcessingJob.from_row(dict(row)) if row is not None else None
+
+    def claim_job_by_id(
+        self,
+        *,
+        job_id: int,
+        worker_id: str,
+        job_types: tuple[str, ...] | list[str] | set[str] | None = None,
+    ) -> ProcessingJob | None:
+        """Claim 指定 run_id 的 queued job；DB smoke 用它避免吃掉正式 AI 任務。"""
+        job_type_filter = tuple(str(item) for item in (job_types or ()))
+        unknown_types = sorted(set(job_type_filter) - JOB_TYPES)
+        if unknown_types:
+            raise ValueError(f"unsupported job_types: {', '.join(unknown_types)}")
+        type_clause = "AND run_type = ANY(%s::text[])" if job_type_filter else ""
+        params: list[Any] = [int(job_id)]
+        if job_type_filter:
+            params.append(list(job_type_filter))
+        params.append(worker_id)
+        with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    WITH target_job AS (
+                        SELECT run_id FROM app_layer.workflow_runs
+                        WHERE run_id = %s
+                          AND status = 'queued'
+                          {type_clause}
+                          AND COALESCE((worker_state_json->>'attempt_count')::int, 0)
+                              < COALESCE((worker_state_json->>'max_attempts')::int, 3)
+                        FOR UPDATE SKIP LOCKED
+                    )
+                    UPDATE app_layer.workflow_runs AS r
+                    SET status = 'running',
+                        worker_state_json = r.worker_state_json || jsonb_build_object(
+                            'locked_by', %s::text,
+                            'locked_at', to_jsonb(now()),
+                            'heartbeat_at', to_jsonb(now()),
+                            'started_at', COALESCE(r.worker_state_json->'started_at', to_jsonb(now())),
+                            'attempt_count', COALESCE((r.worker_state_json->>'attempt_count')::int, 0) + 1,
+                            'current_stage', 'starting',
+                            'error_message', NULL)
+                    FROM target_job
+                    WHERE r.run_id = target_job.run_id
+                    RETURNING {', '.join('r.' + c for c in _SELECT_COLUMNS.split(', '))}
+                    """,
+                    params)
                 row = cur.fetchone()
         return ProcessingJob.from_row(dict(row)) if row is not None else None
 

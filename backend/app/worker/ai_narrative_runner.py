@@ -192,13 +192,18 @@ def _subprocess_cli_runner(argv: Sequence[str], timeout: float) -> CliResult:
         raise NarrativeRunnerError(
             f"找不到 CLI 二進位 {binary!r}（headless 解讀需已安裝並登入該 CLI）"
         )
-    completed = subprocess.run(  # noqa: S603 argv 由固定對照表組成，非使用者字串
-        list(argv),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=timeout,
-    )
+    try:
+        completed = subprocess.run(  # noqa: S603 argv 由固定對照表組成，非使用者字串
+            list(argv),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+        )
+    except OSError as exc:
+        raise NarrativeRunnerError(
+            f"無法啟動 CLI 二進位 {binary!r}：{type(exc).__name__}: {exc}"
+        ) from exc
     return CliResult(exit_code=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
 
 

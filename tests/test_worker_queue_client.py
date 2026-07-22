@@ -231,6 +231,11 @@ class RunnerCliTests(unittest.TestCase):
         self.assertEqual(args.command, "run-once")
         self.assertEqual(args.worker_id, "test-worker")
 
+    def test_default_worker_job_types_exclude_ai_jobs(self):
+        """一般 worker 不 claim AI CLI 任務；AI 任務交給 host-side bridge。"""
+        self.assertNotIn("ai:narrative", runner.DEFAULT_WORKER_JOB_TYPES)
+        self.assertIn("report_generate", runner.DEFAULT_WORKER_JOB_TYPES)
+
 
 class FakeQueueClient:
     """記錄 runner 對 queue client 的呼叫，避免單元測試碰資料庫。"""
