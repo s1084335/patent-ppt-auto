@@ -55,8 +55,8 @@ class HandlerContractTests(unittest.TestCase):
         """確認 worker 只支援定案的 job type（2026-07-21 補 patent_import——匯入線 handler
         已上線但本契約集合漏更新，OpenCode 批 G 前置檢查抓到；同日 0021 遷移輪加
         topic_merge/topic_unmerge——佇列由 PostgresTopicRepository 排入、worker 執行；
-        2026-07-22 補 ai:narrative——報表解讀 AI 任務消費者，補齊前端→佇列→headless CLI
-        →MCP／檔案回存→SSE 的 E2E 鏈）。"""
+        2026-07-22 補 embeddings——匯入後建立向量；補 ai:narrative——報表解讀 AI
+        任務消費者，補齊前端→佇列→headless CLI→MCP／檔案回存→SSE 的 E2E 鏈）。"""
         self.assertEqual(
             set(handlers.HANDLERS),
             {
@@ -65,6 +65,7 @@ class HandlerContractTests(unittest.TestCase):
                 "clustering_incremental",
                 "report_generate",
                 "patent_import",
+                "embeddings",
                 "topic_merge",
                 "topic_unmerge",
                 "ai:narrative",

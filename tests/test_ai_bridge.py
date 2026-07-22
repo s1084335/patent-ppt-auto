@@ -25,6 +25,9 @@ class FakeAiQueue:
         self.requeued_with: int | None = None
         self.heartbeats: list[tuple[str | None, int | None]] = []
         self.completed: list[dict[str, object]] = []
+        self.failed: list[dict[str, object]] = []
+        self.cancelled: list[dict[str, object]] = []
+        self.cancelled_job_ids: set[int] = set()
 
     def requeue_stale_jobs(self, *, stale_after_seconds: int) -> dict[str, int]:
         """模擬 stale job 回收；橋接器仍需沿用一般 worker 的保活規則。"""
@@ -50,6 +53,25 @@ class FakeAiQueue:
         """記錄 smoke 完成結果。"""
         self.completed.append(result_json)
 
+    def fail_job(self, *, job_id: int, worker_id: str, error_message: str, current_stage: str = "failed"):
+        """記錄橋接器失敗收斂結果，避免測試真的寫入資料庫。"""
+        self.failed.append(
+            {
+                "job_id": job_id,
+                "worker_id": worker_id,
+                "error_message": error_message,
+                "current_stage": current_stage,
+            }
+        )
+
+    def cancel_job(self, *, job_id: int, worker_id: str, error_message: str):
+        """記錄橋接器取消收斂結果，避免測試真的寫入資料庫。"""
+        self.cancelled.append({"job_id": job_id, "worker_id": worker_id, "error_message": error_message})
+
+    def is_cancelled(self, *, job_id: int) -> bool:
+        """讓 JobContext.check_cancelled 可在測試中被安全呼叫。"""
+        return job_id in self.cancelled_job_ids
+
 
 def _ai_job() -> ProcessingJob:
     """建立一筆 ai:narrative 測試 job。"""
@@ -73,7 +95,7 @@ class AiBridgeTests(unittest.TestCase):
     def test_run_once_claims_only_ai_jobs(self):
         """bridge run-once 必須用 AI job type 過濾 claim。"""
         store = FakeAiQueue(_ai_job())
-        with mock.patch.object(ai_bridge, "execute_job", return_value={"status": "succeeded"}) as patched:
+        with mock.patch.object(ai_bridge, "execute_ai_job", return_value={"status": "succeeded"}) as patched:
             result = ai_bridge.run_once(
                 worker_id="ai-bridge-test",
                 stale_after_seconds=120,
@@ -107,6 +129,56 @@ class AiBridgeTests(unittest.TestCase):
         args = ai_bridge.build_parser().parse_args(["smoke", "--worker-id", "ai-bridge-smoke"])
         self.assertEqual(args.command, "smoke")
         self.assertEqual(args.worker_id, "ai-bridge-smoke")
+
+    def test_parser_accepts_doctor(self):
+        """doctor 指令用來在正式環境先檢查 DB 與本機 CLI 條件。"""
+        args = ai_bridge.build_parser().parse_args(["doctor", "--cli-kind", "claude"])
+        self.assertEqual(args.command, "doctor")
+        self.assertEqual(args.cli_kind, "claude")
+
+    def test_execute_ai_job_completes_narrative_job(self):
+        """AI bridge 自己執行 ai:narrative，不再透過一般 worker runner。"""
+        job = _ai_job()
+        store = FakeAiQueue(job)
+        with mock.patch.object(ai_bridge, "_run_ai_narrative_job", return_value={"ok": True}) as patched:
+            result = ai_bridge.execute_ai_job(job, worker_id="ai-bridge-test", store=store)
+
+        patched.assert_called_once()
+        self.assertEqual(store.heartbeats[0], ("running", 1))
+        self.assertEqual(store.completed[0], {"ok": True})
+        self.assertEqual(result, {"job_id": job.job_id, "status": "succeeded", "result": {"ok": True}})
+
+    def test_execute_ai_job_rejects_non_ai_job(self):
+        """橋接器只處理 AI job，避免錯吃一般 worker 任務。"""
+        job = ProcessingJob(
+            job_id=89,
+            job_type="report_generate",
+            status="queued",
+            workspace_id=None,
+            payload_json={},
+            result_json=None,
+            progress_percent=0,
+            current_stage="queued",
+            attempt_count=0,
+            max_attempts=3,
+        )
+        store = FakeAiQueue(job)
+
+        result = ai_bridge.execute_ai_job(job, worker_id="ai-bridge-test", store=store)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("unsupported AI bridge job_type", store.failed[0]["error_message"])
+
+    def test_doctor_reports_db_and_cli_status(self):
+        """doctor 不寫入 workflow_runs，只回報 DB/CLI 是否可用。"""
+        with (
+            mock.patch.object(ai_bridge, "_db_check", return_value={"ok": True}),
+            mock.patch.object(ai_bridge, "_cli_check", return_value={"ok": False, "binary": "claude"}),
+        ):
+            result = ai_bridge.run_doctor(cli_kind="claude")
+
+        self.assertEqual(result["database"], {"ok": True})
+        self.assertEqual(result["cli"], {"ok": False, "binary": "claude"})
 
     def test_smoke_claims_only_its_own_job_and_completes(self):
         """DB smoke 建立專屬 job 後只 claim 該 job，不會吃掉其他 queued AI 任務。"""

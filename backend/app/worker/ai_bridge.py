@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import socket
 import time
 from datetime import UTC, datetime
@@ -28,14 +29,18 @@ from dotenv import load_dotenv
 
 from backend.app.db import job_repository
 
+from .job_context import JobCancelledError, JobContext
 from .queue_client import WorkerQueueClient
-from .runner import execute_job
 
 
 LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 AI_JOB_TYPES: tuple[str, ...] = ("ai:narrative",)
 SMOKE_VERSION = "ai_bridge_db_smoke_v1"
+CLI_BINARIES: dict[str, str] = {
+    "claude": "claude",
+    "opencode": "opencode",
+}
 
 
 def load_local_env() -> None:
@@ -64,7 +69,62 @@ def run_once(
     if job is None:
         return {"status": "idle", "stale": stale}
     LOGGER.info("AI job claimed: id=%s type=%s", job.job_id, job.job_type)
-    return execute_job(job, worker_id=worker_id, store=queue)
+    return execute_ai_job(job, worker_id=worker_id, store=queue)
+
+
+def _run_ai_narrative_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """執行 AI 敘事任務；延遲載入 handler，避免 bridge 啟動時拉進一般 worker 依賴。"""
+    from .handlers import handle_ai_narrative
+
+    return handle_ai_narrative(payload, context)
+
+
+def execute_ai_job(job: job_repository.ProcessingJob, *, worker_id: str, store: WorkerQueueClient) -> dict[str, Any]:
+    """只執行 AI bridge 支援的 job，成功、失敗、取消都回寫 workflow queue。"""
+    context = JobContext(job=job, worker_id=worker_id, store=store)
+    try:
+        if job.job_type != "ai:narrative":
+            raise ValueError(f"unsupported AI bridge job_type: {job.job_type}")
+        context.heartbeat("running", 1)
+        result = _run_ai_narrative_job(job.payload_json, context)
+        store.complete_job(job_id=job.job_id, worker_id=worker_id, result_json=result)
+        LOGGER.info("AI job succeeded: id=%s type=%s", job.job_id, job.job_type)
+        return {"job_id": job.job_id, "status": "succeeded", "result": result}
+    except JobCancelledError as exc:
+        LOGGER.warning("AI job cancelled: id=%s error=%s", job.job_id, exc)
+        store.cancel_job(job_id=job.job_id, worker_id=worker_id, error_message=str(exc))
+        return {"job_id": job.job_id, "status": "cancelled", "error": str(exc)}
+    except Exception as exc:
+        LOGGER.exception("AI job failed: id=%s type=%s", job.job_id, job.job_type)
+        store.fail_job(
+            job_id=job.job_id,
+            worker_id=worker_id,
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
+        return {"job_id": job.job_id, "status": "failed", "error": str(exc)}
+
+
+def _db_check() -> dict[str, Any]:
+    """用唯讀列表查詢確認 workflow queue 可連線；doctor 不建立任何 job。"""
+    try:
+        job_repository.list_jobs(limit=1)
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    return {"ok": True}
+
+
+def _cli_check(cli_kind: str) -> dict[str, Any]:
+    """確認指定 headless CLI 是否存在於 PATH；不送 prompt、不消耗 LLM。"""
+    binary = CLI_BINARIES.get(cli_kind)
+    if binary is None:
+        return {"ok": False, "binary": None, "error": f"unsupported cli_kind: {cli_kind}"}
+    path = shutil.which(binary)
+    return {"ok": path is not None, "binary": binary, "path": path}
+
+
+def run_doctor(*, cli_kind: str = "claude") -> dict[str, Any]:
+    """正式部署前診斷 DB queue 與本機 AI CLI 條件。"""
+    return {"database": _db_check(), "cli": _cli_check(cli_kind)}
 
 
 def run_smoke(*, worker_id: str, store: WorkerQueueClient | None = None) -> dict[str, Any]:
@@ -126,10 +186,11 @@ def serve(*, worker_id: str, poll_seconds: float, stale_after_seconds: int) -> N
 def build_parser() -> argparse.ArgumentParser:
     """建立 host-side AI bridge CLI 參數。"""
     parser = argparse.ArgumentParser(description="Run host-side patent AI bridge.")
-    parser.add_argument("command", choices=("serve", "run-once", "smoke"))
+    parser.add_argument("command", choices=("serve", "run-once", "smoke", "doctor"))
     parser.add_argument("--worker-id", default=default_bridge_id())
     parser.add_argument("--poll-seconds", type=float, default=3.0)
     parser.add_argument("--stale-after-seconds", type=int, default=1800)
+    parser.add_argument("--cli-kind", choices=tuple(CLI_BINARIES), default="claude")
     parser.add_argument("--log-level", default="INFO")
     return parser
 
@@ -140,6 +201,10 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     logging.basicConfig(level=getattr(logging, str(args.log_level).upper()))
+    if args.command == "doctor":
+        result = run_doctor(cli_kind=args.cli_kind)
+        LOGGER.info("ai-bridge doctor result: %s", result)
+        return
     if args.command == "smoke":
         result = run_smoke(worker_id=args.worker_id)
         LOGGER.info("ai-bridge smoke result: %s", result)

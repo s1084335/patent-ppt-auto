@@ -26,19 +26,25 @@ router = APIRouter(tags=["workspaces"])
 # 允許的 workspace 狀態（與 workspaces_status_check 一致）；非法值由 FastAPI 擋成 422。
 WorkspaceStatus = Literal["active", "archived", "disabled"]
 
+# 匯入批次用途標籤（2026-07-22）：專利總覽可依此過濾/顯示；非法值由 FastAPI 擋成 422。
+WorkspacePurpose = Literal["general", "case_comparison"]
+
 
 @router.get("/workspaces")
 def list_workspaces(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     status: Optional[WorkspaceStatus] = Query(default=None),
+    purpose: Optional[WorkspacePurpose] = Query(default=None),
 ) -> dict[str, Any]:
-    """分頁列出 workspace，含 patent_count 與 is_composed。
+    """分頁列出 workspace，含 purpose、patent_count 與 is_composed。
 
-    回傳 {items, total, limit, offset}；排序固定 created_at DESC, workspace_id DESC。
-    limit/offset/status 由 FastAPI 驗證（越界或非法狀態回 422）。
+    回傳 {items, total, limit, offset}；排序固定 workspace_id DESC。limit/offset/status/purpose
+    由 FastAPI 驗證（越界或非法值回 422）。purpose 供專利總覽依用途（general／case_comparison）
+    過濾；未給則不過濾（general 過濾也涵蓋無 purpose 鍵的舊 workspace）。
     """
-    return workspace_queries.list_workspaces(limit=limit, offset=offset, status=status)
+    return workspace_queries.list_workspaces(
+        limit=limit, offset=offset, status=status, purpose=purpose)
 
 
 @router.get("/workspaces/{workspace_id}")
