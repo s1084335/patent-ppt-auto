@@ -44,6 +44,7 @@ COPY --chown=patent:patent alembic.ini ./
 COPY --chown=patent:patent alembic ./alembic
 COPY --chown=patent:patent backend ./backend
 COPY --chown=patent:patent scripts ./scripts
+COPY --chown=patent:patent sql ./sql
 
 # PatentSBERTa is intentionally excluded from the image.  Mount or download it
 # under MODEL_ARTIFACT_ROOT, usually /app/data/model_artifacts/PatentSBERTa.
