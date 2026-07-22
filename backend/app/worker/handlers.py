@@ -145,6 +145,11 @@ def handle_patent_import(payload: dict[str, Any], context: JobContext) -> dict[s
     實際 SHA-256 等於 payload.file_hash；任一失敗直接 raise 讓 job failed，不進 importer。
     import_wips_file 內為單一 transaction（重複檔回 skipped_duplicate_file、錯誤整批 rollback）。
     重複檔時安全刪除本次上傳目錄；成功匯入則保留（source_files.file_path 需追溯）。
+
+    匯入圈 workspace（2026-07-22 定案）：成功匯入後，依 payload 的 new_workspace_name（新建，
+    成員＝這次匯入 patent_ids）或 workspace_id（既有，union 去重）圈進 workspace；purpose
+    （general／case_comparison）落新 workspace settings_json。走 app_layer.workspaces 服務，
+    不自寫 SQL 繞過。重複檔/dry-run 無 patent_ids，不圈 workspace。
     """
     context.heartbeat("patent_import_started", 5)
     raw_path = payload.get("path")
@@ -167,8 +172,46 @@ def handle_patent_import(payload: dict[str, Any], context: JobContext) -> dict[s
     if summary.get("status") == "skipped_duplicate_file":
         # 重複檔不需保留這份上傳副本；只刪本次上傳目錄（remove_import_dir 會確認位於 imports root）。
         remove_import_dir(path.parent)
+    else:
+        # 成功匯入才圈 workspace；把 workspace 結果併入 summary 供前端顯示。
+        context.heartbeat("patent_import_workspace", 90)
+        workspace_result = _attach_import_workspace(payload, summary.get("patent_ids") or [])
+        if workspace_result is not None:
+            summary["workspace_id"] = workspace_result["workspace_id"]
+            summary["workspace"] = workspace_result
     context.heartbeat("patent_import_completed", 95)
     return _json_safe(summary)
+
+
+def _attach_import_workspace(
+    payload: dict[str, Any], patent_ids: list[int]
+) -> dict[str, Any] | None:
+    """依 payload 把這次匯入的 patent_ids 圈進 workspace（新建或既有 union），回結果或 None。
+
+    new_workspace_name → 建新 workspace（成員＝patent_ids，purpose 落 settings_json）；
+    workspace_id → union 去重進既有 workspace（purpose 於既有 workspace 已定，不重寫）。
+    兩者皆缺 → 不圈 workspace（向後相容既有純匯入）。兩者皆給屬呼叫端錯誤，raise ValueError。
+    走 app_layer.workspace_create 服務，不自寫 SQL。
+    """
+    from backend.app.app_layer import workspace_create
+
+    new_name = payload.get("new_workspace_name")
+    workspace_id = payload.get("workspace_id")
+    if new_name and workspace_id is not None:
+        raise ValueError("patent_import accepts either new_workspace_name or workspace_id, not both")
+
+    if new_name:
+        return workspace_create.create_workspace(
+            workspace_name=str(new_name),
+            patent_ids=patent_ids,
+            purpose=payload.get("purpose"),
+        )
+    if workspace_id is not None:
+        return workspace_create.add_patents_to_workspace(
+            workspace_id=int(workspace_id),
+            patent_ids=patent_ids,
+        )
+    return None
 
 
 def _resolve_active_topic_ids(

@@ -37,6 +37,7 @@ def _fake_job(payload):
         current_stage=None,
         attempt_count=0,
         max_attempts=3,
+        error_message=None,
     )
 
 
@@ -60,7 +61,7 @@ class ImportApiTests(unittest.TestCase):
 
     # ── 成功 ─────────────────────────────────────────────
     def test_success_creates_job_and_saves_file(self):
-        """合法上傳：落地受控目錄、建 patent_import job、payload 只含 path/原檔名/hash。"""
+        """合法上傳：落地受控目錄、建 patent_import job、payload 含 path/原檔名/hash＋預設 purpose。"""
         captured = {}
 
         def fake_create_job(job_type, payload, *, workspace_id=None, **kw):
@@ -75,7 +76,9 @@ class ImportApiTests(unittest.TestCase):
         self.assertEqual(captured["job_type"], "patent_import")
         self.assertIsNone(captured["workspace_id"])
         payload = captured["payload"]
-        self.assertEqual(set(payload.keys()), {"path", "original_filename", "file_hash"})
+        # 2026-07-22：payload 一律帶用途標籤（未指定 workspace 時只多 purpose；預設 general）。
+        self.assertEqual(set(payload.keys()), {"path", "original_filename", "file_hash", "purpose"})
+        self.assertEqual(payload["purpose"], "general")
         self.assertEqual(payload["original_filename"], "sample.csv")
         self.assertEqual(payload["file_hash"], hashlib.sha256(body).hexdigest())
         saved = Path(payload["path"])

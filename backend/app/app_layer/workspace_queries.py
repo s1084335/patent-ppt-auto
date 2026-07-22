@@ -33,10 +33,13 @@ DEFAULT_TOPIC_SOURCE_FIELD = "wips_independent_claims"
 # 0021：patent_count＝patent_ids_json 陣列長度（成員即此陣列，非 join workspace_patents）；
 # is_composed＝該 ws 在 legacy_0021.workspace_compose_sources 有記錄（相關子查詢，投影在
 # LIMIT 之後求值，不造成 N+1）。description/created_by/created_at/updated_at 在 0021 無來源，不投影。
+#   purpose：匯入批次用途標籤（2026-07-22），general／case_comparison，落 settings_json.purpose；
+#       缺省（舊 workspace 無此鍵）視為 general，供專利總覽依用途過濾/顯示。
 _WORKSPACE_FIELDS = """
     w.workspace_id,
     w.workspace_name,
     w.status,
+    COALESCE(w.settings_json->>'purpose', 'general') AS purpose,
     jsonb_array_length(w.patent_ids_json) AS patent_count,
     EXISTS (
         SELECT 1
@@ -47,21 +50,30 @@ _WORKSPACE_FIELDS = """
 
 
 # 清單：固定排序 workspace_id DESC（0021 已無 created_at，改用穩定鍵 workspace_id）；
-# status 為 NULL 時不過濾。status 參數顯式轉 text，避免傳 NULL 時 PG 無法推斷型別（AmbiguousParameter）。
+# status 為 NULL 時不過濾。status/purpose 參數顯式轉 text，避免傳 NULL 時 PG 無法推斷型別
+# （AmbiguousParameter）。purpose 過濾以 COALESCE(...,'general') 對齊投影，讓舊 workspace（無
+# purpose 鍵）在 purpose='general' 時被納入。
+_PURPOSE_FILTER = (
+    "AND (%(purpose)s::text IS NULL "
+    "OR COALESCE(w.settings_json->>'purpose', 'general') = %(purpose)s::text)"
+)
+
 _LIST_SQL = f"""
 SELECT {_WORKSPACE_FIELDS}
 FROM app_layer.workspaces w
 WHERE (%(status)s::text IS NULL OR w.status = %(status)s::text)
+{_PURPOSE_FILTER}
 ORDER BY w.workspace_id DESC
 LIMIT %(limit)s OFFSET %(offset)s
 """
 
 
-# total：套用與清單相同的 status filter。
-_COUNT_SQL = """
+# total：套用與清單相同的 status＋purpose filter。
+_COUNT_SQL = f"""
 SELECT count(*) AS total
 FROM app_layer.workspaces w
 WHERE (%(status)s::text IS NULL OR w.status = %(status)s::text)
+{_PURPOSE_FILTER}
 """
 
 
@@ -199,19 +211,21 @@ def list_workspaces(
     limit: int = 50,
     offset: int = 0,
     status: str | None = None,
+    purpose: str | None = None,
 ) -> dict[str, Any]:
-    """分頁列出 workspace，含 patent_count 與 is_composed。
+    """分頁列出 workspace，含 purpose、patent_count 與 is_composed。
 
     回傳 {items, total, limit, offset}。排序固定 workspace_id DESC（0021 已無 created_at，
-    改用穩定鍵 workspace_id）；status 為 None 時不過濾，total 套用與 items 相同的 status filter。
-    參數合法性由呼叫端（API 層）負責，本函式假設 limit/offset/status 已驗證。
+    改用穩定鍵 workspace_id）；status／purpose 為 None 時各自不過濾，total 套用與 items 相同的
+    filter。purpose 過濾對齊投影的 COALESCE(...,'general')，讓舊 workspace 也能被 general 命中。
+    參數合法性由呼叫端（API 層）負責，本函式假設 limit/offset/status/purpose 已驗證。
     """
-    params = {"status": status, "limit": limit, "offset": offset}
+    params = {"status": status, "purpose": purpose, "limit": limit, "offset": offset}
     with get_pool().connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(_LIST_SQL, params)
             items = cur.fetchall()
-            cur.execute(_COUNT_SQL, {"status": status})
+            cur.execute(_COUNT_SQL, {"status": status, "purpose": purpose})
             total = int(cur.fetchone()["total"])
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 

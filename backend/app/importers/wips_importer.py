@@ -54,8 +54,9 @@ CONFLICT_RESOLUTION_STRATEGY = "incoming_source_priority"
 # Web 上傳/worker 另有較窄白名單（不含 .mdb）於 importers.import_paths.WEB_IMPORT_SUFFIXES。
 SUPPORTED_IMPORT_SUFFIXES = (".xlsx", ".csv", ".txt", ".xml", ".mdb")
 
-# update_patent_empty_fields 的 (欄位, 參數名) 對照：用來組 WHERE guard，區分 no-op 與實際補值。
-# 必須與該函式 SET 子句的 COALESCE 欄位/參數完全一致。
+# update_patent_changed_fields 的 (欄位, 參數名) 對照：用來逐欄組「差異即更新」CASE 與
+# WHERE guard，區分 no-op 與實際更新。不寫死欄名清單——SET/guard 皆由本表生成，
+# 日後增減欄位只改此表即可。
 _UPDATE_COLUMN_PARAMS: tuple[tuple[str, str], ...] = (
     ('"授權公告號"', "授權公告號"),
     ('"審查的公告號"', "審查的公告號"),
@@ -413,10 +414,13 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
     from backend.app.db.connection import get_connection_kwargs
 
     # 匯入計數；整段在單一 connection／transaction 內，任一步拋錯由 with 區塊 rollback（不 commit）。
-    # inserted=新建 patent；matched_existing=識別號命中既有；updated⊆matched_existing（真的補了 NULL 欄）。
+    # inserted=新建 patent；matched_existing=識別號命中既有；updated⊆matched_existing（任一欄差異更新）。
     stats = {"inserted": 0, "matched_existing": 0, "updated": 0}
     # 匯入列的 (申請人代表碼, 名稱) 供已知 code 變體即時補入；於 commit 後統一註冊（該函式自管連線）
     variant_pairs: list[tuple[str | None, str | None]] = []
+    # 本次涉及的 patent_ids（新建＋命中既有），保序去重，供匯入圈 workspace（2026-07-22 定案）。
+    touched_patent_ids: list[int] = []
+    seen_patent_ids: set[int] = set()
     with psycopg.connect(**get_connection_kwargs()) as conn:
         with conn.cursor() as cur:
             if find_existing_raw_import(cur, file_hash):
@@ -426,12 +430,16 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
                 summary["matched_existing"] = 0
                 summary["updated"] = 0
                 summary["skipped"] = summary["records"]
+                summary["patent_ids"] = []
                 return summary
             for raw, item in zip(records, normalized):
                 raw_record_id = insert_raw_record(cur, selected_source, raw, file_hash)
                 # 去重只靠專利號查找（upsert_patent→find_existing_patent_id）；不再產生 dedupe_key，
                 # 無專利號列由 find_existing 回 None 而各自新建，靠 raw_record_id 保持獨立與追溯。
                 patent_id = upsert_patent(cur, item["patent"], raw_record_id, stats)
+                if patent_id not in seen_patent_ids:
+                    seen_patent_ids.add(patent_id)
+                    touched_patent_ids.append(int(patent_id))
                 insert_patent_source(cur, patent_id, raw_record_id)
                 replace_people(cur, patent_id, raw_record_id, item["people"])
                 replace_attributes(cur, patent_id, raw_record_id, item["attributes"])
@@ -439,12 +447,14 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
                 variant_pairs.append((people.get("申请人代表码"), people.get("申请人")))
                 variant_pairs.append((people.get("申请人代表码"), people.get("标准化申请人")))
         conn.commit()
-    # 匯入成功：每列一次 upsert，inserted+matched_existing=records、skipped=0；updated 為其中確有補值者。
+    # 匯入成功：每列一次 upsert，inserted+matched_existing=records、skipped=0；updated 為其中確有差異更新者。
     summary["inserted"] = stats["inserted"]
     summary["matched_existing"] = stats["matched_existing"]
     summary["updated"] = stats["updated"]
     summary["skipped"] = 0
     summary["status"] = "imported"
+    # 本次涉及專利（新建＋命中既有，去重）供 handler 圈進 workspace；空檔亦回空陣列。
+    summary["patent_ids"] = touched_patent_ids
     # 報表定案 #3 接線：已知 WIPS code 的新名稱變體即時補入唯一對照表（unknown/conflicting 進 manual）。
     summary["alias_variants"] = register_known_code_variants(
         variant_pairs, source_label=f"import:{path.name}")
@@ -489,8 +499,8 @@ def upsert_patent(
     """依識別號 upsert 一筆 patent；命中既有走 update、否則 insert。
 
     傳入 stats 時累加：insert 路徑 stats["inserted"]；識別號命中既有一律 stats["matched_existing"]，
-    其中真的把某欄由 NULL 補成非 NULL（update_patent_empty_fields 回 True）才另計 stats["updated"]。
-    不改既有 mapping 與 COALESCE 去重/更新政策。
+    其中真的有任一欄差異更新（update_patent_changed_fields 回 True）才另計 stats["updated"]。
+    更新採 2026-07-22「差異即更新（新值非空）」政策，不改既有 mapping 與去重機制。
     """
     patent_params = {
         **patent,
@@ -509,7 +519,7 @@ def upsert_patent(
     }
     patent_id = find_existing_patent_id(cur, patent)
     if patent_id:
-        changed = update_patent_empty_fields(cur, patent_id, patent_params)
+        changed = update_patent_changed_fields(cur, patent_id, patent_params)
         if stats is not None:
             stats["matched_existing"] = stats.get("matched_existing", 0) + 1
             if changed:
@@ -598,60 +608,65 @@ def find_existing_patent_id(cur, patent: dict[str, Any]) -> int | None:
     return existing[0] if existing else None
 
 
-def update_patent_empty_fields(cur, patent_id: int, patent_params: dict[str, Any]) -> bool:
-    """只把既有 NULL 欄位補成新來源非 NULL 值（COALESCE 政策不變，不覆蓋既有非空值）。
+# 差異比對用的參數名後綴：同一新值同時餵兩個 placeholder——寫回用原名（欄位型別語境，
+# 由 COALESCE(欄) 錨定推型別）、文字比對用 <param>__cmp（一律 ::text 語境）。psycopg3
+# server-side binding 對每個 placeholder 只推一種型別，拆成兩個名字才不會讓同一參數
+# 同時被要求是 text 又是 date/int 而衝突（DatatypeMismatch / UndefinedFunction）。
+_CHANGE_CMP_SUFFIX = "__cmp"
 
-    WHERE guard 讓「沒有任何 NULL 欄可補」時完全不更新；回傳是否真的補了至少一個欄位
-    （cur.rowcount>0），供匯入統計區分 matched_existing 與 updated（no-op 不算 updated）。
+
+def _column_change_condition(column: str, param: str) -> str:
+    """單欄「新值非空且與舊值不同」的判定 SQL（差異即更新政策的原子條件）。
+
+    新值（<param>__cmp）與舊值一律 `::text` 後比較：①以 NULLIF(BTRIM(新值::text),'') 判空
+    （NULL/空字串/全空白視為空），空則不觸發更新；②文字化兩側避免 date/int 欄與參數的
+    型別不符。非空時以 IS DISTINCT FROM 比對（NULL 舊值也算差異）。此處只讀比對用參數，
+    寫回值另由 SET 的原名參數處理，不受文字化影響。
     """
-    # guard：任一「既有欄為 NULL 且新值非 NULL」才需要更新；否則 UPDATE 命中 0 列。
-    # 參數包在 COALESCE(欄, %(p)s) 內讓 PostgreSQL 由欄位推參數型別：
-    # 裸寫 %(p)s IS NOT NULL 屬無型別語境，psycopg3 server-side binding 會拋
-    # AmbiguousParameter（regression：tests/test_wips_importer_empty_update.py）。
-    # 語意不變：欄為 NULL 時 COALESCE(欄, p) IS NOT NULL ⇔ p IS NOT NULL。
-    guard = " OR ".join(
-        f"({column} IS NULL AND COALESCE({column}, %({param})s) IS NOT NULL)"
+    cmp_param = f"{param}{_CHANGE_CMP_SUFFIX}"
+    return (
+        f"(NULLIF(BTRIM(%({cmp_param})s::text), '') IS NOT NULL "
+        f"AND %({cmp_param})s::text IS DISTINCT FROM {column}::text)"
+    )
+
+
+def update_patent_changed_fields(cur, patent_id: int, patent_params: dict[str, Any]) -> bool:
+    """逐欄比對：新值非空且與舊值不同就更新；新值空一律不覆蓋既有值。
+
+    2026-07-22 政策（取代舊「只補 NULL」COALESCE 語意）：專利狀態會演進
+    （legal_status、公告號、權利人、同族等），故命中既有時全欄一致採「差異即更新」。
+    護欄：新值為空（NULL/空字串/全空白，NULLIF(BTRIM(...),'') 判定）不得覆蓋既有有值，
+    避免某批來源缺欄把既有好資料清空。
+
+    SET 每欄形態：欄 = CASE WHEN <新值非空且與舊值不同> THEN 新值 ELSE 欄 END；
+    WHERE guard 為所有欄變更條件的 OR，讓完全無差異時 UPDATE 命中 0 列。
+    回傳是否真的更新至少一欄（cur.rowcount>0），供匯入統計區分 matched_existing 與 updated
+    （no-op 不算 updated）。SET/guard 皆由 _UPDATE_COLUMN_PARAMS 生成，不寫死欄名清單。
+    """
+    # THEN 用 COALESCE(%(param)s, 欄) 讓無型別參數由欄位錨定推得型別（沿用舊碼 COALESCE 錨定
+    # 手法，date/int/text 皆適用）；THEN 只在新值非空時觸發，此時 COALESCE 必回新值本身。
+    set_clause = ",\n            ".join(
+        f"{column} = CASE WHEN {_column_change_condition(column, param)} "
+        f"THEN COALESCE(%({param})s, {column}) ELSE {column} END"
         for column, param in _UPDATE_COLUMN_PARAMS
     )
+    guard = " OR ".join(
+        _column_change_condition(column, param) for column, param in _UPDATE_COLUMN_PARAMS
+    )
+    # 每個新值同時綁定原名（寫回）與 <name>__cmp（文字比對），兩者取同一值；缺鍵者當 None。
+    params: dict[str, Any] = {"patent_id": patent_id}
+    for _, param in _UPDATE_COLUMN_PARAMS:
+        value = patent_params.get(param)
+        params[param] = value
+        params[f"{param}{_CHANGE_CMP_SUFFIX}"] = value
     cur.execute(
         f"""
         UPDATE patents
         SET
-            "授權公告號" = COALESCE("授權公告號", %(授權公告號)s),
-            "審查的公告號" = COALESCE("審查的公告號", %(審查的公告號)s),
-            "未審查的公開號" = COALESCE("未審查的公開號", %(未審查的公開號)s),
-            "申請號" = COALESCE("申請號", %(申請號)s),
-            country_code = COALESCE(country_code, %(country_code)s),
-            database_name = COALESCE(database_name, %(database_name)s),
-            document_kind = COALESCE(document_kind, %(document_kind)s),
-            patent_type = COALESCE(patent_type, %(patent_type)s),
-            publication_date = COALESCE(publication_date, %(publication_date)s),
-            publication_year = COALESCE(publication_year, %(publication_year)s),
-            application_date = COALESCE(application_date, %(application_date)s),
-            application_year = COALESCE(application_year, %(application_year)s),
-            title = COALESCE(title, %(title)s),
-            title_original = COALESCE(title_original, %(title_original)s),
-            abstract = COALESCE(abstract, %(abstract)s),
-            "權利要求的項數" = COALESCE("權利要求的項數", %(claim_count)s),
-            "所有權利要求[JP,KR,CN]" = COALESCE("所有權利要求[JP,KR,CN]", %(all_claims)s),
-            "主權項" = COALESCE("主權項", %(main_claim)s),
-            "主權項(原文)" = COALESCE("主權項(原文)", %(main_claim_original)s),
-            "獨立項數量[KR,JP,US,CN,EP,IN]" = COALESCE("獨立項數量[KR,JP,US,CN,EP,IN]", %(independent_claim_count)s),
-            "獨立項[KR,JP,US,CN,EP,IN]" = COALESCE("獨立項[KR,JP,US,CN,EP,IN]", %(independent_claims)s),
-            "獨立項(原文)[KR,JP,CN,EP]" = COALESCE("獨立項(原文)[KR,JP,CN,EP]", %(independent_claims_original)s),
-            "效果 摘要[US,EP,PCT,JP,KR,CN,TW]" = COALESCE(
-                "效果 摘要[US,EP,PCT,JP,KR,CN,TW]",
-                %(effect_summary)s
-            ),
-            "Orig. CPC(Main)" = COALESCE("Orig. CPC(Main)", %(orig_cpc_main)s),
-            "Orig. IPC(Main)" = COALESCE("Orig. IPC(Main)", %(orig_ipc_main)s),
-            "Curr. CPC(Main)" = COALESCE("Curr. CPC(Main)", %(curr_cpc_main)s),
-            "Curr. IPC(Main)" = COALESCE("Curr. IPC(Main)", %(curr_ipc_main)s),
-            legal_status = COALESCE(legal_status, %(legal_status)s),
-            "WIPS同族ID" = COALESCE("WIPS同族ID", %(WIPS同族ID)s)
+            {set_clause}
         WHERE id = %(patent_id)s AND ({guard})
         """,
-        {**patent_params, "patent_id": patent_id},
+        params,
     )
     return cur.rowcount > 0
 
@@ -673,12 +688,18 @@ def insert_patent_source(cur, patent_id: int, raw_record_id: int) -> None:
 
 
 def replace_people(cur, patent_id: int, raw_record_id: int, people: dict[str, Any]) -> None:
+    """upsert 一列 patent_people；命中既有時採 2026-07-22「差異即更新（新值非空）」政策。
+
+    盤點揪出的漏網：舊政策 COALESCE(EXCLUDED, 舊) 只補空，權利人/申請人演進（decision
+    動因明列權利人）更新不到，且空白字串會覆蓋既有值。改為每欄
+    CASE WHEN 新值非空（NULLIF(BTRIM,'') 判定）且與舊值不同 THEN 新值 ELSE 舊值 END，
+    與 update_patent_changed_fields 同語意。people 欄皆 text，無需型別錨定。
+    欄清單由 PEOPLE_FIELDS/PEOPLE_FIELD_COLUMNS 生成，不寫死欄名。
+    """
     quoted_columns = ",\n            ".join(f'"{PEOPLE_FIELD_COLUMNS[field]}"' for field in PEOPLE_FIELDS)
     placeholders = ", ".join(["%s"] * (len(PEOPLE_FIELDS) + 1))
     update_assignments = ",\n            ".join(
-        f'"{PEOPLE_FIELD_COLUMNS[field]}" = '
-        f'COALESCE(EXCLUDED."{PEOPLE_FIELD_COLUMNS[field]}", patent_people."{PEOPLE_FIELD_COLUMNS[field]}")'
-        for field in PEOPLE_FIELDS
+        _people_column_update_clause(PEOPLE_FIELD_COLUMNS[field]) for field in PEOPLE_FIELDS
     )
     cur.execute(
         f"""
@@ -692,6 +713,23 @@ def replace_people(cur, patent_id: int, raw_record_id: int, people: dict[str, An
             {update_assignments}
         """,
         (patent_id, *(people.get(field) for field in PEOPLE_FIELDS)),
+    )
+
+
+def _people_column_update_clause(column: str) -> str:
+    """單一 people 欄的 ON CONFLICT DO UPDATE 子句（差異即更新、新值空不覆蓋）。
+
+    EXCLUDED.<欄> 為本次匯入新值、patent_people.<欄> 為既有值。新值非空
+    （NULLIF(BTRIM(...),'') 判定）且與舊值不同才寫入新值，否則保留舊值。people 欄皆 text，
+    直接比較不需型別錨定。
+    """
+    excluded = f'EXCLUDED."{column}"'
+    existing = f'patent_people."{column}"'
+    return (
+        f'"{column}" = CASE '
+        f"WHEN NULLIF(BTRIM({excluded}), '') IS NOT NULL "
+        f"AND {excluded} IS DISTINCT FROM {existing} "
+        f"THEN {excluded} ELSE {existing} END"
     )
 
 

@@ -121,20 +121,74 @@ class SchemaComplianceTests(unittest.TestCase):
         self.assertEqual(row[0], 990001)
         self.assertEqual(row[1], 990001)
 
-    def test_existing_non_null_not_overwritten(self):
-        """既有專利非空值不被 importer COALESCE 覆蓋。"""
-        from backend.app.importers.wips_importer import update_patent_empty_fields, _UPDATE_COLUMN_PARAMS
+    def test_existing_non_null_updated_when_new_value_differs(self):
+        """2026-07-22 政策：既有非空值與新值不同即更新（取代舊「只補 NULL、不覆蓋非空」）。"""
+        from backend.app.importers.wips_importer import update_patent_changed_fields, _UPDATE_COLUMN_PARAMS
         with psycopg.connect(**_rw(TEST_DB)) as c:
             c.execute("INSERT INTO core_layer.patents (id, title, legal_status) VALUES (990002, '原標題', '有效')")
             params = {param: None for _, param in _UPDATE_COLUMN_PARAMS}
-            params.update(title="新標題不得蓋舊值", legal_status="無效")
+            params.update(title="新標題", legal_status="無效")
             with c.cursor() as cur:
-                changed = update_patent_empty_fields(cur, 990002, params)
+                changed = update_patent_changed_fields(cur, 990002, params)
             row = c.execute("SELECT title, legal_status FROM core_layer.patents WHERE id=990002").fetchone()
             c.execute("ROLLBACK")
-        self.assertFalse(changed, "無 NULL 欄可補時不得回傳 True")
+        self.assertTrue(changed, "有欄位差異時應回傳 True")
+        self.assertEqual(row[0], "新標題")
+        self.assertEqual(row[1], "無效")
+
+    def test_existing_non_null_not_cleared_by_empty_new_value(self):
+        """護欄：新值空（NULL/空白）一律不覆蓋既有有值，且無實際差異時回 False。"""
+        from backend.app.importers.wips_importer import update_patent_changed_fields, _UPDATE_COLUMN_PARAMS
+        with psycopg.connect(**_rw(TEST_DB)) as c:
+            c.execute("INSERT INTO core_layer.patents (id, title, legal_status) VALUES (990012, '原標題', '有效')")
+            params = {param: None for _, param in _UPDATE_COLUMN_PARAMS}
+            params.update(title=None, legal_status="   ")
+            with c.cursor() as cur:
+                changed = update_patent_changed_fields(cur, 990012, params)
+            row = c.execute("SELECT title, legal_status FROM core_layer.patents WHERE id=990012").fetchone()
+            c.execute("ROLLBACK")
+        self.assertFalse(changed, "新值皆空、無差異時不得回傳 True")
         self.assertEqual(row[0], "原標題")
         self.assertEqual(row[1], "有效")
+
+    def test_replace_people_updates_changed_owner(self):
+        """2026-07-22：replace_people 同套「新值非空且有差異才更新」政策——權利人可被更新。
+
+        權利人（最近專利權人）會隨轉讓/年費演進，是 decision 動因明列欄位；驗證第二次匯入
+        帶入不同權利人時，patent_people 對應欄由舊值更新到新值。
+        """
+        from backend.app.importers.wips_importer import replace_people
+        with psycopg.connect(**_rw(TEST_DB)) as c:
+            c.execute("INSERT INTO core_layer.patents (id, title) VALUES (990003, 'owner test')")
+            c.execute("INSERT INTO raw_layer.raw_records (id, sheet_name, row_number, raw_data, source_system, source_file_hash, imported_at) "
+                      "VALUES (990003, 'S', 1, '{}'::jsonb, 'WIPS', 'h3', now())")
+            owner_field = "最近专利权人[US,JP,KR,CN,CA,AU]"
+            with c.cursor() as cur:
+                replace_people(cur, 990003, 990003, {owner_field: "力山工業股份有限公司"})
+                replace_people(cur, 990003, 990003, {owner_field: "力山國際股份有限公司"})
+            row = c.execute(
+                'SELECT "最近專利權人[US,JP,KR,CN,CA,AU]" FROM core_layer.patent_people WHERE patent_id=990003'
+            ).fetchone()
+            c.execute("ROLLBACK")
+        self.assertEqual(row[0], "力山國際股份有限公司", "權利人有差異時應更新到新值")
+
+    def test_replace_people_empty_new_value_not_cleared(self):
+        """護欄：第二次匯入該欄為空（NULL/空白）時不得覆蓋既有權利人。"""
+        from backend.app.importers.wips_importer import replace_people
+        with psycopg.connect(**_rw(TEST_DB)) as c:
+            c.execute("INSERT INTO core_layer.patents (id, title) VALUES (990004, 'owner test 2')")
+            c.execute("INSERT INTO raw_layer.raw_records (id, sheet_name, row_number, raw_data, source_system, source_file_hash, imported_at) "
+                      "VALUES (990004, 'S', 1, '{}'::jsonb, 'WIPS', 'h4', now())")
+            owner_field = "最近专利权人[US,JP,KR,CN,CA,AU]"
+            with c.cursor() as cur:
+                replace_people(cur, 990004, 990004, {owner_field: "力山工業股份有限公司"})
+                replace_people(cur, 990004, 990004, {owner_field: None})
+                replace_people(cur, 990004, 990004, {owner_field: "   "})
+            row = c.execute(
+                'SELECT "最近專利權人[US,JP,KR,CN,CA,AU]" FROM core_layer.patent_people WHERE patent_id=990004'
+            ).fetchone()
+            c.execute("ROLLBACK")
+        self.assertEqual(row[0], "力山工業股份有限公司", "新值空不得清空既有權利人")
 
     def test_find_existing_raw_import_queries_raw_records(self):
         """find_existing_raw_import 正確查詢 raw_records（非 source_files）。"""
