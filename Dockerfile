@@ -16,8 +16,7 @@ WORKDIR /app
 
 COPY --from=uv_bin /uv /uvx /bin/
 COPY pyproject.toml uv.lock ./
-RUN --mount=type=cache,id=s/2408e425-5d2e-45b6-83e7-77e17f411c8a-/root/.cache/uv,target=/root/.cache/uv,sharing=locked \
-    uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project
 
 FROM ${PYTHON_IMAGE} AS runtime
 
