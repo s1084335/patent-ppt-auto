@@ -69,6 +69,15 @@ class AggregateColumnsTests(unittest.TestCase):
         self.assertIn('patent_id = ANY(%(patent_ids)s)', sql)
         self.assertEqual(params["patent_ids"], [101, 102])
 
+    def test_applicant_ranking_excludes_self_assignee(self) -> None:
+        """轉讓藍段只計「最新受讓人≠申請人」：同名（專利未離手）不算轉讓、不進明細
+        （2026-07-22 使用者回饋：斯蒂爾申請、最新受讓人也是斯蒂爾，不該分顏色）。"""
+        sql, _ = build_report_sql(REPORT_DEFINITIONS["applicant_ranking"], filters=None, limit=None)
+        excl = 'IS DISTINCT FROM NULLIF(BTRIM("applicant_display_name"::text), \'\')'
+        self.assertIn(excl, sql)
+        # count 與受讓人明細兩個聚合都要帶排除條件
+        self.assertEqual(sql.count(excl), 2)
+
     def test_owner_year_matrix_definition_and_sql_contract(self) -> None:
         """專利權人年度布局矩陣以 current assignee × application year 聚合。"""
         definition = REPORT_DEFINITIONS["owner_year_matrix"]

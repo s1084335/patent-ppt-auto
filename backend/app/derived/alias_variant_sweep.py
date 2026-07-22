@@ -1,5 +1,9 @@
 """掃描 patent_people 申請人代表碼變體，自動補入唯一 company_aliases 對照表。
 
+本模組是「名稱治理管線」（govern_company_names）的全量觸發點：匯入時由
+wips_importer 對增量 pairs 即時觸發，本模組對 patent_people 全量重掃，
+兩者共用同一套核心，不各自維護第二份偵測邏輯。
+
 使用方式：
     python -m backend.app.derived.alias_variant_sweep
 
@@ -7,7 +11,8 @@
 - inserted：自動補入別稱數
 - skipped_existing：已存在變體數
 - manual_review：unknown/conflicting code 列表
-- manual_review_html：交使用者確認的單頁 HTML（存 output/）
+- needs_zh_name：顯示名無 CJK 且未經 curation 裁決的待中文化代碼列表
+- manual_review_html：交使用者確認的單頁 HTML（存 output/，含待中文化建議節）
 """
 from __future__ import annotations
 
@@ -23,7 +28,7 @@ except ImportError as exc:
     raise RuntimeError("psycopg is required. Install psycopg[binary].") from exc
 
 from backend.app.db.connection import get_connection_kwargs
-from backend.app.derived.company_alias_importer import register_known_code_variants
+from backend.app.derived.company_alias_importer import govern_company_names
 
 
 VARIANTS_SOURCE_LABEL = "variant_sweep"
@@ -62,14 +67,20 @@ def collect_pairs(connect_kwargs: dict[str, Any] | None = None) -> list[tuple[st
 def write_manual_review_html(
     manual: list[dict[str, str]],
     output_dir: Path,
+    needs_zh_name: list[dict[str, str]] | None = None,
 ) -> Path:
-    """寫出 manual_review 單頁 HTML。"""
+    """寫出 manual_review 單頁 HTML（含「待中文化建議」節）。"""
+    needs = needs_zh_name or []
     now = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = output_dir / f"alias_sweep_manual_review_{now}.html"
     rows_html = "\n".join(
         f"<tr><td>{r['company_code']}</td><td>{r['alias_name']}</td>"
         f"<td>{r['reason']}</td></tr>"
         for r in manual
+    )
+    zh_rows_html = "\n".join(
+        f"<tr><td>{r['company_code']}</td><td>{r['company_name']}</td></tr>"
+        for r in needs
     )
     html = f"""<!doctype html>
 <html lang="zh-Hant">
@@ -81,6 +92,7 @@ def write_manual_review_html(
   th {{ background: #f5f5f5; }}
   .unknown_code {{ background: #fff3cd; }}
   .conflicting_code {{ background: #f8d7da; }}
+  h2 {{ margin-top: 32px; }}
 </style></head>
 <body>
 <h1>Alias Variant Sweep — Manual Review</h1>
@@ -89,6 +101,15 @@ def write_manual_review_html(
 <thead><tr><th>申請人代碼</th><th>名稱變體</th><th>原因</th></tr></thead>
 <tbody>
 {rows_html}
+</tbody>
+</table>
+<h2>待中文化建議</h2>
+<p>以下 {len(needs)} 個代碼的顯示名不含中文（CJK）且尚未經 curation 裁決；
+請依 company-name-curation 流程查證市場慣用中文名，或裁決保留原文（裁決後不再浮現）。</p>
+<table>
+<thead><tr><th>申請人代碼</th><th>目前顯示名</th></tr></thead>
+<tbody>
+{zh_rows_html}
 </tbody>
 </table>
 </body></html>"""
@@ -100,17 +121,18 @@ def sweep_and_report(
     connect_kwargs: dict[str, Any] | None = None,
     output_dir: str | Path | None = None,
 ) -> dict[str, Any]:
-    """執行一次完整 sweep，回傳統計與 manual_review 結果。"""
+    """執行一次完整 sweep（名稱治理管線全量觸發），回傳統計、manual_review 與 needs_zh_name。"""
     pairs = collect_pairs(connect_kwargs=connect_kwargs)
-    result = register_known_code_variants(
+    result = govern_company_names(
         pairs,
         source_label=VARIANTS_SOURCE_LABEL,
         connect_kwargs=connect_kwargs,
     )
 
     manual = result.get("manual_review", [])
-    if manual and output_dir:
-        html_path = write_manual_review_html(manual, Path(output_dir))
+    needs_zh = result.get("needs_zh_name", [])
+    if (manual or needs_zh) and output_dir:
+        html_path = write_manual_review_html(manual, Path(output_dir), needs_zh_name=needs_zh)
         result["manual_review_html"] = str(html_path)
 
     result["total_pairs"] = len(pairs)

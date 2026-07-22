@@ -130,8 +130,9 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         columns=("applicant_display_name",),
         group_by=("applicant_display_name",),
         aggregates=(
-            ("count_nonblank", "recent_assignee_display_name", "recent_assignee_count"),
-            ("string_agg_distinct_nonblank", "recent_assignee_display_name", "recent_assignee_display_names"),
+            # _excl_group：申請人＝最新受讓人（未離手）不算轉讓（2026-07-22 使用者定案）
+            ("count_nonblank_excl_group", "recent_assignee_display_name", "recent_assignee_count"),
+            ("string_agg_distinct_nonblank_excl_group", "recent_assignee_display_name", "recent_assignee_display_names"),
         ),
         default_order=(("patent_count", "desc"), ("applicant_display_name", "asc")),
         default_limit=100,

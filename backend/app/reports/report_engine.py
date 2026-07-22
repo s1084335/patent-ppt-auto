@@ -27,17 +27,32 @@ AGGREGATE_FUNCTIONS = {
     "count_distinct": "COUNT(DISTINCT {col})::int",
     "avg": "AVG({col})::numeric(12,2)",
     "max": "MAX({col})",
+    # _excl_group 變體：聚合欄與分組鍵（group_by 第一欄）同值時不計——
+    # 用於「申請人＝最新受讓人」這種未離手情況不算轉讓（通用比對，不寫死欄名）。
+    "count_nonblank_excl_group": (
+        "COUNT(*) FILTER (WHERE NULLIF(BTRIM({col}::text), '') IS NOT NULL "
+        "AND NULLIF(BTRIM({col}::text), '') IS DISTINCT FROM NULLIF(BTRIM({group_col}::text), ''))::int"
+    ),
+    "string_agg_distinct_nonblank_excl_group": (
+        "COALESCE(STRING_AGG(DISTINCT NULLIF(BTRIM({col}::text), ''), '; ' "
+        "ORDER BY NULLIF(BTRIM({col}::text), '')) "
+        "FILTER (WHERE NULLIF(BTRIM({col}::text), '') IS NOT NULL "
+        "AND NULLIF(BTRIM({col}::text), '') IS DISTINCT FROM NULLIF(BTRIM({group_col}::text), '')), '')"
+    ),
 }
 
 
 def build_aggregate_columns(definition: ReportDefinition) -> str:
     """把 definition.aggregates 組成 SELECT 片段（含前置逗號），無聚合時回空字串。"""
     parts: list[str] = []
+    group_col = quote_ident(definition.group_by[0]) if definition.group_by else None
     for func, column, alias in definition.aggregates:
         template = AGGREGATE_FUNCTIONS.get(func)
         if template is None:
             raise ValueError(f"Unsupported aggregate function: {func} (report {definition.name})")
-        parts.append(f"{template.format(col=quote_ident(column))} AS {quote_ident(alias)}")
+        if "{group_col}" in template and group_col is None:
+            raise ValueError(f"Aggregate {func} requires group_by (report {definition.name})")
+        parts.append(f"{template.format(col=quote_ident(column), group_col=group_col)} AS {quote_ident(alias)}")
     return (", " + ", ".join(parts)) if parts else ""
 
 

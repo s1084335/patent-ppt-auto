@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -618,6 +619,102 @@ class DataTableHumanizeTests(unittest.TestCase):
         self.assertEqual(cells[1], "15", "patent_count 加總有意義，應出總計")
         for idx, col in ((2, "applicant_count"), (3, "leading_applicant_count"), (4, "application_year")):
             self.assertEqual(cells[idx], "—", f"{col} 加總無意義（distinct/年份），應顯示 —")
+
+
+class NarrativeRefreshTests(unittest.TestCase):
+    """報表解讀管線系統件（2026-07-21）：sections 持久化進 report_data.json、
+    --refresh-index 從持久化 sections 重建 index（narratives.json 有就嵌入、
+    版本不符顯示過期、舊 run 無 sections 鍵明確報錯不猜）。"""
+
+    @staticmethod
+    def _stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        rows = [{"current_assignee_display_name": f"Owner {i:02d}", "application_year": 2020,
+                 "patent_count": 30 - i} for i in range(12)]
+        return fake_report(name, rows)
+
+    def _make_run(self, tmp: str) -> Path:
+        with mock.patch.object(chart_runner, "run_report", self._stub_run_report):
+            result = chart_runner.run_chart_trial(output_dir=Path(tmp), report_names=["owner_year_matrix"])
+        return Path(result["output_dir"])
+
+    def test_sections_persisted_in_report_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._make_run(tmp)
+            rd = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
+        sections = rd.get("sections")
+        self.assertIsInstance(sections, list, "report_data.json 應含 sections 鍵")
+        self.assertEqual(len(sections), 1)
+        self.assertIn("title", sections[0])
+        self.assertEqual(sections[0]["variants"][0]["file"], "owner_year_matrix.svg")
+
+    def test_refresh_index_embeds_narratives_and_clears_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._make_run(tmp)
+            narratives = {
+                "based_on_version": run_dir.name,
+                "reports": {
+                    "owner_year_matrix": {
+                        "text": "測試解讀文字XYZ",
+                        "ai_model": "test-model",
+                        "prompt_version": "report_narrative_v1",
+                        "generated_at": "2026-07-21T00:00:00",
+                        "based_on_version": run_dir.name,
+                    }
+                },
+            }
+            (run_dir / "narratives.json").write_text(
+                json.dumps(narratives, ensure_ascii=False), encoding="utf-8")
+            stats = chart_runner.refresh_index(run_dir)
+            index_html = (run_dir / "index.html").read_text(encoding="utf-8")
+        self.assertIn("測試解讀文字XYZ", index_html, "解讀文字應嵌入每張圖表變體面板內")
+        self.assertNotIn("待解讀", index_html, "解讀齊備後不得殘留待解讀佔位")
+        self.assertEqual(stats["pending"], [], "無缺漏 key")
+        # owner_year_matrix has 2 variants (default + more); v1 direct text serves both
+        self.assertEqual(stats["narrated"], 2)
+
+    def test_narrative_lookup_strips_level_suffix(self):
+        """IPC/CPC 卡查找鍵由檔名 fallback 帶 _L4 尾巴，narratives 契約鍵不帶層級——
+        解讀查找須退基底鍵（2026-07-22 v2 首跑 4 變體待解讀 regression）。"""
+        narrs = {"ipc_main_distribution": {"variants": {
+            "L4": {"text": "四階解讀"}, "L5": {"text": "五階解讀"}}}}
+        entry = chart_runner._narrative_entry(narrs, "ipc_main_distribution_L4")
+        self.assertEqual(chart_runner._narrative_text(entry, "L4"), "四階解讀")
+        self.assertEqual(chart_runner._narrative_text(entry, "L5"), "五階解讀")
+        # 精確鍵優先：同名精確鍵存在時不退基底
+        narrs2 = {"foo_L4": {"text": "精確"}, "foo": {"text": "基底"}}
+        self.assertEqual(chart_runner._narrative_text(
+            chart_runner._narrative_entry(narrs2, "foo_L4"), "default"), "精確")
+
+    def test_refresh_index_version_mismatch_shows_expired(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._make_run(tmp)
+            narratives = {"based_on_version": "report_trial_other",
+                          "reports": {"owner_year_matrix": {"text": "舊解讀"}}}
+            (run_dir / "narratives.json").write_text(
+                json.dumps(narratives, ensure_ascii=False), encoding="utf-8")
+            chart_runner.refresh_index(run_dir)
+            index_html = (run_dir / "index.html").read_text(encoding="utf-8")
+        self.assertIn("解讀版本過期", index_html)
+        self.assertNotIn("舊解讀", index_html, "過期解讀不得當有效內容嵌入")
+
+    def test_refresh_index_old_run_without_sections_fails_loud(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._make_run(tmp)
+            rd_path = run_dir / "report_data.json"
+            rd = json.loads(rd_path.read_text(encoding="utf-8"))
+            rd.pop("sections", None)  # 模擬舊版產出
+            rd_path.write_text(json.dumps(rd, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                chart_runner.refresh_index(run_dir)
+        self.assertIn("sections", str(ctx.exception), "錯誤訊息應指明缺 sections 鍵")
+
+    def test_cli_refresh_index_mode(self):
+        """argparse 接線：--refresh-index <run_dir> 走 refresh、不進出圖路徑。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._make_run(tmp)
+            with mock.patch.object(sys, "argv", ["chart_runner", "--refresh-index", str(run_dir)]):
+                chart_runner.main()
+            self.assertTrue((run_dir / "index.html").exists())
 
 
 class SelectiveRenderTests(unittest.TestCase):

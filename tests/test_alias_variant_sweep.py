@@ -11,6 +11,7 @@ from alembic import command
 from alembic.config import Config
 
 TEST_DB = "patent_ppt_sweep"
+CURATION_DB = "patent_ppt_curation"
 HEAD_REV = "0021_derived_app_consolidation"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -173,6 +174,175 @@ class AliasVariantSweepTests(unittest.TestCase):
         self.assertIn("skipped_existing", r)
         self.assertIn("manual_review", r)
         self.assertIsInstance(r["manual_review"], list)
+
+
+class DisplayNameGovernanceTests(unittest.TestCase):
+    """公司顯示名 curation upsert 與名稱治理管線（匯入/sweep 共用核心）的 needs_zh_name 偵測。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._prev = {k: os.environ.get(k) for k in ("PGHOST", "PGDATABASE", "DATABASE_URL")}
+        os.environ["PGHOST"] = "127.0.0.1"
+        try:
+            with psycopg.connect(**_kw("postgres"), autocommit=True, connect_timeout=3) as admin:
+                admin.execute(f'DROP DATABASE IF EXISTS "{CURATION_DB}" WITH (FORCE)')
+                admin.execute(f'CREATE DATABASE "{CURATION_DB}"')
+        except Exception as exc:
+            raise unittest.SkipTest(f"admin DB unavailable: {exc}")
+        os.environ.pop("DATABASE_URL", None)
+        os.environ["PGDATABASE"] = CURATION_DB
+        cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+        command.upgrade(cfg, HEAD_REV)
+
+    @classmethod
+    def tearDownClass(cls):
+        for k, v in cls._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        try:
+            with psycopg.connect(**_kw("postgres"), autocommit=True, connect_timeout=3) as admin:
+                admin.execute(f'DROP DATABASE IF EXISTS "{CURATION_DB}" WITH (FORCE)')
+        except Exception:
+            pass
+
+    def _seed_alias(self, code, name, alias, source_file="setup", review_status="confirmed"):
+        """輔助：直接種一列對照（模擬既有資料）。"""
+        with psycopg.connect(**_rw(CURATION_DB)) as c:
+            c.execute(
+                'INSERT INTO derived_layer.company_aliases '
+                '("申請人代碼", "公司名稱", "別稱", source_file, review_status) '
+                "VALUES (%s, %s, %s, %s, %s)",
+                (code, name, alias, source_file, review_status))
+            c.commit()
+
+    def _rows(self, code):
+        """輔助：取指定 code 的 (公司名稱, 別稱, source_file, review_status) 列。"""
+        with psycopg.connect(**_rw(CURATION_DB)) as c:
+            return c.execute(
+                'SELECT "公司名稱", "別稱", source_file, review_status '
+                'FROM derived_layer.company_aliases WHERE "申請人代碼"=%s ORDER BY id',
+                (code,)).fetchall()
+
+    def test_apply_inserts_new_confirmed_rows(self):
+        """upsert 三態之一：全新 lookup key → INSERT confirmed，canonical 自身納入別稱。"""
+        from backend.app.derived.company_alias_importer import apply_confirmed_display_names
+        result = apply_confirmed_display_names(
+            {"C100": {"canonical": "甲公司", "aliases": ["Alpha Tools Inc.", "Alpha Tools Corporation"]}},
+            source_label="display_name_curation_test",
+            connect_kwargs=_rw(CURATION_DB))
+        self.assertEqual(result["inserted"], 3)
+        self.assertEqual(result["updated"], 0)
+        self.assertEqual(result["dedup_dropped"], 0)
+        rows = self._rows("C100")
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all(r[0] == "甲公司" and r[3] == "confirmed" for r in rows))
+        self.assertIn("甲公司", [r[1] for r in rows], "canonical 自身應納入別稱")
+
+    def test_apply_updates_existing_key_without_unique_violation(self):
+        """upsert 三態之二：lookup key 已存在（confirmed）→ UPDATE 該列 re-canonicalize，不拋 UniqueViolation。"""
+        self._seed_alias("C200", "BETA CORP", "Beta Corp")
+        from backend.app.derived.company_alias_importer import apply_confirmed_display_names
+        # 「BETA  corp」大小寫＋空白變體 normalize 後與既有「Beta Corp」同 lookup key，
+        # 天真 INSERT 會撞 ux_company_aliases_lookup_confirmed；正確行為是 UPDATE 既有列。
+        result = apply_confirmed_display_names(
+            {"C200": {"canonical": "乙公司", "aliases": ["BETA  corp"]}},
+            source_label="display_name_curation_test",
+            connect_kwargs=_rw(CURATION_DB))
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["inserted"], 1)  # canonical 乙公司為新 key
+        rows = self._rows("C200")
+        self.assertEqual(len(rows), 2, "撞鍵應更新既有列，不插新列")
+        by_alias = {r[1]: r for r in rows}
+        seeded = by_alias["Beta Corp"]
+        self.assertEqual(seeded[0], "乙公司")
+        self.assertEqual(seeded[2], "display_name_curation_test")
+        self.assertEqual(seeded[3], "confirmed")
+
+    def test_apply_updates_review_required_row_to_confirmed(self):
+        """撞鍵不限 confirmed：review_required 列被裁決後轉 confirmed。"""
+        self._seed_alias("C210", "GAMMA", "Gamma LLC", review_status="review_required")
+        from backend.app.derived.company_alias_importer import apply_confirmed_display_names
+        result = apply_confirmed_display_names(
+            {"C210": {"canonical": "丙公司", "aliases": ["Gamma LLC"]}},
+            source_label="display_name_curation_test",
+            connect_kwargs=_rw(CURATION_DB))
+        self.assertEqual(result["updated"], 1)
+        rows = self._rows("C210")
+        statuses = {r[1]: r[3] for r in rows}
+        self.assertEqual(statuses["Gamma LLC"], "confirmed")
+
+    def test_apply_dedups_within_batch(self):
+        """upsert 三態之三：批內同 lookup key 只留第一個字面；跨 code 相同 canonical 也只落一列。"""
+        from backend.app.derived.company_alias_importer import apply_confirmed_display_names
+        result = apply_confirmed_display_names(
+            {
+                "C300": {"canonical": "丁公司", "aliases": ["Delta Tools", "DELTA TOOLS", "delta  tools"]},
+                "C301": {"canonical": "戊公司", "aliases": []},
+                "C302": {"canonical": "戊公司", "aliases": []},
+            },
+            source_label="display_name_curation_test",
+            connect_kwargs=_rw(CURATION_DB))
+        # C300：丁公司＋Delta Tools 入庫，兩個大小寫/空白變體被批內去重；
+        # C302 的戊公司與 C301 同 key，也在批內去重（不會把戊公司改掛到第二個 code）。
+        self.assertEqual(result["dedup_dropped"], 3)
+        self.assertEqual(result["inserted"], 3)
+        self.assertEqual({r[1] for r in self._rows("C300")}, {"丁公司", "Delta Tools"})
+        self.assertEqual(len(self._rows("C301")), 1)
+        self.assertEqual(len(self._rows("C302")), 0)
+
+    def test_govern_needs_zh_name_detection(self):
+        """治理管線：中文 canonical 不列、英文 canonical 列入、已 curation 裁決（含保留原文）不列。"""
+        self._seed_alias("N001", "中文公司", "中文公司")
+        self._seed_alias("N002", "English Co", "English Co")
+        # N003 已走過 curation（裁決＝保留原文），source_file 即裁決標記
+        self._seed_alias("N003", "Keep Original Co", "Keep Original Co",
+                         source_file="display_name_curation_20260721")
+        from backend.app.derived.company_alias_importer import govern_company_names
+        result = govern_company_names(
+            [("N001", "中文公司 股份有限公司"), ("N002", "English Co Ltd."), ("N003", "Keep Original Co LLC")],
+            source_label="test_intake",
+            connect_kwargs=_rw(CURATION_DB))
+        codes = {r["company_code"] for r in result["needs_zh_name"]}
+        self.assertIn("N002", codes, "英文 canonical 應列入待中文化")
+        self.assertNotIn("N001", codes, "中文 canonical 不應列入")
+        self.assertNotIn("N003", codes, "已裁決保留原文者不得重複浮現")
+
+    def test_import_path_reports_needs_zh_name(self):
+        """匯入路徑（register_known_code_variants 薄包裝）自動帶出 needs_zh_name。"""
+        self._seed_alias("N010", "Foreign Newco", "Foreign Newco")
+        from backend.app.derived.company_alias_importer import register_known_code_variants
+        result = register_known_code_variants(
+            [("N010", "Foreign Newco Inc.")],
+            source_label="import:test.xlsx",
+            connect_kwargs=_rw(CURATION_DB))
+        self.assertIn("needs_zh_name", result)
+        self.assertIn("N010", {r["company_code"] for r in result["needs_zh_name"]})
+
+    def test_manual_review_html_has_needs_zh_section(self):
+        """manual_review HTML 需含「待中文化建議」節。"""
+        import tempfile
+        from backend.app.derived.alias_variant_sweep import write_manual_review_html
+        out_dir = Path(tempfile.mkdtemp())
+        path = write_manual_review_html(
+            [], out_dir,
+            needs_zh_name=[{"company_code": "Z100", "company_name": "Foreign Co"}])
+        html = path.read_text(encoding="utf-8")
+        self.assertIn("待中文化建議", html)
+        self.assertIn("Z100", html)
+        path.unlink()
+        out_dir.rmdir()
+
+    def test_sweep_reports_needs_zh_name_key(self):
+        """sweep 為治理管線的全量觸發點：統計需帶 needs_zh_name 鍵。"""
+        from backend.app.derived.alias_variant_sweep import sweep_and_report
+        r = sweep_and_report(connect_kwargs={
+            "options": "-c search_path=derived_layer,core_layer,raw_layer,public",
+            **_kw(CURATION_DB)})
+        self.assertIn("needs_zh_name", r)
+        self.assertIsInstance(r["needs_zh_name"], list)
 
 
 if __name__ == "__main__":

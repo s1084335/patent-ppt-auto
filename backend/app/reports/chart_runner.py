@@ -936,13 +936,119 @@ def _data_table_html(rows: list[dict[str, Any]], report_name: str) -> str:
     return f'<div class="data-table-wrap">{table}</div>'
 
 
+def _section_report_name(section: dict[str, Any]) -> str:
+    """卡片對應的 report key（解讀 narratives 與數據 rows 查找共用）：
+    有 report_key 用之，否則以第一個 variant 檔名去副檔名。"""
+    variants = section.get("variants", [])
+    fallback = variants[0]["file"].replace(".svg", "").replace(".html", "") if variants else ""
+    return section.get("report_key", fallback)
+
+
+# sections 持久化欄位白名單（report_data.json["sections"]，--refresh-index 重建 index 用；
+# 只收可 JSON 序列化的顯示欄位）。
+SECTION_PERSIST_KEYS = (
+    "title", "report_key", "variants", "more_variants", "more_label", "note", "stacked", "links",
+)
+
+
+def persistable_sections(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把 sections 過濾成可序列化的持久化形狀（缺的欄位不補、不猜）。"""
+    return [
+        {key: section[key] for key in SECTION_PERSIST_KEYS if key in section}
+        for section in sections
+    ]
+
+
+def refresh_index(run_dir: Path) -> dict[str, Any]:
+    """從 run_dir/report_data.json["sections"] 重建 index.html（解讀回填後重渲染）。
+
+    render_index 內部會讀同目錄 narratives.json：版本相符即嵌入解讀、不符顯示
+    「解讀版本過期」。舊 run（無 sections 鍵）明確報錯，不做推測重建。
+    回傳統計：sections 數、有解讀數、缺漏 report_key 清單、是否過期。
+    """
+    run_dir = Path(run_dir)
+    rd_path = run_dir / "report_data.json"
+    if not rd_path.exists():
+        raise FileNotFoundError(f"{rd_path} 不存在（不是有效的報表輸出目錄）")
+    rd = json.loads(rd_path.read_text(encoding="utf-8"))
+    sections = rd.get("sections")
+    if sections is None:
+        raise ValueError(
+            "report_data.json 缺 'sections' 鍵（舊版產出）：請以新版 run_chart_trial 重產報表後再 refresh，"
+            "不支援對舊 run 推測重建 sections"
+        )
+    parameters = rd.get("parameters", {})
+    render_index(
+        run_dir / "index.html",
+        sections,
+        meta={
+            "ranking_limit": parameters.get("ranking_limit", ""),
+            "ipc_levels": " ".join(str(v) for v in parameters.get("ipc_levels", [])),
+            "cpc_levels": " ".join(str(v) for v in parameters.get("cpc_levels", [])),
+        },
+    )
+    # 統計解讀覆蓋：按變體計（v2 契約 each variant = one narrative）
+    narratives = _read_narratives(run_dir, run_dir.name)
+    expired = bool(narratives.pop("_expired", False))
+    total_variants = 0
+    narrated_variants = 0
+    pending_variants: list[str] = []
+    for s in sections:
+        report_key = _section_report_name(s)
+        entry = _narrative_entry(narratives, report_key)
+        all_variants = list(s.get("variants", [])) + list(s.get("more_variants", []))
+        for v in all_variants:
+            total_variants += 1
+            vk = v.get("variant_key", "default")
+            text = _narrative_text(entry, vk) if not expired else None
+            if text:
+                narrated_variants += 1
+            else:
+                pending_variants.append(f"{report_key}:{vk}")
+    return {
+        "status": "ok",
+        "run_dir": str(run_dir),
+        "sections": len(sections),
+        "variants_total": total_variants,
+        "narrated": narrated_variants,
+        "pending": pending_variants,
+        "narratives_expired": expired,
+    }
+
+
+def _narrative_entry(narratives: dict[str, Any], report_key: str) -> dict[str, Any]:
+    """解讀查找：先精確鍵；查無且鍵帶層級尾巴（_L<n>）時退基底鍵。
+    IPC/CPC 卡的查找鍵由檔名 fallback 帶 _L4/_L5，narratives 契約鍵不帶層級。"""
+    entry = narratives.get(report_key)
+    if entry:
+        return entry
+    base, sep, tail = report_key.rpartition("_L")
+    if sep and tail.isdigit():
+        return narratives.get(base, {}) or {}
+    return {}
+
+
+def _narrative_text(entry: dict[str, Any] | None, variant_key: str) -> str | None:
+    if not entry:
+        return None
+    if "variants" in entry:
+        v = entry["variants"].get(variant_key)
+        return v.get("text") if v and v.get("text") else None
+    if entry.get("text"):
+        return entry.get("text")
+    return None
+
+
 def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> None:
     """Card-style report index with data table, chart, and explanation.
 
     Sections order is fixed by SECTION_SPECS. Each card shows:
     1. Data table (first 20 rows + totals, expandable)
-    2. Chart (SVG embed)
+    2. Chart (SVG embed) + per-variant explanation
     3. Explanation (from narratives.json, or placeholder)
+
+    v2 narratives: narratives[report_name]["variants"][variant_key]["text"].
+    v1 backward compat: direct "text" serves as default for all variants.
     """
     meta = meta or {}
     run_dir = path.parent
@@ -956,7 +1062,8 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
         if not variants:
             continue
         title = section.get("title", "")
-        report_name = section.get("report_key", variants[0]["file"].replace(".svg", "").replace(".html", ""))
+        report_name = _section_report_name(section)
+        entry = _narrative_entry(narratives, report_name)
 
         # 1. Data table
         report_data_json = run_dir / "report_data.json"
@@ -969,8 +1076,6 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
                 if not report_rows:
                     report_rows = rd.get("family_reports", {}).get(report_name, {}).get("rows", [])
                 if not report_rows:
-                    # 第三 fallback：chart_rows（如 cluster_topic_table 這類非報表引擎
-                    # 產出的列）；chart_rows 值可能是 dict（矩陣中繼資料），只收 list。
                     chart_rows_entry = rd.get("chart_rows", {}).get(report_name, [])
                     if isinstance(chart_rows_entry, list):
                         report_rows = chart_rows_entry
@@ -980,8 +1085,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
 
         data_html = _data_table_html(rows, report_name)
 
-        # 2. Chart panels（多 variant 出切換鈕；2026-07-21 三次修正：IPC/CPC 恢復
-        # L4/L5 toggle，stacked 佈局取消，全部 section 回歸同一 toggle 行為）
+        # 2. Chart panels + per-variant explanation
         group_id = f"sec{index}"
         buttons = ""
         if len(variants) > 1:
@@ -991,16 +1095,29 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
                 for v_i, variant in enumerate(variants)
             )
             buttons = f'<div class="toggle-bar">{btns}</div>'
+
+        def _panel_narrative(variant: dict[str, Any]) -> str:
+            vk = variant.get("variant_key", "default")
+            if narr_expired:
+                return '<div class="explanation expired">⚠️ 解讀版本過期</div>'
+            text = _narrative_text(entry, vk)
+            if text:
+                return f'<div class="explanation"><p>{xml_text(text)}</p></div>'
+            return '<div class="explanation pending">⏳ 待解讀</div>'
+
         panels = "".join(
             f'<div class="chart-panel" id="{group_id}-{v_i}"{"" if v_i == 0 else " hidden"}>'
-            f'{render_chart_embed(variant["file"])}</div>'
+            f'{render_chart_embed(variant["file"])}'
+            f'{_panel_narrative(variant)}</div>'
             for v_i, variant in enumerate(variants)
         )
         more_variants = section.get("more_variants", [])
         more_html = ""
         if more_variants:
             more_panels = "".join(
-                f'<div class="chart-panel" id="{group_id}-more-{v_i}">{render_chart_embed(variant["file"])}</div>'
+                f'<div class="chart-panel" id="{group_id}-more-{v_i}">'
+                f'{render_chart_embed(variant["file"])}'
+                f'{_panel_narrative(variant)}</div>'
                 for v_i, variant in enumerate(more_variants)
             )
             more_label = xml_text(section.get("more_label", "＋查看全部（第 11～20 名）"))
@@ -1009,16 +1126,6 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
                 f'data-label="{more_label}">{more_label}</button>'
                 f'<div class="chart-more" id="{group_id}-more" hidden>{more_panels}</div>'
             )
-
-        # 3. Explanation
-        if narr_expired:
-            expl_html = '<div class="explanation expired">⚠️ 解讀版本過期</div>'
-        else:
-            entry = narratives.get(report_name, {})
-            if entry and entry.get("text"):
-                expl_html = f'<div class="explanation"><p>{xml_text(entry["text"])}</p></div>'
-            else:
-                expl_html = '<div class="explanation pending">⏳ 待解讀</div>'
 
         links = section.get("links", [])
         link_html = ""
@@ -1036,7 +1143,6 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             f'{note}'
             f'<div class="card-data">{data_html}</div>'
             f'{buttons}<div class="chart-stage">{panels}{more_html}</div>'
-            f'<div class="card-explanation">{expl_html}</div>'
             f'</section>'
         )
 
@@ -1247,7 +1353,11 @@ def _build_trend_section(ctx: ChartContext) -> None:
     publication = ctx.report("publication_trend")
     trend_title = f'{application["label_zh"]}與{publication["label_zh"]}'
     render_line_chart(ctx.run_dir / "annual_trend.svg", trend_title, application["rows"], publication["rows"])
-    ctx.sections.append({"title": trend_title, "variants": [{"label": "Trend", "file": "annual_trend.svg"}]})
+    ctx.chart_rows["annual_trend"] = application["rows"]
+    ctx.sections.append({
+        "title": trend_title,
+        "variants": [{"label": "Trend", "file": "annual_trend.svg", "variant_key": "default"}],
+    })
 
 
 def _build_country_map_section(ctx: ChartContext) -> None:
@@ -1259,9 +1369,10 @@ def _build_country_map_section(ctx: ChartContext) -> None:
         report["rows"],
         "country_code",
     )
+    ctx.chart_rows["jurisdiction_distribution"] = report["rows"]
     ctx.sections.append({
         "title": report["label_zh"],
-        "variants": [{"label": "Bar", "file": "jurisdiction_distribution.svg"}],
+        "variants": [{"label": "Bar", "file": "jurisdiction_distribution.svg", "variant_key": "default"}],
         "note": "專利受理局分布以 country_code group by，與全庫或 workspace patent_ids 快照共用同一報表定義。",
     })
 
@@ -1294,9 +1405,10 @@ def _build_family_layout_section(ctx: ChartContext) -> None:
         family_report["rows"],
         "country_code",
     )
+    ctx.chart_rows["family_country_distribution"] = family_report["rows"]
     ctx.sections.append({
         "title": family_report["label_zh"],
-        "variants": [{"label": "Bar", "file": "family_country_distribution.svg"}],
+        "variants": [{"label": "Bar", "file": "family_country_distribution.svg", "variant_key": "default"}],
         "links": [{"label": "家族品質明細 JSON", "file": "family_quality.json"}],
         "note": " ".join(family_notes),
     })
@@ -1322,7 +1434,7 @@ def _build_classification_section(
             rows,
             source_column,
         )
-        variants.append({"label": f"{level} 階 · {level_label.split('(')[-1].rstrip(')')}", "file": filename})
+        variants.append({"label": f"{level} 階 · {level_label.split('(')[-1].rstrip(')')}", "file": filename, "variant_key": f"L{level}"})
     ctx.sections.append({
         "title": report["label_zh"],
         "variants": variants,
@@ -1351,15 +1463,15 @@ def _build_applicant_ranking_section(ctx: ChartContext) -> None:
     )
     ctx.sections.append({
         "title": report["label_zh"],
-        "variants": [{"label": "Applicants", "file": "applicant_ranking.svg"}],
-        "note": "總長＝申請人全部專利；藍色區段＝其中 recent_assignee_display_name 非空的專利。CSV/JSON 保留受讓人公司明細欄。",
+        "variants": [{"label": "Applicants", "file": "applicant_ranking.svg", "variant_key": "default"}],
+        "note": "總長＝申請人全部專利；藍色區段＝轉讓他家（最新受讓人≠申請人）的專利，同名未離手不計。CSV/JSON 保留受讓人公司明細欄。",
     })
 
 
 def _build_owner_ranking_section(ctx: ChartContext) -> None:
     report = ctx.report("owner_ranking")
     render_bar_chart(ctx.run_dir / "owner_ranking.svg", report["label_zh"], report["rows"], "current_assignee_display_name")
-    ctx.sections.append({"title": report["label_zh"], "variants": [{"label": "Assignees", "file": "owner_ranking.svg"}]})
+    ctx.sections.append({"title": report["label_zh"], "variants": [{"label": "Assignees", "file": "owner_ranking.svg", "variant_key": "default"}]})
 
 
 def _build_recent_assignee_ranking_section(ctx: ChartContext) -> None:
@@ -1373,7 +1485,7 @@ def _build_recent_assignee_ranking_section(ctx: ChartContext) -> None:
     )
     ctx.sections.append({
         "title": report["label_zh"],
-        "variants": [{"label": "Recent assignees", "file": "recent_assignee_ranking.svg"}],
+        "variants": [{"label": "Recent assignees", "file": "recent_assignee_ranking.svg", "variant_key": "default"}],
         "note": "只統計 recent_assignee_display_name 非空的專利；原申請人與原始欄位值不改寫。",
     })
 
@@ -1397,10 +1509,10 @@ def _build_applicant_year_matrix_section(ctx: ChartContext) -> None:
             layout,
             top_rows[10:20],
         )
-        more_variants.append({"label": "11-20", "file": "applicant_year_matrix_more.svg"})
+        more_variants.append({"label": "11-20", "file": "applicant_year_matrix_more.svg", "variant_key": "more"})
     ctx.sections.append({
         "title": report["label_zh"],
-        "variants": [{"label": "Top 10", "file": "applicant_year_matrix.svg"}],
+        "variants": [{"label": "Top 10", "file": "applicant_year_matrix.svg", "variant_key": "default"}],
         "more_variants": more_variants,
         "more_label": "＋查看全部（第 11～20 名）",
         "note": f"縱軸為申請人公司，橫軸為申請年份，泡泡大小＝patent_count；依公司跨年度總量排序，預設顯示前 {min(10, len(top_rows))} / {layout['rows_total']} 家。CSV/JSON 保留完整 rows。",
@@ -1426,10 +1538,10 @@ def _build_owner_year_matrix_section(ctx: ChartContext) -> None:
             layout,
             top_rows[10:20],
         )
-        more_variants.append({"label": "11-20", "file": "owner_year_matrix_more.svg"})
+        more_variants.append({"label": "11-20", "file": "owner_year_matrix_more.svg", "variant_key": "more"})
     ctx.sections.append({
         "title": report["label_zh"],
-        "variants": [{"label": "Top 10", "file": "owner_year_matrix.svg"}],
+        "variants": [{"label": "Top 10", "file": "owner_year_matrix.svg", "variant_key": "default"}],
         "more_variants": more_variants,
         "more_label": "＋查看全部（第 11～20 名）",
         "note": f"縱軸為專利權人公司，橫軸為申請年份，泡泡大小＝patent_count；依公司跨年度總量排序，預設顯示前 {min(10, len(top_rows))} / {layout['rows_total']} 家。CSV/JSON 保留完整 rows。",
@@ -1455,9 +1567,10 @@ def _build_applicant_country_section(ctx: ChartContext) -> None:
         "欄＝受理局（按件、含死案，與受理局分布同口徑）；儲存格＝該公司在該受理局的件數，不跨公司混算。"
         "完整數據見 report_data.json；追蹤特定公司時用 filters 圈定申請人清單。"
     )
+    ctx.chart_rows["applicant_country_matrix"] = report["rows"]
     ctx.sections.append({
         "title": report["label_zh"],
-        "variants": [{"label": "Matrix", "file": "applicant_country_matrix.svg"}],
+        "variants": [{"label": "Matrix", "file": "applicant_country_matrix.svg", "variant_key": "default"}],
         "note": note,
     })
 
@@ -1468,7 +1581,7 @@ def _build_lifecycle_section(ctx: ChartContext) -> None:
     render_lifecycle_chart(ctx.run_dir / "lifecycle.svg", report["label_zh"], report["rows"])
     ctx.sections.append({
         "title": report["label_zh"],
-        "variants": [{"label": "Lifecycle", "file": "lifecycle.svg"}],
+        "variants": [{"label": "Lifecycle", "file": "lifecycle.svg", "variant_key": "default"}],
         "note": "各點＝一個申請年；萌芽/成長/成熟/衰退的階段判讀由分析者依軌跡判斷。",
     })
 
@@ -1481,7 +1594,7 @@ def _build_growth_section(ctx: ChartContext) -> None:
     render_growth_chart(ctx.run_dir / "application_growth.svg", growth_title, growth_rows)
     ctx.sections.append({
         "title": growth_title,
-        "variants": [{"label": "YoY %", "file": "application_growth.svg"}],
+        "variants": [{"label": "YoY %", "file": "application_growth.svg", "variant_key": "default"}],
         "note": "年增率＝(當年−前一年)/前一年；年份斷檔或前一年為 0 的年份不產生增率點。技術別成長折線待分群引擎產出 topic 後再加。",
     })
     ctx.chart_rows["application_growth"] = growth_rows
@@ -1933,7 +2046,7 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     # （中位數門檻按段各自計算，不跨來源混算）；單一來源維持原檔名與原 tab 名。
     segments = _source_segments(topic_rows)
     multi_source = len(segments) > 1
-    variants: list[dict[str, str]] = [{"label": "主題統計表", "file": "cluster_topic_table.html"}]
+    variants: list[dict[str, str]] = [{"label": "主題統計表", "file": "cluster_topic_table.html", "variant_key": "topic_table"}]
     segment_matrices: list[tuple[str, str, dict[str, Any], dict[str, Any]]] = []
     leading_by_topic: dict[str, dict[str, Any]] = {}
     for sf, segment_label, seg_rows in segments:
@@ -1969,8 +2082,8 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
             ctx.run_dir / opp_file, f"機會四象限分析——{segment_label}", opp_matrix)
         render_pain_point_quadrant_svg(
             ctx.run_dir / pain_file, f"痛點四象限分析——{segment_label}", pain_matrix)
-        variants.append({"label": f"機會矩陣{tab_suffix}", "file": opp_file})
-        variants.append({"label": f"痛點矩陣{tab_suffix}", "file": pain_file})
+        variants.append({"label": f"機會矩陣{tab_suffix}", "file": opp_file, "variant_key": f"opportunity{suffix}"})
+        variants.append({"label": f"痛點矩陣{tab_suffix}", "file": pain_file, "variant_key": f"pain{suffix}"})
         ctx.chart_rows[f"opportunity_quadrant{suffix}"] = opp_matrix
         ctx.chart_rows[f"pain_point_quadrant{suffix}"] = pain_matrix
 
@@ -2122,6 +2235,8 @@ def run_chart_trial(
             },
             "chart_rows": persist_chart_rows,
             "chart_rows_total": chart_rows_total,
+            # sections 持久化：--refresh-index 由此重建 index（解讀回填後重渲染）
+            "sections": persistable_sections(ctx.sections),
             **ctx.meta,
         },
     )
@@ -2250,7 +2365,20 @@ def main() -> None:
     parser.add_argument("--analysis-id", type=int, help="Bind charts to an app_layer analysis: use its patent snapshot and record files into export_runs.")
     parser.add_argument("--reports", help="Comma-separated report keys to render selectively (default: full battery).")
     parser.add_argument("--filters", help="JSON object of report filters (whitelist columns; family reports stay full-DB scope).")
+    parser.add_argument(
+        "--refresh-index", type=Path, metavar="RUN_DIR",
+        help="不出圖：從 RUN_DIR/report_data.json 的 sections 重建 index.html（narratives.json 有就嵌入解讀）。",
+    )
     args = parser.parse_args()
+    # 解讀回填後重渲染模式：不碰 DB、不出圖，只重建該目錄的 index.html
+    if args.refresh_index is not None:
+        try:
+            result = refresh_index(args.refresh_index)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+            print(json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False), file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
     report_names = [name.strip() for name in args.reports.split(",") if name.strip()] if args.reports else None
     try:
         result = run_chart_trial(
