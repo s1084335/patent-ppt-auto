@@ -81,8 +81,9 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("current_stage", self.html)
 
     def test_ai_panel_channel_wired(self):
-        """右欄 AI 助手接 ai-tasks / tasks / events(SSE)。"""
-        self.assertIn("/ai-tasks", self.html)
+        """右欄 AI 助手接 Companion / tasks / events(SSE)。"""
+        self.assertIn("/companion/narrative-tasks", self.html)
+        self.assertIn("/companion/tasks/", self.html)
         self.assertIn("/tasks", self.html)
         self.assertIn("/events", self.html)
         self.assertIn("ai:narrative", self.html)

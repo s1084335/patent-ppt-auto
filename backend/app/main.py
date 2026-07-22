@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from backend.app import settings
 from backend.app.api import (
     clustering,
+    companion,
     comparison,
     events,
     imports,
@@ -26,6 +27,7 @@ from backend.app.repositories.topic_repository import TopicRepositoryUnavailable
 app = FastAPI(title="Patent Backend", version="0.1.0")
 app.include_router(jobs.router, prefix=settings.API_V1_PREFIX)
 app.include_router(clustering.router, prefix=settings.API_V1_PREFIX)
+app.include_router(companion.router, prefix=settings.API_V1_PREFIX)
 app.include_router(reports.router, prefix=settings.API_V1_PREFIX)
 app.include_router(workspaces.router, prefix=settings.API_V1_PREFIX)
 app.include_router(imports.router, prefix=settings.API_V1_PREFIX)

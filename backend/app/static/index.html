@@ -1119,24 +1119,27 @@ async function fetchTasks() {
     renderTaskList(data.tasks);
   } catch (e) { /* 靜默：狀態頁另有系統狀態顯示 */ }
 }
-// 送出 AI 任務（ai:narrative）：右欄輸入框內容作為修改需求 params。
+// 送出 AI 任務（ai:narrative）：右欄輸入框內容走 Companion 正式任務入口。
 async function sendAiRequest() {
   const btn = el('btn-ai-send');
   const input = el('ai-input');
   const text = (input && input.value.trim()) || '';
   btn.disabled = true; btn.textContent = '送出中…';
   try {
-    const params = { workspace_id: state.workspaceId, nav: state.nav };
-    if (text) params.instruction = text;
-    const resp = await fetch(API + '/ai-tasks', {
+    const payload = { workspace_id: state.workspaceId, cli_kind: 'claude' };
+    if (text) payload.instruction = text;
+    if (state.nav) payload.based_on_version = state.nav;
+    const resp = await fetch(API + '/companion/narrative-tasks', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task_type: 'ai:narrative', params: params }),
+      body: JSON.stringify(payload),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       alert('建立 AI 任務失敗：' + (err.detail || resp.status));
       return;
     }
+    const created = await resp.json();
+    await getJson(API + '/companion/tasks/' + created.run_id).catch(() => null);
     if (input) input.value = '';
     await fetchTasks();
   } catch (e) {
