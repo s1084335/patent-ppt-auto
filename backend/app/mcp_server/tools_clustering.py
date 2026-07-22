@@ -25,21 +25,19 @@ from backend.app.mcp_server._shared import json_safe
 def list_workspaces() -> dict[str, Any]:
     """列出 active workspaces 與專利件數（分群探索入口）。
 
-    與 clustering/api.py 的 GET /api/workspaces 同一查詢——服務層沒有這支
-    函式，MCP 不 import HTTP 層（避免把 FastAPI app 拖進 MCP process），
-    故在此保留同款 SQL；兩邊若改要一起改。
+    0021 起 workspace 成員收在 app_layer.workspaces.patent_ids_json（舊
+    workspace_patents 表已下沉 legacy_0021），故 patent_count 由該 JSONB 陣列長度取；
+    工具 SQL 只碰 app_layer，不直寫 legacy schema 名。created_at/updated_at 等欄
+    於 0021 已移除，改以 workspace_id 排序。
     """
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
         rows = conn.execute(
             """
-            SELECT w.workspace_id, w.workspace_name, w.description, w.status,
-                   count(wp.patent_id)::integer AS patent_count,
-                   w.created_at, w.updated_at
+            SELECT w.workspace_id, w.workspace_name, w.status,
+                   jsonb_array_length(w.patent_ids_json)::integer AS patent_count
             FROM app_layer.workspaces w
-            LEFT JOIN app_layer.workspace_patents wp ON wp.workspace_id = w.workspace_id
             WHERE w.status = 'active'
-            GROUP BY w.workspace_id
-            ORDER BY w.updated_at DESC, w.workspace_id DESC
+            ORDER BY w.workspace_id DESC
             """
         ).fetchall()
     return json_safe(

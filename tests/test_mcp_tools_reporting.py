@@ -163,11 +163,30 @@ class RunReportAnalysisTests(unittest.TestCase):
                 mock.patch.object(tools_reporting, "run_reports_batch", return_value={}) as batch, \
                 mock.patch.object(tools_reporting, "run_chart_trial", return_value={
                     "output_dir": "o", "files": [], "sections_rendered": [], "export_count": 3,
+                }), \
+                mock.patch.object(tools_reporting, "_load_report_data_json", return_value={"reports": {}}), \
+                mock.patch.object(tools_reporting, "save_workflow_output", return_value={
+                    "run_id": 7, "output_type": "report_data", "version": 1,
                 }):
             result = tools_reporting.run_report_analysis(["application_trend"], analysis_id=7)
         fetch.assert_called_once_with(7)
         self.assertEqual(batch.call_args.kwargs["patent_ids"], [1, 2])
         self.assertEqual(result["charts"]["export_count"], 3)
+
+    def test_analysis_chart_payload_saved_to_workflow_outputs(self):
+        """analysis_id 存在時，報表頁面用的 report_data.json 也要版本化回存 DB。"""
+        with mock.patch.object(tools_reporting, "fetch_analysis_patent_ids", return_value=[1, 2]), \
+                mock.patch.object(tools_reporting, "run_reports_batch", return_value={}), \
+                mock.patch.object(tools_reporting, "run_chart_trial", return_value={
+                    "output_dir": "o", "files": ["report_data.json"], "sections_rendered": [],
+                }), \
+                mock.patch.object(tools_reporting, "_load_report_data_json", return_value={"reports": {"x": {}}}), \
+                mock.patch.object(tools_reporting, "save_workflow_output", return_value={
+                    "run_id": 7, "output_type": "report_data", "version": 4,
+                }) as save:
+            result = tools_reporting.run_report_analysis(["application_trend"], analysis_id=7)
+        save.assert_called_once_with(7, "report_data", {"reports": {"x": {}}})
+        self.assertEqual(result["charts"]["report_data_version"], 4)
 
 
 class _FakeCursor:

@@ -133,6 +133,13 @@ class ComparisonStore:
             raise ValueError("figure_paths 必須為 list")
         return self._outputs.append_output(run_id, OUTPUT_ILLUSTRATIONS, {"figure_paths": figure_paths})
 
+    def get_latest_element_analysis(self, run_id: int) -> dict[str, Any] | None:
+        """回傳最新版 element_analysis 的 {version, data}；無則 None。"""
+        output = self._outputs.get_output(run_id, OUTPUT_ELEMENT_ANALYSIS)
+        if output is None:
+            return None
+        return {"version": output["version"], "data": output.get("data_json")}
+
     def save_target(self, run_id: int, target: dict[str, Any]) -> int:
         """存標的資料（output_type='target'，版本化 append）。
 

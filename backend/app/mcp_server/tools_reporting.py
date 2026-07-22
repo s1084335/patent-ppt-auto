@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,15 @@ from backend.app.reports.report_engine import run_reports_batch
 # 回傳給 client 的預設列數上限：保護 LLM context 不被 detail 報表灌爆。
 # 完整數據（各報表自己的預設列數）在出圖時落在 report_data.json。
 DEFAULT_ROW_LIMIT = 50
+
+
+def _load_report_data_json(output_dir: str | Path) -> dict[str, Any]:
+    """讀取本次報表頁面對應的結構化資料，作為 workflow_outputs 的回存 payload。"""
+    report_data_path = Path(output_dir) / "report_data.json"
+    payload = json.loads(report_data_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"{report_data_path} must contain a JSON object")
+    return payload
 
 
 def list_reports() -> dict[str, Any]:
@@ -110,9 +120,108 @@ def run_report_analysis(
         }
         if "export_count" in chart_result:
             charts["export_count"] = chart_result["export_count"]
+        if analysis_id is not None:
+            # report_data.json 是前端與 AI 解讀共同使用的結構化數據；有 analysis/run
+            # 脈絡時同步版本化回存 DB，避免只靠檔案路徑追溯。
+            saved = save_workflow_output(
+                int(analysis_id),
+                "report_data",
+                _load_report_data_json(chart_result["output_dir"]),
+            )
+            charts["report_data_version"] = saved["version"]
         result["charts"] = charts
 
     return json_safe(result)
+
+
+# 敘述型 AI 專用道前綴：一般 workflow output 不得佔用（只准 save_analysis_narrative 走）。
+_AI_OUTPUT_PREFIX = "ai:"
+# derived 刷新範圍白名單：aliases＝含公司正規化名稱的 report_patent_base；
+# report_views＝家族層 report view；all＝兩者（base 先於 family，維持相依順序）。
+_REFRESH_SCOPES = ("aliases", "report_views", "all")
+
+
+def save_workflow_output(run_id: int, output_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """版本化 append 一筆 workflow output（薄包 workflow_outputs_repository，不寫第二份邏輯）。
+
+    guard：output_type 不得為空、不得以 'ai:' 起（敘述型專用道保留給 save_analysis_narrative）；
+    payload 帶 artifact_key 者走 append_artifact_output（套引擎既有副檔白名單 .png/.svg/.jpg/.jpeg/
+    .pptx），否則走 append_output 版本化 append（append-only，不覆蓋舊版）。回傳新版本號。
+    """
+    from backend.app.repositories.workflow_outputs_repository import (
+        PostgresWorkflowOutputsRepository,
+    )
+
+    ot = str(output_type or "").strip()
+    if not ot:
+        raise ValueError("output_type 不得為空")
+    if ot.startswith(_AI_OUTPUT_PREFIX):
+        raise ValueError(
+            f"output_type {_AI_OUTPUT_PREFIX!r} 前綴為敘述型專用道，請改用 save_analysis_narrative")
+    if not isinstance(payload, dict):
+        raise ValueError("payload 必須為 dict")
+
+    repo = PostgresWorkflowOutputsRepository()
+    if "artifact_key" in payload:
+        version = repo.append_artifact_output(int(run_id), ot, payload)
+    else:
+        version = repo.append_output(int(run_id), ot, payload)
+    return json_safe({"run_id": int(run_id), "output_type": ot, "version": version})
+
+
+def refresh_derived_data(scope: str) -> dict[str, Any]:
+    """刷新 derived 層（薄包既有 refresh 函式）。scope 白名單見 _REFRESH_SCOPES。
+
+    - aliases：report_patent_base（applicant 正規化名稱落此表）。
+    - report_views：report_family_country（家族×國家 report view）。
+    - all：兩者依相依順序（base → family）。
+    回傳每步影響列數（各 refresh 函式原樣 summary）與耗時 elapsed_ms。
+    """
+    import time
+
+    from backend.app.derived.refresh_report_family_country import refresh_report_family_country
+    from backend.app.derived.refresh_report_patent_base import refresh_report_patent_base
+
+    name = str(scope or "").strip()
+    if name not in _REFRESH_SCOPES:
+        raise ValueError(f"unsupported scope: {scope!r}；限 {list(_REFRESH_SCOPES)}")
+    plans = {
+        "aliases": [("report_patent_base", refresh_report_patent_base)],
+        "report_views": [("report_family_country", refresh_report_family_country)],
+        "all": [("report_patent_base", refresh_report_patent_base),
+                ("report_family_country", refresh_report_family_country)],
+    }
+    steps: list[dict[str, Any]] = []
+    for step_name, fn in plans[name]:
+        started = time.perf_counter()
+        summary = fn()
+        steps.append({
+            "step": step_name,
+            "summary": summary,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000),
+        })
+    return json_safe({"scope": name, "steps": steps})
+
+
+def generate_report_ppt(version: str) -> dict[str, Any]:
+    """觸發報告 PPT 產製（薄包 job 佇列）。
+
+    PPT 產製屬耗時、有超時風險，故一律建立 report_generate workflow_run 排隊、回 run_id
+    供輪詢，不在 MCP 工具行程內同步跑（避免傳輸層逾時）。version＝要產製的報表版本代號。
+    """
+    from backend.app.db.job_repository import create_job
+
+    v = str(version or "").strip()
+    if not v:
+        raise ValueError("version 不得為空")
+    job = create_job("report_generate", payload={"version": v, "artifact": "ppt"})
+    return json_safe({
+        "run_id": job.job_id,
+        "run_type": "report_generate",
+        "status": job.status,
+        "version": v,
+        "queued": True,
+    })
 
 
 def get_data_status() -> dict[str, Any]:

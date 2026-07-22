@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -37,7 +38,12 @@ logger = logging.getLogger("patent-mcp")
 from mcp.server.fastmcp import FastMCP  # noqa: E402（dotenv／logging 先設好再載）
 
 from backend.app.db.connection import get_connection_kwargs  # noqa: E402
-from backend.app.mcp_server import tools_clustering, tools_reporting  # noqa: E402
+from backend.app.mcp_server import (  # noqa: E402
+    tools_ai,
+    tools_clustering,
+    tools_market,
+    tools_reporting,
+)
 
 mcp = FastMCP("patent")
 
@@ -45,6 +51,21 @@ mcp = FastMCP("patent")
 mcp.tool()(tools_reporting.list_reports)
 mcp.tool()(tools_reporting.run_report_analysis)
 mcp.tool()(tools_reporting.get_data_status)
+mcp.tool()(tools_reporting.save_workflow_output)
+mcp.tool()(tools_reporting.refresh_derived_data)
+mcp.tool()(tools_reporting.generate_report_ppt)
+
+# ── AI 任務工具（取數口＋敘述型回存）────────────────────────────
+mcp.tool()(tools_ai.get_report_payload)
+mcp.tool()(tools_ai.save_analysis_narrative)
+
+# ── market evidence tools（市場資料證據庫）──────────────────────
+mcp.tool()(tools_market.get_market_evidence)
+mcp.tool()(tools_market.save_market_evidence)
+mcp.tool()(tools_market.aggregate_market_evidence)
+mcp.tool()(tools_market.prepare_market_evidence_task)
+mcp.tool()(tools_market.save_market_evidence_candidates)
+mcp.tool()(tools_market.accept_market_evidence_candidates)
 
 # ── clustering tools（分群引擎，輕量七支）───────────────────────
 mcp.tool()(tools_clustering.list_workspaces)
@@ -61,7 +82,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Central Patent MCP Server")
     parser.add_argument("--transport", choices=("stdio", "http"), default="stdio")
     parser.add_argument("--host", default="127.0.0.1", help="http 傳輸的綁定位址")
-    parser.add_argument("--port", type=int, default=8300, help="http 傳輸的埠")
+    parser.add_argument("--port", type=int, default=8100, help="http 傳輸的埠（8000 為 FastAPI）")
     args = parser.parse_args()
 
     kwargs = get_connection_kwargs()
@@ -74,9 +95,19 @@ def main() -> None:
     )
 
     if args.transport == "http":
+        # 第一版安全從簡＝內網 bearer token（已定案）；未設 token 一律拒啟 http，避免裸露。
+        token = os.getenv("PATENT_MCP_TOKEN")
+        if not token:
+            logger.error("PATENT_MCP_TOKEN 未設，拒絕以 http 模式啟動（內網 token 為必要條件）")
+            raise SystemExit(2)
         mcp.settings.host = args.host
         mcp.settings.port = args.port
-        mcp.run(transport="streamable-http")
+        import uvicorn
+
+        from backend.app.mcp_server._auth import BearerTokenMiddleware
+
+        app = BearerTokenMiddleware(mcp.streamable_http_app(), token)
+        uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     else:
         mcp.run()  # stdio
 
