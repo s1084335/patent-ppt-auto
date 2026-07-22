@@ -7,10 +7,11 @@ PatentSBERTa embedding 演算法仍在 ``model.py``，避免產生第二套模�
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from psycopg.types.json import Jsonb
 from transformers import AutoTokenizer
 
 from backend.app.db.connection import get_connection_kwargs
+from backend.app.settings import get_model_artifact_root
 
 from .model import (
     PATENT_SBERTA_MAX_SEQ_LENGTH,
@@ -50,8 +52,23 @@ from .sources import (
 
 
 LOGGER = logging.getLogger(__name__)
-DEFAULT_LOCAL_MODEL_PATH = Path("backend/models/PatentSBERTa")
 SOURCE_FIELD_WIPS_INDEPENDENT_CLAIMS = SOURCE_FIELD_TECHNICAL
+
+
+def default_patent_sberta_model_path() -> Path:
+    """回傳正式執行時的 PatentSBERTa 本機模型路徑。
+
+    正式 image 不包 `backend/models`；模型由部署流程下載或掛載到
+    `MODEL_ARTIFACT_ROOT/PatentSBERTa`，必要時可用 `PATENT_SBERTA_MODEL_DIR`
+    指到其他 volume 路徑。
+    """
+    configured = os.getenv("PATENT_SBERTA_MODEL_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return get_model_artifact_root() / "PatentSBERTa"
+
+
+DEFAULT_LOCAL_MODEL_PATH = default_patent_sberta_model_path()
 
 
 @dataclass(frozen=True)
@@ -68,7 +85,7 @@ class EmbeddingWriteConfig:
     """集中管理正式 embedding 寫入所需的可追溯參數。"""
 
     source_field: str = SOURCE_FIELD_WIPS_INDEPENDENT_CLAIMS
-    model_path: Path = DEFAULT_LOCAL_MODEL_PATH
+    model_path: Path = field(default_factory=default_patent_sberta_model_path)
     device: str = "auto"
     batch_size: int = 8
     normalize_embeddings: bool = True

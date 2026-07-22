@@ -30,6 +30,8 @@ dependencies = [
 package = false
 
 [tool.uv.sources]
+# GPU runtime：正式 Lightning AI 部署仍需要 CUDA-enabled torch。
+# Image 瘦身靠排除模型與資料檔，不用 CPU-only torch 犧牲 embedding GPU 功能。
 torch = [
     { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]

@@ -21,6 +21,7 @@ data/raw
 data/model_artifacts
 data/signal corpus
 data/patent_assets
+backend/models
 archive
 tests
 docs/reference
@@ -31,4 +32,6 @@ docs/reference
 *.pdf
 *.png
 *.pptx
+*.bin
+*.safetensors
 *.vsix

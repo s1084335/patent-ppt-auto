@@ -1,9 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
-# Backend 與 worker 共用同一組鎖定依賴；base image 可由部署環境覆蓋。
+# One production image is shared by backend and worker.  Runtime keeps GPU-capable
+# Python dependencies, but model weights and data are mounted or downloaded.
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.27
 ARG PYTHON_IMAGE=python:3.12.13-slim-bookworm
+
 FROM ${UV_IMAGE} AS uv_bin
+
 FROM ${PYTHON_IMAGE} AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
@@ -29,22 +32,21 @@ ENV PATH="/app/.venv/bin:$PATH" \
     TOKENIZERS_PARALLELISM=false
 WORKDIR /app
 
-# scikit-learn / scipy 的 OpenMP runtime；healthcheck 使用 Python 標準函式庫。
+# scikit-learn and scipy need the OpenMP runtime.  Keep apt packages minimal.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid "${APP_GID}" patent \
     && useradd --system --uid "${APP_UID}" --gid patent --home-dir /app patent
 
-# COPY 時直接給 owner：避免事後 chown -R 遍歷 .venv（數 GB、數十萬檔）——
-# Windows Docker Desktop overlay 上該遞迴要 600s+ 且複寫出等大的重複 layer（export 超時主因）。
 COPY --from=builder --chown=patent:patent /app/.venv /app/.venv
 COPY --chown=patent:patent alembic.ini ./
 COPY --chown=patent:patent alembic ./alembic
 COPY --chown=patent:patent backend ./backend
+COPY --chown=patent:patent scripts ./scripts
 
-# PatentSBERTa 已在 backend/models 內，建置後不需在正式環境重新下載。
-# chown 只點名兩個新建的空目錄（非遞迴掃全樹），成本趨近零。
+# PatentSBERTa is intentionally excluded from the image.  Mount or download it
+# under MODEL_ARTIFACT_ROOT, usually /app/data/model_artifacts/PatentSBERTa.
 RUN mkdir -p /app/data/model_artifacts /app/output \
     && chown patent:patent /app /app/data /app/data/model_artifacts /app/output
 
