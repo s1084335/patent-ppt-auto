@@ -19,23 +19,29 @@ class ProcessingJobTests(unittest.TestCase):
     """驗證 worker job 資料物件與固定狀態集合。"""
 
     def test_from_row_parses_payload_and_workspace(self):
-        """確認 DB row 可轉成 worker 使用的 ProcessingJob。"""
+        """確認 DB row（0021 workflow_runs 形狀）可轉成 worker 使用的 ProcessingJob。"""
         row = {
-            "job_id": 1,
-            "job_type": "report_generate",
+            "run_id": 1,
+            "run_type": "report_generate",
             "status": "queued",
             "workspace_id": None,
-            "payload_json": {"report_names": ["x"]},
-            "result_json": None,
-            "progress_percent": 0,
-            "current_stage": "queued",
-            "attempt_count": 0,
-            "max_attempts": 3,
+            "request_json": {"report_names": ["x"]},
+            "worker_state_json": {
+                "attempt_count": 0,
+                "max_attempts": 3,
+                "progress_percent": 0,
+                "current_stage": "queued",
+            },
         }
         job = ProcessingJob.from_row(row)
         self.assertEqual(job.job_id, 1)
+        self.assertEqual(job.job_type, "report_generate")
         self.assertEqual(job.workspace_id, None)
         self.assertEqual(job.payload_json["report_names"], ["x"])
+        self.assertEqual(job.attempt_count, 0)
+        self.assertEqual(job.max_attempts, 3)
+        # 0021：結果落 workflow_outputs，佇列列上的 result_json 一律 None
+        self.assertIsNone(job.result_json)
 
     def test_terminal_statuses_do_not_include_running(self):
         """確認 terminal 狀態不包含 running。"""
@@ -47,7 +53,10 @@ class HandlerContractTests(unittest.TestCase):
 
     def test_required_handler_keys(self):
         """確認 worker 只支援定案的 job type（2026-07-21 補 patent_import——匯入線 handler
-        已上線但本契約集合漏更新，OpenCode 批 G 前置檢查抓到）。"""
+        已上線但本契約集合漏更新，OpenCode 批 G 前置檢查抓到；同日 0021 遷移輪加
+        topic_merge/topic_unmerge——佇列由 PostgresTopicRepository 排入、worker 執行；
+        2026-07-22 補 ai:narrative——報表解讀 AI 任務消費者，補齊前端→佇列→headless CLI
+        →MCP／檔案回存→SSE 的 E2E 鏈）。"""
         self.assertEqual(
             set(handlers.HANDLERS),
             {
@@ -56,6 +65,9 @@ class HandlerContractTests(unittest.TestCase):
                 "clustering_incremental",
                 "report_generate",
                 "patent_import",
+                "topic_merge",
+                "topic_unmerge",
+                "ai:narrative",
             },
         )
 
@@ -146,6 +158,68 @@ class HandlerContractTests(unittest.TestCase):
         context.heartbeat.return_value = None
         with self.assertRaises(ValueError):
             handlers.handle_report_generate({"report_names": "application_trend"}, context)
+
+    def test_topic_merge_resolves_codes_then_calls_engine(self):
+        """確認 merge handler 先把 topic_code 解析成 int topic_ids，才呼叫引擎（不改引擎本體）。"""
+        context = mock.Mock()
+        context.heartbeat.return_value = None
+        context.keepalive.return_value = nullcontext()
+        context.job.workspace_id = 7
+        with mock.patch.object(
+            handlers, "_resolve_active_topic_ids", return_value=[11, 12]
+        ) as resolver:
+            with mock.patch.object(
+                handlers, "merge_workspace_topics", return_value={"ok": True}
+            ) as engine:
+                result = handlers.handle_topic_merge(
+                    {
+                        "source_field": SOURCE_FIELD_TECHNICAL,
+                        "topic_keys": ["T01", "T02"],
+                        "label": "合併後主題",
+                        "requested_by": "web-user",
+                    },
+                    context,
+                )
+        self.assertEqual(result, {"ok": True})
+        resolver.assert_called_once_with(
+            workspace_id=7, source_field=SOURCE_FIELD_TECHNICAL, topic_codes=["T01", "T02"]
+        )
+        self.assertEqual(engine.call_args.kwargs["topic_ids"], [11, 12])
+        self.assertEqual(engine.call_args.kwargs["merged_by"], "web-user")
+        self.assertEqual(engine.call_args.kwargs["label"], "合併後主題")
+
+    def test_topic_merge_requires_workspace_id_on_run(self):
+        """確認 merge handler 拒絕沒有 workspace_id 的 run（workspace_id 由 run 帶）。"""
+        context = mock.Mock()
+        context.heartbeat.return_value = None
+        context.job.workspace_id = None
+        with self.assertRaises(ValueError):
+            handlers.handle_topic_merge(
+                {"source_field": SOURCE_FIELD_TECHNICAL, "topic_keys": ["T01", "T02"]},
+                context,
+            )
+
+    def test_topic_unmerge_calls_engine_with_merge_run_id(self):
+        """確認 unmerge handler 直接以 int merge_run_id 呼叫引擎（無 code 解析需求）。"""
+        context = mock.Mock()
+        context.heartbeat.return_value = None
+        context.keepalive.return_value = nullcontext()
+        context.job.workspace_id = 7
+        with mock.patch.object(
+            handlers, "unmerge_workspace_topics", return_value={"ok": True}
+        ) as engine:
+            result = handlers.handle_topic_unmerge(
+                {
+                    "source_field": SOURCE_FIELD_TECHNICAL,
+                    "merge_run_id": 55,
+                    "requested_by": "web-user",
+                },
+                context,
+            )
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(engine.call_args.kwargs["merge_run_id"], 55)
+        self.assertEqual(engine.call_args.kwargs["reverted_by"], "web-user")
+        self.assertEqual(engine.call_args.kwargs["workspace_id"], 7)
 
 
 class RunnerCliTests(unittest.TestCase):

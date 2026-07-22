@@ -8,9 +8,16 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
+import psycopg
+
 from backend.app.clustering.runner import calibrate_top_level, finalize_top_level
 from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL, get_source_spec
-from backend.app.clustering.workspace_service import incremental_workspace
+from backend.app.clustering.workspace_service import (
+    incremental_workspace,
+    merge_workspace_topics,
+    unmerge_workspace_topics,
+)
+from backend.app.db.connection import get_connection_kwargs
 from backend.app.importers.import_paths import (
     WEB_IMPORT_SUFFIXES,
     is_within_imports_root,
@@ -20,6 +27,7 @@ from backend.app.importers.wips_importer import file_sha256, import_wips_file
 from backend.app.reports.report_definitions import DEFAULT_REPORT_NAMES
 from backend.app.reports.report_engine import run_reports_batch
 
+from . import ai_narrative_runner
 from .job_context import JobContext
 
 
@@ -111,7 +119,7 @@ def handle_clustering_incremental(payload: dict[str, Any], context: JobContext) 
 
 
 def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
-    """執行報表引擎批次查詢，將報表 JSON 回寫到 processing_jobs。"""
+    """執行報表引擎批次查詢，報表 JSON 由 runner 經 workflow_outputs 版本化保存。"""
     context.heartbeat("report_generate_started", 10)
     report_names_payload = payload.get("report_names")
     if report_names_payload is None or report_names_payload == []:
@@ -163,12 +171,171 @@ def handle_patent_import(payload: dict[str, Any], context: JobContext) -> dict[s
     return _json_safe(summary)
 
 
+def _resolve_active_topic_ids(
+    *, workspace_id: int, source_field: str, topic_codes: list[str]
+) -> list[int]:
+    """topic_code→topic_id 解析層（2026-07-21 裁決）。
+
+    佇列 request_json 存的是 topic_code（str），引擎 merge_workspace_topics 要 int topic_ids；
+    從最新「topic_state_json->'topics' 非空」的 derived_layer.topic_runs（該 workspace_id＋
+    source_field，經 app_layer.workflow_runs 連 workspace）反查。incremental run 的 state 不帶
+    topics，須沿 run_id 由大到小 fallback，否則會抓到空 state 而誤判 code 不存在。
+    只認同時帶 topic_id 且 status='active' 的條目；任一 code 查不到、非 active 或缺 topic_id
+    一律 raise ValueError（runner 會把該 run 標 failed 並保存明確錯誤），不猜測。
+    """
+    with psycopg.connect(**get_connection_kwargs()) as conn:
+        row = conn.execute(
+            """
+            SELECT tr.run_id, tr.topic_state_json
+            FROM derived_layer.topic_runs tr
+            JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id
+            WHERE wr.workspace_id = %s AND tr.source_field = %s
+              AND jsonb_array_length(COALESCE(tr.topic_state_json->'topics', '[]'::jsonb)) > 0
+            ORDER BY tr.run_id DESC
+            LIMIT 1
+            """,
+            (workspace_id, source_field),
+        ).fetchone()
+    if row is None:
+        raise ValueError(
+            f"topic merge/unmerge: no topic run for workspace {workspace_id} "
+            f"/ {source_field}; cannot resolve topic codes {topic_codes}"
+        )
+    topic_run_id, state = row
+    by_code = {t.get("topic_code"): t for t in (state or {}).get("topics") or []}
+    resolved: list[int] = []
+    for code in topic_codes:
+        entry = by_code.get(code)
+        if entry is None:
+            raise ValueError(
+                f"topic code {code!r} not found in latest topic run {topic_run_id}")
+        if entry.get("status") != "active":
+            raise ValueError(
+                f"topic code {code!r} is not active (status={entry.get('status')!r}) "
+                f"in topic run {topic_run_id}")
+        if entry.get("topic_id") is None:
+            raise ValueError(
+                f"topic code {code!r} has no topic_id in topic run {topic_run_id}")
+        resolved.append(int(entry["topic_id"]))
+    return resolved
+
+
+def handle_topic_merge(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """執行佇列中的主題合併：解析 topic_code→topic_id 後交給分群引擎（引擎本體不改）。
+
+    request_json 形狀依 PostgresTopicRepository.queue_merge：
+    {source_field, topic_keys:[a,b], label, requested_by}；workspace_id 由 run 帶。
+    """
+    context.heartbeat("topic_merge_started", 5)
+    workspace_id = context.job.workspace_id
+    if workspace_id is None:
+        raise ValueError("topic_merge requires workspace_id on the workflow run")
+    source_field = _source_field(payload.get("source_field"))
+    topic_keys = payload.get("topic_keys")
+    if not isinstance(topic_keys, list) or len(topic_keys) != 2:
+        raise ValueError("topic_merge requires topic_keys with exactly two topic codes")
+    topic_ids = _resolve_active_topic_ids(
+        workspace_id=int(workspace_id),
+        source_field=source_field,
+        topic_codes=[str(key) for key in topic_keys],
+    )
+    context.heartbeat("topic_merge_resolved", 15)
+    # 合併會重載模型 artifact 並重算 assignment，時間隨語料量成長，需要保活。
+    with context.keepalive("topic_merge_running", 35, interval_seconds=_heartbeat_interval(payload)):
+        summary = merge_workspace_topics(
+            workspace_id=int(workspace_id),
+            source_field=source_field,
+            topic_ids=topic_ids,
+            merged_by=str(payload.get("requested_by") or "worker"),
+            label=payload.get("label"),
+        )
+    context.heartbeat("topic_merge_completed", 95)
+    return _json_safe(summary)
+
+
+def handle_topic_unmerge(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """執行佇列中的主題解除合併：merge_run_id 已是 int，直接交給分群引擎。
+
+    request_json 形狀依 PostgresTopicRepository.queue_unmerge：
+    {source_field, merge_run_id, requested_by}；workspace_id 由 run 帶。
+    """
+    context.heartbeat("topic_unmerge_started", 5)
+    workspace_id = context.job.workspace_id
+    if workspace_id is None:
+        raise ValueError("topic_unmerge requires workspace_id on the workflow run")
+    source_field = _source_field(payload.get("source_field"))
+    merge_run_id = payload.get("merge_run_id")
+    if merge_run_id is None:
+        raise ValueError("topic_unmerge requires merge_run_id")
+    # unmerge 需從基底 artifact 重播其餘 merge，與 merge 同樣屬長任務。
+    with context.keepalive("topic_unmerge_running", 35, interval_seconds=_heartbeat_interval(payload)):
+        summary = unmerge_workspace_topics(
+            workspace_id=int(workspace_id),
+            source_field=source_field,
+            merge_run_id=int(merge_run_id),
+            reverted_by=str(payload.get("requested_by") or "worker"),
+        )
+    context.heartbeat("topic_unmerge_completed", 95)
+    return _json_safe(summary)
+
+
+def handle_ai_narrative(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """報表解讀 AI 任務消費者（E2E 鏈：前端按 AI 解讀 → 佇列 → 本 handler → headless CLI
+    → narratives.json → refresh-index → SSE 回推）。
+
+    payload：based_on_version（要解讀的報表版本目錄名；缺省取 full_report_latest 最新
+    report_trial_）、cli_kind（claude／opencode，預設 claude，介面留給 Companion 雙 CLI 對接）、
+    可選 cli_timeout_seconds。
+
+    階段映射（decisions.md「長時任務前端進度顯示」，AI 任務無內部百分比，用階段緩進）：
+    ai_narrative_started 15 →（runner 內 cli_running 30，CLI 跑期間緩進到 ~85）→
+    narrative_saved 90 → completed 100。CLI 呼叫由 ai_narrative_runner 抽成可注入函式，
+    測試以 fake runner 取代，不真跑 CLI。
+    """
+    context.heartbeat("開始 AI 報表解讀", 15)
+    based_on_version = payload.get("based_on_version")
+    cli_kind = str(payload.get("cli_kind") or "claude")
+    # model 由任務 payload 帶（如 claude-opus-4-8）；未給則用 CLI 預設模型。
+    model = payload.get("model") or None
+    timeout_seconds = float(
+        payload.get("cli_timeout_seconds") or ai_narrative_runner.DEFAULT_CLI_TIMEOUT_SECONDS
+    )
+
+    def _progress(stage: str, percent: int) -> None:
+        """把 runner 的 CLI 執行進度轉成 worker heartbeat（繁中階段文字）。"""
+        context.heartbeat("CLI 解讀執行中", percent)
+
+    summary = ai_narrative_runner.run_narrative(
+        based_on_version,
+        cli_kind=cli_kind,
+        model=model,
+        cli_runner=payload.get("_cli_runner"),
+        timeout_seconds=timeout_seconds,
+        progress=_progress,
+    )
+    context.heartbeat("解讀已回存", 90)
+    result = {
+        "based_on_version": summary.get("based_on_version"),
+        "variants_narrated": summary.get("narrated"),
+        "variants_total": summary.get("variants_total"),
+        "pending": summary.get("pending", []),
+        "cli_kind": summary.get("cli_kind"),
+        "prompt_version": summary.get("prompt_version"),
+        "narratives_path": summary.get("narratives_path"),
+    }
+    context.heartbeat("完成", 100)
+    return _json_safe(result)
+
+
 HANDLERS: dict[str, Handler] = {
     "clustering_calibrate": handle_clustering_calibrate,
     "clustering_finalize": handle_clustering_finalize,
     "clustering_incremental": handle_clustering_incremental,
     "report_generate": handle_report_generate,
     "patent_import": handle_patent_import,
+    "topic_merge": handle_topic_merge,
+    "topic_unmerge": handle_topic_unmerge,
+    "ai:narrative": handle_ai_narrative,
 }
 
 

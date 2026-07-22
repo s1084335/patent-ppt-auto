@@ -77,7 +77,7 @@ def run_once(*, worker_id: str, stale_after_seconds: int) -> dict[str, Any]:
 
 
 def serve(*, worker_id: str, poll_seconds: float, stale_after_seconds: int) -> None:
-    """常駐輪詢 processing_jobs，初期固定單程序單工作執行。"""
+    """常駐輪詢 app_layer.workflow_runs 佇列，初期固定單程序單工作執行。"""
     LOGGER.info("worker started: worker_id=%s", worker_id)
     while True:
         result = run_once(worker_id=worker_id, stale_after_seconds=stale_after_seconds)
