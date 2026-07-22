@@ -36,14 +36,17 @@ RUN apt-get update \
     && groupadd --system --gid "${APP_GID}" patent \
     && useradd --system --uid "${APP_UID}" --gid patent --home-dir /app patent
 
-COPY --from=builder /app/.venv /app/.venv
-COPY alembic.ini ./
-COPY alembic ./alembic
-COPY backend ./backend
+# COPY 時直接給 owner：避免事後 chown -R 遍歷 .venv（數 GB、數十萬檔）——
+# Windows Docker Desktop overlay 上該遞迴要 600s+ 且複寫出等大的重複 layer（export 超時主因）。
+COPY --from=builder --chown=patent:patent /app/.venv /app/.venv
+COPY --chown=patent:patent alembic.ini ./
+COPY --chown=patent:patent alembic ./alembic
+COPY --chown=patent:patent backend ./backend
 
 # PatentSBERTa 已在 backend/models 內，建置後不需在正式環境重新下載。
+# chown 只點名兩個新建的空目錄（非遞迴掃全樹），成本趨近零。
 RUN mkdir -p /app/data/model_artifacts /app/output \
-    && chown -R patent:patent /app
+    && chown patent:patent /app /app/data /app/data/model_artifacts /app/output
 
 USER patent
 EXPOSE 8000

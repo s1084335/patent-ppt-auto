@@ -15,15 +15,20 @@ backups
 output
 tmp
 .tmp_import_tests
+.tmp_visual
+.pytest_cache
 data/raw
 data/model_artifacts
 data/signal corpus
+data/patent_assets
 archive
 tests
+docs/reference
 
 *.xlsx
 *.xls
 *.csv
 *.pdf
 *.png
+*.pptx
 *.vsix

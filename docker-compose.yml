@@ -57,6 +57,8 @@ services:
     volumes:
       - ${DATA_HOST_PATH:-./data}:/app/data
       - ${OUTPUT_HOST_PATH:-./output}:/app/output
+      # 前端靜態頁掛 host 目錄：改 index.html 後容器 F5 立即生效，無需 rebuild。
+      - ./backend/app/static:/app/backend/app/static
     depends_on:
       postgres:
         condition: service_healthy
