@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from backend.app import settings
-from backend.app.api import clustering, imports, jobs, reports, topics, workspaces
+from backend.app.api import clustering, comparison, events, imports, jobs, reports, topics, workspaces
 from backend.app.repositories.topic_repository import TopicRepositoryUnavailableError
 
 app = FastAPI(title="Patent Backend", version="0.1.0")
@@ -19,6 +19,34 @@ app.include_router(reports.router, prefix=settings.API_V1_PREFIX)
 app.include_router(workspaces.router, prefix=settings.API_V1_PREFIX)
 app.include_router(imports.router, prefix=settings.API_V1_PREFIX)
 app.include_router(topics.router, prefix=settings.API_V1_PREFIX)
+app.include_router(comparison.router, prefix=settings.API_V1_PREFIX)
+app.include_router(events.router, prefix=settings.API_V1_PREFIX)
+
+
+_REPORT_LATEST = settings.PROJECT_ROOT / "output" / "full_report_latest" / "index.html"
+
+
+@app.get("/api/v1/report-latest")
+def serve_latest_report():
+    """serve output/full_report_latest/index.html 如存在。"""
+    from fastapi.responses import FileResponse, HTMLResponse
+
+    if _REPORT_LATEST.exists():
+        return FileResponse(str(_REPORT_LATEST))
+    return HTMLResponse(
+        content="<p>尚無報表產出。請先執行報表引擎產生 full_report_latest。</p>",
+        status_code=404,
+    )
+
+
+@app.get("/")
+def serve_frontend():
+    """前端最小頁（單一 HTML + 原生 JS）。"""
+    from pathlib import Path
+    from fastapi.responses import HTMLResponse
+
+    html_path = Path(__file__).resolve().parent / "static" / "index.html"
+    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
 
 
 @app.exception_handler(TopicRepositoryUnavailableError)

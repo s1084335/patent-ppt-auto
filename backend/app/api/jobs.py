@@ -32,6 +32,8 @@ def job_to_dict(job: job_repository.ProcessingJob) -> dict[str, Any]:
         "current_stage": job.current_stage,
         "attempt_count": job.attempt_count,
         "max_attempts": job.max_attempts,
+        # 失敗／逾時原因；前端失敗卡點開讀此欄，未失敗為 None
+        "error_message": job.error_message,
     }
 
 
@@ -60,15 +62,19 @@ def ready() -> dict[str, Any]:
         with conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
+                # 0021：佇列遷至 workflow_runs，worker 簿記（含 heartbeat_at）收在 worker_state_json
                 cur.execute(
                     """
                     SELECT
                         count(*) AS running,
                         count(*) FILTER (
-                            WHERE heartbeat_at < now() - make_interval(secs => %s)
+                            WHERE (worker_state_json->>'heartbeat_at')::timestamptz
+                                  < now() - make_interval(secs => %s)
                         ) AS stale,
-                        EXTRACT(EPOCH FROM (now() - max(heartbeat_at)))::int AS latest_age
-                    FROM app_layer.processing_jobs
+                        EXTRACT(EPOCH FROM (
+                            now() - max((worker_state_json->>'heartbeat_at')::timestamptz)
+                        ))::int AS latest_age
+                    FROM app_layer.workflow_runs
                     WHERE status = 'running'
                     """,
                     (settings.WORKER_HEARTBEAT_TIMEOUT_SECONDS,),

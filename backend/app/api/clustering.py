@@ -2,8 +2,13 @@
 
 backend 只建立工作與讀結果，不執行分群（那是 worker）。payload 欄名對齊
 worker handlers.py 的期待。source_field 以白名單驗證，未知 workspace 由 FK
-擋（轉 404）。候選查詢直接讀 derived_layer.topic_candidates，不 import 分群
+擋（轉 404）。候選查詢直接讀 legacy_0021.topic_candidates，不 import 分群
 引擎（避免把 BERTopic 等重模組載進 backend）。
+
+schema 落點：0021 併表把 topic_candidates 以 SET SCHEMA 搬到 legacy_0021（欄位不變、
+仍為實體表），derived_layer 下已無此表，故候選查詢一律走 legacy_0021.topic_candidates。
+run 的 workspace_id/status 在 0021 移到 app_layer.workflow_runs，需經 topic_runs.workflow_run_id join。
+專案未設 schema 常數，沿用全庫慣例直接寫字面 schema 前綴（見 refresh_report_* 等）。
 """
 from __future__ import annotations
 
@@ -109,7 +114,7 @@ def create_finalize(run_id: int, request: FinalizeRequest) -> dict[str, Any]:
         candidate = conn.execute(
             """
             SELECT 1
-            FROM derived_layer.topic_candidates
+            FROM legacy_0021.topic_candidates
             WHERE run_id = %s AND candidate_id = %s
             """,
             (run_id, request.candidate_id),
@@ -137,9 +142,12 @@ def create_finalize(run_id: int, request: FinalizeRequest) -> dict[str, Any]:
 def get_candidates(run_id: int) -> dict[str, Any]:
     """讀取某 run 的候選主題數方案（讀分群結果，不建工作）。run 不存在回 404。"""
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
+        # 0021：workspace_id/status 移到 app_layer.workflow_runs，經 workflow_run_id join 取得
         run = conn.execute(
-            "SELECT run_id, workspace_id, source_field, status "
-            "FROM derived_layer.topic_runs WHERE run_id = %s",
+            "SELECT tr.run_id, wr.workspace_id, tr.source_field, wr.status "
+            "FROM derived_layer.topic_runs tr "
+            "JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id "
+            "WHERE tr.run_id = %s",
             (run_id,),
         ).fetchone()
         if run is None:
@@ -148,7 +156,7 @@ def get_candidates(run_id: int) -> dict[str, Any]:
             """
             SELECT candidate_id, candidate_type, candidate_k, coherence, diversity,
                    balance, score, llm_explanation, is_selected
-            FROM derived_layer.topic_candidates
+            FROM legacy_0021.topic_candidates
             WHERE run_id = %s ORDER BY candidate_k
             """,
             (run_id,),

@@ -14,10 +14,15 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, field_validator
 
+from backend.app.app_layer import workspace_queries
 from backend.app.clustering.sources import get_source_spec
+from backend.app.repositories.topic_state_repository import (
+    PostgresTopicStateRepository,
+    TopicStateNotFoundError,
+)
 from backend.app.repositories.topic_repository import (
     TopicRepository,
     TopicNotFoundError,
@@ -60,6 +65,28 @@ class TopicsListResponse(BaseModel):
     source_field: str
     run_id: int
     topics: list[TopicResponse]
+
+
+class TopicPatentItem(BaseModel):
+    """topic 專利明細單筆（分類區點主題後列出）。"""
+
+    patent_id: int
+    patent_number: str | None
+    title: str | None
+    country_code: str | None
+    applicant_display_name: str | None
+
+
+class TopicPatentsResponse(BaseModel):
+    """某 topic 指派專利分頁回應。"""
+
+    workspace_id: int
+    source_field: str
+    topic_key: str
+    total: int
+    limit: int
+    offset: int
+    items: list[TopicPatentItem]
 
 
 class MergeSuggestionItem(BaseModel):
@@ -198,6 +225,14 @@ def _validate_source_field(source_field: str) -> None:
         ) from exc
 
 
+def get_topic_state_repository() -> PostgresTopicStateRepository:
+    """FastAPI Dependency：唯讀 topic 狀態 repository（topic→patents 指派唯一來源）。
+
+    測試可以 app.dependency_overrides 覆寫；正式走預設連線設定。
+    """
+    return PostgresTopicStateRepository()
+
+
 # ── Endpoints ──────────────────────────────────────────────────────
 
 
@@ -235,6 +270,63 @@ def list_topics(
             )
             for t in result["topics"]
         ],
+    )
+
+
+@router.get(
+    "/workspaces/{workspace_id}/topics/{topic_key}/patents",
+    response_model=TopicPatentsResponse,
+    summary="列出指派到某主題的專利（分類區點主題後列出）",
+)
+def list_topic_patents(
+    workspace_id: Annotated[int, Path(ge=1)],
+    topic_key: Annotated[str, Path(min_length=1, pattern=r"\S+")],
+    source_field: str,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    state_repo: PostgresTopicStateRepository = Depends(get_topic_state_repository),
+) -> TopicPatentsResponse:
+    """回傳該 topic 指派到的專利明細（分頁）。
+
+    topic→patents 走 topic_state_repository 的指派關係（非 label 文字比對）。workspace 不存在
+    或該通道尚無分群、或 topic_key 非 active 主題 → 404；找到則以 patent_ids 交集 workspace
+    成員取明細。source_field 需為白名單通道。
+    """
+    _validate_source_field(source_field)
+    # workspace 存在性：不存在直接 404（區分「無此 ws」與「有 ws 但無此 topic」）。
+    if workspace_queries.get_workspace_detail(workspace_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"workspace not found: {workspace_id}",
+        )
+    try:
+        state = state_repo.get_latest_topic_state(workspace_id, source_field)
+    except TopicStateNotFoundError:
+        # ws 存在但該通道尚無分群 run：等同 topic 不存在。
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"topic not found: {topic_key}",
+        )
+    topic = next((t for t in state.get("topics", []) if t.get("topic_code") == topic_key), None)
+    if topic is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"topic not found: {topic_key}",
+        )
+    result = workspace_queries.list_topic_patents(
+        workspace_id=workspace_id,
+        patent_ids=[int(pid) for pid in topic.get("patent_ids", [])],
+        limit=limit,
+        offset=offset,
+    )
+    return TopicPatentsResponse(
+        workspace_id=workspace_id,
+        source_field=source_field,
+        topic_key=topic_key,
+        total=result["total"],
+        limit=result["limit"],
+        offset=result["offset"],
+        items=[TopicPatentItem(**it) for it in result["items"]],
     )
 
 

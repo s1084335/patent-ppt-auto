@@ -1,0 +1,1115 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>專利分析平台</title>
+<style>
+/* ── 主題變數：亮暗雙主題（data-theme 覆寫） ── */
+:root {
+  --bg: #f0f2f5; --panel: #ffffff; --panel-2: #f7f9fc; --border: #e2e6ec;
+  --text: #1a1a2e; --text-muted: #6c757d; --accent: #0f3460; --accent-2: #1a6bc4;
+  --nav-active-bg: #0f3460; --nav-active-fg: #ffffff; --shadow: 0 1px 3px rgba(0,0,0,.08);
+  --ok: #1a8a4a; --warn: #d0384e;
+}
+:root[data-theme="dark"] {
+  --bg: #12141c; --panel: #1c1f2b; --panel-2: #232634; --border: #2f3342;
+  --text: #e6e8ef; --text-muted: #9aa2b4; --accent: #4d8fdb; --accent-2: #6fa8e8;
+  --nav-active-bg: #2a4a7a; --nav-active-fg: #ffffff; --shadow: 0 1px 3px rgba(0,0,0,.4);
+  --ok: #4ecb7d; --warn: #f0748a;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12141c; --panel: #1c1f2b; --panel-2: #232634; --border: #2f3342;
+    --text: #e6e8ef; --text-muted: #9aa2b4; --accent: #4d8fdb; --accent-2: #6fa8e8;
+    --nav-active-bg: #2a4a7a; --nav-active-fg: #ffffff; --shadow: 0 1px 3px rgba(0,0,0,.4);
+    --ok: #4ecb7d; --warn: #f0748a;
+  }
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; }
+body {
+  font-family: -apple-system, 'Segoe UI', system-ui, 'Microsoft JhengHei', sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5;
+  height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+}
+button { font-family: inherit; }
+
+/* ── 頂列 ── */
+#topbar {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 1rem;
+  padding: 0.6rem 1.1rem; background: var(--panel); border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow); z-index: 5;
+}
+#topbar .brand { font-size: 1.1rem; font-weight: 700; color: var(--accent); }
+#topbar .spacer { flex: 1; }
+#workspace-select {
+  padding: 0.4rem 0.6rem; border: 1px solid var(--border); border-radius: 0.35rem;
+  background: var(--panel-2); color: var(--text); font-size: 0.9rem; min-width: 220px;
+}
+.icon-btn {
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+  border-radius: 0.35rem; padding: 0.4rem 0.7rem; cursor: pointer; font-size: 0.85rem;
+}
+.icon-btn:hover { border-color: var(--accent); }
+
+/* ── 三欄主體 ── */
+#layout { flex: 1 1 auto; display: flex; min-height: 0; }
+#nav-panel {
+  flex: 0 0 200px; background: var(--panel); border-right: 1px solid var(--border);
+  padding: 0.75rem 0.5rem; overflow-y: auto;
+}
+#main-panel {
+  flex: 1 1 auto; padding: 1.1rem 1.35rem; overflow-y: auto; min-width: 0;
+}
+#ai-panel {
+  flex: 0 0 300px; background: var(--panel); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* ── 左導覽 ── */
+.nav-item {
+  display: block; width: 100%; text-align: left; border: none; background: transparent;
+  color: var(--text); padding: 0.55rem 0.7rem; border-radius: 0.4rem; cursor: pointer;
+  font-size: 0.92rem; margin-bottom: 0.15rem;
+}
+.nav-item:hover { background: var(--panel-2); }
+.nav-item.active { background: var(--nav-active-bg); color: var(--nav-active-fg); font-weight: 600; }
+.nav-section-label { font-size: 0.72rem; color: var(--text-muted); padding: 0.4rem 0.7rem 0.2rem; text-transform: uppercase; letter-spacing: .04em; }
+
+/* ── 主內容通用 ── */
+.panel-title { font-size: 1.25rem; margin-bottom: 0.9rem; color: var(--text); }
+.hint { color: var(--text-muted); font-size: 0.9rem; padding: 1.2rem 0; }
+.card {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 0.5rem;
+  padding: 1rem 1.15rem; margin-bottom: 1rem;
+}
+.toolbar { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.9rem; }
+.text-input {
+  padding: 0.45rem 0.6rem; border: 1px solid var(--border); border-radius: 0.35rem;
+  background: var(--panel); color: var(--text); font-size: 0.9rem;
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.45rem 0.95rem;
+  border: none; border-radius: 0.35rem; font-size: 0.88rem; cursor: pointer; transition: opacity .15s;
+}
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { opacity: .88; }
+.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+
+/* ── 表格 ── */
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 0.5rem; }
+table.data { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+table.data th, table.data td { padding: 0.5rem 0.7rem; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+table.data th { background: var(--panel-2); position: sticky; top: 0; font-weight: 600; }
+table.data tr:hover td { background: var(--panel-2); }
+.flag-yes { color: var(--ok); } .flag-no { color: var(--text-muted); }
+.pager { display: flex; align-items: center; gap: 0.7rem; margin-top: 0.8rem; font-size: 0.88rem; color: var(--text-muted); }
+
+/* ── 標籤（分類區） ── */
+.tag-list { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+.tag {
+  padding: 0.35rem 0.7rem; border: 1px solid var(--border); border-radius: 1rem;
+  background: var(--panel-2); color: var(--text); cursor: pointer; font-size: 0.85rem;
+}
+.tag.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.tag .count { opacity: .7; margin-left: 0.3rem; }
+
+/* ── 報表勾選 ── */
+.report-check-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0.5rem; margin-bottom: 1rem; }
+.report-check {
+  display: flex; align-items: center; gap: 0.55rem; padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border); border-radius: 0.4rem; background: var(--panel-2); font-size: 0.88rem;
+}
+.report-check input { width: 1rem; height: 1rem; }
+
+/* ── 統一進度元件 ── */
+.progress-bar-wrap { height: 0.4rem; background: var(--border); border-radius: 0.25rem; overflow: hidden; margin: 0.35rem 0; }
+.progress-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 0.25rem; transition: width .5s ease; width: 0%; }
+.task-card { border: 1px solid var(--border); border-radius: 0.45rem; padding: 0.65rem 0.8rem; background: var(--panel-2); margin-bottom: 0.55rem; }
+.task-card-header { display: flex; justify-content: space-between; align-items: center; font-size: 0.84rem; margin-bottom: 0.25rem; }
+.task-type { font-weight: 600; color: var(--accent); word-break: break-all; }
+.task-status { font-size: 0.76rem; padding: 0.1rem 0.4rem; border-radius: 0.25rem; white-space: nowrap; }
+.status-queued { background: #fff3cd; color: #856404; }
+.status-running { background: #cce5ff; color: #004085; }
+.status-succeeded { background: #d4edda; color: #155724; }
+.status-failed { background: #f8d7da; color: #721c24; }
+.status-cancelled { background: #e2e3e5; color: #383d41; }
+.task-meta { display: flex; justify-content: space-between; font-size: 0.76rem; color: var(--text-muted); gap: 0.5rem; }
+.task-meta .elapsed { font-variant-numeric: tabular-nums; }
+.task-empty { text-align: center; color: var(--text-muted); padding: 1.4rem 0; font-size: 0.88rem; }
+.task-clickable { cursor: pointer; }
+.task-clickable:hover { border-color: var(--accent); }
+.task-detail { margin-top: 0.45rem; padding-top: 0.45rem; border-top: 1px dashed var(--border); font-size: 0.78rem; color: var(--text-muted); }
+.task-detail-title { font-weight: 600; color: var(--text); margin-bottom: 0.25rem; }
+.task-detail-error { color: var(--warn); white-space: pre-wrap; word-break: break-word; }
+
+/* ── 右欄 AI 助手 ── */
+.ai-header { flex: 0 0 auto; padding: 0.75rem 0.9rem; border-bottom: 1px solid var(--border); font-weight: 600; color: var(--accent); }
+.ai-body { flex: 1 1 auto; overflow-y: auto; padding: 0.75rem 0.9rem; }
+.ai-footer { flex: 0 0 auto; border-top: 1px solid var(--border); padding: 0.7rem 0.9rem; }
+.ai-input { width: 100%; resize: vertical; min-height: 3.2rem; padding: 0.5rem 0.6rem; border: 1px solid var(--border); border-radius: 0.4rem; background: var(--panel-2); color: var(--text); font-size: 0.86rem; font-family: inherit; }
+.ai-section-label { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; margin: 0.6rem 0 0.35rem; }
+
+/* ── 系統狀態 ── */
+.health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.5rem; }
+.health-item { text-align: center; padding: 0.5rem; background: var(--panel-2); border-radius: 0.4rem; }
+.health-item .label { font-size: 0.75rem; color: var(--text-muted); }
+.health-item .value { font-size: 1.05rem; font-weight: 600; }
+.health-ok { color: var(--ok); } .health-warn { color: var(--warn); }
+
+.placeholder-box { border: 1px dashed var(--border); border-radius: 0.5rem; padding: 2rem 1rem; text-align: center; color: var(--text-muted); }
+.badge-plan { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 1rem; background: var(--panel-2); border: 1px solid var(--border); font-size: 0.8rem; }
+
+/* ── 響應式：窄螢幕收合右欄與左欄 ── */
+@media (max-width: 960px) { #ai-panel { flex-basis: 240px; } #nav-panel { flex-basis: 160px; } }
+@media (max-width: 720px) {
+  #layout { flex-direction: column; overflow-y: auto; }
+  #nav-panel, #ai-panel { flex-basis: auto; border: none; border-bottom: 1px solid var(--border); }
+  #nav-panel { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+}
+</style>
+</head>
+<body>
+
+<!-- ══ 頂列：workspace 切換 ══ -->
+<header id="topbar">
+  <span class="brand">專利分析平台</span>
+  <label for="workspace-select" style="font-size:0.82rem;color:var(--text-muted)">Workspace</label>
+  <select id="workspace-select" onchange="onWorkspaceChange()">
+    <option value="">載入中…</option>
+  </select>
+  <span class="spacer"></span>
+  <button class="icon-btn" id="theme-toggle" onclick="toggleTheme()" title="切換亮／暗主題">🌗 主題</button>
+</header>
+
+<div id="layout">
+  <!-- ══ 左欄：導覽 ══ -->
+  <nav id="nav-panel">
+    <div class="nav-section-label">分析</div>
+    <button class="nav-item active" data-nav="patents" onclick="navTo('patents')">專利總覽</button>
+    <button class="nav-item" data-nav="topics" onclick="navTo('topics')">分類區</button>
+    <div class="nav-section-label">報告</div>
+    <button class="nav-item" data-nav="reports" onclick="navTo('reports')">報表種類</button>
+    <button class="nav-item" data-nav="export" onclick="navTo('export')">匯出報告</button>
+    <div class="nav-section-label">進階</div>
+    <button class="nav-item" data-nav="comparison" onclick="navTo('comparison')">案件比對</button>
+    <button class="nav-item" data-nav="status" onclick="navTo('status')">系統狀態</button>
+  </nav>
+
+  <!-- ══ 中欄：主內容（依左導覽切換） ══ -->
+  <main id="main-panel">
+    <div class="hint">正在載入 workspace…</div>
+  </main>
+
+  <!-- ══ 右欄：AI 助手 ══ -->
+  <aside id="ai-panel">
+    <div class="ai-header">AI 助手</div>
+    <div class="ai-body" id="ai-body">
+      <div class="ai-section-label">任務進度</div>
+      <div id="task-container">
+        <div class="task-empty">正在載入任務清單…</div>
+      </div>
+    </div>
+    <div class="ai-footer">
+      <div class="ai-section-label">對目前頁面提出修改需求</div>
+      <textarea class="ai-input" id="ai-input" placeholder="例如：把趨勢圖改成近十年、加一段風險摘要…"></textarea>
+      <button class="btn btn-primary" id="btn-ai-send" style="margin-top:0.5rem;width:100%" onclick="sendAiRequest()">送出給 AI 助手</button>
+    </div>
+  </aside>
+</div>
+
+<script>
+"use strict";
+const API = '/api/v1';
+// 分類區固定通道（topics API 需 source_field；用既有白名單通道）
+const TOPIC_SOURCE_FIELD = 'wips_independent_claims';
+const PATENTS_PAGE_SIZE = 100;
+
+// ── 全域狀態 ──
+const state = {
+  workspaceId: null,
+  nav: 'patents',
+  patentsOffset: 0,
+  topicFilterKey: null,   // 分類區選定的 topic_key（前端篩選用）
+  reportSelection: new Set(),
+  comparison: { jobId: null, understandingVersion: null },
+};
+
+// ══════════ 工具 ══════════
+function escHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function el(id) { return document.getElementById(id); }
+async function getJson(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return resp.json();
+}
+
+// ══════════ 主題切換（亮／暗） ══════════
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  try { localStorage.setItem('theme', theme); } catch (_) {}
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute('data-theme');
+  applyTheme(cur === 'dark' ? 'light' : 'dark');
+}
+(function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem('theme'); } catch (_) {}
+  if (saved) document.documentElement.setAttribute('data-theme', saved);
+})();
+
+// ══════════ Workspace 切換 ══════════
+async function loadWorkspaces() {
+  try {
+    const data = await getJson(API + '/workspaces?limit=200');
+    const sel = el('workspace-select');
+    const items = data.items || [];
+    if (items.length === 0) {
+      sel.innerHTML = '<option value="">（尚無 workspace）</option>';
+      el('main-panel').innerHTML = '<div class="hint">尚無 workspace，請先於後端建立。</div>';
+      return;
+    }
+    sel.innerHTML = items.map(w =>
+      '<option value="' + w.workspace_id + '">'
+      + escHtml(w.workspace_name) + '（' + (w.patent_count ?? 0) + ' 件'
+      + (w.is_composed ? '・組合' : '') + '）</option>'
+    ).join('');
+    state.workspaceId = items[0].workspace_id;
+    sel.value = String(state.workspaceId);
+    renderMain();
+  } catch (e) {
+    el('workspace-select').innerHTML = '<option value="">載入失敗</option>';
+    el('main-panel').innerHTML = '<div class="hint">無法載入 workspace 清單（' + escHtml(e.message) + '）。</div>';
+  }
+}
+function onWorkspaceChange() {
+  const v = el('workspace-select').value;
+  state.workspaceId = v ? parseInt(v, 10) : null;
+  state.patentsOffset = 0;
+  state.topicFilterKey = null;
+  renderMain();
+}
+
+// ══════════ 左導覽切換 ══════════
+function navTo(nav) {
+  state.nav = nav;
+  document.querySelectorAll('.nav-item').forEach(b => {
+    b.classList.toggle('active', b.dataset.nav === nav);
+  });
+  renderMain();
+}
+
+// 主內容路由：依 state.nav 呼叫對應 render。
+function renderMain() {
+  const m = el('main-panel');
+  if (!state.workspaceId && state.nav !== 'status' && state.nav !== 'comparison') {
+    m.innerHTML = '<div class="hint">請先選擇 workspace。</div>';
+    return;
+  }
+  switch (state.nav) {
+    case 'patents': return renderPatents();
+    case 'topics': return renderTopics();
+    case 'reports': return renderReports();
+    case 'export': return renderExport();
+    case 'comparison': return renderComparison();
+    case 'status': return renderStatus();
+    default: m.innerHTML = '<div class="hint">未知頁面。</div>';
+  }
+}
+
+// ══════════ 專利總覽（GET /workspaces/{id}/patents，一頁 100 筆） ══════════
+async function renderPatents() {
+  const m = el('main-panel');
+  m.innerHTML = '<h2 class="panel-title">專利總覽</h2>'
+    + '<div class="toolbar">'
+    + '<input class="text-input" id="patent-kw" placeholder="搜尋 專利號／名稱／申請人" style="min-width:260px">'
+    + '<button class="btn btn-outline" onclick="onPatentSearch()">搜尋</button>'
+    + '</div>'
+    + '<div id="patents-body"><div class="hint">載入中…</div></div>';
+  const kwInput = el('patent-kw');
+  if (kwInput) kwInput.addEventListener('keydown', e => { if (e.key === 'Enter') onPatentSearch(); });
+  await loadPatents();
+}
+function onPatentSearch() { state.patentsOffset = 0; loadPatents(); }
+async function loadPatents() {
+  const body = el('patents-body');
+  if (!body) return;
+  const kw = (el('patent-kw') && el('patent-kw').value.trim()) || '';
+  const qs = 'limit=' + PATENTS_PAGE_SIZE + '&offset=' + state.patentsOffset
+    + (kw ? '&keyword=' + encodeURIComponent(kw) : '');
+  try {
+    const data = await getJson(API + '/workspaces/' + state.workspaceId + '/patents?' + qs);
+    body.innerHTML = patentsTableHtml(data);
+  } catch (e) {
+    body.innerHTML = '<div class="hint">載入專利失敗（' + escHtml(e.message) + '）。</div>';
+  }
+}
+function patentsTableHtml(data) {
+  const items = data.items || [];
+  if (items.length === 0) return '<div class="hint">此 workspace 無符合的專利。</div>';
+  // 所屬主題欄：顯示 topic_label（該專利在最新分群的歸屬），未分類者標示「未分類」。
+  const rows = items.map(p =>
+    '<tr>'
+    + '<td>' + escHtml(p.patent_number) + '</td>'
+    + '<td style="white-space:normal;min-width:280px">' + escHtml(p.title) + '</td>'
+    + '<td>' + escHtml(p.country_code) + '</td>'
+    + '<td>' + escHtml(p.applicant_display_name) + '</td>'
+    + '<td>' + topicCell(p.topic_label) + '</td>'
+    + '<td>' + flag(p.has_technical_text) + '</td>'
+    + '<td>' + flag(p.has_effect_text) + '</td>'
+    + '</tr>'
+  ).join('');
+  const total = data.total ?? items.length;
+  const from = (data.offset ?? 0) + 1;
+  const to = (data.offset ?? 0) + items.length;
+  const canPrev = (data.offset ?? 0) > 0;
+  const canNext = to < total;
+  return '<div class="table-wrap"><table class="data">'
+    + '<thead><tr><th>專利號</th><th>名稱</th><th>受理局</th><th>申請人</th><th>所屬主題</th><th>技術描述</th><th>功效描述</th></tr></thead>'
+    + '<tbody>' + rows + '</tbody></table></div>'
+    + '<div class="pager">'
+    + '<button class="btn btn-outline" ' + (canPrev ? '' : 'disabled') + ' onclick="pagePatents(-1)">上一頁</button>'
+    + '<span>' + from + '–' + to + ' / 共 ' + total + ' 件</span>'
+    + '<button class="btn btn-outline" ' + (canNext ? '' : 'disabled') + ' onclick="pagePatents(1)">下一頁</button>'
+    + '</div>';
+}
+// 所屬主題儲存格：有 topic_label 顯示之，否則標「未分類」（灰字）。
+function topicCell(label) {
+  if (label === null || label === undefined || label === '') {
+    return '<span class="flag-no">未分類</span>';
+  }
+  return escHtml(label);
+}
+function flag(v) { return v ? '<span class="flag-yes">✓</span>' : '<span class="flag-no">—</span>'; }
+function pagePatents(dir) {
+  const next = state.patentsOffset + dir * PATENTS_PAGE_SIZE;
+  if (next < 0) return;
+  state.patentsOffset = next;
+  loadPatents();
+}
+
+// ══════════ 分類區（點主題→列該主題「指派」到的專利，非 label 文字比對） ══════════
+// 主題清單快取（供概覽顯示 label/件數）；點主題 chip 走 /topics/{key}/patents 指派端點。
+let topicListCache = [];
+async function renderTopics() {
+  const m = el('main-panel');
+  m.innerHTML = '<h2 class="panel-title">分類區</h2>'
+    + '<p class="hint" style="padding:0 0 0.6rem">點選主題以列出指派到該主題的專利（通道：' + escHtml(TOPIC_SOURCE_FIELD) + '）。</p>'
+    + '<div id="topic-tags"><div class="hint">載入主題中…</div></div>'
+    + '<div id="topic-overview"></div>'
+    + '<div id="topic-patents"></div>';
+  try {
+    const data = await getJson(API + '/workspaces/' + state.workspaceId
+      + '/topics?source_field=' + encodeURIComponent(TOPIC_SOURCE_FIELD));
+    topicListCache = data.topics || [];
+    renderTopicTags(topicListCache);
+  } catch (e) {
+    el('topic-tags').innerHTML = '<div class="hint">此 workspace 尚無分群結果或載入失敗（' + escHtml(e.message) + '）。可先在後端跑分群。</div>';
+  }
+}
+function renderTopicTags(topics) {
+  const wrap = el('topic-tags');
+  if (topics.length === 0) {
+    wrap.innerHTML = '<div class="hint">此 workspace 尚無主題標籤。</div>';
+    return;
+  }
+  const tags = topics.map(t =>
+    '<span class="tag' + (state.topicFilterKey === t.topic_key ? ' active' : '') + '"'
+    + ' onclick="onTopicTag(\'' + escHtml(t.topic_key) + '\')">'
+    + escHtml(t.label || t.topic_key)
+    + '<span class="count">' + (t.doc_count ?? 0) + '</span></span>'
+  ).join('');
+  wrap.innerHTML = '<div class="tag-list">'
+    + '<span class="tag' + (state.topicFilterKey === null ? ' active' : '') + '" onclick="onTopicTag(null)">全部</span>'
+    + tags + '</div>';
+  renderTopicOverview();
+  // 「全部」→ workspace 全部專利（沿用總覽查詢）；選定主題→列該主題指派專利。
+  if (state.topicFilterKey === null) loadAllWorkspacePatents();
+  else loadTopicAssignedPatents(state.topicFilterKey);
+}
+// 主題概覽：顯示選定主題的 label 與件數（doc_count）；「全部」時顯示 workspace 全部件數。
+function renderTopicOverview() {
+  const wrap = el('topic-overview');
+  if (!wrap) return;
+  if (state.topicFilterKey === null) {
+    wrap.innerHTML = '<div class="card"><strong>全部</strong>：顯示此 workspace 全部專利。</div>';
+    return;
+  }
+  const t = topicListCache.find(x => x.topic_key === state.topicFilterKey);
+  if (!t) { wrap.innerHTML = ''; return; }
+  wrap.innerHTML = '<div class="card"><strong>' + escHtml(t.label || t.topic_key) + '</strong>'
+    + '　件數：' + (t.doc_count ?? 0) + '</div>';
+}
+function onTopicTag(key) {
+  state.topicFilterKey = key;
+  renderTopics();
+}
+// 「全部」：沿用總覽查詢列出 workspace 全部專利（含所屬主題欄）。
+async function loadAllWorkspacePatents() {
+  const wrap = el('topic-patents');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="hint">載入中…</div>';
+  try {
+    const data = await getJson(API + '/workspaces/' + state.workspaceId
+      + '/patents?limit=' + PATENTS_PAGE_SIZE + '&offset=0');
+    wrap.innerHTML = patentsTableHtml(data);
+  } catch (e) {
+    wrap.innerHTML = '<div class="hint">載入失敗（' + escHtml(e.message) + '）。</div>';
+  }
+}
+// 選定主題：走 /topics/{topic_key}/patents 指派端點（deterministic，非 label 文字比對）。
+async function loadTopicAssignedPatents(topicKey) {
+  const wrap = el('topic-patents');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="hint">載入中…</div>';
+  const qs = 'source_field=' + encodeURIComponent(TOPIC_SOURCE_FIELD)
+    + '&limit=' + PATENTS_PAGE_SIZE + '&offset=0';
+  try {
+    const data = await getJson(API + '/workspaces/' + state.workspaceId
+      + '/topics/' + encodeURIComponent(topicKey) + '/patents?' + qs);
+    wrap.innerHTML = topicPatentsTableHtml(data);
+  } catch (e) {
+    wrap.innerHTML = '<div class="hint">載入失敗（' + escHtml(e.message) + '）。</div>';
+  }
+}
+// 主題專利表（/topics/{key}/patents 回應：五欄，無所屬主題欄與完整度旗標）。
+function topicPatentsTableHtml(data) {
+  const items = data.items || [];
+  if (items.length === 0) return '<div class="hint">此主題尚無指派的專利。</div>';
+  const rows = items.map(p =>
+    '<tr>'
+    + '<td>' + escHtml(p.patent_number) + '</td>'
+    + '<td style="white-space:normal;min-width:280px">' + escHtml(p.title) + '</td>'
+    + '<td>' + escHtml(p.country_code) + '</td>'
+    + '<td>' + escHtml(p.applicant_display_name) + '</td>'
+    + '</tr>'
+  ).join('');
+  const total = data.total ?? items.length;
+  return '<div class="table-wrap"><table class="data">'
+    + '<thead><tr><th>專利號</th><th>名稱</th><th>受理局</th><th>申請人</th></tr></thead>'
+    + '<tbody>' + rows + '</tbody></table></div>'
+    + '<div class="pager"><span>共 ' + total + ' 件</span></div>';
+}
+
+// ══════════ 報表種類勾選（POST /reports → GET /reports/{job_id} 輪詢） ══════════
+// 報表清單直接內嵌（來源：backend report_definitions；label_zh）。
+// 報表清單涵蓋引擎所有 active 報表（對齊 report_definitions.DEFAULT_REPORT_NAMES，
+// 含家族完整性明細 family_quality_detail），預設全部勾選（使用者可再取消個別項）。
+const REPORT_TYPES = [
+  ['application_trend', '專利申請趨勢'],
+  ['publication_trend', '專利公告趨勢'],
+  ['country_distribution', '專利受理局分布'],
+  ['applicant_country_distribution', '公司×國家交叉表'],
+  ['ipc_main_distribution', 'IPC 主分類分布'],
+  ['cpc_main_distribution', 'CPC 主分類分布'],
+  ['applicant_ranking', '主要申請人排名'],
+  ['owner_ranking', '現專利權人排名'],
+  ['recent_assignee_ranking', '最新受讓人排名'],
+  ['applicant_year_matrix', '申請人年度分布矩陣'],
+  ['owner_year_matrix', '專利權人年度布局矩陣'],
+  ['lifecycle', '專利生命週期'],
+  ['family_country_layout', '國家佈局（現有保護）'],
+  ['family_quality_detail', '家族完整性明細'],
+];
+// 預設全勾：首次進報表區時，把全部報表填入選取集合（含 family_quality_detail）。
+let reportSelectionInitialized = false;
+function ensureReportSelectionDefault() {
+  if (reportSelectionInitialized) return;
+  REPORT_TYPES.forEach(([name]) => state.reportSelection.add(name));
+  reportSelectionInitialized = true;
+}
+function renderReports() {
+  const m = el('main-panel');
+  ensureReportSelectionDefault();  // 預設全部勾選
+  const checks = REPORT_TYPES.map(([name, zh]) =>
+    '<label class="report-check"><input type="checkbox" value="' + name + '"'
+    + (state.reportSelection.has(name) ? ' checked' : '')
+    + ' onchange="onReportToggle(this)"> ' + escHtml(zh) + '</label>'
+  ).join('');
+  m.innerHTML = '<h2 class="panel-title">報表種類</h2>'
+    + '<p class="hint" style="padding:0 0 0.6rem">預設全部勾選，可取消個別項；送出後於下方顯示產製進度。</p>'
+    + '<div class="toolbar">'
+    + '<button class="btn btn-outline" id="btn-report-all" onclick="toggleAllReports()">全選／全不選</button>'
+    + '</div>'
+    + '<div class="report-check-list">' + checks + '</div>'
+    + '<div class="toolbar">'
+    + '<button class="btn btn-primary" id="btn-gen-report" onclick="submitReports()">產製選定報表</button>'
+    + '</div>'
+    + '<div id="report-job"></div>';
+}
+function onReportToggle(cb) {
+  if (cb.checked) state.reportSelection.add(cb.value);
+  else state.reportSelection.delete(cb.value);
+}
+// 全選／全不選切換：目前非全選則補齊全部，否則清空。
+function toggleAllReports() {
+  const allSelected = REPORT_TYPES.every(([name]) => state.reportSelection.has(name));
+  if (allSelected) state.reportSelection.clear();
+  else REPORT_TYPES.forEach(([name]) => state.reportSelection.add(name));
+  renderReports();
+}
+async function submitReports() {
+  const names = Array.from(state.reportSelection);
+  if (names.length === 0) { alert('請至少勾選一個報表。'); return; }
+  const btn = el('btn-gen-report');
+  btn.disabled = true; btn.textContent = '送出中…';
+  try {
+    const resp = await fetch(API + '/reports', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ report_names: names }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('建立報表工作失敗：' + (err.detail || resp.status));
+      return;
+    }
+    const job = await resp.json();
+    pollReportJob(job.job_id);
+  } catch (e) {
+    alert('連線錯誤：' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '產製選定報表';
+  }
+}
+// 輪詢報表 job 狀態（GET /reports/{job_id}），以統一進度元件呈現。
+async function pollReportJob(jobId) {
+  const wrap = el('report-job');
+  const started = Date.now();
+  async function tick() {
+    if (!wrap || state.nav !== 'reports') return;
+    try {
+      const j = await getJson(API + '/reports/' + jobId);
+      wrap.innerHTML = jobProgressCardHtml(j, started);
+      if (['succeeded', 'failed', 'cancelled'].includes(j.status)) {
+        if (j.status === 'succeeded') {
+          wrap.innerHTML += '<p style="margin-top:0.6rem"><a class="btn btn-outline" href="'
+            + API + '/report-latest" target="_blank" rel="noopener">開啟最新完整報表</a></p>';
+        }
+        return;
+      }
+    } catch (e) {
+      wrap.innerHTML = '<div class="hint">查詢報表狀態失敗（' + escHtml(e.message) + '）。</div>';
+      return;
+    }
+    setTimeout(tick, 2000);
+  }
+  tick();
+}
+// 統一進度卡（job dict：status/progress_percent/current_stage）＋已耗時。
+function jobProgressCardHtml(j, startedMs) {
+  const pct = j.progress_percent ?? 0;
+  const stage = j.current_stage || '';
+  const statusCls = 'status-' + (j.status || 'queued');
+  const elapsed = fmtElapsed(startedMs);
+  return '<div class="task-card">'
+    + '<div class="task-card-header">'
+    + '<span class="task-type">' + escHtml(j.job_type || 'report_generate') + ' #' + escHtml(j.job_id) + '</span>'
+    + '<span class="task-status ' + statusCls + '">' + escHtml(j.status) + '</span>'
+    + '</div>'
+    + '<div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:' + pct + '%"></div></div>'
+    + '<div class="task-meta"><span>' + escHtml(stage) + '</span><span class="elapsed">' + elapsed + '</span></div>'
+    + '</div>';
+}
+function fmtElapsed(startedMs) {
+  const sec = Math.floor((Date.now() - startedMs) / 1000);
+  if (sec < 60) return sec + ' 秒';
+  return Math.floor(sec / 60) + ' 分 ' + (sec % 60) + ' 秒';
+}
+
+// ══════════ 匯出報告（分析報告匯出入口：觸發＋取回連結） ══════════
+function renderExport() {
+  const m = el('main-panel');
+  m.innerHTML = '<h2 class="panel-title">匯出報告</h2>'
+    + '<div class="card">'
+    + '<p style="margin-bottom:0.8rem">觸發分析報告產製（走既有報表管線），完成後於下方取得可開啟的報告連結。</p>'
+    + '<button class="btn btn-primary" id="btn-export" onclick="triggerExport()">產製分析報告</button>'
+    + '</div>'
+    + '<div id="export-job"></div>'
+    + '<div class="card"><p style="margin:0"><a href="' + API + '/report-latest" target="_blank" rel="noopener">直接開啟最新完整報表 index.html</a></p></div>';
+}
+async function triggerExport() {
+  const btn = el('btn-export');
+  btn.disabled = true; btn.textContent = '送出中…';
+  const wrap = el('export-job');
+  try {
+    // 匯出＝以全部預設報表建立 report_generate job（實際檔案產製走既有管線）。
+    const resp = await fetch(API + '/reports', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('建立匯出工作失敗：' + (err.detail || resp.status));
+      return;
+    }
+    const job = await resp.json();
+    // 沿用報表輪詢＋取回連結；輪詢寫入 export-job 區。
+    pollExportJob(job.job_id);
+  } catch (e) {
+    alert('連線錯誤：' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '產製分析報告';
+  }
+}
+async function pollExportJob(jobId) {
+  const wrap = el('export-job');
+  const started = Date.now();
+  async function tick() {
+    if (!wrap || state.nav !== 'export') return;
+    try {
+      const j = await getJson(API + '/reports/' + jobId);
+      wrap.innerHTML = jobProgressCardHtml(j, started);
+      if (j.status === 'succeeded') {
+        wrap.innerHTML += '<p style="margin-top:0.6rem"><a class="btn btn-primary" href="'
+          + API + '/report-latest" target="_blank" rel="noopener">取回並開啟分析報告</a></p>';
+        return;
+      }
+      if (['failed', 'cancelled'].includes(j.status)) return;
+    } catch (e) {
+      wrap.innerHTML = '<div class="hint">查詢匯出狀態失敗（' + escHtml(e.message) + '）。</div>';
+      return;
+    }
+    setTimeout(tick, 2000);
+  }
+  tick();
+}
+
+// ══════════ 案件比對（建立 job + target + understanding + approve） ══════════
+function renderComparison() {
+  const m = el('main-panel');
+    m.innerHTML = '<h2 class="panel-title">案件比對</h2>'
+
+    // 載入既有案件
+    + '<div class="card">'
+    + '<div style="font-weight:600;margin-bottom:0.6rem">載入既有案件</div>'
+    + '<div class="toolbar">'
+    + '<input class="text-input" id="comp-load-job-id" placeholder="輸入 Job ID" style="min-width:120px">'
+    + '<button class="btn btn-outline" id="comp-load-job-btn" onclick="loadComparisonState()">載入</button>'
+    + '</div>'
+    + '</div>'
+
+    // 被比對來源（新案件）
+    + '<div class="card" id="comp-create-section">'
+    + '<div style="font-weight:600;margin-bottom:0.6rem">被比對來源（專利 claim／技術描述）</div>'
+    + '<div class="toolbar">'
+    + '<input class="text-input" id="comp-case-title" placeholder="案件名稱（如 US12345678 vs Product X）" style="min-width:220px">'
+    + '<input class="text-input" id="comp-case-text" placeholder="專利 claim 或技術描述" style="min-width:300px;flex:1">'
+    + '</div>'
+    + '<button class="btn btn-primary" id="btn-create-comparison" onclick="createComparison()">建立比對</button>'
+    + '</div>'
+
+    // 工作狀態顯示區
+    + '<div class="card" id="comp-job-info">'
+    + '<div style="font-weight:600;margin-bottom:0.6rem">比對工作狀態</div>'
+    + '<div style="display:grid;grid-template-columns:auto 1fr;gap:0.3rem 1rem;font-size:0.88rem">'
+    + '<span style="color:var(--text-muted)">Job ID</span><span id="comp-job-id">—</span>'
+    + '<span style="color:var(--text-muted)">狀態</span><span id="comp-job-status">—</span>'
+    + '<span style="color:var(--text-muted)">階段</span><span id="comp-current-stage">—</span>'
+    + '<span style="color:var(--text-muted)">進度</span><span id="comp-progress-percent">0%</span>'
+    + '</div>'
+    + '<div class="progress-bar-wrap"><div class="progress-bar-fill" id="comp-progress-bar" style="width:0%"></div></div>'
+    + '</div>'
+
+    // 比對來源（target）
+    + '<div class="card">'
+    + '<div style="font-weight:600;margin-bottom:0.6rem">比對來源（產品／實測資料）</div>'
+    + '<div class="toolbar">'
+    + '<select class="text-input" id="comp-target-type"><option value="text">text</option><option value="image">image</option><option value="file">file</option></select>'
+    + '<input class="text-input" id="comp-target-title" placeholder="標的標題" style="min-width:200px">'
+    + '</div>'
+    + '<textarea class="text-input" id="comp-target-description" placeholder="標的說明" style="width:100%;min-height:60px;margin-bottom:0.5rem"></textarea>'
+    + '<label style="font-size:0.88rem;display:flex;align-items:center;gap:0.4rem;margin-bottom:0.5rem">'
+    + '<input type="checkbox" id="comp-target-simulated"> 模擬標的'
+    + '</label>'
+    + '<button class="btn btn-primary" id="btn-save-target" onclick="saveTarget()">儲存標的</button>'
+    + '<span style="margin-left:0.8rem;font-size:0.84rem;color:var(--text-muted)">版本：<span id="comp-version-target">—</span></span>'
+    + '</div>'
+
+    // AI 理解稿
+    + '<div class="card">'
+    + '<div style="font-weight:600;margin-bottom:0.6rem">AI 理解稿</div>'
+    + '<textarea class="text-input" id="comp-understanding-features" placeholder="特徵（每行一項）" style="width:100%;min-height:60px;margin-bottom:0.5rem"></textarea>'
+    + '<textarea class="text-input" id="comp-understanding-assumptions" placeholder="假設（每行一項）" style="width:100%;min-height:60px;margin-bottom:0.5rem"></textarea>'
+    + '<div class="toolbar">'
+    + '<select class="text-input" id="comp-understanding-source"><option value="claude_cli">claude_cli</option><option value="manual">manual</option></select>'
+    + '<button class="btn btn-primary" id="btn-save-understanding" onclick="saveUnderstanding()">儲存理解稿</button>'
+    + '<span style="font-size:0.84rem;color:var(--text-muted)">版本：<span id="comp-version-understanding">—</span></span>'
+    + '</div>'
+    + '</div>'
+
+    // 核准理解稿
+    + '<div class="card">'
+    + '<div style="font-weight:600;margin-bottom:0.6rem">核准理解稿</div>'
+    + '<div class="toolbar">'
+    + '<input class="text-input" id="comp-approved-by" placeholder="核准者名稱" style="min-width:150px">'
+    + '<button class="btn btn-primary" id="btn-approve-understanding" onclick="approveUnderstanding()">核准</button>'
+    + '<span style="font-size:0.84rem;color:var(--text-muted)">版本：<span id="comp-version-approval">—</span></span>'
+    + '</div>'
+    + '</div>'
+
+    // 逐要素比對
+    + '<div class="card">'
+    + '<div style="font-weight:600;margin-bottom:0.6rem">逐要素比對</div>'
+    + '<textarea class="text-input" id="comp-element-analysis-json" placeholder=\'{"claims": [{"claim_number": "1", "elements": [{"element_id": "1a", "element_text": "...", "status": "met", "notes": "..."}]}]}\' style="width:100%;min-height:120px;margin-bottom:0.5rem;font-family:monospace"></textarea>'
+    + '<div class="toolbar">'
+    + '<button class="btn btn-primary" id="btn-save-element-analysis" onclick="saveElementAnalysis()">儲存要素比對</button>'
+    + '<span style="font-size:0.84rem;color:var(--text-muted)">版本：<span id="comp-version-element-analysis">—</span></span>'
+    + '</div>'
+    + '</div>';
+}
+
+async function createComparison() {
+  const title = el('comp-case-title').value.trim();
+  const text = el('comp-case-text').value.trim();
+  if (!title || !text) { alert('請輸入案件名稱與文字。'); return; }
+  const wsId = state.workspaceId || 1;
+  try {
+    const resp = await fetch(API + '/comparisons', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workspace_id: wsId, case_title: title, case_text: text,
+        comparison_type: 'claim_or_technical',
+        idempotency_key: 'fe-' + Date.now(),
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('建立比對失敗：' + (err.detail || resp.status));
+      return;
+    }
+    const job = await resp.json();
+    state.comparison.jobId = job.job_id;
+    updateComparisonJobInfo(job);
+  } catch (e) { alert('連線錯誤：' + e.message); }
+}
+
+function updateComparisonJobInfo(job) {
+  setText('comp-job-id', job.job_id);
+  setText('comp-job-status', job.status);
+  setText('comp-current-stage', job.current_stage);
+  const pct = job.progress_percent ?? 0;
+  setText('comp-progress-percent', pct + '%');
+  const bar = el('comp-progress-bar');
+  if (bar) bar.style.width = pct + '%';
+}
+
+async function saveTarget() {
+  const jobId = state.comparison.jobId;
+  if (!jobId) { alert('請先建立比對案件。'); return; }
+  try {
+    const resp = await fetch(API + '/comparisons/' + jobId + '/target', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        target_type: el('comp-target-type').value,
+        title: el('comp-target-title').value.trim(),
+        description: el('comp-target-description').value.trim(),
+        simulated: el('comp-target-simulated').checked,
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('儲存標的失敗：' + (err.detail || resp.status));
+      return;
+    }
+    const data = await resp.json();
+    setText('comp-version-target', data.version);
+  } catch (e) { alert('連線錯誤：' + e.message); }
+}
+
+async function saveUnderstanding() {
+  const jobId = state.comparison.jobId;
+  if (!jobId) { alert('請先建立比對案件。'); return; }
+  const rawFeatures = (el('comp-understanding-features').value || '');
+  const rawAssumptions = (el('comp-understanding-assumptions').value || '');
+  const features = rawFeatures.split('\n').filter(s => s.trim());
+  const assumptions = rawAssumptions.split('\n').filter(s => s.trim());
+  try {
+    const resp = await fetch(API + '/comparisons/' + jobId + '/understanding', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        features: features,
+        assumptions: assumptions,
+        source: el('comp-understanding-source').value,
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('儲存理解稿失敗：' + (err.detail || resp.status));
+      return;
+    }
+    const data = await resp.json();
+    state.comparison.understandingVersion = data.version;
+    setText('comp-version-understanding', data.version);
+  } catch (e) { alert('連線錯誤：' + e.message); }
+}
+
+async function approveUnderstanding() {
+  const jobId = state.comparison.jobId;
+  if (!jobId) { alert('請先建立比對案件。'); return; }
+  const version = state.comparison.understandingVersion;
+  if (!version) { alert('請先儲存理解稿。'); return; }
+  const approvedBy = el('comp-approved-by').value.trim();
+  if (!approvedBy) { alert('請輸入核准者名稱。'); return; }
+  try {
+    const resp = await fetch(API + '/comparisons/' + jobId + '/understanding/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        understanding_version: version,
+        approved_by: approvedBy,
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('核准失敗：' + (err.detail || resp.status));
+      return;
+    }
+    const data = await resp.json();
+    setText('comp-version-approval', data.version);
+  } catch (e) { alert('連線錯誤：' + e.message); }
+}
+
+async function loadComparisonState() {
+  const jobId = parseInt(el('comp-load-job-id').value.trim(), 10) || state.comparison.jobId;
+  if (!jobId) { alert('請輸入 Job ID。'); return; }
+  try {
+    const data = await getJson(API + '/comparisons/' + jobId);
+    fillComparisonFromResponse(data);
+    state.comparison.jobId = jobId;
+    el('comp-load-job-id').value = jobId;
+  } catch (e) { alert('載入失敗：' + e.message); }
+}
+
+function fillComparisonFromResponse(data) {
+  setText('comp-job-id', data.job_id);
+  setText('comp-job-status', data.status);
+  setText('comp-current-stage', data.current_stage);
+  const pct = data.progress_percent ?? 0;
+  setText('comp-progress-percent', pct + '%');
+  const bar = el('comp-progress-bar');
+  if (bar) bar.style.width = pct + '%';
+  // 回填 outputs
+  const result = data.result || {};
+  if (result.target_version) setText('comp-version-target', result.target_version);
+  if (result.understanding_version) setText('comp-version-understanding', result.understanding_version);
+  if (result.approval_version) setText('comp-version-approval', result.approval_version);
+  // 回填 element_analysis
+  if (data.element_analysis_version != null) {
+    setText('comp-version-element-analysis', data.element_analysis_version);
+  }
+  if (data.element_analysis) {
+    el('comp-element-analysis-json').value = JSON.stringify(data.element_analysis, null, 2);
+  }
+}
+
+async function saveElementAnalysis() {
+  const jobId = state.comparison.jobId;
+  if (!jobId) { alert('請先建立比對案件。'); return; }
+  const raw = el('comp-element-analysis-json').value.trim();
+  if (!raw) { alert('請輸入要素比對 JSON。'); return; }
+  let payload;
+  try { payload = JSON.parse(raw); } catch (_) { alert('JSON 格式無效。'); return; }
+  try {
+    const resp = await fetch(API + '/comparisons/' + jobId + '/element-analysis', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('儲存要素比對失敗：' + (err.detail || resp.status));
+      return;
+    }
+    const data = await resp.json();
+    setText('comp-version-element-analysis', data.version);
+  } catch (e) { alert('連線錯誤：' + e.message); }
+}
+
+function setText(id, val) {
+  const node = el(id);
+  if (node) node.textContent = val ?? '—';
+}
+
+// ══════════ 系統狀態（GET /ready） ══════════
+async function renderStatus() {
+  const m = el('main-panel');
+  m.innerHTML = '<h2 class="panel-title">系統狀態</h2>'
+    + '<div class="toolbar"><button class="btn btn-outline" onclick="renderStatus()">重新整理</button></div>'
+    + '<div class="health-grid">'
+    + '<div class="health-item"><div class="label">狀態</div><div class="value health-warn" id="h-status">—</div></div>'
+    + '<div class="health-item"><div class="label">資料庫</div><div class="value" id="h-db">—</div></div>'
+    + '<div class="health-item"><div class="label">Worker</div><div class="value" id="h-worker">—</div></div>'
+    + '<div class="health-item"><div class="label">執行中工作</div><div class="value" id="h-running">—</div></div>'
+    + '</div>';
+  try {
+    const resp = await fetch(API + '/ready');
+    const body = await resp.json();
+    const ok = resp.ok && body.status === 'ready';
+    setHealth('h-status', ok ? 'ready' : (body.status || 'not_ready'), ok);
+    const db = body.database || (body.detail && body.detail.database) || {};
+    setHealth('h-db', db.ok ? '✓ 正常' : '✗ 異常', !!db.ok);
+    const wh = body.worker || (body.detail && body.detail.worker) || null;
+    if (wh) {
+      setHealth('h-worker', wh.healthy ? '✓ 正常' : '✗ 停滯', !!wh.healthy);
+      el('h-running').textContent = wh.running_jobs ?? '0';
+    } else {
+      el('h-worker').textContent = '—';
+    }
+  } catch (e) {
+    setHealth('h-status', '離線', false);
+  }
+}
+function setHealth(id, text, ok) {
+  const node = el(id);
+  if (!node) return;
+  node.textContent = text;
+  node.className = 'value ' + (ok ? 'health-ok' : 'health-warn');
+}
+
+// ══════════ 右欄 AI 助手：任務列表 + SSE + enqueue ══════════
+// 顯示邏輯（decisions.md「長時任務前端進度顯示」）：succeeded 不顯示（完成即從列表過濾），
+// queued/running/failed/cancelled 保留；running/queued 點卡看「在做哪裡」（current_stage＋進度），
+// failed 點卡看錯誤原因（job.error_message）。詳情用狀態欄位判斷，不寫死特定 job_id。
+const HIDDEN_TASK_STATUSES = new Set(['succeeded']);  // succeeded 過濾掉，其餘保留
+let taskById = {};  // job_id -> 任務物件，供點擊展開詳情查閱 error_message／stage
+function isHiddenTask(t) { return HIDDEN_TASK_STATUSES.has(t.status); }
+function taskCardHtml(t) {
+  const statusCls = 'status-' + (t.status || 'queued');
+  const pct = t.progress_percent ?? 0;
+  const stage = t.current_stage || '';
+  // 任一狀態都可點開詳情；failed 看原因、running/queued 看階段與進度。
+  return '<div class="task-card task-clickable" data-run-id="' + t.job_id + '"'
+    + ' onclick="toggleTaskDetail(' + t.job_id + ')" title="點擊查看詳情">'
+    + '<div class="task-card-header">'
+    + '<span class="task-type">' + escHtml(t.job_type) + ' #' + escHtml(t.job_id) + '</span>'
+    + '<span class="task-status ' + statusCls + '">' + escHtml(t.status) + '</span>'
+    + '</div>'
+    + '<div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:' + pct + '%"></div></div>'
+    + '<div class="task-meta"><span>' + escHtml(stage) + '</span><span class="elapsed"></span></div>'
+    + '<div class="task-detail" data-detail-for="' + t.job_id + '" style="display:none"></div>'
+    + '</div>';
+}
+// 點卡展開／收合詳情：failed 顯示 error_message，其餘顯示目前階段與進度。
+function toggleTaskDetail(runId) {
+  const box = document.querySelector('.task-detail[data-detail-for="' + runId + '"]');
+  if (!box) return;
+  if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+  const t = taskById[runId] || {};
+  let html;
+  if (t.status === 'failed' || t.status === 'cancelled') {
+    const reason = t.error_message || '（無錯誤訊息）';
+    html = '<div class="task-detail-title">失敗原因</div>'
+      + '<div class="task-detail-error">' + escHtml(reason) + '</div>';
+  } else {
+    html = '<div class="task-detail-title">目前進度</div>'
+      + '<div>階段：' + escHtml(t.current_stage || '—')
+      + '　進度：' + (t.progress_percent ?? 0) + '%</div>';
+  }
+  box.innerHTML = html;
+  box.style.display = 'block';
+}
+function renderTaskList(tasks) {
+  const c = el('task-container');
+  if (!c) return;
+  // 先過濾 succeeded，再建 id 索引供詳情查閱。
+  const visible = (tasks || []).filter(t => !isHiddenTask(t));
+  taskById = {};
+  (tasks || []).forEach(t => { taskById[t.job_id] = t; });
+  if (visible.length === 0) { c.innerHTML = '<div class="task-empty">尚無進行中或待處理任務</div>'; return; }
+  c.innerHTML = visible.map(taskCardHtml).join('');
+}
+// SSE 進度事件即時更新對應卡片（progress/status/stage）；轉為 succeeded 時整卡移除。
+function updateTaskFromEvent(ev) {
+  const cached = taskById[ev.run_id];
+  if (cached) {
+    if (ev.status) cached.status = ev.status;
+    if (ev.stage) cached.current_stage = ev.stage;
+    const p = ev.progress ?? ev.progress_percent;
+    if (p !== undefined && p !== null) cached.progress_percent = p;
+    if (ev.error_message !== undefined) cached.error_message = ev.error_message;
+  }
+  const card = document.querySelector('.task-card[data-run-id="' + ev.run_id + '"]');
+  // succeeded 不顯示：已完成即從列表移除該卡（無卡時忽略）。
+  if (ev.status && HIDDEN_TASK_STATUSES.has(ev.status)) { if (card) card.remove(); return; }
+  if (!card) { fetchTasks(); return; }
+  const pct = ev.progress ?? ev.progress_percent ?? 0;
+  const fill = card.querySelector('.progress-bar-fill');
+  if (fill) fill.style.width = pct + '%';
+  const st = card.querySelector('.task-status');
+  if (st && ev.status) { st.textContent = ev.status; st.className = 'task-status status-' + ev.status; }
+  const meta = card.querySelectorAll('.task-meta span');
+  if (meta.length > 0 && ev.stage) meta[0].textContent = ev.stage;
+}
+async function fetchTasks() {
+  try {
+    const data = await getJson(API + '/tasks?limit=20');
+    renderTaskList(data.tasks);
+  } catch (e) { /* 靜默：狀態頁另有系統狀態顯示 */ }
+}
+// 送出 AI 任務（ai:narrative）：右欄輸入框內容作為修改需求 params。
+async function sendAiRequest() {
+  const btn = el('btn-ai-send');
+  const input = el('ai-input');
+  const text = (input && input.value.trim()) || '';
+  btn.disabled = true; btn.textContent = '送出中…';
+  try {
+    const params = { workspace_id: state.workspaceId, nav: state.nav };
+    if (text) params.instruction = text;
+    const resp = await fetch(API + '/ai-tasks', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_type: 'ai:narrative', params: params }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('建立 AI 任務失敗：' + (err.detail || resp.status));
+      return;
+    }
+    if (input) input.value = '';
+    await fetchTasks();
+  } catch (e) {
+    alert('連線錯誤：' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '送出給 AI 助手';
+  }
+}
+
+// ══════════ SSE 訂閱（斷線退化 30 秒輪詢） ══════════
+let sse = null;
+let ssePollTimer = null;
+function connectSSE() {
+  if (sse) sse.close();
+  try { sse = new EventSource(API + '/events'); }
+  catch (_) { startPollFallback(); return; }
+  sse.onmessage = function (e) {
+    try {
+      const ev = JSON.parse(e.data);
+      if (ev.kind === 'run') updateTaskFromEvent(ev);
+    } catch (_) {}
+  };
+  sse.addEventListener('heartbeat', function () {});
+  sse.onopen = function () {
+    if (ssePollTimer) { clearInterval(ssePollTimer); ssePollTimer = null; }
+  };
+  sse.onerror = function () {
+    if (sse) { sse.close(); sse = null; }
+    startPollFallback();
+  };
+}
+function startPollFallback() {
+  if (!ssePollTimer) {
+    ssePollTimer = setInterval(fetchTasks, 30000);  // 斷線退化：30 秒輪詢保底
+  }
+}
+
+// ══════════ 初始化 ══════════
+loadWorkspaces();
+fetchTasks();
+connectSSE();
+setInterval(fetchTasks, 60000);  // 保底整體重整
+</script>
+</body>
+</html>
