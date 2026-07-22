@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.app.market.evidence_model import MarketEvidenceError
+from backend.app.market import evidence_runs
 from backend.app.mcp_server import tools_market
 
 
@@ -25,6 +26,7 @@ class MarketEvidenceTaskRequest(BaseModel):
     targets: list[str] = Field(default_factory=list)
     kinds: list[str] | None = None
     report_version: str | None = None
+    workspace_id: int | None = None
 
 
 class MarketEvidenceCandidatesRequest(BaseModel):
@@ -47,12 +49,23 @@ class MarketEvidenceAcceptRequest(BaseModel):
 def prepare_market_evidence_task(body: MarketEvidenceTaskRequest) -> dict[str, Any]:
     """產生 Claude CLI 可直接使用的 market research brief。"""
     try:
-        return tools_market.prepare_market_evidence_task(
+        task = tools_market.prepare_market_evidence_task(
             scope=body.scope,
             targets=body.targets,
             kinds=body.kinds,
             report_version=body.report_version,
         )
+        run = evidence_runs.create_market_evidence_run(
+            task_payload=task,
+            workspace_id=body.workspace_id,
+        )
+        return {
+            **task,
+            "run_id": run["run_id"],
+            "run_type": run["run_type"],
+            "task_status": run["status"],
+            "workspace_id": run["workspace_id"],
+        }
     except (ValueError, MarketEvidenceError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

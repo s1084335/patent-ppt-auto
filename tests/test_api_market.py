@@ -41,24 +41,36 @@ def _candidate() -> dict:
 class MarketEvidenceApiTests(unittest.TestCase):
     """驗證 market evidence API 對外契約與人工確認 guard。"""
 
-    def test_prepare_task_returns_claude_research_brief(self) -> None:
-        """建立 research brief，讓 Claude CLI 依固定 schema 找外部市場資料。"""
-        response = client.post(
-            f"{PREFIX}/market-evidence/tasks",
-            json={
-                "scope": "robot mower",
-                "targets": ["US", "EU"],
-                "kinds": ["market_size"],
-                "report_version": "r1",
+    def test_prepare_task_returns_claude_research_brief_and_run_id(self) -> None:
+        """建立 research brief，同時建立 workflow run 供候選 evidence 對齊。"""
+        with mock.patch(
+            "backend.app.api.market.evidence_runs.create_market_evidence_run",
+            return_value={
+                "run_id": 31,
+                "run_type": "market_evidence_research",
+                "status": "waiting_external_research",
+                "workspace_id": None,
             },
-        )
+        ) as create_run:
+            response = client.post(
+                f"{PREFIX}/market-evidence/tasks",
+                json={
+                    "scope": "robot mower",
+                    "targets": ["US", "EU"],
+                    "kinds": ["market_size"],
+                    "report_version": "r1",
+                },
+            )
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
+        self.assertEqual(body["run_id"], 31)
+        self.assertEqual(body["run_type"], "market_evidence_research")
         self.assertEqual(body["status"], "needs_external_research")
         self.assertEqual(body["output_type"], "market:evidence_candidates")
         self.assertEqual(body["scope"], "robot mower")
         self.assertIn("anti_hallucination_rules", body)
+        self.assertEqual(create_run.call_args.kwargs["task_payload"]["scope"], "robot mower")
 
     def test_prepare_task_validation_errors_return_422(self) -> None:
         """空 scope 或非法 kind 這類 market workflow 錯誤要回 422。"""
@@ -133,7 +145,7 @@ class MarketEvidenceApiTests(unittest.TestCase):
         self.assertEqual(get_evidence.call_args.kwargs["scope"], "robot mower")
 
     def test_aggregate_market_evidence_returns_report_payload(self) -> None:
-        """彙總 API 回傳報表/PPT 可用的 market evidence payload。"""
+        """彙總 API 回傳報表/PPT 可使用的 market evidence payload。"""
         with mock.patch(
             "backend.app.api.market.tools_market.aggregate_market_evidence",
             return_value={"scope": "robot mower", "groups": []},
