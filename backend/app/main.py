@@ -15,6 +15,7 @@ from backend.app.api import (
     events,
     imports,
     jobs,
+    market,
     patents,
     reports,
     topics,
@@ -32,6 +33,7 @@ app.include_router(topics.router, prefix=settings.API_V1_PREFIX)
 app.include_router(comparison.router, prefix=settings.API_V1_PREFIX)
 app.include_router(events.router, prefix=settings.API_V1_PREFIX)
 app.include_router(patents.router, prefix=settings.API_V1_PREFIX)
+app.include_router(market.router, prefix=settings.API_V1_PREFIX)
 
 
 _REPORT_LATEST = settings.PROJECT_ROOT / "output" / "full_report_latest" / "index.html"
