@@ -1,84 +1,137 @@
 """查詢端 API 驗收：GET /api/v1/workspaces（清單）與 /workspaces/{id}（詳情）。
 
-每個 test 以 UUID 產生跨執行唯一的 workspace_name 與 created_by，直接以 SQL 灌拋棄式
-workspace（含一般與組合）以精確控制 patent_count／is_composed／compose_sources，不依賴
-compose 服務邏輯、不依賴固定 marker。覆蓋：分頁與固定排序、status filter 與 total、
-patent_count／is_composed、一般詳情、組合直接來源、404、以及 limit/offset/status 非法值
-422。tearDown 只刪本次執行自建的 workspace，不動其他執行留下的資料。
+0021 對齊：以拋棄式 DB patent_ppt_apiwsqueries（upgrade head）驗證，絕不碰正式庫
+patent_ppt。成員專利存 app_layer.workspaces.patent_ids_json（bigint 陣列）；compose
+lineage 存 legacy_0021.workspace_compose_sources。清單固定排序 workspace_id DESC
+（0021 已無 created_at），清單投影不含 created_at；詳情的 compose_sources 仍帶
+created_at（來源自 legacy 表）。每個 test 以 UUID 產生跨執行唯一的 workspace_name，
+直接以 SQL 灌拋棄式 workspace（含一般與組合）精確控制 patent_count／is_composed／
+compose_sources。覆蓋：分頁與固定排序、status filter 與 total、patent_count／
+is_composed、一般詳情、組合直接來源、404、以及 limit/offset/status 非法值 422。
 """
 from __future__ import annotations
 
-import datetime as dt
+import os
 import unittest
 import uuid
 from pathlib import Path
 
-from dotenv import load_dotenv
+import psycopg
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
 
 
 PREFIX = "/api/v1"
+TEST_DB = "patent_ppt_apiwsqueries"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 client = TestClient(app)
 
+# fixture 專利 id（避開正式資料範圍；本測試只在拋棄式 DB 內灌這些）。
+PIDS = [920001, 920002, 920003, 920004, 920005, 920006]
 
-def _connect():
-    """開一條測試用直連（唯讀查詢走 API/池，本連線只做灌資料與清理）。"""
-    import psycopg
+_prev_env: dict[str, str | None] = {}
 
-    from backend.app.db.connection import get_connection_kwargs
 
-    return psycopg.connect(**get_connection_kwargs())
+def _kw(dbname: str) -> dict:
+    """組出連測試庫的 psycopg 參數（與其他 0021 API 測試同源）。"""
+    kw = dict(
+        host=os.getenv("PGHOST", "127.0.0.1"),
+        port=int(os.getenv("PGPORT", "5433")),
+        user=os.getenv("PGUSER", "postgres"),
+        dbname=dbname,
+    )
+    password = os.getenv("PGPASSWORD")
+    if password:
+        kw["password"] = password
+    return kw
+
+
+def _reset_pool():
+    """關閉並清空 lazy 連線池單例，讓 get_pool() 依目前 env 重建（避免綁到別庫）。"""
+    from backend.app.db import connection
+
+    if connection._pool is not None:
+        try:
+            connection._pool.close()
+        except Exception:  # noqa: BLE001
+            pass
+        connection._pool = None
+
+
+def _seed_patents():
+    """灌可控 core_layer.patents fixture（只需 id 供 patent_ids_json 成員存在）。"""
+    with psycopg.connect(**_kw(TEST_DB)) as conn:
+        for i, pid in enumerate(PIDS):
+            conn.execute(
+                "INSERT INTO core_layer.patents (id, title, country_code) VALUES (%s, %s, 'TW')",
+                (pid, f"query fixture {i}"),
+            )
+        conn.commit()
+
+
+def setUpModule():
+    """建拋棄式 DB → upgrade head → 灌 patent fixture；admin 不可用則整組 skip。"""
+    global _prev_env
+    _prev_env = {k: os.environ.get(k) for k in ("PGHOST", "PGDATABASE", "DATABASE_URL")}
+    os.environ["PGHOST"] = "127.0.0.1"  # Windows localhost 走 IPv6 會慢
+    try:
+        with psycopg.connect(**_kw("postgres"), autocommit=True, connect_timeout=3) as admin:
+            admin.execute(f'DROP DATABASE IF EXISTS "{TEST_DB}" WITH (FORCE)')
+            admin.execute(f'CREATE DATABASE "{TEST_DB}"')
+    except Exception as exc:  # noqa: BLE001
+        raise unittest.SkipTest(f"admin DB unavailable: {exc}")
+    os.environ.pop("DATABASE_URL", None)
+    os.environ["PGDATABASE"] = TEST_DB
+    _reset_pool()
+
+    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+    command.upgrade(cfg, "head")
+    _seed_patents()
+
+
+def tearDownModule():
+    _reset_pool()
+    for k, v in _prev_env.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    try:
+        with psycopg.connect(**_kw("postgres"), autocommit=True, connect_timeout=3) as admin:
+            admin.execute(f'DROP DATABASE IF EXISTS "{TEST_DB}" WITH (FORCE)')
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class WorkspaceQueriesTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        """載入 .env、取既有 patent id 供 workspace_patents 使用；DB 不可用則 skip。"""
-        import psycopg
-
-        from backend.app.db.connection import get_connection_kwargs
-
-        load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
-        try:
-            with psycopg.connect(**get_connection_kwargs(), connect_timeout=3) as conn:
-                cls.pids = [
-                    int(r[0])
-                    for r in conn.execute(
-                        "SELECT id FROM core_layer.patents ORDER BY id LIMIT 6"
-                    ).fetchall()
-                ]
-        except Exception as exc:  # noqa: BLE001
-            raise unittest.SkipTest(f"DB unreachable: {exc}")
-        if len(cls.pids) < 5:
-            raise unittest.SkipTest("need at least 5 patents")
-
     def setUp(self):
         """每個測試以 UUID 建立固定一組拋棄式 workspace，記錄 id 供斷言與清理。"""
-        # UUID 前綴：workspace_name 與 created_by 皆嵌入，跨執行唯一、不撞固定 marker。
+        # UUID 前綴：workspace_name 嵌入，跨執行唯一、不撞固定 marker。
         self.run = uuid.uuid4().hex
-        self.created_by = f"vq_{self.run}"
         self._ws: list[int] = []
         self._seq = 0
-        p = self.pids
-        # created_at 顯式指定並遠置於過去，讓本測試 workspace 的相對順序固定可斷言。
-        # 相對 DESC 順序（created_at 大→小）：E, D, C, B, A。
-        self.ws_a = self._make_ws("A", "active", "2020-01-01 00:00:01+00", [p[0], p[1]])          # 2 件
-        self.ws_b = self._make_ws("B", "active", "2020-01-01 00:00:02+00", [p[2], p[3], p[4]])    # 3 件
-        self.ws_c = self._make_ws("C", "active", "2020-01-01 00:00:03+00", [p[0], p[1], p[2], p[3], p[4]])  # 聯集 5 件
-        self.ws_d = self._make_ws("D", "archived", "2020-01-01 00:00:04+00", [p[0]])              # 1 件、archived
-        self.ws_e = self._make_ws("E", "disabled", "2020-01-01 00:00:05+00", [])                  # 0 件、disabled
+        p = PIDS
+        # 建立順序即 workspace_id 遞增順序（IDENTITY）；讀取路徑固定排序 workspace_id DESC。
+        # 相對 DESC 順序（workspace_id 大→小）：E, D, C, B, A。
+        self.ws_a = self._make_ws("A", "active", [p[0], p[1]])                    # 2 件
+        self.ws_b = self._make_ws("B", "active", [p[2], p[3], p[4]])              # 3 件
+        self.ws_c = self._make_ws("C", "active", [p[0], p[1], p[2], p[3], p[4]])  # 聯集 5 件
+        self.ws_d = self._make_ws("D", "archived", [p[0]])                        # 1 件、archived
+        self.ws_e = self._make_ws("E", "disabled", [])                           # 0 件、disabled
         # C 為 A、B 的組合：灌 lineage（source_patent_count 用 2 與 3 以驗證對應）。
         self._make_lineage(self.ws_c, [(self.ws_a, 2), (self.ws_b, 3)])
 
     def tearDown(self):
-        """只刪本次執行建立的 workspace 與其 lineage；workspace_patents 隨 workspace CASCADE。"""
+        """只刪本次執行建立的 workspace 與其 lineage。"""
         if not self._ws:
             return
-        with _connect() as conn:
+        with psycopg.connect(**_kw(TEST_DB)) as conn:
             conn.execute(
-                "DELETE FROM app_layer.workspace_compose_sources "
+                "DELETE FROM legacy_0021.workspace_compose_sources "
                 "WHERE workspace_id = ANY(%s) OR source_workspace_id = ANY(%s)",
                 (self._ws, self._ws),
             )
@@ -90,33 +143,34 @@ class WorkspaceQueriesTests(unittest.TestCase):
         self._seq += 1
         return f"vq_{self.run}_{tag}_{self._seq}"
 
-    def _make_ws(self, tag: str, status: str, created_at: str, patent_ids: list[int]) -> int:
-        """建立一個 workspace（顯式 created_at/status）並灌入指定專利成員，回傳 workspace_id。"""
-        with _connect() as conn:
+    def _make_ws(self, tag: str, status: str, patent_ids: list[int]) -> int:
+        """建立一個 workspace（0021 種法：成員存 patent_ids_json bigint 陣列），回傳 workspace_id。"""
+        from psycopg.types.json import Jsonb
+
+        with psycopg.connect(**_kw(TEST_DB)) as conn:
             wid = int(
                 conn.execute(
                     "INSERT INTO app_layer.workspaces "
-                    "(workspace_name, status, created_by, created_at) "
+                    "(workspace_name, status, patent_ids_json, settings_json) "
                     "VALUES (%s, %s, %s, %s) RETURNING workspace_id",
-                    (self._name(tag), status, self.created_by, created_at),
+                    (
+                        self._name(tag),
+                        status,
+                        Jsonb([int(v) for v in patent_ids]),
+                        Jsonb({"created_by": f"vq_{self.run}"}),
+                    ),
                 ).fetchone()[0]
             )
-            for pid in patent_ids:
-                conn.execute(
-                    "INSERT INTO app_layer.workspace_patents "
-                    "(workspace_id, patent_id, source_type, added_by) VALUES (%s, %s, 'manual', %s)",
-                    (wid, pid, self.created_by),
-                )
             conn.commit()
         self._ws.append(wid)
         return wid
 
     def _make_lineage(self, workspace_id: int, sources: list[tuple[int, int]]) -> None:
-        """灌 workspace_compose_sources：(source_workspace_id, source_patent_count) 逐列。"""
-        with _connect() as conn:
+        """灌 legacy_0021.workspace_compose_sources：(source_workspace_id, source_patent_count) 逐列。"""
+        with psycopg.connect(**_kw(TEST_DB)) as conn:
             for source_id, count in sources:
                 conn.execute(
-                    "INSERT INTO app_layer.workspace_compose_sources "
+                    "INSERT INTO legacy_0021.workspace_compose_sources "
                     "(workspace_id, source_workspace_id, source_patent_count) VALUES (%s, %s, %s)",
                     (workspace_id, source_id, count),
                 )
@@ -131,22 +185,23 @@ class WorkspaceQueriesTests(unittest.TestCase):
 
     # ── 分頁與固定排序 ───────────────────────────────────
     def test_list_pagination_slices_and_order(self):
-        """全量清單切片應與分頁一致，且順序全域符合 created_at DESC, workspace_id DESC。"""
+        """全量清單切片應與分頁一致，且順序全域符合 workspace_id DESC。"""
         full = self._list(limit=200, offset=0).json()
         full_ids = self._ids(full)
         # 分頁 = 全量切片（驗證 offset/limit 與排序穩定）。
         self.assertEqual(self._ids(self._list(limit=3, offset=0).json()), full_ids[0:3])
         if len(full_ids) >= 6:
             self.assertEqual(self._ids(self._list(limit=3, offset=3).json()), full_ids[3:6])
-        # 全域單調遞減：(created_at, workspace_id) 皆非遞增。
-        keys = [(dt.datetime.fromisoformat(it["created_at"]), it["workspace_id"]) for it in full["items"]]
-        for earlier, later in zip(keys, keys[1:]):
+        # 全域單調遞減：workspace_id 非遞增（0021 已無 created_at，固定鍵為 workspace_id）。
+        for earlier, later in zip(full_ids, full_ids[1:]):
             self.assertGreaterEqual(earlier, later)
-        # 我方五筆的相對順序固定為 E, D, C, B, A。
+        # 我方五筆的相對順序固定為 E, D, C, B, A（建立即遞增，DESC 反序）。
         mine = [wid for wid in full_ids if wid in self._ws]
         self.assertEqual(mine, [self.ws_e, self.ws_d, self.ws_c, self.ws_b, self.ws_a])
         # limit/offset 原樣回傳。
         self.assertEqual((full["limit"], full["offset"]), (200, 0))
+        # 0021 清單投影不含 created_at。
+        self.assertNotIn("created_at", full["items"][0])
 
     # ── status filter 與 total ───────────────────────────
     def test_status_filter_and_total(self):
@@ -155,7 +210,7 @@ class WorkspaceQueriesTests(unittest.TestCase):
         self.assertTrue(all(it["status"] == "archived" for it in resp["items"]))
         self.assertIn(self.ws_d, self._ids(resp))          # 我方 archived 應在內
         self.assertNotIn(self.ws_a, self._ids(resp))       # active 不應洩漏
-        with _connect() as conn:
+        with psycopg.connect(**_kw(TEST_DB)) as conn:
             db_total = int(
                 conn.execute(
                     "SELECT count(*) FROM app_layer.workspaces WHERE status='archived'"
@@ -202,6 +257,7 @@ class WorkspaceQueriesTests(unittest.TestCase):
         self.assertEqual(by_id[self.ws_b]["source_patent_count"], 3)
         self.assertEqual(by_id[self.ws_a]["status"], "active")
         self.assertTrue(by_id[self.ws_a]["workspace_name"].startswith(f"vq_{self.run}"))
+        # compose_sources 仍帶 created_at（來源自 legacy_0021 表）。
         self.assertIsNotNone(by_id[self.ws_a]["created_at"])
 
     # ── 不存在回 404 ────────────────────────────────────

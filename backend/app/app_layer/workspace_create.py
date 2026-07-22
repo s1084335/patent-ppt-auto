@@ -2,13 +2,15 @@
 
 對應 Backend Contract Readiness Matrix #2「建立一般 workspace」。設計約束與 compose
 一致：不改 clustering/workspace_service.py（避免踩分群模組邊界），在 app_layer 自足地
-於單一 transaction 內完成「驗證專利存在 → 建 workspace → 寫入成員」，任一步失敗整筆
-rollback，不留半成品 workspace。
+於單一 transaction 內完成「驗證專利存在 → 建 workspace（成員即寫入 patent_ids_json）」，
+任一步失敗整筆 rollback，不留半成品 workspace。
 
 - patent_ids 去重後不可為空，且必須全部存在於 core_layer.patents，否則 422。
 - workspace_name 唯一（ux_workspaces_name），撞名回 409。
-- 只寫 app_layer 表；不改 core_layer.patents 原始值；parameters_json 沿用 create_workspace
-  的 clustering_sources 慣例，讓後續分群通道一致。
+- 0021 對齊：成員專利存 app_layer.workspaces.patent_ids_json（bigint 陣列，去重、
+  jsonb_array_elements→::bigint 讀），不再寫已下沉 legacy_0021 的 workspace_patents；
+  審計資訊（created_by/description）與分群 clustering_sources 慣例改承載於 settings_json
+  （沿讀取路徑對 settings_json 的既有用法，不新增資料庫欄）。
 """
 from __future__ import annotations
 
@@ -75,35 +77,37 @@ def create_workspace(
             if missing:
                 raise PatentsNotFoundError(missing)
 
-            # 建立 workspace；撞名（ux_workspaces_name）轉成可讀 409，交易隨例外 rollback。
+            # 建立 workspace：成員直接進 patent_ids_json（0021 已無 workspace_patents 明細表），
+            # 審計與 clustering_sources 慣例承載於 settings_json（jsonb_strip_nulls 去 None，
+            # 與 0021 migration 回填 settings_json 的欄名一致）。撞名（ux_workspaces_name）
+            # 轉成可讀 409，交易隨例外 rollback，不留半成品。
             try:
                 cur.execute(
                     """
                     INSERT INTO app_layer.workspaces
-                        (workspace_name, description, created_by, parameters_json)
-                    VALUES (%s, %s, %s, %s)
+                        (workspace_name, patent_ids_json, settings_json)
+                    VALUES (
+                        %s,
+                        %s,
+                        jsonb_strip_nulls(%s::jsonb)
+                    )
                     RETURNING workspace_id
                     """,
                     (
                         name,
-                        description,
-                        created_by,
-                        Jsonb({"clustering_sources": list(source_fields())}),
+                        Jsonb(unique_patent_ids),
+                        Jsonb(
+                            {
+                                "description": description,
+                                "created_by": created_by,
+                                "parameters": {"clustering_sources": list(source_fields())},
+                            }
+                        ),
                     ),
                 )
                 workspace_id = int(cur.fetchone()["workspace_id"])
             except psycopg.errors.UniqueViolation as exc:
                 raise WorkspaceNameConflictError(name) from exc
-
-            # 寫入成員（source_type 用 'manual'，與 create_workspace 一致）。
-            cur.executemany(
-                """
-                INSERT INTO app_layer.workspace_patents
-                    (workspace_id, patent_id, source_type, added_by)
-                VALUES (%s, %s, 'manual', %s)
-                """,
-                [(workspace_id, pid, created_by) for pid in unique_patent_ids],
-            )
         conn.commit()
 
     return {

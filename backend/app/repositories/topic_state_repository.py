@@ -34,38 +34,65 @@ class PostgresTopicStateRepository:
         return psycopg.connect(**(self._connect_kwargs or get_connection_kwargs()))
 
     def get_latest_topic_state(self, workspace_id: int, source_field: str) -> dict[str, Any]:
-        """回傳最新正式主題狀態：{workspace_id, source_field, run_id, topics:[...]}。
+        """回傳最新正式主題狀態：{workspace_id, source_field, run_id, state_run_id, topics:[...]}。
 
         topics 每項含 topic_code/label/status/topic_kind/doc_count/patent_ids；
         僅 active 主題（含未分類），已合併主題的 assignments 併回目標主題。
 
+        incremental run 的 topic_state_json 不帶 topics（topics 掛在 finalize run），
+        且其 topic_assignments 只帶增量。因此：
+        - topics 取「最新且 topics 非空」的 run（沿 run_id 由大到小 fallback）→ state_run_id；
+        - assignments 取該 ws/field 全部 run 中每個 patent_id 的最新一筆（DISTINCT ON），
+          再依合併鏈併回 active 主題；
+        - run_id＝assignments 基準 run（該 ws/field 最新 run，含只帶增量者），與 state_run_id 分明。
+
         Raises:
             ValueError: source_field 非法。
-            TopicStateNotFoundError: 該 workspace/source_field 無 run。
+            TopicStateNotFoundError: 該 workspace/source_field 無帶 topics 的 run。
         """
         if source_field not in ALLOWED_SOURCE_FIELDS:
             raise ValueError(f"unsupported source_field: {source_field!r}")
 
         with self._connect() as conn:
-            row = conn.execute(
+            # 主題來源：最新「topic_state_json->topics 非空」的 run（fallback 過濾掉 incremental）
+            state_row = conn.execute(
                 """
                 SELECT tr.run_id, tr.topic_state_json
                 FROM derived_layer.topic_runs tr
                 JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id
                 WHERE wr.workspace_id = %s AND tr.source_field = %s
+                  AND jsonb_array_length(COALESCE(tr.topic_state_json->'topics', '[]'::jsonb)) > 0
                 ORDER BY tr.run_id DESC
                 LIMIT 1
                 """,
                 (workspace_id, source_field),
             ).fetchone()
-            if row is None:
+            if state_row is None:
                 raise TopicStateNotFoundError(
                     f"no topic run for workspace {workspace_id} / {source_field}")
-            run_id, state = row
+            state_run_id, state = state_row
+            # assignments 基準 run：該 ws/field 最新 run（含只帶增量的 incremental run）
+            base_row = conn.execute(
+                """
+                SELECT max(tr.run_id)
+                FROM derived_layer.topic_runs tr
+                JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id
+                WHERE wr.workspace_id = %s AND tr.source_field = %s
+                """,
+                (workspace_id, source_field),
+            ).fetchone()
+            run_id = base_row[0]
+            # assignments：全部 run 中每個 patent 取 run_id 最大一筆（DISTINCT ON 語意）
             assignments = conn.execute(
-                "SELECT patent_id, topic_key FROM derived_layer.topic_assignments "
-                "WHERE run_id = %s ORDER BY patent_id",
-                (run_id,),
+                """
+                SELECT DISTINCT ON (ta.patent_id) ta.patent_id, ta.topic_key
+                FROM derived_layer.topic_assignments ta
+                JOIN derived_layer.topic_runs tr ON tr.run_id = ta.run_id
+                JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id
+                WHERE wr.workspace_id = %s AND tr.source_field = %s
+                ORDER BY ta.patent_id, ta.run_id DESC
+                """,
+                (workspace_id, source_field),
             ).fetchall()
 
         topics = list((state or {}).get("topics") or [])
@@ -107,6 +134,7 @@ class PostgresTopicStateRepository:
         return {
             "workspace_id": workspace_id,
             "source_field": source_field,
-            "run_id": run_id,
+            "run_id": run_id,              # assignments 基準 run（最新 run，含 incremental）
+            "state_run_id": state_run_id,  # topics 來源 run（最新有 topics 者）
             "topics": sorted(result_topics.values(), key=lambda t: t["topic_code"]),
         }

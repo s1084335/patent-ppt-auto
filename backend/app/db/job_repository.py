@@ -1,15 +1,17 @@
-"""app_layer.processing_jobs 的單一 DB 存取層（backend＋worker 共用）。
+"""app_layer.workflow_runs 的單一佇列存取層（backend＋worker 共用，0021 遷移版）。
 
-分工定案（2026-07-17，方案 A）：processing_jobs 的所有 DB 存取集中在本檔，
-由 Claude 維護，backend 與 worker 都 import 這裡，避免兩份實作漂移。
+分工定案（2026-07-17 方案 A）：佇列所有 DB 存取集中本檔，backend 與 worker 都 import。
+0021 遷移（對映表見 work-log「Worker 遷移輪」）：
+- 佇列表 processing_jobs → app_layer.workflow_runs（欄位精簡至 7 欄）。
+- job_id→run_id、job_type→run_type、payload_json→request_json、idempotency_key→request_key
+  （UNIQUE，ON CONFLICT (request_key)）。
+- worker 簿記（progress/current_stage/attempt_count/max_attempts/locked_by/locked_at/
+  heartbeat_at/started_at/finished_at/error_message）全收 worker_state_json（JSONB）。
+- 結果落 app_layer.workflow_outputs（版本化，用 PostgresWorkflowOutputsRepository，不自寫 SQL）；
+  output_type='job_result:'||run_type。ProcessingJob.result_json 薄轉接由 outputs 讀回。
+- claim ORDER BY run_id 走既有 idx_workflow_runs_claim (status, run_id)。
 
-- backend 端（建立/查詢/取消）：module-level 函式 create_job／get_job／
-  list_jobs／cancel_job。
-- worker 端（領取/心跳/完成/失敗/取消收斂/回收）：WorkerQueueClient 類別。
-  其邏輯沿用 Codex 已驗證的 worker queue 實作；claim 用 FOR UPDATE SKIP LOCKED，
-  與 migration 0012 鎖定的 contract 完全一致。
-
-correctness-critical 的原子領取與逾時回收 SQL 由 schema 擁有者（Claude）維護。
+correctness-critical 的原子領取（FOR UPDATE SKIP LOCKED）與逾時回收由 schema 擁有者維護。
 """
 from __future__ import annotations
 
@@ -24,69 +26,60 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from backend.app.db.connection import get_connection_kwargs, get_pool
+from backend.app.repositories.workflow_outputs_repository import (
+    PostgresWorkflowOutputsRepository,
+)
 
-
-# 合法工作類型（DB 不設 job_type check，由此白名單於 backend 建立時驗證）。
+# 合法工作類型（DB 不設 run_type check；backend 建立時由此白名單驗證）。
+# 佇列亦承載 topic_merge/topic_unmerge（由 PostgresTopicRepository 直接寫入，不經 create_job）。
 JOB_TYPES: frozenset[str] = frozenset(
     {
         "clustering_calibrate",
         "clustering_finalize",
         "clustering_incremental",
         "report_generate",
+        "patent_import",
+        "ai:narrative",
+        "case_comparison",
     }
 )
 
-# 終態：不可再被領取或改動。
 TERMINAL_STATUSES: frozenset[str] = frozenset({"succeeded", "failed", "cancelled"})
 
-# 回傳整列的欄位，統一給 ProcessingJob.from_row 使用。
-_SELECT_COLUMNS = (
-    "job_id, job_type, status, workspace_id, payload_json, result_json, "
-    "progress_percent, current_stage, attempt_count, max_attempts"
-)
+# workflow_runs 選欄（統一給 ProcessingJob.from_row）。
+_SELECT_COLUMNS = "run_id, run_type, status, workspace_id, request_json, worker_state_json"
+
+# 結果 output_type 前綴（自取設計，2026-07-21 採用）。
+_RESULT_OUTPUT_PREFIX = "job_result:"
 
 
-def _request_fingerprint(
-    *,
-    job_type: str,
-    payload: dict[str, Any],
-    workspace_id: int | None,
-    max_attempts: int,
-) -> str:
+def _result_output_type(run_type: str) -> str:
+    return f"{_RESULT_OUTPUT_PREFIX}{run_type}"
+
+
+def _request_fingerprint(*, job_type: str, payload: dict[str, Any],
+                         workspace_id: int | None, max_attempts: int) -> str:
     """依請求內容產生穩定指紋，讓 idempotency key 可區分不同請求。"""
-    canonical = {
-        "job_type": job_type,
-        "payload": payload,
-        "workspace_id": workspace_id,
-        "max_attempts": max_attempts,
-    }
+    canonical = {"job_type": job_type, "payload": payload,
+                 "workspace_id": workspace_id, "max_attempts": max_attempts}
     data = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
-def _effective_idempotency_key(
-    *,
-    idempotency_key: str | None,
-    job_type: str,
-    payload: dict[str, Any],
-    workspace_id: int | None,
-    max_attempts: int,
-) -> str | None:
-    """把使用者 key 與請求指紋合成實際入庫 key；未帶 key 時維持 NULL。"""
+def _effective_idempotency_key(*, idempotency_key: str | None, job_type: str,
+                               payload: dict[str, Any], workspace_id: int | None,
+                               max_attempts: int) -> str | None:
+    """把使用者 key 與請求指紋合成實際入庫 request_key；未帶 key 時維持 NULL。"""
     if idempotency_key is None:
         return None
     fingerprint = _request_fingerprint(
-        job_type=job_type,
-        payload=payload,
-        workspace_id=workspace_id,
-        max_attempts=max_attempts,
-    )
+        job_type=job_type, payload=payload, workspace_id=workspace_id, max_attempts=max_attempts)
     return f"{idempotency_key}:{fingerprint}"
 
 
 @dataclass(frozen=True)
 class ProcessingJob:
-    """代表 app_layer.processing_jobs 的單筆工作（backend 與 worker 共用）。"""
+    """佇列單筆工作（backend 與 worker 共用；欄位相容 processing_jobs 舊介面）。"""
 
     job_id: int
     job_type: str
@@ -98,99 +91,89 @@ class ProcessingJob:
     current_stage: str
     attempt_count: int
     max_attempts: int
+    # 失敗／逾時可讀原因（worker fail_job／requeue 寫入 worker_state_json.error_message）；
+    # 前端失敗卡讀此欄顯示原因，未失敗時為 None。預設 None 以相容既有具名建構點。
+    error_message: str | None = None
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "ProcessingJob":
-        """把 psycopg dict row 轉為內部資料物件。"""
+        """把 workflow_runs dict row 轉為內部資料物件；簿記欄由 worker_state_json 還原。"""
+        state = dict(row["worker_state_json"] or {})
+        error_message = state.get("error_message")
         return cls(
-            job_id=int(row["job_id"]),
-            job_type=str(row["job_type"]),
+            job_id=int(row["run_id"]),
+            job_type=str(row["run_type"]),
             status=str(row["status"]),
             workspace_id=int(row["workspace_id"]) if row["workspace_id"] is not None else None,
-            payload_json=dict(row["payload_json"] or {}),
-            result_json=dict(row["result_json"]) if row["result_json"] is not None else None,
-            progress_percent=int(row["progress_percent"]),
-            current_stage=str(row["current_stage"]),
-            attempt_count=int(row["attempt_count"]),
-            max_attempts=int(row["max_attempts"]),
+            payload_json=dict(row["request_json"] or {}),
+            result_json=None,  # 結果落 workflow_outputs；需要時由 fetch_job_result 讀回
+            progress_percent=int(state.get("progress_percent", 0)),
+            current_stage=str(state.get("current_stage", "")),
+            attempt_count=int(state.get("attempt_count", 0)),
+            max_attempts=int(state.get("max_attempts", 3)),
+            error_message=str(error_message) if error_message is not None else None,
         )
+
+
+def fetch_job_result(run_id: int, run_type: str) -> dict[str, Any] | None:
+    """讀回某 run 最新一版工作結果（自 workflow_outputs），無則 None。"""
+    output = PostgresWorkflowOutputsRepository().get_output(run_id, _result_output_type(run_type))
+    return output["data_json"] if output else None
 
 
 # ── backend 端：建立、查詢、取消 ───────────────────────────────
 
 
-def create_job(
-    job_type: str,
-    payload: dict[str, Any] | None = None,
-    *,
-    workspace_id: int | None = None,
-    idempotency_key: str | None = None,
-    max_attempts: int = 3,
-) -> ProcessingJob:
-    """建立一筆 queued 工作；帶 idempotency_key 且已存在時回傳既有工作，不重建。
-
-    job_type 必須在 JOB_TYPES 白名單內。payload 存進 payload_json 供 worker
-    handler 取用。idempotency 依賴 0012 的部分唯一索引（key 非 NULL 才受約束）。
-    """
+def create_job(job_type: str, payload: dict[str, Any] | None = None, *,
+               workspace_id: int | None = None, idempotency_key: str | None = None,
+               max_attempts: int = 3) -> ProcessingJob:
+    """建立一筆 queued 工作；帶 idempotency_key 且已存在時回既有工作，不重建。"""
     if job_type not in JOB_TYPES:
         raise ValueError(f"unsupported job_type: {job_type}")
     if max_attempts < 1:
         raise ValueError("max_attempts must be >= 1")
     payload_dict = payload or {}
-    effective_idempotency_key = _effective_idempotency_key(
-        idempotency_key=idempotency_key,
-        job_type=job_type,
-        payload=payload_dict,
-        workspace_id=workspace_id,
-        max_attempts=max_attempts,
-    )
-    payload_json = Jsonb(payload_dict)
-    # backend 面向函式借用連線池（API 熱路徑）；per-cursor row_factory 不外洩到池。
+    request_key = _effective_idempotency_key(
+        idempotency_key=idempotency_key, job_type=job_type, payload=payload_dict,
+        workspace_id=workspace_id, max_attempts=max_attempts)
+    initial_state = {"attempt_count": 0, "max_attempts": max_attempts,
+                     "progress_percent": 0, "current_stage": "queued"}
     with get_pool().connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 f"""
-                INSERT INTO app_layer.processing_jobs
-                    (job_type, payload_json, workspace_id, idempotency_key, max_attempts)
+                INSERT INTO app_layer.workflow_runs
+                    (run_type, request_json, workspace_id, request_key, worker_state_json)
                 VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
-                DO NOTHING
+                ON CONFLICT (request_key) WHERE request_key IS NOT NULL DO NOTHING
                 RETURNING {_SELECT_COLUMNS}
                 """,
-                (job_type, payload_json, workspace_id, effective_idempotency_key, max_attempts),
+                (job_type, Jsonb(payload_dict), workspace_id, request_key, Jsonb(initial_state)),
             )
             row = cur.fetchone()
             if row is None:
-                # idempotency 命中：回傳既有工作，不新增第二筆。
                 cur.execute(
-                    f"SELECT {_SELECT_COLUMNS} FROM app_layer.processing_jobs "
-                    "WHERE idempotency_key = %s",
-                    (effective_idempotency_key,),
-                )
+                    f"SELECT {_SELECT_COLUMNS} FROM app_layer.workflow_runs WHERE request_key = %s",
+                    (request_key,))
                 row = cur.fetchone()
         conn.commit()
     return ProcessingJob.from_row(row)
 
 
 def get_job(job_id: int) -> ProcessingJob | None:
-    """依 job_id 取單筆工作；不存在回 None。"""
+    """依 run_id 取單筆工作；不存在回 None。"""
     with get_pool().connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
-                f"SELECT {_SELECT_COLUMNS} FROM app_layer.processing_jobs WHERE job_id = %s",
-                (job_id,),
-            )
+                f"SELECT {_SELECT_COLUMNS} FROM app_layer.workflow_runs WHERE run_id = %s",
+                (job_id,))
             row = cur.fetchone()
     return ProcessingJob.from_row(row) if row is not None else None
 
 
-def list_jobs(
-    *,
-    workspace_id: int | None = None,
-    status: str | None = None,
-    limit: int = 50,
-) -> list[ProcessingJob]:
-    """列出工作（新到舊），可依 workspace 或狀態過濾。"""
+def list_jobs(*, workspace_id: int | None = None, status: str | None = None,
+              limit: int = 50) -> list[ProcessingJob]:
+    """列出工作（新到舊＝run_id DESC），可依 workspace 或狀態過濾。"""
     if limit < 1:
         raise ValueError("limit must be >= 1")
     conditions: list[str] = []
@@ -206,151 +189,137 @@ def list_jobs(
     with get_pool().connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
-                f"SELECT {_SELECT_COLUMNS} FROM app_layer.processing_jobs "
-                f"{where} ORDER BY created_at DESC, job_id DESC LIMIT %s",
-                params,
-            )
+                f"SELECT {_SELECT_COLUMNS} FROM app_layer.workflow_runs "
+                f"{where} ORDER BY run_id DESC LIMIT %s", params)
             rows = cur.fetchall()
     return [ProcessingJob.from_row(row) for row in rows]
 
 
 def cancel_job(job_id: int) -> ProcessingJob | None:
-    """backend 端請求取消：queued 直接收斂為 cancelled；running 標記 cancelled
-    後由 worker 的 is_cancelled 檢查停止。取消即終點，一律寫 finished_at；
-    running 中的 worker 因 status 不再是 running 而無法覆寫。已是終態則不動、
-    回傳現況。
-    """
+    """backend 端請求取消：queued/running 收斂為 cancelled；已終態則不動、回現況。"""
     with get_pool().connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 f"""
-                UPDATE app_layer.processing_jobs
+                UPDATE app_layer.workflow_runs
                 SET status = 'cancelled',
-                    current_stage = 'cancelled',
-                    finished_at = now()
-                WHERE job_id = %s AND status IN ('queued', 'running')
+                    worker_state_json = worker_state_json
+                        || jsonb_build_object('current_stage', 'cancelled',
+                                              'finished_at', to_jsonb(now()))
+                WHERE run_id = %s AND status IN ('queued', 'running')
                 RETURNING {_SELECT_COLUMNS}
                 """,
-                (job_id,),
-            )
+                (job_id,))
             row = cur.fetchone()
             if row is None:
                 cur.execute(
-                    f"SELECT {_SELECT_COLUMNS} FROM app_layer.processing_jobs WHERE job_id = %s",
-                    (job_id,),
-                )
+                    f"SELECT {_SELECT_COLUMNS} FROM app_layer.workflow_runs WHERE run_id = %s",
+                    (job_id,))
                 row = cur.fetchone()
         conn.commit()
     return ProcessingJob.from_row(row) if row is not None else None
 
 
 # ── worker 端：領取、心跳、完成、失敗、取消收斂、回收 ───────────
-# 邏輯沿用 Codex 的 worker queue 實作，集中到本層由 Claude 維護。
 
 
 class WorkerQueueClient:
-    """worker 對 app_layer.processing_jobs 的所有寫入規則。"""
+    """worker 對 app_layer.workflow_runs 的所有寫入規則。"""
 
     def claim_next_job(self, *, worker_id: str) -> ProcessingJob | None:
-        """用 FOR UPDATE SKIP LOCKED 原子領取下一筆 queued 工作（0012 驗過的 contract）。"""
+        """FOR UPDATE SKIP LOCKED 原子領取下一筆 queued 工作（ORDER BY run_id 走 claim 索引）。"""
         with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
+                    f"""
                     WITH next_job AS (
-                        SELECT job_id
-                        FROM app_layer.processing_jobs
+                        SELECT run_id FROM app_layer.workflow_runs
                         WHERE status = 'queued'
-                          AND attempt_count < max_attempts
-                        ORDER BY created_at, job_id
+                          AND COALESCE((worker_state_json->>'attempt_count')::int, 0)
+                              < COALESCE((worker_state_json->>'max_attempts')::int, 3)
+                        ORDER BY run_id
                         FOR UPDATE SKIP LOCKED
                         LIMIT 1
                     )
-                    UPDATE app_layer.processing_jobs AS jobs
+                    UPDATE app_layer.workflow_runs AS r
                     SET status = 'running',
-                        locked_by = %s,
-                        locked_at = now(),
-                        heartbeat_at = now(),
-                        started_at = COALESCE(started_at, now()),
-                        attempt_count = attempt_count + 1,
-                        current_stage = 'starting',
-                        error_message = NULL
+                        worker_state_json = r.worker_state_json || jsonb_build_object(
+                            'locked_by', %s::text,
+                            'locked_at', to_jsonb(now()),
+                            'heartbeat_at', to_jsonb(now()),
+                            'started_at', COALESCE(r.worker_state_json->'started_at', to_jsonb(now())),
+                            'attempt_count', COALESCE((r.worker_state_json->>'attempt_count')::int, 0) + 1,
+                            'current_stage', 'starting',
+                            'error_message', NULL)
                     FROM next_job
-                    WHERE jobs.job_id = next_job.job_id
-                    RETURNING jobs.*
+                    WHERE r.run_id = next_job.run_id
+                    RETURNING {', '.join('r.' + c for c in _SELECT_COLUMNS.split(', '))}
                     """,
-                    (worker_id,),
-                )
+                    (worker_id,))
                 row = cur.fetchone()
         return ProcessingJob.from_row(dict(row)) if row is not None else None
 
-    def heartbeat(
-        self,
-        *,
-        job_id: int,
-        worker_id: str,
-        current_stage: str | None = None,
-        progress_percent: int | None = None,
-    ) -> None:
+    def heartbeat(self, *, job_id: int, worker_id: str, current_stage: str | None = None,
+                  progress_percent: int | None = None) -> None:
         """更新執行中工作的 heartbeat、階段與進度（只認持鎖 worker）。"""
-        assignments = ["heartbeat_at = now()"]
-        params: list[Any] = []
+        extra: dict[str, Any] = {}
         if current_stage is not None:
-            assignments.append("current_stage = %s")
-            params.append(current_stage)
+            extra["current_stage"] = current_stage
         if progress_percent is not None:
-            assignments.append("progress_percent = %s")
-            params.append(progress_percent)
-        params.extend([job_id, worker_id])
-        with psycopg.connect(**get_connection_kwargs()) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    UPDATE app_layer.processing_jobs
-                    SET {", ".join(assignments)}
-                    WHERE job_id = %s AND locked_by = %s AND status = 'running'
-                    """,
-                    params,
-                )
-
-    def complete_job(self, *, job_id: int, worker_id: str, result_json: dict[str, Any]) -> None:
-        """標記成功並保存 handler 結果；狀態被改動時 raise。"""
+            extra["progress_percent"] = progress_percent
         with psycopg.connect(**get_connection_kwargs()) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE app_layer.processing_jobs
-                    SET status = 'succeeded', progress_percent = 100,
-                        current_stage = 'completed', result_json = %s,
-                        error_message = NULL, heartbeat_at = now(),
-                        finished_at = now()
-                    WHERE job_id = %s AND locked_by = %s AND status = 'running'
+                    UPDATE app_layer.workflow_runs
+                    SET worker_state_json = worker_state_json || %s::jsonb
+                        || jsonb_build_object('heartbeat_at', to_jsonb(now()))
+                    WHERE run_id = %s AND worker_state_json->>'locked_by' = %s AND status = 'running'
                     """,
-                    (Jsonb(result_json), job_id, worker_id),
-                )
+                    (Jsonb(extra), job_id, worker_id))
+
+    def complete_job(self, *, job_id: int, worker_id: str, result_json: dict[str, Any]) -> None:
+        """保存結果（workflow_outputs 版本化）並標記成功；狀態被改動時 raise。"""
+        # 先取 run_type 以組 output_type；再寫結果，最後守鎖更新狀態。
+        with psycopg.connect(**get_connection_kwargs()) as conn:
+            row = conn.execute(
+                "SELECT run_type FROM app_layer.workflow_runs WHERE run_id = %s", (job_id,)
+            ).fetchone()
+        if row is None:
+            raise RuntimeError(f"job {job_id} not found")
+        PostgresWorkflowOutputsRepository().append_output(
+            job_id, _result_output_type(str(row[0])), result_json)
+        with psycopg.connect(**get_connection_kwargs()) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE app_layer.workflow_runs
+                    SET status = 'succeeded',
+                        worker_state_json = worker_state_json || jsonb_build_object(
+                            'progress_percent', 100, 'current_stage', 'completed',
+                            'error_message', NULL, 'heartbeat_at', to_jsonb(now()),
+                            'finished_at', to_jsonb(now()))
+                    WHERE run_id = %s AND worker_state_json->>'locked_by' = %s AND status = 'running'
+                    """,
+                    (job_id, worker_id))
                 if cur.rowcount != 1:
                     raise RuntimeError(f"job {job_id} was not completed; state changed")
 
-    def fail_job(
-        self,
-        *,
-        job_id: int,
-        worker_id: str,
-        error_message: str,
-        current_stage: str = "failed",
-    ) -> None:
+    def fail_job(self, *, job_id: int, worker_id: str, error_message: str,
+                 current_stage: str = "failed") -> None:
         """標記失敗並保存可讀錯誤訊息（只認持鎖 worker）。"""
         with psycopg.connect(**get_connection_kwargs()) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE app_layer.processing_jobs
-                    SET status = 'failed', current_stage = %s, error_message = %s,
-                        heartbeat_at = now(), finished_at = now()
-                    WHERE job_id = %s AND locked_by = %s AND status = 'running'
+                    UPDATE app_layer.workflow_runs
+                    SET status = 'failed',
+                        worker_state_json = worker_state_json || jsonb_build_object(
+                            'current_stage', %s::text, 'error_message', %s::text,
+                            'heartbeat_at', to_jsonb(now()), 'finished_at', to_jsonb(now()))
+                    WHERE run_id = %s AND worker_state_json->>'locked_by' = %s AND status = 'running'
                     """,
-                    (current_stage, error_message[:4000], job_id, worker_id),
-                )
+                    (current_stage, error_message[:4000], job_id, worker_id))
 
     def cancel_job(self, *, job_id: int, worker_id: str, error_message: str) -> None:
         """把已被外部取消的工作收斂成 cancelled 終態（worker 端）。"""
@@ -358,24 +327,22 @@ class WorkerQueueClient:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE app_layer.processing_jobs
-                    SET status = 'cancelled', current_stage = 'cancelled',
-                        error_message = %s, heartbeat_at = now(),
-                        finished_at = now()
-                    WHERE job_id = %s AND locked_by = %s
+                    UPDATE app_layer.workflow_runs
+                    SET status = 'cancelled',
+                        worker_state_json = worker_state_json || jsonb_build_object(
+                            'current_stage', 'cancelled', 'error_message', %s::text,
+                            'heartbeat_at', to_jsonb(now()), 'finished_at', to_jsonb(now()))
+                    WHERE run_id = %s AND worker_state_json->>'locked_by' = %s
                       AND status IN ('running', 'cancelled')
                     """,
-                    (error_message[:4000], job_id, worker_id),
-                )
+                    (error_message[:4000], job_id, worker_id))
 
     def is_cancelled(self, *, job_id: int) -> bool:
         """確認工作是否已被 backend 或使用者標記為 cancelled。"""
         with psycopg.connect(**get_connection_kwargs()) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT status FROM app_layer.processing_jobs WHERE job_id = %s",
-                    (job_id,),
-                )
+                    "SELECT status FROM app_layer.workflow_runs WHERE run_id = %s", (job_id,))
                 row = cur.fetchone()
         return row is not None and row[0] == "cancelled"
 
@@ -386,28 +353,31 @@ class WorkerQueueClient:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE app_layer.processing_jobs
-                    SET status = 'failed', current_stage = 'stale_failed',
-                        error_message = 'worker heartbeat timed out',
-                        locked_by = NULL, locked_at = NULL,
-                        finished_at = now()
+                    UPDATE app_layer.workflow_runs
+                    SET status = 'failed',
+                        worker_state_json = worker_state_json || jsonb_build_object(
+                            'current_stage', 'stale_failed',
+                            'error_message', 'worker heartbeat timed out',
+                            'locked_by', NULL, 'locked_at', NULL, 'finished_at', to_jsonb(now()))
                     WHERE status = 'running'
-                      AND heartbeat_at < now() - %s::interval
-                      AND attempt_count >= max_attempts
+                      AND (worker_state_json->>'heartbeat_at')::timestamptz < now() - %s::interval
+                      AND COALESCE((worker_state_json->>'attempt_count')::int, 0)
+                          >= COALESCE((worker_state_json->>'max_attempts')::int, 3)
                     """,
-                    (stale_interval,),
-                )
+                    (stale_interval,))
                 failed_count = cur.rowcount
                 cur.execute(
                     """
-                    UPDATE app_layer.processing_jobs
-                    SET status = 'queued', current_stage = 'requeued',
-                        locked_by = NULL, locked_at = NULL, heartbeat_at = NULL
+                    UPDATE app_layer.workflow_runs
+                    SET status = 'queued',
+                        worker_state_json = worker_state_json || jsonb_build_object(
+                            'current_stage', 'requeued',
+                            'locked_by', NULL, 'locked_at', NULL, 'heartbeat_at', NULL)
                     WHERE status = 'running'
-                      AND heartbeat_at < now() - %s::interval
-                      AND attempt_count < max_attempts
+                      AND (worker_state_json->>'heartbeat_at')::timestamptz < now() - %s::interval
+                      AND COALESCE((worker_state_json->>'attempt_count')::int, 0)
+                          < COALESCE((worker_state_json->>'max_attempts')::int, 3)
                     """,
-                    (stale_interval,),
-                )
+                    (stale_interval,))
                 requeued_count = cur.rowcount
         return {"failed_count": int(failed_count), "requeued_count": int(requeued_count)}

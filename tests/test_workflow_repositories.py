@@ -91,18 +91,31 @@ def _seed():
                                 "status": "active", "topic_kind": "model", "doc_count": 1}]}
     state_912004 = {"topics": [{"topic_id": 913005, "topic_code": "X01", "label": "別家主題",
                                 "status": "active", "topic_kind": "model", "doc_count": 1}]}
+    # incremental 形狀（重現正式庫 ws164）：finalize run 帶 topics＋多筆 assignments；
+    # 其後 incremental run 的 state 不帶 topics、只帶增量 assignment。此處以最小筆數
+    # 重現該形狀（正式庫為 200＋1），驗證讀取須沿 run_id fallback 取 topics、跨 run 併指派。
+    state_912005 = {"topics": [
+        {"topic_id": 913006, "topic_code": "T01", "label": "主結構", "status": "active",
+         "topic_kind": "model", "doc_count": 2},
+        {"topic_id": 913007, "topic_code": "T02", "label": "傳動", "status": "active",
+         "topic_kind": "model", "doc_count": 1},
+    ]}
+    state_912006 = {"topics": []}  # incremental run：state 不帶 topics
     with psycopg.connect(**_kw(TEST_DB)) as c:
-        for pid in (910001, 910002, 910003):
+        for pid in (910001, 910002, 910003, 910004, 910005, 910006):
             c.execute("INSERT INTO core_layer.patents (id, title) VALUES (%s, 'repo fixture')", (pid,))
         # 原始專利值：alias 變體補登不得改動
         c.execute("INSERT INTO core_layer.patent_people (patent_id, \"申請人\") VALUES (910001, 'REXON IND.')")
         c.execute("INSERT INTO app_layer.workspaces (workspace_id, workspace_name) VALUES (910001, 'repo_ws')")
         c.execute("INSERT INTO app_layer.workspaces (workspace_id, workspace_name) VALUES (910002, 'repo_ws_other')")
+        c.execute("INSERT INTO app_layer.workspaces (workspace_id, workspace_name) VALUES (910005, 'repo_ws_incr')")
         for run_id, ws, rt in (
             (911001, 910001, "clustering:wips_independent_claims"),
             (911002, 910001, "clustering:wips_independent_claims"),
             (911003, 910001, "clustering:effect_summary"),
             (911004, 910002, "clustering:wips_independent_claims"),
+            (911005, 910005, "clustering:wips_independent_claims"),  # finalize
+            (911006, 910005, "clustering:wips_independent_claims"),  # incremental
         ):
             c.execute(
                 "INSERT INTO app_layer.workflow_runs (run_id, workspace_id, run_type, status) "
@@ -112,6 +125,8 @@ def _seed():
             (912002, 911002, "wips_independent_claims", state_912002),
             (912003, 911003, "effect_summary", state_912003),
             (912004, 911004, "wips_independent_claims", state_912004),
+            (912005, 911005, "wips_independent_claims", state_912005),  # finalize：帶 topics
+            (912006, 911006, "wips_independent_claims", state_912006),  # incremental：無 topics
         ):
             c.execute(
                 "INSERT INTO derived_layer.topic_runs (run_id, workflow_run_id, source_field, topic_state_json) "
@@ -123,6 +138,10 @@ def _seed():
             (912002, 910003, "U00"),   # 未分類：保留
             (912003, 910001, "E01"),
             (912004, 910001, "X01"),
+            (912005, 910004, "T01"),   # finalize run 的既有指派
+            (912005, 910005, "T01"),
+            (912005, 910006, "T02"),
+            (912006, 910005, "T02"),   # incremental：910005 由 T01 覆蓋成 T02（驗「取最新一筆」）
         ):
             c.execute(
                 "INSERT INTO derived_layer.topic_assignments (run_id, patent_id, topic_key) "
@@ -192,6 +211,20 @@ class TopicStateRepositoryTests(unittest.TestCase):
         """不同 workspace 不互漏。"""
         state = self._latest(ws=910002)
         self.assertEqual({t["topic_code"] for t in state["topics"]}, {"X01"})
+
+    def test_incremental_run_falls_back_to_finalize_topics(self):
+        """incremental run（state 無 topics）後：topics 沿 fallback 取 finalize run，
+        assignments 跨 run 每 patent 取最新一筆，run_id/state_run_id 語意分明。"""
+        state = self._latest(ws=910005)
+        # topics 來源＝最新「有 topics」的 run（finalize 912005），非最新 run
+        self.assertEqual(state["state_run_id"], 912005)
+        # assignments 基準 run＝該 ws/field 最新 run（incremental 912006）
+        self.assertEqual(state["run_id"], 912006)
+        by_code = {t["topic_code"]: t for t in state["topics"]}
+        self.assertEqual(set(by_code), {"T01", "T02"})  # 不因 incremental 無 topics 回空
+        # 910005 finalize 指到 T01、incremental 覆蓋成 T02 → 取最新一筆歸 T02
+        self.assertEqual(by_code["T01"]["patent_ids"], [910004])
+        self.assertEqual(by_code["T02"]["patent_ids"], [910005, 910006])
 
     def test_not_found_and_invalid_source_field(self):
         """無 run 拋 TopicStateNotFoundError；非法 source_field 拋 ValueError。"""
@@ -269,6 +302,51 @@ class CompanyAliasVariantTests(unittest.TestCase):
         # 原始專利值不得被改動
         self.assertEqual(_scalar(
             'SELECT "申請人" FROM core_layer.patent_people WHERE patent_id=910001'), "REXON IND.")
+
+
+class ProductionReadOnlySmokeTests(unittest.TestCase):
+    """正式庫唯讀煙囪：對 patent_ppt ws164 呼叫 get_latest_topic_state，斷言 incremental
+    修正後數字（topics=12、assignments=201、state_run_id=58）。
+
+    紅線：只 SELECT，session 強制 default_transaction_read_only=on，任何寫入直接報錯；
+    連不上正式庫時 skip（不視為失敗）。數字對應 2026-07-21 正式庫快照。
+    """
+
+    def _ro_repo(self):
+        from backend.app.repositories.topic_state_repository import PostgresTopicStateRepository
+        kw = dict(
+            host=os.getenv("PGHOST", "127.0.0.1"),
+            port=int(os.getenv("PGPORT", "5433")),
+            user=os.getenv("PGUSER", "postgres"),
+            dbname="patent_ppt",
+            options="-c default_transaction_read_only=on",  # 紅線：整個 session 唯讀
+        )
+        password = os.getenv("PGPASSWORD")
+        if password:
+            kw["password"] = password
+        return PostgresTopicStateRepository(kw)
+
+    def test_ws164_incremental_state_readonly(self):
+        try:
+            with psycopg.connect(
+                host=os.getenv("PGHOST", "127.0.0.1"),
+                port=int(os.getenv("PGPORT", "5433")),
+                user=os.getenv("PGUSER", "postgres"),
+                dbname="patent_ppt",
+                connect_timeout=3,
+            ) as probe:
+                if probe.execute(
+                    "SELECT 1 FROM app_layer.workspaces WHERE workspace_id = 164"
+                ).fetchone() is None:
+                    self.skipTest("patent_ppt has no workspace 164")
+        except Exception as exc:  # noqa: BLE001
+            self.skipTest(f"patent_ppt unavailable: {exc}")
+
+        state = self._ro_repo().get_latest_topic_state(164, "wips_independent_claims")
+        n_assign = sum(len(t["patent_ids"]) for t in state["topics"])
+        self.assertEqual(len(state["topics"]), 12)
+        self.assertEqual(n_assign, 201)
+        self.assertEqual(state["state_run_id"], 58)
 
 
 if __name__ == "__main__":

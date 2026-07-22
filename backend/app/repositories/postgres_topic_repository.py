@@ -86,7 +86,9 @@ class PostgresTopicRepository:
                 # ws 存在但該通道尚無 topic run：回空主題，run_id=0 表示尚無 run
                 return ListTopicsResult(
                     workspace_id=workspace_id, source_field=source_field, run_id=0, topics=[])
-            raw = self._fetch_raw_topics(state["run_id"])
+            # 顯示欄位（summary/keywords/label_source…）取自帶 topics 的 run，
+            # 非 assignments 基準 run（incremental run 不帶 topics）
+            raw = self._fetch_raw_topics(state["state_run_id"])
             topics: list[TopicDict] = []
             for order, t in enumerate(state["topics"]):
                 extra = raw.get(t["topic_code"], {})

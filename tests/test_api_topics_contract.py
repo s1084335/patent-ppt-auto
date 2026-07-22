@@ -237,6 +237,22 @@ class TopicApiContractTests(unittest.TestCase):
     def tearDown(self):
         app.dependency_overrides.clear()
 
+    def _override_unavailable_repo(self):
+        """注入一個所有方法都拋 TopicRepositoryUnavailableError 的替身，模擬儲存層不可用→503。
+
+        DI 接線後預設會回真的 PostgresTopicRepository，不能再靠「清 override」得到 503；
+        以替身直接驗 handler 把 TopicRepositoryUnavailableError 轉 503 的既有防呆語意。
+        """
+        from backend.app.api.topics import get_topic_repository
+
+        class _UnavailableRepo:
+            def __getattr__(self, _name):
+                def _raise(*_a, **_k):
+                    raise TopicRepositoryUnavailableError("backend unavailable")
+                return _raise
+
+        app.dependency_overrides[get_topic_repository] = lambda: _UnavailableRepo()
+
     # ── 1. GET /workspaces/{workspace_id}/topics ───────────────
     def test_get_topics_happy_path(self):
         self.fake_repo._topics[(1, "wips_independent_claims")] = [
@@ -283,8 +299,9 @@ class TopicApiContractTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_get_topics_repo_unavailable_503(self):
-        app.dependency_overrides.clear()
-        # No override = default raises TopicRepositoryUnavailableError -> 503
+        # DI 已接線為 PostgresTopicRepository，故「repo 不可用→503」改由注入拋
+        # TopicRepositoryUnavailableError 的替身驗證（原「清 override 即 503」前提已隨接線失效）
+        self._override_unavailable_repo()
         resp = client.get(f"{PREFIX}/workspaces/1/topics?source_field=wips_independent_claims")
         self.assertEqual(resp.status_code, 503)
 
@@ -425,7 +442,7 @@ class TopicApiContractTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 409)
 
     def test_post_merge_repo_unavailable_503(self):
-        app.dependency_overrides.clear()
+        self._override_unavailable_repo()
         resp = client.post(
             f"{PREFIX}/workspaces/1/topics/merge",
             json={
@@ -507,7 +524,7 @@ class TopicApiContractTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 409)
 
     def test_post_unmerge_repo_unavailable_503(self):
-        app.dependency_overrides.clear()
+        self._override_unavailable_repo()
         resp = client.post(
             f"{PREFIX}/workspaces/1/topics/unmerge",
             json={
@@ -555,7 +572,7 @@ class TopicApiContractTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_patch_rename_repo_unavailable_503(self):
-        app.dependency_overrides.clear()
+        self._override_unavailable_repo()
         resp = client.patch(
             f"{PREFIX}/workspaces/1/topics/topic-1",
             json={"label": "新名稱", "renamed_by": "web-user"},

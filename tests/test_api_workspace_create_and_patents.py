@@ -1,20 +1,25 @@
 """驗收：POST /api/v1/workspaces（建立一般 workspace）與
 GET /api/v1/workspaces/{id}/patents（分頁列成員、可選 keyword）。
 
-每個 test 以 UUID 產生跨執行唯一的 workspace_name 與 created_by，tearDown 只依「本次
-執行的 created_by」清理自建資料，不依賴固定 marker、不動其他執行留下的資料。
+0021 對齊：以拋棄式 DB patent_ppt_apiwscreate（upgrade head）驗證，絕不碰正式庫
+patent_ppt。成員專利存 app_layer.workspaces.patent_ids_json（bigint 陣列），不再有
+workspace_patents 明細表。模組層自建可控 core_layer.patents fixture（含技術/功效文本、
+patent_number 與一筆 report_patent_base 申請人），供成員 shape、旗標與 keyword 斷言。
 覆蓋：建立成功／去重／缺專利 422／撞名 409／失敗不留半成品、成員 shape（含
 applicant_display_name 與完整度旗標）、分頁、patent_number 與 applicant 搜尋、404、
-非法參數 422，以及「成員寫入拋錯不得 commit」的 mock 單元測試。
+非法參數 422，以及「workspace INSERT 拋錯不得 commit」的 mock 單元測試。
 """
 from __future__ import annotations
 
+import os
 import unittest
 import uuid
 from pathlib import Path
 from unittest import mock
 
-from dotenv import load_dotenv
+import psycopg
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
 
 from backend.app.app_layer import workspace_create
@@ -22,43 +27,112 @@ from backend.app.main import app
 
 
 PREFIX = "/api/v1"
+TEST_DB = "patent_ppt_apiwscreate"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 client = TestClient(app)
 
 # 兩個來源文本欄（鏡射 clustering.sources SOURCE_SPECS.source_column），供旗標期望值查核。
 TECH_COL = "獨立項[KR,JP,US,CN,EP,IN]"
 EFFECT_COL = "效果 摘要[US,EP,PCT,JP,KR,CN,TW]"
 
+# fixture 專利 id（避開正式資料範圍；本測試只在拋棄式 DB 內灌這些）。
+PIDS = [910001, 910002, 910003, 910004, 910005, 910006]
 
-def _connect():
-    """開一條測試用直連（灌前置與清理用；查詢走 API/池）。"""
-    import psycopg
+_prev_env: dict[str, str | None] = {}
 
-    from backend.app.db.connection import get_connection_kwargs
 
-    return psycopg.connect(**get_connection_kwargs())
+def _kw(dbname: str) -> dict:
+    """組出連測試庫的 psycopg 參數（與其他 0021 API 測試同源）。"""
+    kw = dict(
+        host=os.getenv("PGHOST", "127.0.0.1"),
+        port=int(os.getenv("PGPORT", "5433")),
+        user=os.getenv("PGUSER", "postgres"),
+        dbname=dbname,
+    )
+    password = os.getenv("PGPASSWORD")
+    if password:
+        kw["password"] = password
+    return kw
+
+
+def _reset_pool():
+    """關閉並清空 lazy 連線池單例，讓 get_pool() 依目前 env 重建（避免綁到別庫）。"""
+    from backend.app.db import connection
+
+    if connection._pool is not None:
+        try:
+            connection._pool.close()
+        except Exception:  # noqa: BLE001
+            pass
+        connection._pool = None
+
+
+def _seed_patents():
+    """灌可控 core_layer.patents fixture：每筆有技術/功效文本與 patent_number，
+    第一筆另補 report_patent_base 申請人供 applicant keyword 斷言。"""
+    with psycopg.connect(**_kw(TEST_DB)) as conn:
+        for i, pid in enumerate(PIDS):
+            conn.execute(
+                f'''
+                INSERT INTO core_layer.patents
+                    (id, title, country_code, "授權公告號", "{TECH_COL}", "{EFFECT_COL}")
+                VALUES (%s, %s, 'TW', %s, %s, %s)
+                ''',
+                (
+                    pid,
+                    f"fixture patent {i}",
+                    f"TW{pid}B",
+                    f"technical claim text {i}",
+                    f"effect summary text {i}",
+                ),
+            )
+        conn.execute(
+            "INSERT INTO derived_layer.report_patent_base (patent_id, applicant_display_name) "
+            "VALUES (%s, %s)",
+            (PIDS[0], "REXON INDUSTRIAL"),
+        )
+        conn.commit()
+
+
+def setUpModule():
+    """建拋棄式 DB → upgrade head → 灌 patent fixture；admin 不可用則整組 skip。"""
+    global _prev_env
+    _prev_env = {k: os.environ.get(k) for k in ("PGHOST", "PGDATABASE", "DATABASE_URL")}
+    os.environ["PGHOST"] = "127.0.0.1"  # Windows localhost 走 IPv6 會慢
+    try:
+        with psycopg.connect(**_kw("postgres"), autocommit=True, connect_timeout=3) as admin:
+            admin.execute(f'DROP DATABASE IF EXISTS "{TEST_DB}" WITH (FORCE)')
+            admin.execute(f'CREATE DATABASE "{TEST_DB}"')
+    except Exception as exc:  # noqa: BLE001
+        raise unittest.SkipTest(f"admin DB unavailable: {exc}")
+    os.environ.pop("DATABASE_URL", None)
+    os.environ["PGDATABASE"] = TEST_DB
+    _reset_pool()
+
+    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
+    command.upgrade(cfg, "head")
+    _seed_patents()
+
+
+def tearDownModule():
+    _reset_pool()
+    for k, v in _prev_env.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    try:
+        with psycopg.connect(**_kw("postgres"), autocommit=True, connect_timeout=3) as admin:
+            admin.execute(f'DROP DATABASE IF EXISTS "{TEST_DB}" WITH (FORCE)')
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class WorkspaceCreateAndPatentsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        """載入 .env、取既有 patent id 供建立成員；DB 不可用則 skip。"""
-        import psycopg
-
-        from backend.app.db.connection import get_connection_kwargs
-
-        load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
-        try:
-            with psycopg.connect(**get_connection_kwargs(), connect_timeout=3) as conn:
-                cls.pids = [
-                    int(r[0])
-                    for r in conn.execute(
-                        "SELECT id FROM core_layer.patents ORDER BY id LIMIT 6"
-                    ).fetchall()
-                ]
-        except Exception as exc:  # noqa: BLE001
-            raise unittest.SkipTest(f"DB unreachable: {exc}")
-        if len(cls.pids) < 6:
-            raise unittest.SkipTest("need at least 6 patents")
+        cls.pids = PIDS
 
     def setUp(self):
         # 每個 test 一組 UUID：workspace_name 與 created_by 皆嵌入，跨執行唯一。
@@ -67,9 +141,12 @@ class WorkspaceCreateAndPatentsTests(unittest.TestCase):
         self._seq = 0
 
     def tearDown(self):
-        """只刪本次執行 created_by 的 workspace；workspace_patents 隨 workspace CASCADE。"""
-        with _connect() as conn:
-            conn.execute("DELETE FROM app_layer.workspaces WHERE created_by = %s", (self.created_by,))
+        """只刪本次執行 created_by 的 workspace（0021 審計 created_by 存 settings_json）。"""
+        with psycopg.connect(**_kw(TEST_DB)) as conn:
+            conn.execute(
+                "DELETE FROM app_layer.workspaces WHERE settings_json->>'created_by' = %s",
+                (self.created_by,),
+            )
             conn.commit()
 
     def _name(self, tag: str) -> str:
@@ -113,6 +190,16 @@ class WorkspaceCreateAndPatentsTests(unittest.TestCase):
         self.assertEqual(resp.json()["patent_count"], 2)
         self.assertEqual(self._patents(resp.json()["workspace_id"], limit=200).json()["total"], 2)
 
+    def test_create_persists_bigint_patent_ids_json(self):
+        """成員以 bigint 陣列存 patent_ids_json，讀寫形狀一致（jsonb_array_elements→::bigint）。"""
+        wid = self._create_ws([self.pids[0], self.pids[1]])
+        with psycopg.connect(**_kw(TEST_DB)) as conn:
+            ids = conn.execute(
+                "SELECT patent_ids_json FROM app_layer.workspaces WHERE workspace_id = %s",
+                (wid,),
+            ).fetchone()[0]
+        self.assertEqual(sorted(int(v) for v in ids), sorted([self.pids[0], self.pids[1]]))
+
     # ── 輸入錯誤 422 ─────────────────────────────────────
     def test_create_missing_patent_422(self):
         """有不存在的 patent_id → 422。"""
@@ -138,7 +225,7 @@ class WorkspaceCreateAndPatentsTests(unittest.TestCase):
         """缺專利導致 422 時該名稱 workspace 不應被建立（整筆 rollback）。"""
         name = self._name("partial")
         self.assertEqual(self._create([self.pids[0], 999_999_999], name=name).status_code, 422)
-        with _connect() as conn:
+        with psycopg.connect(**_kw(TEST_DB)) as conn:
             n = conn.execute(
                 "SELECT count(*) FROM app_layer.workspaces WHERE workspace_name = %s", (name,)
             ).fetchone()[0]
@@ -163,8 +250,14 @@ class WorkspaceCreateAndPatentsTests(unittest.TestCase):
                 "applicant_display_name",
                 "has_technical_text",
                 "has_effect_text",
+                "topic_key",
+                "topic_label",
             },
         )
+        # 無分群 workspace：所屬主題欄應為 None（未分類）。
+        for it in body["items"]:
+            self.assertIsNone(it["topic_key"])
+            self.assertIsNone(it["topic_label"])
         # 旗標須為 bool。
         for it in body["items"]:
             self.assertIsInstance(it["has_technical_text"], bool)
@@ -224,7 +317,7 @@ class WorkspaceCreateAndPatentsTests(unittest.TestCase):
         """has_technical_text／has_effect_text 與 DB 來源文本非空狀態一致。"""
         wid = self._create_ws(self.pids[:6])
         items = {it["patent_id"]: it for it in self._patents(wid, limit=200).json()["items"]}
-        with _connect() as conn:
+        with psycopg.connect(**_kw(TEST_DB)) as conn:
             expected = {
                 int(r[0]): (bool(r[1]), bool(r[2]))
                 for r in conn.execute(
@@ -256,17 +349,16 @@ class WorkspaceCreateAndPatentsTests(unittest.TestCase):
 
 
 class WorkspaceCreateCommitGuardTests(unittest.TestCase):
-    """mock 單元測試（不連 DB）：workspace 已 INSERT 後成員寫入拋錯，不得 commit。"""
+    """mock 單元測試（不連 DB）：workspace INSERT 拋錯時不得 commit（0021 成員已併入
+    單筆 INSERT 的 patent_ids_json，不再有獨立成員 executemany）。"""
 
-    def test_member_insert_error_does_not_commit(self):
-        """驗證：驗證與 workspace INSERT 皆過、executemany 成員寫入拋錯 → 例外外拋且 commit 未被呼叫。"""
+    def test_workspace_insert_error_does_not_commit(self):
+        """驗證：專利存在驗證過、workspace INSERT 拋錯 → 例外外拋且 commit 未被呼叫。"""
         fake_cur = mock.MagicMock()
         # 驗證專利存在：兩個 id 都在。
         fake_cur.fetchall.return_value = [{"id": 1}, {"id": 2}]
-        # workspace INSERT ... RETURNING：回一個 workspace_id（代表 workspace 已 INSERT）。
-        fake_cur.fetchone.return_value = {"workspace_id": 12345}
-        # 成員寫入拋錯。
-        fake_cur.executemany.side_effect = RuntimeError("member insert boom")
+        # workspace INSERT 拋錯（0021 建 workspace 即單筆寫入成員與 settings）。
+        fake_cur.execute.side_effect = [None, RuntimeError("workspace insert boom")]
 
         fake_conn = mock.MagicMock()
         cur_cm = fake_conn.cursor.return_value
@@ -284,8 +376,7 @@ class WorkspaceCreateCommitGuardTests(unittest.TestCase):
                     workspace_name="mock_ws", patent_ids=[1, 2], created_by="mock"
                 )
 
-        fake_cur.executemany.assert_called_once()  # 確有嘗試寫成員
-        fake_conn.commit.assert_not_called()        # 但整筆未 commit
+        fake_conn.commit.assert_not_called()  # 整筆未 commit
 
 
 if __name__ == "__main__":

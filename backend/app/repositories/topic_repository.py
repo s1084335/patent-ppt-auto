@@ -233,12 +233,13 @@ class TopicRepository(Protocol):
 async def get_topic_repository() -> TopicRepository:
     """FastAPI Dependency：取得 TopicRepository 實例。
 
-    正式環境預設未配置實作時，拋出 TopicRepositoryUnavailableError
-    （由 exception handler 轉為 503）。
+    正式環境預設注入 PostgresTopicRepository（對齊 0021 schema）。若儲存層真的不可用，
+    Postgres 實作在各方法內把 psycopg.Error 轉為 TopicRepositoryUnavailableError，
+    由 exception handler 轉為 503——保留「repository 不可用時回 503」的防呆語意。
 
     測試時以 `app.dependency_overrides[get_topic_repository] = lambda: FakeTopicRepository()`
-    注入替身。
+    注入替身。實作在此函式內延遲 import，避免 topic_repository 模組反向依賴 psycopg。
     """
-    raise TopicRepositoryUnavailableError(
-        "TopicRepository not configured. Override get_topic_repository in tests."
-    )
+    from backend.app.repositories.postgres_topic_repository import PostgresTopicRepository
+
+    return PostgresTopicRepository()

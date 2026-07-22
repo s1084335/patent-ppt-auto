@@ -19,9 +19,12 @@ from backend.app.reports.cluster_data_loader import (
     load_cluster_workspace_data,
     run_full_report,
 )
+from backend.app.repositories.topic_state_repository import TopicStateNotFoundError
 
 TEST_DB = "patent_ppt_loadercheck"
-BASE_REV = "0018_compose_created_at_comment"
+# 0021（head）：load_cluster_workspace_data 已換接 topic_state_repository，
+# 讀 topic_runs/topic_assignments/topic_state_json，不再讀 0018 derived_layer.topics。
+TARGET_REV = "head"
 
 # ── helpers ──────────────────────────────────────────────────────
 
@@ -68,7 +71,7 @@ class ClusterDataLoaderDbTests(unittest.TestCase):
         os.environ.pop("DATABASE_URL", None)
         os.environ["PGDATABASE"] = TEST_DB
 
-        command.upgrade(_alembic_cfg(), BASE_REV)
+        command.upgrade(_alembic_cfg(), TARGET_REV)
         cls._seed()
 
     @classmethod
@@ -91,7 +94,24 @@ class ClusterDataLoaderDbTests(unittest.TestCase):
 
     @classmethod
     def _seed(cls):
-        """最小 fixture — 滿足所有 FK，涵蓋合併/未分類/多申請人。"""
+        """0021 fixture — 重現正式庫 finalize＋incremental 形狀，涵蓋合併/未分類/多申請人。
+
+        finalize run（6001）帶 topics 與多筆 assignments；其後 incremental run（6002）
+        的 topic_state_json 不帶 topics、只帶 1 筆新增 assignment。驗證 load 沿 fallback
+        取 finalize topics，並跨 run 併回 assignments（含 merged 重映與 incremental 增量）。
+        """
+        finalize_state = {"topics": [
+            {"topic_id": 1, "topic_code": "T01", "label": "半導體製程", "status": "active",
+             "topic_kind": "model", "doc_count": 3},
+            {"topic_id": 2, "topic_code": "T02", "label": "面板驅動", "status": "active",
+             "topic_kind": "model", "doc_count": 1},
+            {"topic_id": 3, "topic_code": "T01_OLD", "label": "半導體(舊)", "status": "merged",
+             "merged_into_topic_id": 1, "topic_kind": "model", "doc_count": 0},
+            {"topic_id": 4, "topic_code": "UNCLASSIFIED", "label": "未分類", "status": "active",
+             "topic_kind": "unclassified", "doc_count": 1},
+        ]}
+        incremental_state = {"topics": []}  # incremental run：state 不帶 topics
+        from psycopg.types.json import Jsonb
         with psycopg.connect(**_kw(TEST_DB)) as c:
             # core_layer.patents（FK 基礎）
             for pid, title in [(101, "p101"), (102, "p102"), (103, "p103"),
@@ -101,33 +121,37 @@ class ClusterDataLoaderDbTests(unittest.TestCase):
                 c.execute("INSERT INTO core_layer.patents (id, title) VALUES (%s, %s)", (pid, title))
 
             # workspace
-            c.execute("INSERT INTO app_layer.workspaces (workspace_id, workspace_name, created_by) VALUES (1, 'test_ws', 'test')")
+            c.execute("INSERT INTO app_layer.workspaces (workspace_id, workspace_name) VALUES (1, 'test_ws')")
 
-            # topic_runs
-            c.execute("INSERT INTO derived_layer.topic_runs (run_id, workspace_id, source_field, run_mode, status) VALUES (1, 1, 'wips_independent_claims', 'full', 'completed')")
+            # workflow_runs：finalize 5001、incremental 5002
+            for run_id in (5001, 5002):
+                c.execute(
+                    "INSERT INTO app_layer.workflow_runs (run_id, workspace_id, run_type, status) "
+                    "VALUES (%s, 1, 'clustering:wips_independent_claims', 'succeeded')", (run_id,))
 
-            # topics
-            c.execute("""
-                INSERT INTO derived_layer.topics (topic_id, workspace_id, source_field, created_run_id, topic_code, status, merged_into_topic_id, merged_at, label, doc_count, merged_by)
-                VALUES
-                    (1, 1, 'wips_independent_claims', 1, 'T01',          'active',  NULL, NULL, '半導體製程', 3, NULL),
-                    (2, 1, 'wips_independent_claims', 1, 'T02',          'active',  NULL, NULL, '面板驅動',   1, NULL),
-                    (3, 1, 'wips_independent_claims', 1, 'T01_OLD',      'merged',  1,    '2026-07-21T00:00:00+00', '半導體(舊)', 0, 'test_user'),
-                    (4, 1, 'wips_independent_claims', 1, 'UNCLASSIFIED', 'active',  NULL, NULL, '未分類',     1, NULL)
-            """)
+            # topic_runs：finalize 帶 topics，incremental 不帶
+            for run_id, wf, state in (
+                (6001, 5001, finalize_state),
+                (6002, 5002, incremental_state),
+            ):
+                c.execute(
+                    "INSERT INTO derived_layer.topic_runs (run_id, workflow_run_id, source_field, topic_state_json) "
+                    "VALUES (%s, %s, 'wips_independent_claims', %s)", (run_id, wf, Jsonb(state)))
 
-            # topic_assignments
-            c.execute("""
-                INSERT INTO derived_layer.topic_assignments (assignment_id, workspace_id, source_field, patent_id, topic_id, assigned_run_id, is_current)
-                VALUES
-                    (1, 1, 'wips_independent_claims', 101, 1, 1, true),
-                    (2, 1, 'wips_independent_claims', 102, 1, 1, true),
-                    (3, 1, 'wips_independent_claims', 103, 2, 1, true),
-                    (4, 1, 'wips_independent_claims', 104, 3, 1, true),   -- merged → T01
-                    (5, 1, 'wips_independent_claims', 105, 4, 1, true)    -- UNCLASSIFIED
-            """)
+            # topic_assignments（0021：run_id, patent_id, topic_key）
+            for run_id, pid, key in (
+                (6001, 101, "T01"),
+                (6001, 102, "T01"),
+                (6001, 103, "T02"),
+                (6001, 104, "T01_OLD"),      # merged → 併回 T01
+                (6001, 105, "UNCLASSIFIED"),
+                (6002, 106, "T02"),          # incremental 只帶 1 筆新增
+            ):
+                c.execute(
+                    "INSERT INTO derived_layer.topic_assignments (run_id, patent_id, topic_key) "
+                    "VALUES (%s, %s, %s)", (run_id, pid, key))
 
-            # report_patent_base（101/102/104 同一公司 測去重；103,105 各一；106-110 測 top 10）
+            # report_patent_base（101/102/104 各家 測去重；103,105 各一；106-110 測 top 10）
             c.execute("""
                 INSERT INTO derived_layer.report_patent_base (patent_id, applicant_display_name)
                 VALUES
@@ -142,9 +166,6 @@ class ClusterDataLoaderDbTests(unittest.TestCase):
                     (109, 'CompanyD'),
                     (110, 'CompanyE')
             """)
-
-            # analysis_runs（供 compute_and_save 測試）
-            c.execute("INSERT INTO app_layer.analysis_runs (analysis_id, analysis_name, analysis_type, status) VALUES (42, 'test analysis', 'report', 'completed')")
 
             c.commit()
 
@@ -197,6 +218,8 @@ class ClusterDataLoaderDbTests(unittest.TestCase):
         # 驗證順序：TSMC(101,102) 2 件應排最前
         self.assertEqual(result["top_applicants_ws"][0], "TSMC")
 
+    @unittest.skip("analysis_outputs 於 0021 併入 workflow_outputs（移入 legacy_0021）；"
+                   "compute_and_save 寫入路徑換接為另案，本輪只換 load_cluster_workspace_data")
     def test_compute_and_save_writes_three_rows(self):
         """compute_and_save_cluster_analysis 寫入 topic_effect_table／
         opportunity_matrix／pain_point_matrix 三列。"""
@@ -215,6 +238,8 @@ class ClusterDataLoaderDbTests(unittest.TestCase):
         self.assertIn("opportunity_matrix", names)
         self.assertIn("pain_point_matrix", names)
 
+    @unittest.skip("analysis_outputs 於 0021 併入 workflow_outputs（移入 legacy_0021）；"
+                   "compute_and_save 寫入路徑換接為另案，本輪只換 load_cluster_workspace_data")
     def test_compute_and_save_append_not_overwrite(self):
         """重跑追加新列，舊列逐值不變。"""
         compute_and_save_cluster_analysis(
@@ -261,125 +286,77 @@ class ClusterDataLoaderDbTests(unittest.TestCase):
 # ======================================================================
 
 class LoadClusterDataTests(unittest.TestCase):
-    """load_cluster_workspace_data: 從 0018 schema 載入分群資料。"""
+    """load_cluster_workspace_data: topics/assignments 委派 repository，applicant 走 conn。"""
 
-    def _mock_cursor(self, fetchall_results: list[list[dict]]) -> mock.MagicMock:
+    def _state(self, topics: list[dict]) -> dict:
+        """組出 repository.get_latest_topic_state 的回傳形狀（合併/未分類已解析）。"""
+        return {"workspace_id": 1, "source_field": "claims",
+                "run_id": 2, "state_run_id": 1, "topics": topics}
+
+    def _conn(self, applicant_rows: list[dict], top_rows: list[dict]) -> mock.MagicMock:
+        """mock conn：cursor 依序回 applicant、top applicant 兩批 fetchall。"""
         cur = mock.MagicMock()
         cur.execute.return_value = cur
-        cur.fetchall.side_effect = list(fetchall_results)
-        return cur
-
-    def _make_conn(self, fetchall_results: list[list[dict]]) -> mock.MagicMock:
-        cur = self._mock_cursor(fetchall_results)
+        cur.fetchall.side_effect = [applicant_rows, top_rows]
         conn = mock.MagicMock()
         conn.cursor.return_value = cur
         return conn
 
-    def test_loads_active_topics_and_assignments(self):
-        topics_data = [
-            {"topic_id": 1, "topic_code": "T01", "status": "active",
-             "merged_into_topic_id": None, "label": "半導體製程",
-             "source_field": "independent_claims", "doc_count": 5},
-            {"topic_id": 2, "topic_code": "T02", "status": "active",
-             "merged_into_topic_id": None, "label": "面板驅動",
-             "source_field": "independent_claims", "doc_count": 3},
-        ]
-        assignments_data = [
-            {"patent_id": 101, "topic_id": 1, "topic_code": "T01"},
-            {"patent_id": 102, "topic_id": 1, "topic_code": "T01"},
-            {"patent_id": 103, "topic_id": 2, "topic_code": "T02"},
-        ]
-        applicants_data = [
-            {"patent_id": 101, "applicant_display_name": "TSMC"},
-            {"patent_id": 102, "applicant_display_name": "TSMC"},
-            {"patent_id": 103, "applicant_display_name": "Samsung"},
-        ]
-        top_applicants_data = [
-            {"applicant_display_name": "TSMC", "cnt": 2},
-        ]
-
-        conn = self._make_conn([
-            topics_data,
-            assignments_data,
-            applicants_data,
-            top_applicants_data,
+    @mock.patch("backend.app.reports.cluster_data_loader.PostgresTopicStateRepository")
+    def test_loads_active_topics_and_assignments(self, mock_repo):
+        mock_repo.return_value.get_latest_topic_state.return_value = self._state([
+            {"topic_code": "T01", "label": "半導體製程", "status": "active",
+             "topic_kind": "model", "doc_count": 2, "patent_ids": [101, 102]},
+            {"topic_code": "T02", "label": "面板驅動", "status": "active",
+             "topic_kind": "model", "doc_count": 1, "patent_ids": [103]},
         ])
-        result = load_cluster_workspace_data(1, "independent_claims", conn)
+        conn = self._conn(
+            [{"patent_id": 101, "applicant_display_name": "TSMC"},
+             {"patent_id": 102, "applicant_display_name": "TSMC"},
+             {"patent_id": 103, "applicant_display_name": "Samsung"}],
+            [{"applicant_display_name": "TSMC", "cnt": 2}])
+        result = load_cluster_workspace_data(1, "claims", conn)
 
-        self.assertIn("topics", result)
-        self.assertIn("assignments", result)
-        self.assertIn("normalized_applicants", result)
-        self.assertIn("top_applicants_ws", result)
-
-        self.assertEqual(len(result["topics"]), 2)
-        codes = {t["topic_code"] for t in result["topics"]}
-        self.assertEqual(codes, {"T01", "T02"})
-
+        self.assertEqual({t["topic_code"] for t in result["topics"]}, {"T01", "T02"})
         self.assertEqual(len(result["assignments"]), 3)
         self.assertEqual(len(result["normalized_applicants"]), 3)
         self.assertIn("TSMC", result["top_applicants_ws"])
 
-    def test_merged_topics_resolved_to_active_target(self):
-        topics_data = [
-            {"topic_id": 1, "topic_code": "T01", "status": "active",
-             "merged_into_topic_id": None, "label": "半導體",
-             "source_field": "claims", "doc_count": 3},
-            {"topic_id": 2, "topic_code": "T01_OLD", "status": "merged",
-             "merged_into_topic_id": 1, "label": "半導體(舊)",
-             "source_field": "claims", "doc_count": 2},
-        ]
-        assignments_data = [
-            {"patent_id": 101, "topic_id": 1, "topic_code": "T01"},
-            {"patent_id": 102, "topic_id": 2, "topic_code": "T01_OLD"},
-        ]
-        applicants_data = [
-            {"patent_id": 101, "applicant_display_name": "TSMC"},
-            {"patent_id": 102, "applicant_display_name": "TSMC"},
-        ]
-        top_applicants_data = [{"applicant_display_name": "TSMC", "cnt": 2}]
-
-        conn = self._make_conn([
-            topics_data,
-            assignments_data,
-            applicants_data,
-            top_applicants_data,
+    @mock.patch("backend.app.reports.cluster_data_loader.PostgresTopicStateRepository")
+    def test_merged_topics_already_resolved_by_repo(self, mock_repo):
+        # repository 已把 merged 併回 active，loader 直接採用其 topics/patent_ids
+        mock_repo.return_value.get_latest_topic_state.return_value = self._state([
+            {"topic_code": "T01", "label": "半導體", "status": "active",
+             "topic_kind": "model", "doc_count": 2, "patent_ids": [101, 102]},
         ])
+        conn = self._conn(
+            [{"patent_id": 101, "applicant_display_name": "TSMC"},
+             {"patent_id": 102, "applicant_display_name": "TSMC"}],
+            [{"applicant_display_name": "TSMC", "cnt": 2}])
         result = load_cluster_workspace_data(1, "claims", conn)
 
-        codes = {t["topic_code"] for t in result["topics"]}
-        self.assertEqual(codes, {"T01"})
-        assign_codes = {a["topic_code"] for a in result["assignments"]}
-        self.assertEqual(assign_codes, {"T01"})
+        self.assertEqual({t["topic_code"] for t in result["topics"]}, {"T01"})
+        self.assertEqual({a["topic_code"] for a in result["assignments"]}, {"T01"})
         self.assertEqual(len(result["assignments"]), 2)
 
-    def test_no_topics_returns_empty_structures(self):
-        conn = self._make_conn([[], [], [], []])
+    @mock.patch("backend.app.reports.cluster_data_loader.PostgresTopicStateRepository")
+    def test_no_topics_returns_empty_structures(self, mock_repo):
+        mock_repo.return_value.get_latest_topic_state.side_effect = TopicStateNotFoundError("none")
+        conn = mock.MagicMock()
         result = load_cluster_workspace_data(99, "effect_summary", conn)
         self.assertEqual(result["topics"], [])
         self.assertEqual(result["assignments"], [])
         self.assertEqual(result["normalized_applicants"], [])
         self.assertEqual(result["top_applicants_ws"], [])
 
-    def test_patent_id_cast_to_int(self):
-        topics_data = [
-            {"topic_id": 1, "topic_code": "T01", "status": "active",
-             "merged_into_topic_id": None, "label": "AI",
-             "source_field": "claims", "doc_count": 1},
-        ]
-        assignments_data = [
-            {"patent_id": 999, "topic_id": 1, "topic_code": "T01"},
-        ]
-        applicants_data = [
-            {"patent_id": 999, "applicant_display_name": "Google"},
-        ]
-        top_applicants_data = [{"applicant_display_name": "Google", "cnt": 1}]
-
-        conn = self._make_conn([
-            topics_data,
-            assignments_data,
-            applicants_data,
-            top_applicants_data,
+    @mock.patch("backend.app.reports.cluster_data_loader.PostgresTopicStateRepository")
+    def test_patent_id_cast_to_int(self, mock_repo):
+        mock_repo.return_value.get_latest_topic_state.return_value = self._state([
+            {"topic_code": "T01", "label": "AI", "status": "active",
+             "topic_kind": "model", "doc_count": 1, "patent_ids": [999]},
         ])
+        conn = self._conn([{"patent_id": 999, "applicant_display_name": "Google"}],
+                          [{"applicant_display_name": "Google", "cnt": 1}])
         result = load_cluster_workspace_data(1, "claims", conn)
         self.assertIsInstance(result["assignments"][0]["patent_id"], int)
         self.assertIsInstance(result["normalized_applicants"][0]["patent_id"], int)

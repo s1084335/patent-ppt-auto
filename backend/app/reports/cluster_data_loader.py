@@ -1,7 +1,8 @@
-"""0018 schema 分群資料載入（過渡用，0021 後改接 topic_state_repository）。
+"""0021 schema 分群資料載入：topics/assignments 委派 topic_state_repository。
 
-載入邏輯收在 load_cluster_workspace_data — 0021 後改接
-backend/app/repositories/topic_state_repository.py（Claude 已完成，勿改它）。
+load_cluster_workspace_data 走 PostgresTopicStateRepository（唯一事實來源，已含
+合併重映與 incremental fallback），applicant 由 derived_layer.report_patent_base 取；
+不再直查 0018 derived_layer.topics（0021 已不存在）。
 
 compute_and_save_cluster_analysis 負責 載入→計算→寫入 app_layer.analysis_outputs。
 """
@@ -22,6 +23,10 @@ from backend.app.reports.cluster_analytics import (
     build_pain_point_matrix,
     build_topic_effect_table,
 )
+from backend.app.repositories.topic_state_repository import (
+    PostgresTopicStateRepository,
+    TopicStateNotFoundError,
+)
 
 
 def load_cluster_workspace_data(
@@ -29,16 +34,17 @@ def load_cluster_workspace_data(
     source_field: str,
     conn: Any,
 ) -> dict[str, Any]:
-    """從 0018 schema 載入分群分析資料。
+    """從 0021 schema 載入分群分析資料。
 
-    0021 後改接 backend/app/repositories/topic_state_repository.py
-    （Claude 已完成，勿改它）。
+    topics/assignments 委派 backend/app/repositories/topic_state_repository.py
+    （唯一事實來源，已含合併重映、未分類保留與 incremental fallback）；applicant
+    名稱由本函式以傳入 conn 查 derived_layer.report_patent_base。
 
     Parameters
     ----------
     workspace_id : int
     source_field : str
-    conn : psycopg connection（已連線，含 dict_row row_factory）。
+    conn : psycopg connection（已連線，含 dict_row row_factory）；供 applicant 查詢。
 
     Returns
     -------
@@ -52,74 +58,34 @@ def load_cluster_workspace_data(
         top_applicants_ws : list[str]
             該 workspace 主題涵蓋專利的前十大申請人名稱。
     """
-    cur = conn.cursor()
-
-    # ── 1. 讀取所有主題，建立 map 與合併鏈 ──
-    cur.execute(
-        "SELECT topic_id, topic_code, label, source_field, doc_count, "
-        "       status, merged_into_topic_id "
-        "FROM derived_layer.topics "
-        "WHERE workspace_id = %s AND source_field = %s",
-        (workspace_id, source_field),
-    )
-    all_topics = cur.fetchall()
-
-    topic_by_id: dict[int, dict[str, Any]] = {}
-    merged_target: dict[int, int] = {}
-    active_topic_ids: list[int] = []
-    for r in all_topics:
-        tid = r["topic_id"]
-        info = {
-            "topic_code": r["topic_code"],
-            "label": r["label"] or r["topic_code"],
-            "source_field": r["source_field"] or source_field,
-            "status": r["status"],
+    # ── 1+2. topics 與 assignments 委派唯讀 repository（合併鏈、未分類、incremental
+    #         fallback 均在 repository 內處理；無 topics 的 run 視為空結果） ──
+    try:
+        state = PostgresTopicStateRepository().get_latest_topic_state(
+            workspace_id, source_field)
+    except TopicStateNotFoundError:
+        return {
+            "topics": [], "assignments": [],
+            "normalized_applicants": [], "top_applicants_ws": [],
         }
-        topic_by_id[tid] = info
-        if r["status"] == "merged" and r["merged_into_topic_id"] is not None:
-            merged_target[tid] = r["merged_into_topic_id"]
-        elif r["status"] == "active":
-            active_topic_ids.append(tid)
 
-    def resolve_target(tid: int) -> int:
-        seen: set[int] = set()
-        while tid in merged_target and tid not in seen:
-            seen.add(tid)
-            tid = merged_target[tid]
-        return tid
-
-    # ── 2. 讀取指派，合併解析 ──
-    cur.execute(
-        "SELECT ta.patent_id, ta.topic_id, t.topic_code "
-        "FROM derived_layer.topic_assignments ta "
-        "JOIN derived_layer.topics t ON t.topic_id = ta.topic_id "
-        "WHERE ta.workspace_id = %s AND ta.source_field = %s AND ta.is_current = true",
-        (workspace_id, source_field),
-    )
-    raw_assignments = cur.fetchall()
-
-    assignment_map: dict[str, set[int]] = {}
-    for a in raw_assignments:
-        target_id = resolve_target(a["topic_id"])
-        if target_id not in topic_by_id:
-            continue
-        tc = topic_by_id[target_id]["topic_code"]
-        assignment_map.setdefault(tc, set()).add(int(a["patent_id"]))
-
-    assignments_out: list[dict[str, Any]] = []
-    for tc, pids in assignment_map.items():
-        for pid in sorted(pids):
-            assignments_out.append({"topic_code": tc, "patent_id": pid})
-
-    # 只有 active 的主題輸出
     topics_out: list[dict[str, Any]] = [
-        topic_by_id[tid] for tid in active_topic_ids
+        {
+            "topic_code": t["topic_code"],
+            "label": t.get("label") or t["topic_code"],
+            "source_field": source_field,
+            "status": "active",
+        }
+        for t in state["topics"]
     ]
+    assignments_out: list[dict[str, Any]] = []
+    for t in state["topics"]:
+        for pid in t["patent_ids"]:
+            assignments_out.append({"topic_code": t["topic_code"], "patent_id": int(pid)})
 
     # ── 3. 讀取申請人名稱 ──
-    all_patent_ids = list({
-        int(a["patent_id"]) for a in raw_assignments
-    })
+    cur = conn.cursor()
+    all_patent_ids = sorted({a["patent_id"] for a in assignments_out})
     if all_patent_ids:
         cur.execute(
             "SELECT DISTINCT patent_id, applicant_display_name "
