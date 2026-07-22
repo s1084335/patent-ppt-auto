@@ -162,6 +162,23 @@ table.data tr:hover td { background: var(--panel-2); }
 .placeholder-box { border: 1px dashed var(--border); border-radius: 0.5rem; padding: 2rem 1rem; text-align: center; color: var(--text-muted); }
 .badge-plan { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 1rem; background: var(--panel-2); border: 1px solid var(--border); font-size: 0.8rem; }
 
+/* ── 匯入對話框（modal overlay） ── */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 20; padding: 1rem; }
+.modal-overlay[hidden] { display: none; }
+.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 0.6rem; box-shadow: 0 8px 30px rgba(0,0,0,.35); width: 100%; max-width: 520px; max-height: 90vh; overflow-y: auto; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 0.9rem 1.1rem; border-bottom: 1px solid var(--border); }
+.modal-head .title { font-size: 1.1rem; font-weight: 700; color: var(--accent); }
+.modal-body { padding: 1rem 1.1rem; }
+.modal-foot { padding: 0.8rem 1.1rem; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 0.6rem; }
+.form-row { margin-bottom: 0.95rem; }
+.form-row > label.form-label { display: block; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.35rem; }
+.form-row .full { width: 100%; }
+.radio-line { display: flex; align-items: center; gap: 0.45rem; font-size: 0.9rem; margin-bottom: 0.4rem; }
+.import-error { color: var(--warn); font-size: 0.86rem; white-space: pre-wrap; margin-top: 0.4rem; }
+.import-result { font-size: 0.88rem; }
+.import-result .stat-grid { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; margin-top: 0.5rem; }
+.import-result .stat-grid .k { color: var(--text-muted); }
+
 /* ── 響應式：窄螢幕收合右欄與左欄 ── */
 @media (max-width: 960px) { #ai-panel { flex-basis: 240px; } #nav-panel { flex-basis: 160px; } }
 @media (max-width: 720px) {
@@ -180,6 +197,7 @@ table.data tr:hover td { background: var(--panel-2); }
   <select id="workspace-select" onchange="onWorkspaceChange()">
     <option value="">載入中…</option>
   </select>
+  <button class="icon-btn" id="btn-open-import" onclick="openImportDialog()" title="匯入專利資料檔">⬆ 匯入資料</button>
   <span class="spacer"></span>
   <button class="icon-btn" id="theme-toggle" onclick="toggleTheme()" title="切換亮／暗主題">🌗 主題</button>
 </header>
@@ -218,6 +236,57 @@ table.data tr:hover td { background: var(--panel-2); }
       <button class="btn btn-primary" id="btn-ai-send" style="margin-top:0.5rem;width:100%" onclick="sendAiRequest()">送出給 AI 助手</button>
     </div>
   </aside>
+</div>
+
+<!-- ══ 匯入對話框：選檔 + workspace 二選一 + 用途 + 進度/結果 ══ -->
+<div class="modal-overlay" id="import-overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="import-title">
+    <div class="modal-head">
+      <span class="title" id="import-title">匯入專利資料</span>
+      <button class="icon-btn" onclick="closeImportDialog()" title="關閉">✕</button>
+    </div>
+    <div class="modal-body">
+      <!-- 選檔：accept 對齊後端白名單副檔名 -->
+      <div class="form-row">
+        <label class="form-label" for="import-file">選擇檔案（.xlsx / .csv / .txt / .xml）</label>
+        <input type="file" id="import-file" class="full" accept=".xlsx,.csv,.txt,.xml">
+      </div>
+
+      <!-- workspace 二選一：新建 or 加入既有（互斥，radio 切換） -->
+      <div class="form-row">
+        <label class="form-label">匯入到 Workspace</label>
+        <div class="radio-line">
+          <input type="radio" name="import-ws-mode" id="import-ws-mode-new" value="new" checked onchange="onImportWsModeChange()">
+          <label for="import-ws-mode-new">新建 workspace</label>
+        </div>
+        <input type="text" id="import-new-ws-name" class="text-input full" placeholder="新 workspace 名稱" style="margin-bottom:0.5rem">
+        <div class="radio-line">
+          <input type="radio" name="import-ws-mode" id="import-ws-mode-existing" value="existing" onchange="onImportWsModeChange()">
+          <label for="import-ws-mode-existing">加入既有 workspace</label>
+        </div>
+        <select id="import-existing-ws" class="text-input full" disabled>
+          <option value="">載入中…</option>
+        </select>
+      </div>
+
+      <!-- 用途：general / case_comparison（預設 general），對齊後端 IMPORT_PURPOSES -->
+      <div class="form-row">
+        <label class="form-label" for="import-purpose">用途</label>
+        <select id="import-purpose" class="text-input full">
+          <option value="general" selected>一般情報分析（general）</option>
+          <option value="case_comparison">案件比對（case_comparison）</option>
+        </select>
+      </div>
+
+      <div class="import-error" id="import-error" hidden></div>
+      <div id="import-progress"></div>
+      <div id="import-result"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-outline" onclick="closeImportDialog()">取消</button>
+      <button class="btn btn-primary" id="btn-start-import" onclick="startImport()">開始匯入</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1103,6 +1172,173 @@ function startPollFallback() {
   if (!ssePollTimer) {
     ssePollTimer = setInterval(fetchTasks, 30000);  // 斷線退化：30 秒輪詢保底
   }
+}
+
+// ══════════ 匯入專利資料（頂列匯入鈕 → 對話框 → POST /imports → 輪詢 /jobs） ══════════
+// workspace 二選一（新建 / 加入既有）互斥，對齊後端 create_import 的 workspace_id 與
+// new_workspace_name 互斥參數；用途對齊 IMPORT_PURPOSES（general／case_comparison）。
+// 上傳以檔案原始內容作 raw body 送出（沿 imports API 的串流語意，不打包 multipart）。
+function openImportDialog() {
+  resetImportDialog();
+  populateImportWorkspaces();
+  const ov = el('import-overlay');
+  if (ov) ov.hidden = false;
+}
+function closeImportDialog() {
+  const ov = el('import-overlay');
+  if (ov) ov.hidden = true;
+  if (importPollTimer) { clearTimeout(importPollTimer); importPollTimer = null; }
+}
+// 重置對話框：清錯誤、進度、結果與檔案選擇，恢復按鈕與模式。
+function resetImportDialog() {
+  showImportError('');
+  const prog = el('import-progress'); if (prog) prog.innerHTML = '';
+  const res = el('import-result'); if (res) res.innerHTML = '';
+  const f = el('import-file'); if (f) f.value = '';
+  const btn = el('btn-start-import');
+  if (btn) { btn.disabled = false; btn.textContent = '開始匯入'; }
+  const modeNew = el('import-ws-mode-new'); if (modeNew) modeNew.checked = true;
+  onImportWsModeChange();
+}
+// 二選一互斥：new 模式啟用名稱輸入、停用既有下拉；existing 模式反之。
+function onImportWsModeChange() {
+  const mode = importWsMode();
+  const nameInput = el('import-new-ws-name');
+  const existingSel = el('import-existing-ws');
+  if (nameInput) nameInput.disabled = (mode !== 'new');
+  if (existingSel) existingSel.disabled = (mode !== 'existing');
+}
+function importWsMode() {
+  const existing = el('import-ws-mode-existing');
+  return (existing && existing.checked) ? 'existing' : 'new';
+}
+// 既有 workspace 下拉接真實 /workspaces（不寫死）；沿用清單 API 的 items 欄位。
+async function populateImportWorkspaces() {
+  const sel = el('import-existing-ws');
+  if (!sel) return;
+  try {
+    const data = await getJson(API + '/workspaces?limit=200');
+    const items = data.items || [];
+    if (items.length === 0) {
+      sel.innerHTML = '<option value="">（尚無既有 workspace）</option>';
+      return;
+    }
+    sel.innerHTML = items.map(w =>
+      '<option value="' + w.workspace_id + '">'
+      + escHtml(w.workspace_name) + '（' + (w.patent_count ?? 0) + ' 件）</option>'
+    ).join('');
+  } catch (e) {
+    sel.innerHTML = '<option value="">載入失敗</option>';
+  }
+}
+function showImportError(msg) {
+  const box = el('import-error');
+  if (!box) return;
+  if (!msg) { box.hidden = true; box.textContent = ''; return; }
+  box.hidden = false; box.textContent = msg;
+}
+// 開始匯入：驗證檔案與 workspace 選擇 → 組 query（filename/purpose + workspace 二選一其一）
+// → 以檔案 raw body POST /imports → 拿 job_id 輪詢 /jobs。422/413 顯示可讀中文，不吞錯。
+async function startImport() {
+  showImportError('');
+  const res = el('import-result'); if (res) res.innerHTML = '';
+  const fileInput = el('import-file');
+  const file = fileInput && fileInput.files && fileInput.files[0];
+  if (!file) { showImportError('請先選擇要匯入的檔案。'); return; }
+
+  const mode = importWsMode();
+  // 組 query：filename／purpose 固定，workspace 二選一其一（new_workspace_name 或 workspace_id）。
+  const qsParts = [
+    'filename=' + encodeURIComponent(file.name),
+    'purpose=' + encodeURIComponent(el('import-purpose').value),
+  ];
+  if (mode === 'new') {
+    const name = (el('import-new-ws-name').value || '').trim();
+    if (!name) { showImportError('請輸入新 workspace 名稱。'); return; }
+    qsParts.push('new_workspace_name=' + encodeURIComponent(name));
+  } else {
+    const wsId = el('import-existing-ws').value;
+    if (!wsId) { showImportError('請選擇要加入的既有 workspace。'); return; }
+    qsParts.push('workspace_id=' + encodeURIComponent(wsId));
+  }
+  const queryString = qsParts.join('&');
+
+  const btn = el('btn-start-import');
+  if (btn) { btn.disabled = true; btn.textContent = '上傳中…'; }
+  try {
+    // body 直送檔案本體（raw body 串流）；Content-Type 隨檔（瀏覽器以 File 型別帶出）。
+    const resp = await fetch(API + '/imports?' + queryString, {
+      method: 'POST',
+      headers: file.type ? { 'Content-Type': file.type } : {},
+      body: file,
+    });
+    if (!resp.ok) {
+      showImportError(importErrorMessage(resp.status, await resp.json().catch(() => ({}))));
+      if (btn) { btn.disabled = false; btn.textContent = '開始匯入'; }
+      return;
+    }
+    const job = await resp.json();
+    pollImportJob(job.job_id);
+  } catch (e) {
+    showImportError('連線錯誤：' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '開始匯入'; }
+  }
+}
+// 錯誤碼轉可讀中文：422（副檔名／workspace 二選一互斥／空檔）、413（過大），其餘照原訊息。
+function importErrorMessage(status, err) {
+  const detail = (err && err.detail) ? (typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail)) : '';
+  if (status === 422) return '無法匯入（422）：' + (detail || '檔案格式或 workspace 選擇不符（副檔名須為 .xlsx/.csv/.txt/.xml，且 workspace 僅能擇一）。');
+  if (status === 413) return '檔案過大（413）：' + (detail || '超過上傳容量上限。');
+  return '匯入失敗（' + status + '）：' + (detail || '請稍後再試。');
+}
+// 輪詢匯入 job（GET /jobs/{id}）：以統一進度元件呈現進度／階段／已耗時；完成顯示匯入統計並刷新 workspace 下拉。
+let importPollTimer = null;
+async function pollImportJob(jobId) {
+  const prog = el('import-progress');
+  const started = Date.now();
+  async function tick() {
+    const ov = el('import-overlay');
+    if (!prog || (ov && ov.hidden)) return;  // 對話框已關閉即停止輪詢
+    try {
+      const j = await getJson(API + '/jobs/' + jobId);
+      prog.innerHTML = jobProgressCardHtml(j, started);
+      if (j.status === 'succeeded') {
+        renderImportResult(j);
+        // 匯入完成刷新頂列 workspace 下拉（新建的要出現、圈進的可選）。
+        await loadWorkspaces();
+        const btn = el('btn-start-import');
+        if (btn) { btn.disabled = false; btn.textContent = '再次匯入'; }
+        return;
+      }
+      if (['failed', 'cancelled'].includes(j.status)) {
+        showImportError('匯入工作失敗：' + (j.error_message || '（無錯誤訊息）'));
+        const btn = el('btn-start-import');
+        if (btn) { btn.disabled = false; btn.textContent = '開始匯入'; }
+        return;
+      }
+    } catch (e) {
+      showImportError('查詢匯入狀態失敗：' + e.message);
+      return;
+    }
+    importPollTimer = setTimeout(tick, 2000);
+  }
+  tick();
+}
+// 完成結果：讀 job.result 的匯入統計欄（inserted/matched_existing/updated/patent_ids），欄名以
+// wips_importer summary 為準（另含 status/skipped）。patent_ids 顯示件數。
+function renderImportResult(j) {
+  const wrap = el('import-result');
+  if (!wrap) return;
+  const r = j.result || {};
+  const patentCount = Array.isArray(r.patent_ids) ? r.patent_ids.length : (r.patent_ids ?? 0);
+  wrap.innerHTML = '<div class="card import-result">'
+    + '<div style="font-weight:600;color:var(--ok)">✓ 匯入完成</div>'
+    + '<div class="stat-grid">'
+    + '<span class="k">新增（inserted）</span><span>' + (r.inserted ?? 0) + '</span>'
+    + '<span class="k">命中既有（matched_existing）</span><span>' + (r.matched_existing ?? 0) + '</span>'
+    + '<span class="k">更新（updated）</span><span>' + (r.updated ?? 0) + '</span>'
+    + '<span class="k">本批專利數（patent_ids）</span><span>' + patentCount + '</span>'
+    + '</div></div>';
 }
 
 // ══════════ 初始化 ══════════

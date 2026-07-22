@@ -205,6 +205,60 @@ class FrontendSkeletonTests(unittest.TestCase):
         # 預設全勾語意：把全部 REPORT_TYPES 加入 reportSelection。
         self.assertRegex(self.html, r"state\.reportSelection\.add")
 
+    def test_topbar_has_import_button(self):
+        """頂列（workspace-select 旁）有「匯入」鈕掛點，點開匯入面板。"""
+        # 匯入鈕以 id 掛 onclick，開啟匯入對話框；文案含「匯入」。
+        self.assertIn("btn-open-import", self.html)
+        self.assertIn("openImportDialog", self.html)
+        self.assertIn("匯入", self.html)
+
+    def test_import_panel_has_file_input(self):
+        """匯入面板含檔案輸入，accept 對齊後端白名單副檔名（.xlsx/.csv/.txt/.xml）。"""
+        self.assertIn("import-file", self.html)
+        self.assertRegex(self.html, r'type="file"')
+        for ext in (".xlsx", ".csv", ".txt", ".xml"):
+            with self.subTest(ext=ext):
+                self.assertIn(ext, self.html)
+
+    def test_import_panel_workspace_choice_exclusive(self):
+        """workspace 二選一：新建（輸入名稱）或加入既有（下拉），互斥且接真實 workspaces API。"""
+        for needle in (
+            "import-ws-mode",          # 二選一模式切換（new / existing）
+            "import-new-ws-name",      # 新建 workspace 名稱輸入
+            "import-existing-ws",      # 既有 workspace 下拉
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+        # 既有 workspace 下拉接真實 API（沿用 loadWorkspaces / /workspaces），非寫死清單。
+        self.assertIn("/workspaces", self.html)
+
+    def test_import_panel_has_purpose_options(self):
+        """用途下拉：general／case_comparison（預設 general），對齊後端 IMPORT_PURPOSES。"""
+        self.assertIn("import-purpose", self.html)
+        for needle in ("general", "case_comparison", "一般情報分析", "案件比對"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_import_calls_imports_endpoint(self):
+        """開始匯入以 raw body 呼叫 POST /api/v1/imports（帶 filename/purpose/workspace 參數）。"""
+        self.assertIn("startImport", self.html)
+        # 端點路徑片段（前端以 API 前綴 + '/imports' 組路徑）與 query 參數名。
+        self.assertIn("/imports", self.html)
+        for qs in ("filename=", "purpose="):
+            with self.subTest(qs=qs):
+                self.assertIn(qs, self.html)
+        # workspace 二選一參數名各自存在（互斥擇一帶入）。
+        self.assertIn("workspace_id=", self.html)
+        self.assertIn("new_workspace_name=", self.html)
+        # body 直送檔案（raw body 串流），非 multipart 打包。
+        self.assertIn("pollImportJob", self.html)
+
+    def test_import_completion_reads_job_result_fields(self):
+        """完成顯示 job result 的匯入統計欄（inserted/matched_existing/updated/patent_ids）。"""
+        for field in ("inserted", "matched_existing", "updated", "patent_ids"):
+            with self.subTest(field=field):
+                self.assertIn(field, self.html)
+
     def test_no_hardcoded_fake_patent_rows(self):
         """主內容區不得寫死假專利資料列（資料一律來自真實 API）。"""
         # 佔位提示允許；但不得出現硬寫的假專利號樣式（如 US1234567B2 之類寫死列）
