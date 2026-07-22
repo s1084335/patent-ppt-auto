@@ -41,6 +41,8 @@ JOB_TYPES: frozenset[str] = frozenset(
         "patent_import",
         "ai:narrative",
         "case_comparison",
+        # 匯入後補算 embeddings（technical/effect）；複用既有 write_patent_embeddings，只算缺的。
+        "embeddings",
     }
 )
 

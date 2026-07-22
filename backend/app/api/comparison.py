@@ -160,6 +160,67 @@ def _require_comparison_job(job_id: int) -> jr.ProcessingJob:
     return job
 
 
+@router.post("/{job_id}/subject")
+def set_subject(job_id: int, body: dict[str, Any]):
+    """設定被比對來源（要拆要素、與參考專利比對的案件資料），mode 二選一。
+
+    body={mode:'library', patent_ids:[...]}：驗 patent_ids 存在於庫、去重後綁為被比對集合。
+      去重後為空或有不存在的 patent_id → 422。
+    body={mode:'import', import_job_id:N}：綁定已建立的輪1 匯入 job（須 purpose=case_comparison）
+      為被比對來源；匯入完成後的 patent_ids 由 worker 回填，此處先建立追溯。import_job_id
+      不存在、非 patent_import job 或非 case_comparison 用途 → 422。
+
+    與 target（產品標的）語意區分：subject＝被比對專利集合。回 {job_id, output_type:'subject',
+    version, mode} 及（library）bound_patent_ids／（import）import_job_id。
+    """
+    _require_comparison_job(job_id)
+    mode = body.get("mode")
+    if mode not in ComparisonStore.SUBJECT_MODES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"mode must be one of {sorted(ComparisonStore.SUBJECT_MODES)}",
+        )
+    store = ComparisonStore()
+    if mode == ComparisonStore.SUBJECT_MODE_LIBRARY:
+        patent_ids = body.get("patent_ids")
+        if not isinstance(patent_ids, list) or not all(
+            isinstance(pid, int) for pid in patent_ids
+        ):
+            raise HTTPException(status_code=422, detail="patent_ids must be a list of int")
+        try:
+            version, bound = store.bind_subject_library(job_id, patent_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return {
+            "job_id": job_id,
+            "output_type": "subject",
+            "version": version,
+            "mode": mode,
+            "bound_patent_ids": bound,
+        }
+
+    # import 模式：綁定既有 patent_import job（purpose=case_comparison）為被比對來源。
+    import_job_id = body.get("import_job_id")
+    if not isinstance(import_job_id, int):
+        raise HTTPException(status_code=422, detail="import_job_id is required (int)")
+    import_job = jr.get_job(import_job_id)
+    if import_job is None or import_job.job_type != "patent_import":
+        raise HTTPException(status_code=422, detail="import_job_id is not a patent_import job")
+    if (import_job.payload_json or {}).get("purpose") != "case_comparison":
+        raise HTTPException(
+            status_code=422,
+            detail="import job purpose must be case_comparison",
+        )
+    version = store.bind_subject_import(job_id, import_job_id)
+    return {
+        "job_id": job_id,
+        "output_type": "subject",
+        "version": version,
+        "mode": mode,
+        "import_job_id": import_job_id,
+    }
+
+
 @router.post("/{job_id}/target")
 def save_target(job_id: int, body: dict[str, Any]):
     """Save the comparison target payload."""

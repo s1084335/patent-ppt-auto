@@ -67,6 +67,7 @@ def setUpModule():
     cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(PROJECT_ROOT / "alembic"))
     command.upgrade(cfg, "head")
+    _seed_subject_patents()
 
 
 def tearDownModule():
@@ -89,6 +90,21 @@ def _cleanup():
             "DELETE FROM app_layer.workflow_runs WHERE request_json ? %s",
             ("_verify_marker_comparison",),
         )
+        conn.commit()
+
+
+# subject library 模式需要既有庫專利：灌少量可控 fixture（避開正式資料範圍）。
+SUBJECT_PIDS = [930001, 930002, 930003]
+
+
+def _seed_subject_patents():
+    with psycopg.connect(**_kw(TEST_DB)) as conn:
+        for i, pid in enumerate(SUBJECT_PIDS):
+            conn.execute(
+                'INSERT INTO core_layer.patents (id, title, country_code, "授權公告號") '
+                "VALUES (%s, %s, 'US', %s) ON CONFLICT (id) DO NOTHING",
+                (pid, f"subject fixture {i}", f"US9300{pid}B"),
+            )
         conn.commit()
 
 
@@ -477,6 +493,213 @@ class ElementAnalysisTests(unittest.TestCase):
         self.assertEqual(body["element_analysis_version"], ea_version)
         self.assertIn("element_analysis", body)
         self.assertEqual(body["element_analysis"]["claims"][0]["claim_number"], "1")
+
+
+class SetSubjectLibraryTests(unittest.TestCase):
+    """被比對來源 · library 模式：既有庫專利號選取綁定。"""
+
+    PREFIX = PREFIX
+
+    def setUp(self):
+        resp = client.post(
+            self.PREFIX,
+            json={
+                "workspace_id": 1,
+                "case_title": "Subject library case",
+                "case_text": "text",
+                "comparison_type": "claim_or_technical",
+                "idempotency_key": f"subj-lib-{uuid4().hex[:8]}",
+            },
+        )
+        self.assertEqual(resp.status_code, 202)
+        self.job_id = resp.json()["job_id"]
+
+    def tearDown(self):
+        _cleanup()
+
+    def test_bind_library_valid(self):
+        """綁定既有庫專利集合：回 subject 版本與去重後的 bound_patent_ids。"""
+        resp = client.post(
+            f"{self.PREFIX}/{self.job_id}/subject",
+            json={"mode": "library", "patent_ids": [SUBJECT_PIDS[0], SUBJECT_PIDS[1]]},
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["output_type"], "subject")
+        self.assertEqual(body["mode"], "library")
+        self.assertGreaterEqual(body["version"], 1)
+        self.assertEqual(sorted(body["bound_patent_ids"]), sorted([SUBJECT_PIDS[0], SUBJECT_PIDS[1]]))
+
+    def test_bind_library_dedup(self):
+        """重複 patent_id 去重後綁定集合唯一。"""
+        resp = client.post(
+            f"{self.PREFIX}/{self.job_id}/subject",
+            json={"mode": "library", "patent_ids": [SUBJECT_PIDS[0], SUBJECT_PIDS[0], SUBJECT_PIDS[1]]},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.json()["bound_patent_ids"]), 2)
+
+    def test_bind_library_missing_patent_422(self):
+        """有 patent_id 不存在於庫 → 422（列出缺的）。"""
+        resp = client.post(
+            f"{self.PREFIX}/{self.job_id}/subject",
+            json={"mode": "library", "patent_ids": [SUBJECT_PIDS[0], 999_999_999]},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_bind_library_empty_422(self):
+        """空集合（去重後為空）→ 422。"""
+        resp = client.post(
+            f"{self.PREFIX}/{self.job_id}/subject",
+            json={"mode": "library", "patent_ids": []},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_bind_library_bad_type_422(self):
+        """patent_ids 非 int 陣列 → 422。"""
+        resp = client.post(
+            f"{self.PREFIX}/{self.job_id}/subject",
+            json={"mode": "library", "patent_ids": ["a", "b"]},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_invalid_mode_422(self):
+        """非法 mode → 422。"""
+        resp = client.post(
+            f"{self.PREFIX}/{self.job_id}/subject",
+            json={"mode": "bogus", "patent_ids": [SUBJECT_PIDS[0]]},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_subject_job_not_found_404(self):
+        """job 不存在 → 404。"""
+        resp = client.post(
+            f"{self.PREFIX}/999999/subject",
+            json={"mode": "library", "patent_ids": [SUBJECT_PIDS[0]]},
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_subject_readable_via_store(self):
+        """綁定後 get_latest_subject 取回被比對 patent_ids（供輪3 相似搜尋取用）。"""
+        client.post(
+            f"{self.PREFIX}/{self.job_id}/subject",
+            json={"mode": "library", "patent_ids": [SUBJECT_PIDS[2]]},
+        )
+        subject = ComparisonStore().get_latest_subject(self.job_id)
+        self.assertIsNotNone(subject)
+        self.assertEqual(subject["data"]["mode"], "library")
+        self.assertEqual(subject["data"]["patent_ids"], [SUBJECT_PIDS[2]])
+
+
+class SetSubjectImportTests(unittest.TestCase):
+    """被比對來源 · import 模式：綁定既有輪1 匯入 job（purpose=case_comparison）。"""
+
+    PREFIX = PREFIX
+
+    def setUp(self):
+        resp = client.post(
+            self.PREFIX,
+            json={
+                "workspace_id": 1,
+                "case_title": "Subject import case",
+                "case_text": "text",
+                "comparison_type": "claim_or_technical",
+                "idempotency_key": f"subj-imp-{uuid4().hex[:8]}",
+            },
+        )
+        self.assertEqual(resp.status_code, 202)
+        self.job_id = resp.json()["job_id"]
+
+    def tearDown(self):
+        _cleanup()
+
+    def test_bind_import_valid(self):
+        """綁定 case_comparison patent_import job 為被比對來源。"""
+        import_job = jr.create_job(
+            "patent_import",
+            {"path": "x", "file_hash": "h", "purpose": "case_comparison"},
+        )
+        resp = client.post(
+            f"{self.PREFIX}/{self.job_id}/subject",
+            json={"mode": "import", "import_job_id": import_job.job_id},
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["mode"], "import")
+        self.assertEqual(body["import_job_id"], import_job.job_id)
+        self.assertGreaterEqual(body["version"], 1)
+
+    def test_bind_import_wrong_purpose_422(self):
+        """引用的匯入 job 非 case_comparison 用途 → 422。"""
+        import_job = jr.create_job(
+            "patent_import",
+            {"path": "x", "file_hash": "h", "purpose": "general"},
+        )
+        resp = client.post(
+            f"{self.PREFIX}/{self.job_id}/subject",
+            json={"mode": "import", "import_job_id": import_job.job_id},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_bind_import_non_import_job_422(self):
+        """import_job_id 指向非 patent_import job → 422。"""
+        other = jr.create_job("clustering_calibrate", {"_verify": True})
+        resp = client.post(
+            f"{self.PREFIX}/{self.job_id}/subject",
+            json={"mode": "import", "import_job_id": other.job_id},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_bind_import_missing_id_422(self):
+        """缺 import_job_id → 422。"""
+        resp = client.post(
+            f"{self.PREFIX}/{self.job_id}/subject",
+            json={"mode": "import"},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+
+class EmbeddingsEnqueueOnCaseComparisonImportTests(unittest.TestCase):
+    """案件比對匯入後觸發 embeddings：驗 handler enqueue 既有 embeddings job（gated，不真算）。"""
+
+    def test_case_comparison_import_enqueues_embeddings(self):
+        """purpose=case_comparison 且有 patent_ids 時，匯入 handler enqueue 一個 embeddings job。"""
+        from contextlib import contextmanager
+        from unittest import mock
+
+        from backend.app.worker import handlers
+
+        # mock 掉檔案驗證、實際匯入與 workspace 圈選，只驗案件比對匯入完成後有 enqueue embeddings。
+        fake_ctx = mock.MagicMock()
+
+        @contextmanager
+        def _noop_keepalive(*_args, **_kwargs):
+            yield
+
+        fake_ctx.keepalive.side_effect = _noop_keepalive
+        # 用真實 .xlsx 副檔名路徑通過白名單檢查（不需 mock Path.suffix）。
+        payload = {
+            "path": "imports/uuid/file.xlsx", "file_hash": "h",
+            "purpose": "case_comparison", "new_workspace_name": "cc-ws",
+        }
+        with mock.patch.object(handlers, "is_within_imports_root", return_value=True), \
+             mock.patch("pathlib.Path.is_file", return_value=True), \
+             mock.patch.object(handlers, "file_sha256", return_value="h"), \
+             mock.patch.object(handlers, "import_wips_file",
+                               return_value={"status": "ok", "patent_ids": [SUBJECT_PIDS[0]]}), \
+             mock.patch.object(handlers, "_attach_import_workspace", return_value=None), \
+             mock.patch.object(handlers, "_enqueue_case_comparison_embeddings") as enqueue_mock:
+            enqueue_mock.return_value = mock.MagicMock(job_id=4242)
+            summary = handlers.handle_patent_import(payload, fake_ctx)
+        enqueue_mock.assert_called_once()
+        self.assertEqual(summary["embeddings_job_id"], 4242)
+
+    def test_embeddings_job_type_registered(self):
+        """embeddings 為合法 job_type 且有對應 handler。"""
+        from backend.app.worker import handlers
+
+        self.assertIn("embeddings", jr.JOB_TYPES)
+        self.assertIn("embeddings", handlers.HANDLERS)
 
 
 if __name__ == "__main__":

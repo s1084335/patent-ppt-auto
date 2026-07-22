@@ -11,7 +11,7 @@ from typing import Any, Callable
 import psycopg
 
 from backend.app.clustering.runner import calibrate_top_level, finalize_top_level
-from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL, get_source_spec
+from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL, get_source_spec, source_fields
 from backend.app.clustering.workspace_service import (
     incremental_workspace,
     merge_workspace_topics,
@@ -179,8 +179,25 @@ def handle_patent_import(payload: dict[str, Any], context: JobContext) -> dict[s
         if workspace_result is not None:
             summary["workspace_id"] = workspace_result["workspace_id"]
             summary["workspace"] = workspace_result
+        # 案件比對匯入：匯入的專利要走 embeddings（technical/effect）。複用既有
+        # write_patent_embeddings（只算缺的），以獨立 embeddings job enqueue，不在匯入 job 內
+        # 直接載入數百 MB 權重。一般匯入不自動觸發（沿既有分群流程按需觸發），只案件比對批補算。
+        if payload.get("purpose") == "case_comparison" and (summary.get("patent_ids") or []):
+            embeddings_job = _enqueue_case_comparison_embeddings()
+            summary["embeddings_job_id"] = embeddings_job.job_id
     context.heartbeat("patent_import_completed", 95)
     return _json_safe(summary)
+
+
+def _enqueue_case_comparison_embeddings() -> "jr.ProcessingJob":
+    """為案件比對匯入批 enqueue 一個 embeddings job（技術＋功效兩通道，只算缺的）。
+
+    以 job 觸發而非匯入 job 內直接計算：避免匯入 job 載入重權重、讓 embeddings 可獨立重試。
+    write_patent_embeddings 內建「只算缺的」，故通道級補算不會重算既有 embeddings。
+    """
+    from backend.app.db import job_repository as jr
+
+    return jr.create_job("embeddings", {"source_fields": list(source_fields())})
 
 
 def _attach_import_workspace(
@@ -261,6 +278,44 @@ def _resolve_active_topic_ids(
                 f"topic code {code!r} has no topic_id in topic run {topic_run_id}")
         resolved.append(int(entry["topic_id"]))
     return resolved
+
+
+def handle_embeddings(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """對指定 source_fields 補算 patent-level embeddings；複用既有 write_patent_embeddings。
+
+    payload.source_fields（list[str]，缺省＝技術＋功效兩通道）。逐通道呼叫既有正式流程，
+    該流程內建「只算缺的」（find_pending_embedding_indices：DB 已有相同 model＋text_hash 者直接
+    重用，不重算），故對已算過的專利不重複進 GPU。embeddings 屬全庫通道級補算（案件比對匯入的
+    新專利也在該通道表內），符合「不重算已有 embeddings」。回各通道 upsert/reuse 統計摘要。
+
+    模型權重不存在（開發/測試機無本地 PatentSBERTa）時 write_patent_embeddings 拋
+    FileNotFoundError，job 直接 failed 並保存原因，不半途落庫。
+    """
+    from backend.app.clustering.db_writer import EmbeddingWriteConfig, write_patent_embeddings
+
+    context.heartbeat("embeddings_started", 5)
+    raw_fields = payload.get("source_fields")
+    if raw_fields is None:
+        fields = list(source_fields())
+    else:
+        fields = [_source_field(value) for value in raw_fields]
+    if not fields:
+        raise ValueError("embeddings requires at least one source_field")
+
+    results: dict[str, Any] = {}
+    for index, field in enumerate(fields):
+        context.check_cancelled()
+        context.heartbeat(f"embeddings_{field}", 10 + int(80 * index / max(len(fields), 1)))
+        with context.keepalive(f"embeddings_running_{field}", 20, interval_seconds=LONG_TASK_HEARTBEAT_SECONDS):
+            summary = write_patent_embeddings(EmbeddingWriteConfig(source_field=field))
+        results[field] = {
+            "source_rows": summary.source_rows,
+            "reused_rows": summary.reused_rows,
+            "upserted_rows": summary.upserted_rows,
+            "table_rows_for_source": summary.table_rows_for_source,
+        }
+    context.heartbeat("embeddings_completed", 95)
+    return _json_safe({"source_fields": fields, "results": results})
 
 
 def handle_topic_merge(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
@@ -376,6 +431,7 @@ HANDLERS: dict[str, Handler] = {
     "clustering_incremental": handle_clustering_incremental,
     "report_generate": handle_report_generate,
     "patent_import": handle_patent_import,
+    "embeddings": handle_embeddings,
     "topic_merge": handle_topic_merge,
     "topic_unmerge": handle_topic_unmerge,
     "ai:narrative": handle_ai_narrative,

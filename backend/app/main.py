@@ -9,7 +9,17 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from backend.app import settings
-from backend.app.api import clustering, comparison, events, imports, jobs, reports, topics, workspaces
+from backend.app.api import (
+    clustering,
+    comparison,
+    events,
+    imports,
+    jobs,
+    patents,
+    reports,
+    topics,
+    workspaces,
+)
 from backend.app.repositories.topic_repository import TopicRepositoryUnavailableError
 
 app = FastAPI(title="Patent Backend", version="0.1.0")
@@ -21,6 +31,7 @@ app.include_router(imports.router, prefix=settings.API_V1_PREFIX)
 app.include_router(topics.router, prefix=settings.API_V1_PREFIX)
 app.include_router(comparison.router, prefix=settings.API_V1_PREFIX)
 app.include_router(events.router, prefix=settings.API_V1_PREFIX)
+app.include_router(patents.router, prefix=settings.API_V1_PREFIX)
 
 
 _REPORT_LATEST = settings.PROJECT_ROOT / "output" / "full_report_latest" / "index.html"

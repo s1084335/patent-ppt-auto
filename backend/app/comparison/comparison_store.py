@@ -33,6 +33,14 @@ OUTPUT_ELEMENT_ANALYSIS = "element_analysis"
 OUTPUT_VERDICT = "verdict"
 OUTPUT_ILLUSTRATIONS = "illustrations"
 OUTPUT_TARGET = "target"
+# subject＝被比對專利集合（要拆要素、與參考專利比對的案件資料）。與 target（產品標的）
+# 語意區分：模式 A 產品 vs 專利時，被比對側是專利。掛在同一 run 上、版本化 append。
+OUTPUT_SUBJECT = "subject"
+
+# 被比對來源模式（2026-07-22 定案）：library＝既有庫專利號選取；import＝檔案匯入（走輪1）。
+SUBJECT_MODE_LIBRARY = "library"
+SUBJECT_MODE_IMPORT = "import"
+SUBJECT_MODES: frozenset[str] = frozenset({SUBJECT_MODE_LIBRARY, SUBJECT_MODE_IMPORT})
 
 
 class GateNotApprovedError(RuntimeError):
@@ -41,6 +49,11 @@ class GateNotApprovedError(RuntimeError):
 
 class ComparisonStore:
     """比對案件與版本化產出存取層。"""
+
+    # 被比對來源模式常數掛在類上，供 API 層驗證（避免 API 反向依賴模組級常數多一行 import）。
+    SUBJECT_MODE_LIBRARY = SUBJECT_MODE_LIBRARY
+    SUBJECT_MODE_IMPORT = SUBJECT_MODE_IMPORT
+    SUBJECT_MODES = SUBJECT_MODES
 
     def __init__(self, connect_kwargs: dict[str, Any] | None = None):
         # 未指定時沿用專案統一連線設定（env PG* / DATABASE_URL）；與 outputs repo 共用同一組
@@ -152,6 +165,63 @@ class ComparisonStore:
         if not isinstance(target.get("simulated"), bool):
             raise ValueError("target payload 必須明確標注 simulated 布林值")
         return self._outputs.append_output(run_id, OUTPUT_TARGET, target)
+
+    def bind_subject_library(
+        self, run_id: int, patent_ids: list[int]
+    ) -> tuple[int, list[int]]:
+        """綁定被比對專利集合（library 模式）：去重、驗存在於 core_layer.patents。
+
+        回傳 (version, bound_patent_ids)。空集合（去重後為空）→ ValueError；有 patent_id
+        不存在於庫 → ValueError（列出缺的）。存 output_type='subject'（版本化 append，不覆蓋），
+        payload={mode:'library', patent_ids:[...]}。subject 是比對輸入素材、非判斷產出，
+        不受 understanding_approval 閘門限制。存在性以單一 ANY 批次查（不逐筆）。
+        """
+        bound = self._dedup_ids(patent_ids)
+        if not bound:
+            raise ValueError("patent_ids 去重後不得為空")
+        missing = self._missing_patent_ids(bound)
+        if missing:
+            raise ValueError(f"patent_ids not found in core_layer.patents: {missing}")
+        data = {"mode": SUBJECT_MODE_LIBRARY, "patent_ids": bound}
+        version = self._outputs.append_output(run_id, OUTPUT_SUBJECT, data)
+        return version, bound
+
+    def bind_subject_import(self, run_id: int, import_job_id: int) -> int:
+        """綁定被比對來源（import 模式）：記錄觸發的輪1 匯入 job 參照。
+
+        匯入為非同步（worker 執行實際匯入、圈 workspace、觸發 embeddings），匯入完成後的
+        patent_ids 由 worker 回填到匯入 job summary；此處先綁 import_job_id 建立追溯。
+        存 output_type='subject'，payload={mode:'import', import_job_id:N, patent_ids:[]}。
+        subject 不受 understanding_approval 閘門限制。
+        """
+        data = {
+            "mode": SUBJECT_MODE_IMPORT,
+            "import_job_id": int(import_job_id),
+            "patent_ids": [],
+        }
+        return self._outputs.append_output(run_id, OUTPUT_SUBJECT, data)
+
+    def get_latest_subject(self, run_id: int) -> dict[str, Any] | None:
+        """回傳最新版 subject 的 {version, data}；無則 None。供輪3 取被比對 patent_ids。"""
+        output = self._outputs.get_output(run_id, OUTPUT_SUBJECT)
+        if output is None:
+            return None
+        return {"version": output["version"], "data": output.get("data_json")}
+
+    @staticmethod
+    def _dedup_ids(patent_ids: list[int]) -> list[int]:
+        """去重（保序）並轉 int；型別錯誤直接冒泡（呼叫端應已驗）。"""
+        return list(dict.fromkeys(int(value) for value in patent_ids))
+
+    def _missing_patent_ids(self, patent_ids: list[int]) -> list[int]:
+        """單一 ANY 批次查 core_layer.patents，回不存在的 patent_id（保序）。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id FROM core_layer.patents WHERE id = ANY(%s)",
+                (patent_ids,),
+            ).fetchall()
+        existing = {int(row[0]) for row in rows}
+        return [pid for pid in patent_ids if pid not in existing]
 
     # ── 內部 guard ───────────────────────────────────────────────
 
