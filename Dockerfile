@@ -53,4 +53,5 @@ RUN mkdir -p /app/data/model_artifacts /app/output \
 USER patent
 EXPOSE 8000
 
-CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# APP_ROLE=backend uses the platform PORT; APP_ROLE=worker runs the worker shim.
+CMD ["python", "-m", "backend.app.deploy"]
