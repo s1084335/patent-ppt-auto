@@ -20,26 +20,27 @@ def normalize_lookup(value: str | None) -> str | None:
     return " ".join(text.casefold().split())
 
 
-def load_alias_rows(path: Path) -> list[dict[str, str]]:
+def load_alias_rows(path: Path, with_dropped: bool = False):
+    """載入來源檔並正規化；with_dropped=True 時回傳 (rows, dropped)。"""
     suffix = path.suffix.lower()
     if suffix == ".xlsx":
-        return load_xlsx_alias_rows(path)
+        return load_xlsx_alias_rows(path, with_dropped=with_dropped)
     if suffix == ".csv":
-        return load_csv_alias_rows(path)
+        return load_csv_alias_rows(path, with_dropped=with_dropped)
     raise ValueError(f"Unsupported company alias file format: {path.suffix}")
 
 
-def load_csv_alias_rows(path: Path) -> list[dict[str, str]]:
+def load_csv_alias_rows(path: Path, with_dropped: bool = False):
     for encoding in ("utf-8-sig", "cp950", "big5", "gb18030"):
         try:
             with path.open("r", encoding=encoding, newline="") as handle:
-                return normalize_alias_rows(csv.DictReader(handle))
+                return normalize_alias_rows(csv.DictReader(handle), with_dropped=with_dropped)
         except UnicodeError:
             continue
     raise UnicodeError(f"Cannot decode company alias CSV: {path}")
 
 
-def load_xlsx_alias_rows(path: Path) -> list[dict[str, str]]:
+def load_xlsx_alias_rows(path: Path, with_dropped: bool = False):
     workbook = load_workbook(path, read_only=True, data_only=True)
     worksheet = workbook.worksheets[0]
     rows = worksheet.iter_rows(values_only=True)
@@ -51,38 +52,71 @@ def load_xlsx_alias_rows(path: Path) -> list[dict[str, str]]:
     for row in rows:
         record = {header: row[index] if index < len(row) else None for index, header in enumerate(headers) if header}
         records.append(record)
-    return normalize_alias_rows(records)
+    return normalize_alias_rows(records, with_dropped=with_dropped)
 
 
-def normalize_alias_rows(records: Any) -> list[dict[str, str]]:
+def normalize_alias_rows(records: Any, with_dropped: bool = False):
+    """讀來源檔（中文表頭）→ 輸出 SQL 具名參數用的英文 key，並依 DB 唯一索引去重。
+
+    去重 key 必須與 DB 唯一索引 ux_company_aliases_code_lookup_confirmed 同一把
+    ——即 (申請人代碼, normalize_lookup("別稱"))（後者為 lower + 壓空白）。
+    2026-07-23 定案「代碼是公司收斂的依據」後唯一性下放到代碼層級：
+    同一別稱字面可分屬不同代碼，只有「同代碼同別稱」才算重複。
+    舊版用 (代碼, 公司名稱, 別稱) 三元組，抓不到只差大小寫／空白的變體，
+    整批 executemany 會撞 UniqueViolation 導致全交易 rollback。
+
+    同 key 多筆時保留**來源檔第一筆**：來源順序穩定可重現，不需臆測哪個字面
+    「較正規」（大小寫偏好因公司而異，硬選反而是另一種寫死）。被丟棄的列
+    一律回報，不靜默丟棄。
+    """
     rows = []
-    seen = set()
+    dropped = []
+    seen: dict[tuple[str, str], dict[str, str]] = {}
     for record in records:
         company_code = clean_text(record.get("申請人代碼"))
         company_name = clean_text(record.get("公司名稱"))
         alias_name = clean_text(record.get("別稱"))
         if not company_name or not alias_name:
             continue
-        key = (company_code or "", company_name, alias_name)
+        key = (company_code or "", normalize_lookup(alias_name))
         if key in seen:
+            kept = seen[key]
+            dropped.append(
+                {
+                    "lookup_key": key[1],
+                    "company_code": company_code,
+                    "company_name": company_name,
+                    "alias_name": alias_name,
+                    "kept_company_code": kept["company_code"],
+                    "kept_alias_name": kept["alias_name"],
+                }
+            )
             continue
-        seen.add(key)
-        rows.append(
-            {
-                "company_code": company_code,
-                "company_name": company_name,
-                "alias_name": alias_name,
-            }
-        )
+        row = {
+            "company_code": company_code,
+            "company_name": company_name,
+            "alias_name": alias_name,
+        }
+        seen[key] = row
+        rows.append(row)
+    if with_dropped:
+        return rows, dropped
     return rows
 
 
-def import_company_aliases(path: Path, dry_run: bool = False) -> dict[str, Any]:
-    rows = load_alias_rows(path)
+def import_company_aliases(
+    path: Path,
+    dry_run: bool = False,
+    connect_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """匯入對照表；批內先依 DB 唯一索引同一把 key 去重，重複列記入 summary 警告。"""
+    rows, dropped = load_alias_rows(path, with_dropped=True)
     summary = {
         "file": str(path),
         "file_format": path.suffix.lstrip(".").lower(),
         "rows": len(rows),
+        "duplicate_dropped": len(dropped),
+        "duplicate_warnings": dropped,
         "status": "dry_run" if dry_run else "pending",
     }
     if dry_run:
@@ -95,7 +129,7 @@ def import_company_aliases(path: Path, dry_run: bool = False) -> dict[str, Any]:
 
     from backend.app.db.connection import get_connection_kwargs
 
-    with psycopg.connect(**get_connection_kwargs()) as conn:
+    with psycopg.connect(**(connect_kwargs or get_connection_kwargs())) as conn:
         with conn.cursor() as cur:
             cur.executemany(
                 """
@@ -105,8 +139,12 @@ def import_company_aliases(path: Path, dry_run: bool = False) -> dict[str, Any]:
                 VALUES (
                     %(company_code)s, %(company_name)s, %(alias_name)s, %(source_file)s
                 )
-                ON CONFLICT ("申請人代碼", "公司名稱", "別稱") DO UPDATE
+                -- 衝突目標＝ux_company_aliases_code_lookup_confirmed（同代碼同別稱）。
+                -- 重跑同一檔時更新公司名與來源，維持 idempotent。
+                ON CONFLICT ("申請人代碼", alias_lookup_key) WHERE review_status = 'confirmed' DO UPDATE
                 SET
+                    "公司名稱" = EXCLUDED."公司名稱",
+                    "別稱" = EXCLUDED."別稱",
                     source_file = EXCLUDED.source_file,
                     imported_at = now()
                 """,
@@ -239,14 +277,15 @@ def apply_confirmed_display_names(
     """套用使用者已裁決的公司顯示名（curation 落地機制；載體＝DB 本身，不經 CSV）。
 
     mapping = {申請人代碼: {"canonical": 顯示名, "aliases": [變體, ...]}}
-    規則（2026-07-21 公司顯示名原則定案）：
+    規則（2026-07-21 公司顯示名原則定案；2026-07-23 隨代碼收斂調整）：
     - canonical 自身也納入別稱，確保顯示名字面可精確命中。
-    - 批內先按 normalize_lookup 去重（同 lookup key 保留第一個字面，含跨 code），
-      避免大小寫／空白變體在同批內撞 ux_company_aliases_lookup_confirmed。
-    - lookup key 已存在（任何 review_status；以 DB 端 alias_lookup_key 同一運算式比對）
-      → UPDATE 該列 re-canonicalize：改掛新顯示名／代碼／source_file，review_status
-      一律轉 'confirmed'；不插新列，故不會撞唯一索引。
-    - lookup key 不存在 → INSERT 一列 confirmed（source_type='manual'＝人工裁決）。
+    - 批內按 (代碼, normalize_lookup(別稱)) 去重，與 DB 唯一索引
+      ux_company_aliases_code_lookup_confirmed 同一把 key。不同代碼可有同一別稱
+      字面，故去重**不再跨 code**——跨 code 去重會誤丟別家公司的合法別稱。
+    - (代碼, lookup key) 已存在 → UPDATE 該列 re-canonicalize：改掛新顯示名／
+      source_file，review_status 一律轉 'confirmed'；不插新列，故不撞唯一索引。
+      查詢必須同時比對代碼，否則在「一別稱多公司」下會取到別家公司的列。
+    - 不存在 → INSERT 一列 confirmed（source_type='manual'＝人工裁決）。
     - 只寫 derived_layer.company_aliases；原始專利表不碰。
     回傳 {"inserted", "updated", "dedup_dropped"}。
     """
@@ -257,9 +296,10 @@ def apply_confirmed_display_names(
 
     from backend.app.db.connection import get_connection_kwargs
 
-    # 批內去重：唯一索引是全表範圍，去重也必須跨 code 全批共用同一 key 空間
+    # 批內去重：唯一索引已含代碼，去重 key 同步改為 (code, lookup key)，
+    # 不同代碼的同一別稱字面各自保留，不再互相排擠。
     entries: list[tuple[str, str, str]] = []  # (code, canonical, 別稱字面)
-    seen_keys: set[str] = set()
+    seen_keys: set[tuple[str, str]] = set()
     dedup_dropped = 0
     for raw_code, spec in mapping.items():
         code = clean_text(raw_code)
@@ -270,7 +310,7 @@ def apply_confirmed_display_names(
             alias = clean_text(raw_alias)
             if not alias:
                 continue
-            key = normalize_lookup(alias)
+            key = (code, normalize_lookup(alias))
             if key in seen_keys:
                 dedup_dropped += 1
                 continue
@@ -281,20 +321,23 @@ def apply_confirmed_display_names(
     updated = 0
     with psycopg.connect(**(connect_kwargs or get_connection_kwargs())) as conn:
         for code, canonical, alias in entries:
-            # 以 DB 端與 generated 欄完全相同的正規化運算式找既有列，
+            # 以 DB 端與 generated 欄完全相同的正規化運算式找既有列。
+            # 必須同時比對「申請人代碼」：唯一索引已是 (代碼, lookup key)，
+            # 只用別稱會在「一別稱多公司」時取到別家公司的列並把它改掛到本代碼。
             # 多列同 key（review_required 重複）時優先更新 confirmed 列，其餘不動。
             row = conn.execute(
                 "SELECT id FROM derived_layer.company_aliases "
                 r"WHERE alias_lookup_key = lower(regexp_replace(btrim(%s), '\s+', ' ', 'g')) "
+                'AND "申請人代碼" IS NOT DISTINCT FROM %s '
                 "ORDER BY (review_status = 'confirmed') DESC, id LIMIT 1",
-                (alias,),
+                (alias, code),
             ).fetchone()
             if row:
                 conn.execute(
-                    'UPDATE derived_layer.company_aliases SET "公司名稱" = %s, "申請人代碼" = %s, '
+                    'UPDATE derived_layer.company_aliases SET "公司名稱" = %s, '
                     "source_file = %s, review_status = 'confirmed', source_type = 'manual', "
                     "updated_at = now() WHERE id = %s",
-                    (canonical, code, source_label, row[0]),
+                    (canonical, source_label, row[0]),
                 )
                 updated += 1
             else:

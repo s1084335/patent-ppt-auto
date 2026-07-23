@@ -76,10 +76,27 @@ base AS (
         LIMIT 1
     ) fam ON true
 ),
+-- 代碼→對照表公司名（2026-07-23 定案「申請人代碼是公司收斂的依據」）。
+-- 對照表的「公司名稱」是人工裁決過的顯示名，優先級高於任何從專利資料統計出來的名稱。
+-- 同一代碼在對照表可有多列（多個別稱），公司名稱理應一致；仍以 mode() 取最常見值
+-- 並在平手時依名稱排序，確保 deterministic。只採 confirmed 列，未裁決的不參與收斂。
+-- 這是一次 GROUP BY 掃描（代碼數量級，26 筆等級），之後以 hash join 掛回，非 N+1。
+code_alias_names AS (
+    SELECT
+        NULLIF(BTRIM(ca."申請人代碼"), '') AS company_code,
+        mode() WITHIN GROUP (ORDER BY ca."公司名稱") AS company_name
+    FROM derived_layer.company_aliases ca
+    WHERE ca.review_status = 'confirmed'
+      AND NULLIF(BTRIM(ca."申請人代碼"), '') IS NOT NULL
+      AND NULLIF(BTRIM(ca."公司名稱"), '') IS NOT NULL
+    GROUP BY NULLIF(BTRIM(ca."申請人代碼"), '')
+),
 -- 代碼對照：同一 WIPS 人名代碼（申請人代表碼／標準當前專利權人代碼）在庫內
 -- 可能對到多種名稱寫法（跨檔匯出甚至標準化名也會漂移）。
 -- 每個代碼選一種統一輸出：優先取最常見的標準化名，沒有就取最常見的原始名；
 -- mode() 平手時依排序取第一個，結果 deterministic。
+-- 排在 code_alias_names 之後、別稱之後——它是「庫內自我收斂」的保底，
+-- 沒有人工裁決名時才用，避免未經裁決的統計名蓋掉對照表。
 applicant_code_names AS (
     SELECT
         NULLIF(BTRIM(pp."申請人代表碼"), '') AS person_code,
@@ -155,13 +172,19 @@ SELECT
     b."申請人",
     b."申請人國籍",
     b."標準化申請人",
-    COALESCE(applicant_alias."公司名稱", acn.canonical_name, NULLIF(BTRIM(b."標準化申請人"), ''), NULLIF(BTRIM(b."申請人"), '')) AS applicant_display_name,
+    -- 收斂順位：代碼對照表 > 別稱對照表 > 庫內代碼統計名 > 標準化申請人 > 申請人。
+    -- 代碼命中即優先，確保同一代碼的所有專利落到同一顯示名（＝代碼是收斂依據）。
+    COALESCE(acan.company_name, applicant_alias."公司名稱", acn.canonical_name, NULLIF(BTRIM(b."標準化申請人"), ''), NULLIF(BTRIM(b."申請人"), '')) AS applicant_display_name,
     b."發明人",
     b."發明人國籍",
     b."最近專利權人[US,JP,KR,CN,CA,AU]",
     b."標準當前專利權人[US,JP,KR,CN,CA,AU]",
-    COALESCE(owner_alias."公司名稱", ocn.canonical_name, NULLIF(BTRIM(b."標準當前專利權人[US,JP,KR,CN,CA,AU]"), ''), NULLIF(BTRIM(b."最近專利權人[US,JP,KR,CN,CA,AU]"), '')) AS current_assignee_display_name,
+    -- 同上，以「標準當前專利權人代碼」為收斂依據。
+    COALESCE(ocan.company_name, owner_alias."公司名稱", ocn.canonical_name, NULLIF(BTRIM(b."標準當前專利權人[US,JP,KR,CN,CA,AU]"), ''), NULLIF(BTRIM(b."最近專利權人[US,JP,KR,CN,CA,AU]"), '')) AS current_assignee_display_name,
     b."最近受讓人[US,KR,CN]",
+    -- 最近受讓人在 WIPS 匯出無對應代碼欄（mappings/wips.py 僅有申請人代表碼與
+    -- 標準當前專利權人代碼兩個代碼欄），故只能走別稱路徑；來源日後若新增受讓人
+    -- 代碼欄，此處應比照上面兩欄改為代碼優先。
     COALESCE(assignee_alias."公司名稱", NULLIF(BTRIM(b."最近受讓人[US,KR,CN]"), '')) AS recent_assignee_display_name,
     b."主權項",
     b."獨立項[KR,JP,US,CN,EP,IN]",
@@ -216,7 +239,13 @@ LEFT JOIN LATERAL (
 LEFT JOIN applicant_code_names acn
     ON acn.person_code = NULLIF(BTRIM(b."申請人代表碼"), '')
 LEFT JOIN owner_code_names ocn
-    ON ocn.person_code = NULLIF(BTRIM(b."標準當前專利權人代碼[US,JP,KR,CN,CA,AU]"), '');
+    ON ocn.person_code = NULLIF(BTRIM(b."標準當前專利權人代碼[US,JP,KR,CN,CA,AU]"), '')
+-- 代碼→人工裁決公司名：兩個 CTE 都是代碼層級的小集合，equi-join 走 hash join，
+-- 每筆專利仍是常數成本，不引入 N+1（對照 LATERAL 別稱 join 每列各查一次）。
+LEFT JOIN code_alias_names acan
+    ON acan.company_code = NULLIF(BTRIM(b."申請人代表碼"), '')
+LEFT JOIN code_alias_names ocan
+    ON ocan.company_code = NULLIF(BTRIM(b."標準當前專利權人代碼[US,JP,KR,CN,CA,AU]"), '');
 """
 
 
