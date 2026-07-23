@@ -215,6 +215,19 @@ table.data tr:hover td { background: var(--panel-2); }
 /* 報表種類頁：產製完成後就地顯示完整報表（與匯出工作台共用卡片樣式）。 */
 #report-inline-view:not(:empty) { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.4rem 1.6rem; margin-top: 0.9rem; }
 .report-inline-head { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+/* 報表版本清單：最新展開、舊版收合可點開。 */
+.report-version-head { display: flex; gap: 0.7rem; align-items: baseline; flex-wrap: wrap; margin: 1.1rem 0 0.6rem; }
+.report-version-item { border: 1px solid var(--border); border-radius: 0.5rem; margin-bottom: 0.55rem; background: var(--panel); overflow: hidden; }
+.report-version-item.open { border-color: var(--accent); }
+.report-version-row { display: flex; width: 100%; align-items: center; gap: 0.55rem; padding: 0.6rem 0.85rem; background: var(--panel-2); border: none; color: var(--text); font-size: 0.9rem; cursor: pointer; text-align: left; }
+.report-version-row:hover { background: var(--panel); }
+.report-version-row .ver-caret { color: var(--text-muted); width: 1em; }
+.report-version-row .ver-time { font-weight: 600; }
+.report-version-row .ver-name { color: var(--text-muted); font-size: 0.78rem; }
+.ver-badge { font-size: 0.72rem; padding: 0.1rem 0.45rem; border-radius: 0.75rem; background: var(--accent); color: #fff; }
+.ver-badge-ai { background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
+.report-version-body { padding: 1.1rem 1.3rem; }
+.report-version-body[hidden] { display: none; }
 .export-cover { border-bottom: 2px solid var(--accent); padding-bottom: 1rem; margin-bottom: 1.4rem; }
 .export-cover h1 { font-size: 1.6rem; color: var(--accent); margin-bottom: 0.6rem; }
 .export-cover .cover-meta { display: grid; grid-template-columns: auto 1fr; gap: 0.3rem 1rem; font-size: 0.88rem; color: var(--text-muted); }
@@ -1089,8 +1102,8 @@ async function pollReportJob(jobId) {
       const j = await getJson(API + '/reports/' + jobId);
       wrap.innerHTML = jobProgressCardHtml(j, started);
       if (['succeeded', 'failed', 'cancelled'].includes(j.status)) {
-        // 產製完成即直接把完整報表渲染在本頁下方（不另開分頁）。
-        if (j.status === 'succeeded') loadInlineReport();
+        // 產製完成即重載版本清單：新版本會排在最上方並自動展開顯示內容。
+        if (j.status === 'succeeded') loadReportVersions();
         return;
       }
     } catch (e) {
@@ -1130,6 +1143,128 @@ async function loadInlineReport() {
       + renderReportContentHtml(readOnlyReportView(content));
   } catch (e) {
     wrap.innerHTML = '<div class="hint">載入報表內容失敗（' + escHtml(e.message) + '）。</div>';
+  }
+}
+
+// ── 報表版本清單（最新自動展開、舊版收合可點開） ──
+// 使用者要的是「進頁就看到上次產的報表」，所以進頁只載清單（輕量端點，不開
+// report_data.json），再自動展開最新那筆；舊版本一律收合，點開才去抓該版本內容
+// （lazy），避免一進頁把 N 個版本的完整內容都拉回來。
+const REPORT_VERSION_PAGE = 5;   // 預設只列最近 5 個，其餘按「顯示更多」再列
+const reportVersions = {
+  items: [],        // 已取回的版本清單
+  total: 0,         // 後端實際總數（供「顯示更多」判斷）
+  limit: REPORT_VERSION_PAGE,
+  loaded: {},       // version -> true，已載過內容的版本（不重複抓）
+};
+
+// 目錄名尾端 <8位日期>_<6位時間> → 「2026-07-22 00:10」；解析不出就原樣顯示目錄名。
+function fmtReportVersionLabel(version, generatedAt) {
+  const src = generatedAt || '';
+  const m = src.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
+  if (m) return m[1] + ' ' + m[2] + ':' + m[3];
+  return version;
+}
+
+async function loadReportVersions() {
+  const wrap = el('report-version-list');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="hint">載入報表版本中…</div>';
+  try {
+    const data = await getJson(API + '/reports/versions?limit=' + reportVersions.limit);
+    reportVersions.items = data.versions || [];
+    reportVersions.total = data.total || 0;
+    reportVersions.loaded = {};
+    renderReportVersionList();
+  } catch (e) {
+    wrap.innerHTML = '<div class="hint">載入報表版本失敗（' + escHtml(e.message) + '）。</div>';
+  }
+}
+
+// 只畫外框（每個版本一列＋一個空的內容容器）；內容由展開時填。
+function renderReportVersionList() {
+  const wrap = el('report-version-list');
+  if (!wrap) return;
+  const items = reportVersions.items;
+  if (items.length === 0) {
+    wrap.innerHTML = '<div class="placeholder-box">尚無報表產出：請勾選上方報表種類後按「產製選定報表」。</div>';
+    return;
+  }
+  const rows = items.map(function (v, idx) {
+    const open = idx === 0;   // 最新那筆預設展開
+    const safe = cssSafeVersion(v.version);
+    return '<div class="report-version-item' + (open ? ' open' : '') + '" id="report-version-item-' + safe + '">'
+      + '<button class="report-version-row" onclick="toggleReportVersion(\'' + escHtml(v.version) + '\')"'
+      + ' aria-expanded="' + (open ? 'true' : 'false') + '">'
+      + '<span class="ver-caret">' + (open ? '▾' : '▸') + '</span>'
+      + '<span class="ver-time">' + escHtml(fmtReportVersionLabel(v.version, v.generated_at)) + '</span>'
+      + (v.is_latest ? '<span class="ver-badge">最新</span>' : '')
+      + (v.has_narratives ? '<span class="ver-badge ver-badge-ai">含 AI 解讀</span>' : '')
+      + '<span style="flex:1"></span>'
+      + '<span class="ver-name">' + escHtml(v.version) + '</span>'
+      + '</button>'
+      + '<div class="report-version-body" id="report-version-body-' + safe + '"'
+      + (open ? '' : ' hidden') + '></div>'
+      + '</div>';
+  }).join('');
+  const more = reportVersions.items.length < reportVersions.total
+    ? '<div class="toolbar" style="margin-top:.6rem">'
+      + '<button class="btn btn-outline" onclick="showMoreReportVersions()">顯示更多版本（共 '
+      + reportVersions.total + ' 個）</button></div>'
+    : '';
+  wrap.innerHTML = '<div class="report-version-head">'
+    + '<h3 class="panel-title" style="padding:0;margin:0">已產製的報表版本</h3>'
+    + '<span class="hint" style="padding:0">最新版本已展開；舊版本點列展開檢視。</span>'
+    + '</div>' + rows + more;
+  // 最新那筆進頁即載入內容（使用者要「立刻看到上次產的報表」）。
+  if (items.length > 0) loadReportVersionContent(items[0].version);
+}
+
+// 版本名拿來當 DOM id 尾巴；只留安全字元，避免 id 被特殊字元破壞。
+function cssSafeVersion(version) {
+  return String(version).replace(/[^A-Za-z0-9_-]/g, '_');
+}
+
+function showMoreReportVersions() {
+  reportVersions.limit += REPORT_VERSION_PAGE;
+  loadReportVersions();
+}
+
+// 展開／收合單一版本；第一次展開才抓該版本內容（lazy），之後只切換顯示。
+function toggleReportVersion(version) {
+  const safe = cssSafeVersion(version);
+  const item = el('report-version-item-' + safe);
+  const body = el('report-version-body-' + safe);
+  if (!item || !body) return;
+  const opening = body.hasAttribute('hidden');
+  if (opening) {
+    body.removeAttribute('hidden');
+    item.classList.add('open');
+    loadReportVersionContent(version);
+  } else {
+    body.setAttribute('hidden', '');
+    item.classList.remove('open');
+  }
+  const caret = item.querySelector('.ver-caret');
+  if (caret) caret.textContent = opening ? '▾' : '▸';
+  const row = item.querySelector('.report-version-row');
+  if (row) row.setAttribute('aria-expanded', opening ? 'true' : 'false');
+}
+
+// 取指定版本內容並就地渲染；已載過就不重抓（同版本內容不會變）。
+// 複用匯出工作台的純渲染函式，唯讀 view，不套人工編輯稿。
+async function loadReportVersionContent(version) {
+  const safe = cssSafeVersion(version);
+  const body = el('report-version-body-' + safe);
+  if (!body || reportVersions.loaded[version]) return;
+  body.innerHTML = '<div class="hint">載入報表內容中…</div>';
+  try {
+    const url = API + '/reports/versions/' + encodeURIComponent(version) + '/content';
+    const content = await getJson(url);
+    body.innerHTML = renderReportContentHtml(readOnlyReportView(content));
+    reportVersions.loaded[version] = true;
+  } catch (e) {
+    body.innerHTML = '<div class="hint">載入報表內容失敗（' + escHtml(e.message) + '）。</div>';
   }
 }
 
