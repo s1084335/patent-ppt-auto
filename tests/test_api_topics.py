@@ -209,5 +209,66 @@ class TopicPatentsEndpointTests(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
 
 
+class TopicAiLabelEndpointTests(unittest.TestCase):
+    """POST /workspaces/{id}/topics/ai-label：為正式 topic version 建立 AI 標籤任務。
+
+    端點只負責「建任務」，不在請求執行緒內跑 CLI；payload 組裝與 CLI 呼叫都在
+    AI bridge 那側（ai_topic_label_runner），因此這裡只斷言 job 建立契約。
+    """
+
+    def _post(self, body=None, workspace_id=930001):
+        from unittest import mock
+
+        from backend.app.api import topics as topics_api
+
+        created = {}
+
+        class _Job:
+            job_id = 555
+            job_type = "ai:topic_label"
+            status = "queued"
+
+        with mock.patch.object(topics_api.job_repository, "create_job") as create_job:
+            create_job.return_value = _Job()
+            r = _client().post(
+                f"/api/v1/workspaces/{workspace_id}/topics/ai-label",
+                json=body if body is not None else {"source_field": WIPS},
+            )
+            created["call"] = create_job.call_args
+        return r, created["call"]
+
+    def test_creates_ai_topic_label_job(self):
+        """建立 ai:topic_label job，回 202 與 run_id 供前端輪詢。"""
+        r, call = self._post()
+        self.assertEqual(r.status_code, 202, r.text)
+        body = r.json()
+        self.assertEqual(body["run_id"], 555)
+        self.assertEqual(body["job_type"], "ai:topic_label")
+        self.assertEqual(call.args[0], "ai:topic_label")
+        self.assertEqual(call.kwargs["workspace_id"], 930001)
+
+    def test_job_payload_carries_only_identifiers(self):
+        """🔴 紅線：建任務的 payload 只帶識別資訊，不含 keywords（文檔在 bridge 端才取）。"""
+        _, call = self._post({"source_field": WIPS, "cli_kind": "claude",
+                              "model": "claude-opus-4-8"})
+        payload = call.kwargs["payload"]
+        self.assertEqual(payload["source_field"], WIPS)
+        self.assertEqual(payload["workspace_id"], 930001)
+        self.assertEqual(payload["cli_kind"], "claude")
+        self.assertEqual(payload["model"], "claude-opus-4-8")
+        blob = str(payload).lower()
+        self.assertNotIn("keyword", blob)
+
+    def test_rejects_unknown_source_field(self):
+        """非白名單通道 → 422，不建任務。"""
+        r, _ = self._post({"source_field": "technical"})
+        self.assertEqual(r.status_code, 422)
+
+    def test_rejects_unknown_workspace(self):
+        """不存在的 workspace → 404，不建空轉任務。"""
+        r, _ = self._post({"source_field": WIPS}, workspace_id=999999999)
+        self.assertEqual(r.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

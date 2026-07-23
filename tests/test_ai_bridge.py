@@ -102,7 +102,10 @@ class AiBridgeTests(unittest.TestCase):
                 store=store,
             )
 
-        self.assertEqual(store.claimed_job_types, ("ai:narrative",))
+        # 只 claim AI 類任務（目前含 ai:narrative 與 ai:topic_label）；斷言集合而非固定字面值，
+        # 新增 AI 任務類型時不必回頭改這條。
+        self.assertEqual(set(store.claimed_job_types), set(ai_bridge.AI_JOB_TYPES))
+        self.assertIn("ai:narrative", store.claimed_job_types)
         self.assertEqual(store.requeued_with, 120)
         patched.assert_called_once()
         self.assertEqual(result, {"status": "succeeded"})
@@ -116,7 +119,7 @@ class AiBridgeTests(unittest.TestCase):
             store=store,
         )
         self.assertEqual(result["status"], "idle")
-        self.assertEqual(store.claimed_job_types, ("ai:narrative",))
+        self.assertEqual(set(store.claimed_job_types), set(ai_bridge.AI_JOB_TYPES))
 
     def test_parser_accepts_run_once(self):
         """bridge CLI 支援 run-once，方便 smoke test 與排程單步驗收。"""
@@ -192,7 +195,9 @@ class AiBridgeTests(unittest.TestCase):
         self.assertEqual(create_job.call_args.args[0], "ai:narrative")
         self.assertTrue(create_job.call_args.kwargs["idempotency_key"].startswith("ai-bridge-smoke-"))
         self.assertEqual(store.claimed_job_id, job.job_id)
-        self.assertEqual(store.claimed_job_types, ("ai:narrative",))
+        # smoke 仍只建立／claim ai:narrative 這一種（不因新增 AI 任務類型而改變 smoke 標的），
+        # 但 claim 過濾沿用 bridge 的 AI 集合。
+        self.assertEqual(set(store.claimed_job_types), set(ai_bridge.AI_JOB_TYPES))
         self.assertEqual(store.heartbeats[-1], ("bridge_smoke_completing", 90))
         self.assertEqual(store.completed[0]["smoke"], True)
         self.assertEqual(result["status"], "succeeded")

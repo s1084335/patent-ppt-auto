@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from backend.app.worker.ai_bridge import AI_JOB_TYPES
 
 
 client = TestClient(app)
@@ -173,7 +174,10 @@ def test_status_exposes_ai_bridge_boundary(token_set):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ready"
-    assert body["ai_bridge"]["supported_job_types"] == ["ai:narrative"]
+    # AI bridge 支援的任務類型會隨新 AI 功能增加（目前：報表解讀 ai:narrative、
+    # 主題標籤 ai:topic_label）；斷言「涵蓋且與 bridge 常數一致」而非固定字面值。
+    assert set(body["ai_bridge"]["supported_job_types"]) == set(AI_JOB_TYPES)
+    assert "ai:narrative" in body["ai_bridge"]["supported_job_types"]
     assert body["ai_bridge"]["supported_cli_kinds"] == ["claude", "opencode"]
     assert body["ai_bridge"]["normal_worker_consumes_ai_jobs"] is False
 

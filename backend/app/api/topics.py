@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from backend.app.app_layer import workspace_queries
 from backend.app.clustering.sources import get_source_spec
+from backend.app.db import job_repository
 from backend.app.repositories.topic_state_repository import (
     PostgresTopicStateRepository,
     TopicStateNotFoundError,
@@ -189,6 +190,32 @@ class RenameResponse(BaseModel):
     topic_key: str
     label: str
     label_source: str
+
+
+class AiLabelRequest(BaseModel):
+    """AI 主題標籤／摘要任務請求。
+
+    只帶識別資訊與 CLI 選項；代表性專利文檔在 AI bridge 端才批次取（見
+    worker/ai_topic_label_runner.py），不在 HTTP 請求執行緒內組大 payload。
+    """
+
+    source_field: str
+    # 不給＝該通道全部 active 主題；給了只重跑指定主題（例如人工覺得某幾個名字不好）。
+    topic_keys: list[str] | None = None
+    cli_kind: str = Field(default="claude", max_length=32)
+    model: str | None = Field(default=None, max_length=120)
+    requested_by: str = Field(default="web-user", min_length=1, max_length=120)
+    request_key: str | None = Field(default=None, max_length=200)
+
+
+class AiLabelQueueResponse(BaseModel):
+    """AI 標籤任務排程回應 (202)。"""
+
+    run_id: int
+    workspace_id: int
+    job_type: str
+    status: str
+    poll_url: str
 
 
 # ── Exception Mapping ──────────────────────────────────────────────
@@ -461,6 +488,68 @@ def queue_unmerge(
         workspace_id=result["workspace_id"],
         operation=result["operation"],
         status=result["status"],
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/topics/ai-label",
+    response_model=AiLabelQueueResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="為正式 topic version 建立 AI 標籤／摘要任務",
+)
+def queue_ai_label(
+    workspace_id: Annotated[int, Path(ge=1)],
+    request: AiLabelRequest,
+) -> AiLabelQueueResponse:
+    """把主題標籤／摘要排入 AI 佇列，回 202；由 host-side ai_bridge 領取執行。
+
+    用途：正式 topic version 的主題名現況是 c-TF-IDF 關鍵詞拼接（如 "unit / said / second"），
+    人看不懂。本任務讓 CLI 讀每個主題「c-TF-IDF 衡量出的前 5 筆代表性專利」的文檔內容後，
+    產出中文標籤與摘要草稿。
+
+    🔴 payload 只帶識別資訊（workspace_id／source_field／topic_keys）與 CLI 選項，
+    **不含 keywords**——關鍵詞內容一律不得傳給 CLI（使用者定案）；代表性專利文檔由
+    ai_topic_label_runner 在 bridge 端批次取出，也同樣不帶 keywords。
+
+    產出是**草稿**：回填時一律 label_source='llm'，人工命名（manual）不會被覆蓋。
+    """
+    _validate_source_field(request.source_field)
+    if workspace_queries.get_workspace_detail(workspace_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"workspace not found: {workspace_id}",
+        )
+    payload = {
+        "workspace_id": workspace_id,
+        "source_field": request.source_field,
+        "cli_kind": request.cli_kind,
+        "requested_by": request.requested_by,
+    }
+    if request.topic_keys:
+        payload["topic_keys"] = list(request.topic_keys)
+    if request.model:
+        payload["model"] = request.model
+    try:
+        job = job_repository.create_job(
+            "ai:topic_label",
+            payload=payload,
+            workspace_id=workspace_id,
+            idempotency_key=request.request_key,
+            # AI CLI 任務不自動重試：重跑要花 LLM 額度，失敗由使用者決定是否再送。
+            max_attempts=1,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    except Exception as exc:
+        raise _map_repo_error(exc) from exc
+    return AiLabelQueueResponse(
+        run_id=job.job_id,
+        workspace_id=workspace_id,
+        job_type=job.job_type,
+        status=job.status,
+        poll_url=f"/api/v1/jobs/{job.job_id}",
     )
 
 

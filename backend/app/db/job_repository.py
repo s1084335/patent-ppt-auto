@@ -30,6 +30,22 @@ from backend.app.repositories.workflow_outputs_repository import (
     PostgresWorkflowOutputsRepository,
 )
 
+# 需要外部 AI CLI 的工作類型（唯一事實來源）。
+# 這些任務只由 host-side ai_bridge 領取，一般 worker 不領——一般 worker 容器沒有
+# Claude／OpenCode CLI，領到也跑不動。分工實作：
+#   worker/runner.py  DEFAULT_WORKER_JOB_TYPES = JOB_TYPES - AI_JOB_TYPES
+#   worker/ai_bridge.py AI_JOB_TYPES 直接沿用本常數
+# 新增 AI 任務類型只改這裡一處，兩端自動同步，不再各自維護字面值而漂移。
+AI_JOB_TYPES: frozenset[str] = frozenset(
+    {
+        # 報表解讀敘述（既有）。
+        "ai:narrative",
+        # 主題標籤／摘要：把 c-TF-IDF 關鍵詞拼接的主題名換成人看得懂的中文名。
+        # CLI 只讀每主題前 5 筆代表性專利的文檔內容，不給 keywords（使用者定案）。
+        "ai:topic_label",
+    }
+)
+
 # 合法工作類型（DB 不設 run_type check；backend 建立時由此白名單驗證）。
 # 佇列亦承載 topic_merge/topic_unmerge（由 PostgresTopicRepository 直接寫入，不經 create_job）。
 JOB_TYPES: frozenset[str] = frozenset(
@@ -39,12 +55,11 @@ JOB_TYPES: frozenset[str] = frozenset(
         "clustering_incremental",
         "report_generate",
         "patent_import",
-        "ai:narrative",
         "case_comparison",
         # 匯入後補算 embeddings（technical/effect）；複用既有 write_patent_embeddings，只算缺的。
         "embeddings",
     }
-)
+) | AI_JOB_TYPES
 
 TERMINAL_STATUSES: frozenset[str] = frozenset({"succeeded", "failed", "cancelled"})
 

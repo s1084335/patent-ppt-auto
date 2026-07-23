@@ -35,7 +35,9 @@ from .queue_client import WorkerQueueClient
 
 LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-AI_JOB_TYPES: tuple[str, ...] = ("ai:narrative",)
+# AI job 集合的唯一事實來源在 job_repository；bridge 與一般 worker 由同一份常數推導分工，
+# 不再各自維護字面值（以往兩處字面值重複，新增 AI 任務時容易漏改而讓一般 worker 誤領）。
+AI_JOB_TYPES: tuple[str, ...] = tuple(sorted(job_repository.AI_JOB_TYPES))
 SMOKE_VERSION = "ai_bridge_db_smoke_v1"
 CLI_BINARIES: dict[str, str] = {
     "claude": "claude",
@@ -79,14 +81,79 @@ def _run_ai_narrative_job(payload: dict[str, Any], context: JobContext) -> dict[
     return handle_ai_narrative(payload, context)
 
 
+def _run_ai_topic_label_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """執行主題標籤／摘要任務：驅動 headless CLI 讀代表性專利文檔後命名。
+
+    payload：workspace_id、source_field（必要）；topic_keys（可選，不給＝全部 active 主題）、
+    cli_kind／model／cli_timeout_seconds（沿用 ai:narrative 的 payload 慣例）。
+
+    🔴 keywords 不會出現在 payload 內：CLI 看得到的內容由 ai_topic_label_runner 組裝，
+    只含代表性專利文檔與必要 metadata（使用者定案）。延遲載入 runner，理由同上。
+
+    階段映射（AI 任務無內部百分比，用階段緩進）：開始 15 →（runner 內 30→85）→ 回填 90 → 100。
+    """
+    from . import ai_topic_label_runner
+
+    context.heartbeat("開始 AI 主題標籤", 15)
+    workspace_id = payload.get("workspace_id")
+    if workspace_id is None:
+        raise ValueError("ai:topic_label payload requires workspace_id")
+    source_field = payload.get("source_field")
+    if not source_field:
+        raise ValueError("ai:topic_label payload requires source_field")
+
+    def _progress(stage: str, percent: int) -> None:
+        """把 runner 的 CLI 執行進度轉成 worker heartbeat（繁中階段文字）。"""
+        context.heartbeat("CLI 主題命名執行中", percent)
+
+    result = ai_topic_label_runner.run_topic_label(
+        workspace_id=int(workspace_id),
+        source_field=str(source_field),
+        topic_keys=payload.get("topic_keys") or None,
+        cli_kind=str(payload.get("cli_kind") or "claude"),
+        model=payload.get("model") or None,
+        # _cli_runner 供測試／Companion 注入假或替代執行器；正式跑真實 subprocess。
+        cli_runner=payload.get("_cli_runner"),
+        timeout_seconds=float(
+            payload.get("cli_timeout_seconds")
+            or ai_topic_label_runner.DEFAULT_CLI_TIMEOUT_SECONDS
+        ),
+        progress=_progress,
+    )
+    context.heartbeat("標籤已回存", 90)
+    context.heartbeat("完成", 100)
+    return result
+
+
+# job_type → 執行函式。值存「函式名」而非函式物件，讓 execute_ai_job 在呼叫當下才解析到
+# 模組屬性——測試以 mock.patch.object 換掉 _run_ai_* 時才會生效（存物件會綁死原函式）。
+_AI_JOB_RUNNERS: dict[str, str] = {
+    "ai:narrative": "_run_ai_narrative_job",
+    "ai:topic_label": "_run_ai_topic_label_job",
+}
+
+
+class _LateBoundHandlers:
+    """依 job_type 取回當下模組屬性的小查表器（保持 execute_ai_job 讀起來像 dict）。"""
+
+    def get(self, job_type: str):
+        """回傳該 job_type 的執行函式；未支援時回 None。"""
+        name = _AI_JOB_RUNNERS.get(job_type)
+        return globals().get(name) if name else None
+
+
+_AI_JOB_HANDLERS = _LateBoundHandlers()
+
+
 def execute_ai_job(job: job_repository.ProcessingJob, *, worker_id: str, store: WorkerQueueClient) -> dict[str, Any]:
     """只執行 AI bridge 支援的 job，成功、失敗、取消都回寫 workflow queue。"""
     context = JobContext(job=job, worker_id=worker_id, store=store)
     try:
-        if job.job_type != "ai:narrative":
+        handler = _AI_JOB_HANDLERS.get(job.job_type)
+        if handler is None:
             raise ValueError(f"unsupported AI bridge job_type: {job.job_type}")
         context.heartbeat("running", 1)
-        result = _run_ai_narrative_job(job.payload_json, context)
+        result = handler(job.payload_json, context)
         store.complete_job(job_id=job.job_id, worker_id=worker_id, result_json=result)
         LOGGER.info("AI job succeeded: id=%s type=%s", job.job_id, job.job_type)
         return {"job_id": job.job_id, "status": "succeeded", "result": result}

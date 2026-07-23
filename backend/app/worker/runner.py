@@ -19,7 +19,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from backend.app.db.job_repository import JOB_TYPES
+from backend.app.db.job_repository import AI_JOB_TYPES as _AI_JOB_TYPES, JOB_TYPES
 
 from .handlers import dispatch_job
 from .job_context import JobCancelledError, JobContext
@@ -28,7 +28,9 @@ from .queue_client import ProcessingJob, WorkerQueueClient
 
 LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-AI_JOB_TYPES: tuple[str, ...] = ("ai:narrative",)
+# AI 任務集合取自 job_repository（唯一事實來源），不在此重複字面值——否則新增 AI job type
+# 時漏改這裡，一般 worker 會誤領它跑不動的 CLI 任務。
+AI_JOB_TYPES: tuple[str, ...] = tuple(sorted(_AI_JOB_TYPES))
 DEFAULT_WORKER_JOB_TYPES: tuple[str, ...] = tuple(sorted(JOB_TYPES - set(AI_JOB_TYPES)))
 
 
