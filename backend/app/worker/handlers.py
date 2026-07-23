@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from decimal import Decimal
+import logging
 from pathlib import Path
 from typing import Any, Callable
 
@@ -30,6 +31,8 @@ from backend.app.reports.report_engine import run_reports_batch
 from . import ai_narrative_runner
 from .job_context import JobContext
 
+
+LOGGER = logging.getLogger(__name__)
 
 Handler = Callable[[dict[str, Any], JobContext], dict[str, Any]]
 LONG_TASK_HEARTBEAT_SECONDS = 60.0
@@ -67,22 +70,29 @@ def _json_safe(value: Any) -> Any:
 
 
 def handle_clustering_calibrate(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
-    """對 workspace 執行第一層候選分群；只產生候選，不會自動 finalize。"""
-    context.heartbeat("clustering_calibrate_started", 5)
+    """對 workspace 執行第一層候選分群；只產生候選，不會自動 finalize。
+
+    階段文字採繁中可讀（2026-07-23 需求）：匯入後自動分群期間，使用者要能從任務列表看出
+    系統正在做什麼，而不是只看到「尚未分群」而誤以為壞掉。
+    """
+    source_field = _source_field(payload.get("source_field"), default=SOURCE_FIELD_TECHNICAL)
+    channel = get_source_spec(source_field).label_zh
+    context.heartbeat(f"開始{channel}分群", 5)
     workspace_id = payload.get("workspace_id")
     if workspace_id is None:
         raise ValueError("clustering_calibrate requires workspace_id")
     # 分群掃 k 與 coherence 可能很久；背景 keeper 只補 heartbeat，不改模型結果。
-    with context.keepalive("clustering_calibrate_running", 20, interval_seconds=_heartbeat_interval(payload)):
+    with context.keepalive(f"{channel}分群計算中（掃描主題數）", 20,
+                           interval_seconds=_heartbeat_interval(payload)):
         summary = calibrate_top_level(
             workspace_id=int(workspace_id),
-            source_field=_source_field(payload.get("source_field"), default=SOURCE_FIELD_TECHNICAL),
+            source_field=source_field,
             batch_size=int(payload.get("batch_size") or 8),
             kmeans_batch_size=int(payload.get("kmeans_batch_size") or 128),
             # 分群 job 本身就是一筆 workflow_runs（job_id＝run_id），直接當 topic_runs.workflow_run_id
             workflow_run_id=context.job.job_id,
         )
-    context.heartbeat("clustering_calibrate_completed", 95)
+    context.heartbeat(f"{channel}分群候選已產生", 100)
     return _json_safe(summary)
 
 
@@ -152,8 +162,12 @@ def handle_patent_import(payload: dict[str, Any], context: JobContext) -> dict[s
     成員＝這次匯入 patent_ids）或 workspace_id（既有，union 去重）圈進 workspace；purpose
     （general／case_comparison）落新 workspace settings_json。走 app_layer.workspaces 服務，
     不自寫 SQL 繞過。重複檔/dry-run 無 patent_ids，不圈 workspace。
+
+    匯入後自動分群（2026-07-23 定案）：圈到 workspace 後，自動 enqueue embeddings ＋
+    技術／功效兩通道的 clustering_calibrate，使用者不需手動點「執行分群」。
+    細節見 _enqueue_post_import_jobs。
     """
-    context.heartbeat("patent_import_started", 5)
+    context.heartbeat("開始匯入專利資料", 5)
     raw_path = payload.get("path")
     if not raw_path:
         raise ValueError("patent_import requires payload.path")
@@ -169,30 +183,29 @@ def handle_patent_import(payload: dict[str, Any], context: JobContext) -> dict[s
         raise ValueError("patent_import file hash mismatch")
 
     # 大檔匯入可能久，背景 keeper 只補 heartbeat，不影響匯入結果。
-    with context.keepalive("patent_import_running", 20, interval_seconds=_heartbeat_interval(payload)):
+    with context.keepalive("解析並寫入專利資料", 20, interval_seconds=_heartbeat_interval(payload)):
         summary = import_wips_file(path)
     if summary.get("status") == "skipped_duplicate_file":
         # 重複檔不需保留這份上傳副本；只刪本次上傳目錄（remove_import_dir 會確認位於 imports root）。
         remove_import_dir(path.parent)
     else:
         # 成功匯入才圈 workspace；把 workspace 結果併入 summary 供前端顯示。
-        context.heartbeat("patent_import_workspace", 90)
+        context.heartbeat("建立分析範圍（workspace）", 90)
         workspace_result = _attach_import_workspace(payload, summary.get("patent_ids") or [])
         if workspace_result is not None:
             summary["workspace_id"] = workspace_result["workspace_id"]
             summary["workspace"] = workspace_result
-        # 案件比對匯入：匯入的專利要走 embeddings（technical/effect）。複用既有
-        # write_patent_embeddings（只算缺的），以獨立 embeddings job enqueue，不在匯入 job 內
-        # 直接載入數百 MB 權重。一般匯入不自動觸發（沿既有分群流程按需觸發），只案件比對批補算。
-        if payload.get("purpose") == "case_comparison" and (summary.get("patent_ids") or []):
-            embeddings_job = _enqueue_case_comparison_embeddings()
-            summary["embeddings_job_id"] = embeddings_job.job_id
-    context.heartbeat("patent_import_completed", 95)
+        # 匯入後自動接線（2026-07-23 定案「分群改為匯入後自動觸發」）：
+        # 匯入完成即在背景補 embeddings 並進分群，使用者不需手動點「執行分群」。
+        # 案件比對匯入沿用同一條（原本就只補 embeddings，不分群）。
+        _enqueue_post_import_jobs(payload, summary)
+    # 匯入本身收 100；後續 embeddings／分群各自是獨立 job，有自己的進度條。
+    context.heartbeat("匯入完成，已排入向量計算與分群", 100)
     return _json_safe(summary)
 
 
 def _enqueue_case_comparison_embeddings() -> "jr.ProcessingJob":
-    """為案件比對匯入批 enqueue 一個 embeddings job（技術＋功效兩通道，只算缺的）。
+    """為匯入批 enqueue 一個 embeddings job（技術＋功效兩通道，只算缺的）。
 
     以 job 觸發而非匯入 job 內直接計算：避免匯入 job 載入重權重、讓 embeddings 可獨立重試。
     write_patent_embeddings 內建「只算缺的」，故通道級補算不會重算既有 embeddings。
@@ -200,6 +213,85 @@ def _enqueue_case_comparison_embeddings() -> "jr.ProcessingJob":
     from backend.app.db import job_repository as jr
 
     return jr.create_job("embeddings", {"source_fields": list(source_fields())})
+
+
+def _active_clustering_source_fields(workspace_id: int) -> set[str]:
+    """查該 workspace 目前 queued/running 的 clustering_calibrate 各自佔用的通道。
+
+    重複觸發防護用：同一 workspace 短時間多次匯入時，已在排隊或執行中的通道不再建新 job。
+    不用 request_key 冪等鍵——那是「同一請求永久只有一筆」，會讓第二批匯入永遠分不了群；
+    這裡要的是「同時只有一筆在跑」，故以佇列現況判斷。走既有 list_jobs（workspace_id 過濾
+    走 workflow_runs.workspace_id），不自寫 SQL。
+    """
+    from backend.app.db import job_repository as jr
+
+    active: set[str] = set()
+    for status in ("queued", "running"):
+        for job in jr.list_jobs(workspace_id=workspace_id, status=status, limit=200):
+            if job.job_type != "clustering_calibrate":
+                continue
+            field = (job.payload_json or {}).get("source_field")
+            if field:
+                active.add(str(field))
+    return active
+
+
+def _enqueue_post_import_jobs(payload: dict[str, Any], summary: dict[str, Any]) -> None:
+    """匯入成功後自動接上 embeddings 與兩通道分群（2026-07-23 定案），結果併入 summary。
+
+    順序依賴：分群要讀 embedding 表，embeddings 沒算完就分群會讀到空語料。解法是
+    **先 enqueue embeddings、再 enqueue 分群**——worker 單程序且 claim_next_job 以
+    ORDER BY run_id 取件（FIFO），run_id 較小的 embeddings 必定先跑完才輪到分群，
+    不需要另造 job 相依機制或讓分群 job 自己輪詢等待。
+
+    ⚠ 此保證**依賴單 worker 前提**：若日後開多 worker／多 replica，embeddings 與分群
+    可能被不同 worker 同時領取而重現競態，屆時要改成顯式 job 相依（如分群 job 檢查
+    前置 embeddings job 已 succeeded 才執行，否則 requeue）。
+
+    兩通道：calibrate_top_level 一次只吃一個 source_field，故技術／功效各 enqueue 一個
+    clustering_calibrate（分別重試、分別顯示進度），不是一個 job 內跑兩通道。
+
+    失敗隔離：匯入本身已成功落庫，這裡的 enqueue 只是後續便利；任何例外都只記 log
+    並回填 summary.auto_jobs_error，不 raise，避免把已成功的匯入 job 標成 failed。
+    """
+    patent_ids = summary.get("patent_ids") or []
+    if not patent_ids:
+        # 重複檔／dry-run 沒有新專利，不必補算也不必分群。
+        return
+    workspace_id = summary.get("workspace_id")
+    try:
+        # embeddings 先入列：兩通道同一批算，只算缺的，故只需一個 job。
+        summary["embeddings_job_id"] = _enqueue_case_comparison_embeddings().job_id
+        if workspace_id is None:
+            # 沒圈 workspace 就沒有分群範圍（分群一律以 workspace 為單位），只補 embeddings。
+            return
+        _enqueue_workspace_clustering(int(workspace_id), summary)
+    except Exception as exc:  # noqa: BLE001
+        # 不 raise：匯入已成功，後續 job 可由使用者或下次匯入重新觸發。
+        LOGGER.exception("post-import job enqueue failed: workspace_id=%s", workspace_id)
+        summary["auto_jobs_error"] = f"{type(exc).__name__}: {exc}"
+
+
+def _enqueue_workspace_clustering(workspace_id: int, summary: dict[str, Any]) -> None:
+    """為 workspace 的技術／功效兩通道各 enqueue 一個 clustering_calibrate（已在跑的跳過）。"""
+    from backend.app.db import job_repository as jr
+
+    active = _active_clustering_source_fields(workspace_id)
+    job_ids: list[int] = []
+    for field in source_fields():
+        if field in active:
+            LOGGER.info(
+                "skip auto clustering: workspace_id=%s source_field=%s already queued/running",
+                workspace_id, field)
+            continue
+        job = jr.create_job(
+            "clustering_calibrate",
+            {"workspace_id": workspace_id, "source_field": field},
+            workspace_id=workspace_id,
+        )
+        job_ids.append(job.job_id)
+    if job_ids:
+        summary["clustering_job_ids"] = job_ids
 
 
 def _attach_import_workspace(
@@ -292,10 +384,14 @@ def handle_embeddings(payload: dict[str, Any], context: JobContext) -> dict[str,
 
     模型權重不存在（開發/測試機無本地 PatentSBERTa）時 write_patent_embeddings 拋
     FileNotFoundError，job 直接 failed 並保存原因，不半途落庫。
+
+    階段文字採繁中可讀且百分比單調遞增（2026-07-23 需求）：匯入後 embeddings 可能跑數分鐘，
+    這段期間分類區還沒有主題，使用者要能從任務狀態看出系統在動而不是卡住。keepalive 的
+    progress 需帶該通道的實際百分比，否則背景 keeper 會把進度打回固定值而出現倒退。
     """
     from backend.app.clustering.db_writer import EmbeddingWriteConfig, write_patent_embeddings
 
-    context.heartbeat("embeddings_started", 5)
+    context.heartbeat("開始計算專利向量", 5)
     raw_fields = payload.get("source_fields")
     if raw_fields is None:
         fields = list(source_fields())
@@ -305,10 +401,15 @@ def handle_embeddings(payload: dict[str, Any], context: JobContext) -> dict[str,
         raise ValueError("embeddings requires at least one source_field")
 
     results: dict[str, Any] = {}
+    total = len(fields)
     for index, field in enumerate(fields):
         context.check_cancelled()
-        context.heartbeat(f"embeddings_{field}", 10 + int(80 * index / max(len(fields), 1)))
-        with context.keepalive(f"embeddings_running_{field}", 20, interval_seconds=LONG_TASK_HEARTBEAT_SECONDS):
+        channel = get_source_spec(field).label_zh
+        # 每個通道分到 [10, 90) 區間的一段，通道內以區段起點回報，確保跨通道不倒退。
+        percent = 10 + int(80 * index / total)
+        context.heartbeat(f"{channel}向量：載入模型（{index + 1}/{total} 通道）", percent)
+        with context.keepalive(f"{channel}向量編碼中（{index + 1}/{total} 通道）", percent,
+                               interval_seconds=LONG_TASK_HEARTBEAT_SECONDS):
             summary = write_patent_embeddings(EmbeddingWriteConfig(source_field=field))
         results[field] = {
             "source_rows": summary.source_rows,
@@ -316,7 +417,10 @@ def handle_embeddings(payload: dict[str, Any], context: JobContext) -> dict[str,
             "upserted_rows": summary.upserted_rows,
             "table_rows_for_source": summary.table_rows_for_source,
         }
-    context.heartbeat("embeddings_completed", 95)
+        context.heartbeat(
+            f"{channel}向量已寫入（新增 {summary.upserted_rows} 筆）",
+            10 + int(80 * (index + 1) / total))
+    context.heartbeat("專利向量計算完成", 100)
     return _json_safe({"source_fields": fields, "results": results})
 
 
