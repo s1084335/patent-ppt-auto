@@ -259,7 +259,12 @@ def add_workspace_patents(
     0021：成員落 workspaces.patent_ids_json。以單一 UPDATE 併集後回寫（保留既有
     順序、去重），取代舊 workspace_patents 的 ON CONFLICT DO NOTHING；
     added_by 在併表後無欄位可存，僅保留參數相容不寫入。
+
+    護欄（2026-07-23）：全庫 workspace 成員只由匯入自動同步，此手動路徑一律擋下。
     """
+    from backend.app.app_layer import global_workspace
+
+    global_workspace.assert_not_global(workspace_id, action="add patents to")
     unique_patent_ids = list(dict.fromkeys(int(value) for value in patent_ids))
     if not unique_patent_ids:
         raise ValueError("at least one patent_id is required")

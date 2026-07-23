@@ -29,7 +29,9 @@ POST_0021_TABLES = {
     "derived_layer": {"market_evidence"},
     # 0024_import_blobs：匯入上傳內容的跨容器傳輸表。
     # 0025_report_artifacts：報表產物的跨容器共享表。
-    "app_layer": {"import_blobs", "report_artifacts"},
+    # 0027_workspace_documents：workspace 的技術文獻（PDF）內容保存表。
+    # （0028_global_workspace 只在 workspaces 加 is_global 欄，未建表，故不需登記。）
+    "app_layer": {"import_blobs", "report_artifacts", "workspace_documents"},
 }
 OLD_TABLES = {
     "app_layer": {

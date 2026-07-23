@@ -149,6 +149,7 @@ def add_patents_to_workspace(
     *,
     workspace_id: int,
     patent_ids: list[int],
+    _allow_global: bool = False,
 ) -> dict[str, Any]:
     """把新專利 union 進既有 workspace 的 patent_ids_json（去重、保序），全程單一 transaction。
 
@@ -156,7 +157,15 @@ def add_patents_to_workspace(
     {workspace_id, added_count, patent_count}。workspace 不存在回 404；空 patent_ids 為 no-op
     （added_count=0）；不驗證專利存在（匯入路徑的專利剛寫入 core_layer，且既有成員可能已被
     其他流程移除，重點是集合 union 冪等）。FOR UPDATE 鎖住該列避免併發 union 遺失。
+
+    護欄（2026-07-23）：全庫 workspace 的成員只由匯入自動同步，不得手動增減，故預設擋下
+    is_global 的 workspace。`_allow_global` 只給 global_workspace.sync_global_workspace_patents
+    這條系統同步路徑使用，不對外開放。
     """
+    if not _allow_global:
+        from backend.app.app_layer import global_workspace
+
+        global_workspace.assert_not_global(workspace_id, action="add patents to")
     incoming = list(dict.fromkeys(int(value) for value in patent_ids))
     with get_pool().connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:

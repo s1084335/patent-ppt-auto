@@ -267,9 +267,10 @@ def handle_patent_import(payload: dict[str, Any], context: JobContext) -> dict[s
     （general／case_comparison）落新 workspace settings_json。走 app_layer.workspaces 服務，
     不自寫 SQL 繞過。重複檔/dry-run 無 patent_ids，不圈 workspace。
 
-    匯入後自動分群（2026-07-23 定案）：圈到 workspace 後，自動 enqueue embeddings ＋
-    技術／功效兩通道的 clustering_calibrate，使用者不需手動點「執行分群」。
-    細節見 _enqueue_post_import_jobs。
+    匯入後自動分群（2026-07-23 定案）：自動 enqueue embeddings，並為**批次 workspace 與
+    全庫 workspace**各排技術／功效兩通道的分群（一次匯入最多 4 個 job，全部背景跑），
+    使用者不需手動點「執行分群」。每個 workspace＋通道**首次 calibrate、之後 incremental**。
+    細節見 _enqueue_post_import_jobs 與 _enqueue_workspace_clustering。
     """
     context.heartbeat("開始匯入專利資料", 5)
     blob_id = payload.get("blob_id")
@@ -326,25 +327,54 @@ def _enqueue_case_comparison_embeddings() -> "jr.ProcessingJob":
     return jr.create_job("embeddings", {"source_fields": list(source_fields())})
 
 
+# 佔用同一通道的分群 job 型別：首次 calibrate、之後 incremental，兩者都算「該通道在跑」。
+_CLUSTERING_JOB_TYPES = ("clustering_calibrate", "clustering_incremental")
+
+
 def _active_clustering_source_fields(workspace_id: int) -> set[str]:
-    """查該 workspace 目前 queued/running 的 clustering_calibrate 各自佔用的通道。
+    """查該 workspace 目前 queued/running 的分群 job 各自佔用的通道。
 
     重複觸發防護用：同一 workspace 短時間多次匯入時，已在排隊或執行中的通道不再建新 job。
     不用 request_key 冪等鍵——那是「同一請求永久只有一筆」，會讓第二批匯入永遠分不了群；
     這裡要的是「同時只有一筆在跑」，故以佇列現況判斷。走既有 list_jobs（workspace_id 過濾
     走 workflow_runs.workspace_id），不自寫 SQL。
+
+    calibrate 與 incremental 皆納入判斷：同一通道無論在跑哪一種，都不該再疊第二個。
     """
     from backend.app.db import job_repository as jr
 
     active: set[str] = set()
     for status in ("queued", "running"):
         for job in jr.list_jobs(workspace_id=workspace_id, status=status, limit=200):
-            if job.job_type != "clustering_calibrate":
+            if job.job_type not in _CLUSTERING_JOB_TYPES:
                 continue
             field = (job.payload_json or {}).get("source_field")
             if field:
                 active.add(str(field))
     return active
+
+
+def _has_completed_clustering_run(*, workspace_id: int, source_field: str) -> bool:
+    """該 workspace＋通道是否已有已完成的分群 run（即已有可套用的 artifact）。
+
+    判斷依據沿用 clustering 既有的 _latest_completed_run（incremental_workspace 內部
+    本來就用它取 artifact），不新增第二套判斷機制；該函式在查無 artifact 時 raise
+    ValueError，這裡把它轉成布林。
+    """
+    from backend.app.clustering.workspace_service import _latest_completed_run
+
+    try:
+        _latest_completed_run(workspace_id=workspace_id, source_field=source_field)
+    except ValueError:
+        return False
+    return True
+
+
+def _sync_global_workspace(patent_ids: list[int]) -> int:
+    """把這批匯入專利同步進全庫 workspace（不存在則建立），回全庫 workspace_id。"""
+    from backend.app.app_layer import global_workspace
+
+    return global_workspace.sync_global_workspace_patents(patent_ids)
 
 
 def _enqueue_post_import_jobs(payload: dict[str, Any], summary: dict[str, Any]) -> None:
@@ -373,18 +403,38 @@ def _enqueue_post_import_jobs(payload: dict[str, Any], summary: dict[str, Any]) 
     try:
         # embeddings 先入列：兩通道同一批算，只算缺的，故只需一個 job。
         summary["embeddings_job_id"] = _enqueue_case_comparison_embeddings().job_id
-        if workspace_id is None:
-            # 沒圈 workspace 就沒有分群範圍（分群一律以 workspace 為單位），只補 embeddings。
-            return
-        _enqueue_workspace_clustering(int(workspace_id), summary)
+        # 全庫 workspace（專利總覽）：每批匯入的專利都自動 union 進去，並獨立跑自己的分群。
+        # 它與批次 workspace 是兩份互不影響的 artifact，故各自判斷首次／後續。
+        global_workspace_id = _sync_global_workspace([int(pid) for pid in patent_ids])
+        summary["global_workspace_id"] = global_workspace_id
+        job_ids: list[int] = []
+        if workspace_id is not None:
+            # 沒圈 workspace 時只有全庫要分群（分群一律以 workspace 為單位）。
+            job_ids += _enqueue_workspace_clustering(int(workspace_id), summary)
+        job_ids += _enqueue_workspace_clustering(int(global_workspace_id), summary)
+        if job_ids:
+            summary["clustering_job_ids"] = job_ids
     except Exception as exc:  # noqa: BLE001
         # 不 raise：匯入已成功，後續 job 可由使用者或下次匯入重新觸發。
         LOGGER.exception("post-import job enqueue failed: workspace_id=%s", workspace_id)
         summary["auto_jobs_error"] = f"{type(exc).__name__}: {exc}"
 
 
-def _enqueue_workspace_clustering(workspace_id: int, summary: dict[str, Any]) -> None:
-    """為 workspace 的技術／功效兩通道各 enqueue 一個 clustering_calibrate（已在跑的跳過）。"""
+def _enqueue_workspace_clustering(workspace_id: int, summary: dict[str, Any]) -> list[int]:
+    """為 workspace 的技術／功效兩通道各 enqueue 一個分群 job，回新建的 job_id 清單。
+
+    觸發策略（2026-07-23 定案）：**首次 calibrate、之後一律 incremental**。
+
+    - 該 workspace＋通道**尚無**已完成 run → `clustering_calibrate`（完整分群，建立 artifact）。
+    - **已有**已完成 run → `clustering_incremental`：只處理尚無 assignment 的新專利，載入既有
+      artifact 做 `reducer.transform()` ＋ `partial_fit_bertopic()`，**主題結構不變**，新專利
+      歸進既有主題。⚠ 這不是重跑分群——舊行為每次匯入都 calibrate，第二批匯入會把主題結構
+      整個換掉，屬非預期。
+
+    判斷逐通道獨立（技術可能已有 artifact 而功效還沒），且不同 workspace 各查各的
+    （批次 workspace 與全庫是兩份 artifact），故此函式對任一 workspace_id 都成立，
+    呼叫端不需傳額外旗標。已在排隊／執行中的通道一律跳過，避免重複堆疊。
+    """
     from backend.app.db import job_repository as jr
 
     active = _active_clustering_source_fields(workspace_id)
@@ -395,14 +445,18 @@ def _enqueue_workspace_clustering(workspace_id: int, summary: dict[str, Any]) ->
                 "skip auto clustering: workspace_id=%s source_field=%s already queued/running",
                 workspace_id, field)
             continue
+        job_type = (
+            "clustering_incremental"
+            if _has_completed_clustering_run(workspace_id=workspace_id, source_field=field)
+            else "clustering_calibrate"
+        )
         job = jr.create_job(
-            "clustering_calibrate",
+            job_type,
             {"workspace_id": workspace_id, "source_field": field},
             workspace_id=workspace_id,
         )
         job_ids.append(job.job_id)
-    if job_ids:
-        summary["clustering_job_ids"] = job_ids
+    return job_ids
 
 
 def _attach_import_workspace(
