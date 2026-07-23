@@ -35,6 +35,9 @@ WITH candidates AS (
         ) AS patent_number,
         p.title,
         p.country_code,
+        -- 只回「有無代表圖」布林，不把 bytea 內容帶進清單（清單一頁 200 筆會拖回數 MB）；
+        -- 實際圖片由前端逐筆走 GET /patents/{id}/figure 惰性載入。
+        (p."主附圖" IS NOT NULL) AS has_figure,
         rpb.applicant_display_name AS applicant_display_name
     FROM core_layer.patents p
     LEFT JOIN derived_layer.report_patent_base rpb ON rpb.patent_id = p.id
@@ -62,7 +65,7 @@ _LIST_WHERE = (
 
 _PATENT_LIST_ITEMS_SQL = f"""
 {_CANDIDATES_CTE}
-SELECT patent_id, patent_number, title, country_code, applicant_display_name
+SELECT patent_id, patent_number, title, country_code, has_figure, applicant_display_name
 FROM candidates
 {_LIST_WHERE}
 ORDER BY patent_id
@@ -87,6 +90,21 @@ JOIN LATERAL jsonb_array_elements(w.patent_ids_json) AS m(pid) ON TRUE
 WHERE (m.pid)::bigint = ANY(%(pids)s)
 ORDER BY (m.pid)::bigint, w.workspace_id
 """
+
+
+# 單筆代表圖取回：只取 "主附圖" 一欄（不 SELECT *，避免把主表其他大欄一併拖回）。
+_PATENT_FIGURE_SQL = 'SELECT "主附圖" AS figure FROM core_layer.patents WHERE id = %(pid)s'
+
+
+def get_patent_figure(patent_id: int) -> bytes | None:
+    """取單筆專利的代表圖位元組；查無專利或該筆無圖皆回 None（由 API 層轉 404）。"""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(_PATENT_FIGURE_SQL, {"pid": patent_id})
+            row = cur.fetchone()
+    if not row or row[0] is None:
+        return None
+    return bytes(row[0])
 
 
 def search_patents(*, q: str, limit: int = 20) -> dict[str, Any]:

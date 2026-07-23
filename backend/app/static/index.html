@@ -127,6 +127,13 @@ table.data tr:hover td { background: var(--panel-2); }
   font-size: 0.78rem; white-space: nowrap;
 }
 
+/* ── 專利主附圖（總覽清單縮圖；來源長邊約 460px，此處縮到 72px 供快速掃視） ── */
+.patent-figure {
+  display: block; width: 72px; height: 72px; object-fit: contain;
+  border: 1px solid var(--border); border-radius: 0.25rem; background: #fff;
+}
+.figure-empty { color: var(--text-muted); font-size: 0.78rem; white-space: nowrap; }
+
 /* ── 標籤（分類區） ── */
 .tag-list { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
 .tag {
@@ -569,6 +576,7 @@ function allPatentsTableHtml(data) {
   if (items.length === 0) return '<div class="hint">查無符合的專利。</div>';
   const rows = items.map(p =>
     '<tr>'
+    + '<td>' + patentFigureCell(p) + '</td>'
     + '<td>' + escHtml(p.patent_number) + '</td>'
     + '<td style="white-space:normal;min-width:280px">' + escHtml(p.title) + '</td>'
     + '<td>' + escHtml(p.country_code) + '</td>'
@@ -582,7 +590,7 @@ function allPatentsTableHtml(data) {
   const canPrev = (data.offset ?? 0) > 0;
   const canNext = to < total;
   return '<div class="table-wrap"><table class="data">'
-    + '<thead><tr><th>專利號</th><th>名稱</th><th>受理局</th><th>申請人</th>'
+    + '<thead><tr><th>主附圖</th><th>專利號</th><th>名稱</th><th>受理局</th><th>申請人</th>'
     + '<th>所屬 Workspace</th></tr></thead>'
     + '<tbody>' + rows + '</tbody></table></div>'
     + '<div class="pager">'
@@ -598,6 +606,17 @@ function workspacesCell(workspaces) {
   return list.map(w =>
     '<span class="ws-chip">' + escHtml(w.workspace_name || w.workspace_id) + '</span>'
   ).join(' ');
+}
+// 主附圖儲存格：有圖才輸出 <img>，並一律帶 loading="lazy"——一頁最多 200 筆，
+// 圖片單張約 16KB 且由 GET /patents/{id}/figure 逐張取，捲到才載才不會一次拉數 MB。
+// 後端回應帶 ETag + Cache-Control(1 天)，翻頁回來走瀏覽器快取不重新下載。
+// 無圖（has_figure 為 false）顯示文字 placeholder，不放 <img> 以免出現破圖 icon。
+function patentFigureCell(p) {
+  if (!p.has_figure) return '<span class="figure-empty">無圖</span>';
+  return '<img class="patent-figure" loading="lazy" decoding="async"'
+    + ' src="' + API + '/patents/' + encodeURIComponent(p.patent_id) + '/figure"'
+    + ' alt="' + escHtml(p.patent_number || '') + ' 主附圖"'
+    + ' onerror="this.outerHTML=\'<span class=&quot;figure-empty&quot;>無圖</span>\'">';
 }
 // workspace 專利表（分類區「全部」用；GET /workspaces/{id}/patents 回應含所屬主題與完整度旗標）。
 // 只顯示首頁（PATENTS_PAGE_SIZE 筆），不共用總覽的分頁器——分頁在跨 workspace 的總覽才有意義。

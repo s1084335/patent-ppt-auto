@@ -11,9 +11,10 @@ GET /api/v1/patents：分頁列出全庫專利（不分 workspace），每筆附
 """
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Path, Query, Response
 
 from backend.app.app_layer import patent_queries
 
@@ -47,3 +48,39 @@ def list_patents(
     每筆的 workspaces 為 [{workspace_id, workspace_name}]（不屬任何 workspace 者為空陣列）。
     """
     return patent_queries.list_patents(limit=limit, offset=offset, keyword=keyword)
+
+
+# 內嵌圖 magic number → MIME；WIPS 匯出實測為 JPEG，但不寫死單一格式（PNG/GIF 亦可能出現）。
+_IMAGE_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"GIF8", "image/gif"),
+)
+
+
+def _figure_media_type(blob: bytes) -> str:
+    """依 magic number 判斷圖片 MIME；無法辨識時回泛用 application/octet-stream。"""
+    for signature, media_type in _IMAGE_SIGNATURES:
+        if blob.startswith(signature):
+            return media_type
+    return "application/octet-stream"
+
+
+@router.get("/patents/{patent_id}/figure")
+def get_patent_figure(patent_id: int = Path(..., ge=1)) -> Response:
+    """取單筆專利的代表圖（WIPS Excel 內嵌圖，0026 起存於 core_layer.patents."主附圖"）。
+
+    查無專利或該筆無圖一律回 404（不回 500）；前端據此顯示 placeholder。
+    回應帶 ETag（內容 sha256）與 Cache-Control（不可變內容，快取一天），
+    讓清單捲動時瀏覽器不重複下載同一張圖——一批 1900 張約 30MB，這是必要的。
+    帶 If-None-Match 且相符時回 304，不重送內容。
+    """
+    blob = patent_queries.get_patent_figure(patent_id)
+    if blob is None:
+        raise HTTPException(status_code=404, detail="patent figure not found")
+    etag = f'"{hashlib.sha256(blob).hexdigest()[:32]}"'
+    return Response(
+        content=blob,
+        media_type=_figure_media_type(blob),
+        headers={"ETag": etag, "Cache-Control": "public, max-age=86400"},
+    )

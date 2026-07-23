@@ -28,7 +28,8 @@ POST_0021_TABLES = {
     # 0023_market_evidence：市場資料證據庫。
     "derived_layer": {"market_evidence"},
     # 0024_import_blobs：匯入上傳內容的跨容器傳輸表。
-    "app_layer": {"import_blobs"},
+    # 0025_report_artifacts：報表產物的跨容器共享表。
+    "app_layer": {"import_blobs", "report_artifacts"},
 }
 OLD_TABLES = {
     "app_layer": {

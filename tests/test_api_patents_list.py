@@ -149,7 +149,11 @@ class PatentListTests(unittest.TestCase):
         self.assertGreaterEqual(body["total"], len(PIDS))
 
     def test_item_shape_includes_workspaces(self):
-        """每筆含專利欄位＋workspaces（所屬 workspace 陣列，含 id 與名稱）。"""
+        """每筆含專利欄位＋workspaces（所屬 workspace 陣列，含 id 與名稱）＋has_figure。
+
+        has_figure 為布林旗標（0026 起）：清單只回「有無代表圖」，圖片內容不進清單回應，
+        由前端逐筆走 GET /patents/{id}/figure 惰性載入。
+        """
         resp = self._list(limit=200)
         self.assertEqual(resp.status_code, 200)
         item = _items_by_id(resp.json()["items"])[PIDS[0]]
@@ -160,10 +164,13 @@ class PatentListTests(unittest.TestCase):
                 "patent_number",
                 "title",
                 "country_code",
+                "has_figure",
                 "applicant_display_name",
                 "workspaces",
             },
         )
+        # 本測試 fixture 未寫入代表圖，故旗標為 False（不得回 bytea 內容）。
+        self.assertIs(item["has_figure"], False)
         self.assertEqual(item["patent_number"], "US93000001B2")
         self.assertEqual(item["applicant_display_name"], "REXON INDUSTRIAL")
 

@@ -242,6 +242,10 @@ def display_field_name(field_name: str) -> str:
     return display.translate(DISPLAY_TO_TRADITIONAL)
 
 PATENT_FIELDS = {
+    # 主附圖：WIPS Excel 的浮動圖片欄（儲存格文字恆為空白，真值在 ws._images）。
+    # 列在此表使其歸屬主表 core_layer.patents（0026 起為 bytea）而非自動推導的
+    # patent_attributes；值由 wips_importer 的內嵌圖擷取填入，不走 clean_long_text。
+    "主附图": "主附圖",
     "国家代码": "country_code",
     "数据库名称": "database_name",
     "文献种类": "document_kind",

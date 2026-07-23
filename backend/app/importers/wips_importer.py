@@ -48,6 +48,8 @@ PATENT_IDENTIFIER_LOOKUP_ORDER = (
     UNEXAMINED_PUBLICATION_NUMBER_TRANSFORMED,
 )
 PEOPLE_FIELDS = tuple(dict.fromkeys(field for fields in PEOPLE_GROUPS.values() for field in fields.values()))
+# core_layer.patents 的代表圖欄（0026 起 bytea）；值來自 xlsx 內嵌浮動圖片，非儲存格文字。
+FIGURE_COLUMN = "主附圖"
 CONFLICT_RESOLUTION_STRATEGY = "incoming_source_priority"
 
 # CLI importer 支援的全部來源副檔名（含 .mdb）；與 load_source_rows 的分派一致。
@@ -132,7 +134,88 @@ def load_xlsx_rows(path: Path) -> tuple[list[str], str, list[dict[str, Any]], li
         if has_value:
             raw["_row_number"] = row_number
             records.append(raw)
+    # 內嵌代表圖：openpyxl read_only 模式不載入 drawing，需另開一次非 read_only workbook。
+    # 回 {列號: (圖片 bytes, 該列圖片張數)}；張數 >1 由 import_wips_file 轉成 summary 警告。
+    embedded = extract_embedded_images(path, selected_sheet)
+    for raw in records:
+        found = embedded.get(raw["_row_number"])
+        if found is None:
+            continue
+        blob, count = found
+        raw[EMBEDDED_IMAGE_KEY] = blob
+        if count > 1:
+            raw[FIGURE_WARNINGS_KEY] = _MULTI_IMAGE_WARNING.format(
+                row_number=raw["_row_number"], count=count
+            )
     return sheet_names, selected_sheet, records, headers
+
+
+# 內嵌圖在 record 內的暫存鍵；與 _row_number 同屬非來源欄，不寫進 raw_records.raw_data。
+EMBEDDED_IMAGE_KEY = "_embedded_image"
+FIGURE_WARNINGS_KEY = "_figure_warning"
+# 同一資料列偵測到多張圖時的警告訊息（取第一張，其餘明確記錄不靜默丟棄）。
+_MULTI_IMAGE_WARNING = "第 {row_number} 列偵測到 {count} 張內嵌圖，僅取第一張（其餘未入庫）"
+
+
+def extract_embedded_images(path: Path, sheet_name: str) -> dict[int, tuple[bytes, int]]:
+    """取出 xlsx 指定工作表的內嵌圖片，回 {1-based 列號: (第一張圖 bytes, 該列圖片張數)}。
+
+    WIPS 匯出的「主附圖」是錨在資料列的**浮動圖片物件**，與儲存格文字值無關
+    （儲存格值為單一空白字元），故需由 openpyxl 的 `ws._images` 取得。錨點
+    `anchor._from.row` 為 0-based，+1 後即為 xlsx 的 1-based 列號，可直接對上
+    load_xlsx_rows 的 `_row_number`。
+
+    通用性：不假設圖片在哪一欄、不假設每列都有圖、不假設圖片數等於資料列數。
+    完全沒有內嵌圖（或檔案結構不支援 drawing）時回空 dict，匯入照常進行。
+    同一列多張圖時回傳第一張並附上張數，由呼叫端轉成警告，不靜默丟棄。
+    """
+    images: dict[int, bytes] = {}
+    counts: dict[int, int] = {}
+    try:
+        # read_only=True 不解析 drawing，故此處必須用一般模式；只取 drawing 不讀值。
+        workbook = load_workbook(path, read_only=False, data_only=True)
+    except Exception:
+        # 某些來源（非 zip、加密、損毀 drawing 關聯）無法完整開啟；圖片屬加值資料，
+        # 取不到就當作無圖，不得讓整批匯入失敗。
+        return {}
+    try:
+        if sheet_name not in workbook.sheetnames:
+            return {}
+        worksheet = workbook[sheet_name]
+        for image in getattr(worksheet, "_images", []) or []:
+            row_number = _image_row_number(image)
+            if row_number is None:
+                continue
+            blob = _image_bytes(image)
+            if blob is None:
+                continue
+            counts[row_number] = counts.get(row_number, 0) + 1
+            images.setdefault(row_number, blob)
+    finally:
+        workbook.close()
+    return {row: (blob, counts[row]) for row, blob in images.items()}
+
+
+def _image_row_number(image: Any) -> int | None:
+    """由圖片錨點求得 1-based 列號；錨點形態不支援時回 None（該圖略過）。"""
+    anchor = getattr(image, "anchor", None)
+    marker = getattr(anchor, "_from", None)
+    row = getattr(marker, "row", None)
+    if row is None:
+        return None
+    return int(row) + 1
+
+
+def _image_bytes(image: Any) -> bytes | None:
+    """取出圖片原始位元組；openpyxl 的 `ref` 可能是 bytes、BytesIO 或 PIL 影像。"""
+    ref = getattr(image, "_data", None)
+    if callable(ref):
+        try:
+            data = ref()
+        except Exception:
+            return None
+        return bytes(data) if data else None
+    return None
 
 
 def load_delimited_rows(path: Path, source_name: str) -> tuple[list[str], str, list[dict[str, Any]], list[str]]:
@@ -253,8 +336,16 @@ def row_to_record(headers: list[str], row: list[Any]) -> dict[str, Any]:
     return raw
 
 
+# raw record 中的非來源欄（內部用），不參與判空、正規化與 raw_records.raw_data 寫入。
+_INTERNAL_RECORD_KEYS = ("_row_number", EMBEDDED_IMAGE_KEY, FIGURE_WARNINGS_KEY)
+
+
 def record_has_value(raw: dict[str, Any]) -> bool:
-    return any(value_to_text(value) is not None for key, value in raw.items() if key != "_row_number")
+    return any(
+        value_to_text(value) is not None
+        for key, value in raw.items()
+        if key not in _INTERNAL_RECORD_KEYS
+    )
 
 
 def ordered_headers(records: list[dict[str, Any]]) -> list[str]:
@@ -332,7 +423,12 @@ def normalize_record(raw: dict[str, Any]) -> dict[str, Any]:
     application_date = parse_date(canonical_raw.get(APPLICATION_DATE_FIELD))
     publication_date = first_parsed_date(canonical_raw, PUBLICATION_DATE_FIELDS)
 
-    patent = {target: clean_long_text(canonical_raw.get(source)) for source, target in PATENT_FIELDS.items()}
+    # 文字欄一律走 clean_long_text；主附圖為二進位（bytea），不得經文字清洗，故排除後另填。
+    patent = {
+        target: clean_long_text(canonical_raw.get(source))
+        for source, target in PATENT_FIELDS.items()
+        if target != FIGURE_COLUMN
+    }
     patent.update(transformed_number_fields(patent))
     patent["publication_date"] = publication_date
     patent["publication_year"] = year_from_date(publication_date)
@@ -357,7 +453,7 @@ def first_parsed_date(raw: dict[str, Any], fields: list[str]) -> Any:
 def canonicalize_record(raw: dict[str, Any]) -> dict[str, Any]:
     canonical = {}
     for key, value in raw.items():
-        if key == "_row_number":
+        if key in _INTERNAL_RECORD_KEYS:
             canonical[key] = value
             continue
         canonical.setdefault(canonical_field_name(key), value)
@@ -421,6 +517,9 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
     # 本次涉及的 patent_ids（新建＋命中既有），保序去重，供匯入圈 workspace（2026-07-22 定案）。
     touched_patent_ids: list[int] = []
     seen_patent_ids: set[int] = set()
+    # 代表圖 (patent_id, bytes) 先蒐集、迴圈結束後一次批次寫入，避免逐列 UPDATE 造成 N+1。
+    figure_pairs: list[tuple[int, bytes]] = []
+    figure_warnings: list[str] = []
     with psycopg.connect(**get_connection_kwargs()) as conn:
         with conn.cursor() as cur:
             if find_existing_raw_import(cur, file_hash):
@@ -446,6 +545,15 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
                 people = item["people"]
                 variant_pairs.append((people.get("申请人代表码"), people.get("申请人")))
                 variant_pairs.append((people.get("申请人代表码"), people.get("标准化申请人")))
+                # 代表圖：只在該列真的有內嵌圖時入列（無圖／無內嵌圖的檔案自然為空清單）。
+                blob = raw.get(EMBEDDED_IMAGE_KEY)
+                if blob:
+                    figure_pairs.append((int(patent_id), blob))
+                warning = raw.get(FIGURE_WARNINGS_KEY)
+                if warning:
+                    figure_warnings.append(warning)
+            # 全部 patent_id 確定後單次批次寫圖（executemany），不逐列往返。
+            update_patent_figures(cur, figure_pairs)
         conn.commit()
     # 匯入成功：每列一次 upsert，inserted+matched_existing=records、skipped=0；updated 為其中確有差異更新者。
     summary["inserted"] = stats["inserted"]
@@ -455,6 +563,9 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
     summary["status"] = "imported"
     # 本次涉及專利（新建＋命中既有，去重）供 handler 圈進 workspace；空檔亦回空陣列。
     summary["patent_ids"] = touched_patent_ids
+    # 代表圖入庫統計與警告（同列多圖等）；無內嵌圖的來源為 0 與空清單，不影響匯入結果。
+    summary["figures"] = len(figure_pairs)
+    summary["figure_warnings"] = figure_warnings
     # 報表定案 #3 接線：已知 WIPS code 的新名稱變體即時補入唯一對照表（unknown/conflicting 進 manual）。
     summary["alias_variants"] = register_known_code_variants(
         variant_pairs, source_label=f"import:{path.name}")
@@ -476,7 +587,12 @@ def find_existing_raw_import(cur, file_hash: str) -> bool:
 
 def insert_raw_record(cur, sheet_name: str, raw: dict[str, Any], file_hash: str) -> int:
     """寫 raw_records；來源 metadata 直接落本表（0019 後 schema）。"""
-    raw_json = {key: value_to_text(value) for key, value in raw.items() if key != "_row_number"}
+    # 圖片位元組不進 raw_data（JSONB 存不下也不該存）；追溯靠 patents."主附圖"。
+    raw_json = {
+        key: value_to_text(value)
+        for key, value in raw.items()
+        if key not in _INTERNAL_RECORD_KEYS
+    }
     cur.execute(
         """
         INSERT INTO raw_records
@@ -669,6 +785,26 @@ def update_patent_changed_fields(cur, patent_id: int, patent_params: dict[str, A
         params,
     )
     return cur.rowcount > 0
+
+
+def update_patent_figures(cur, pairs: list[tuple[int, bytes]]) -> int:
+    """批次寫入代表圖到 core_layer.patents."主附圖"，回實際更新列數。
+
+    效率：一次 executemany（單次 round-trip 批送）寫完整批，不逐張發 UPDATE
+    （1900 筆時 N+1 會多出 1900 次往返）。pairs 為 (patent_id, 圖片 bytes)，
+    空清單直接回 0、不發查詢。
+
+    語意：pairs 由呼叫端只放「該列真的有圖」者（無圖列根本不入列），故此處不需再判空——
+    沿用匯入端「新值空不覆蓋既有」政策的做法是**不送**，而非送 NULL 再判。同一 patent_id
+    在同批出現多次（多列指到同一專利）時後者覆蓋前者，與其他欄「後到為準」一致。
+    """
+    if not pairs:
+        return 0
+    cur.executemany(
+        f'UPDATE patents SET "{FIGURE_COLUMN}" = %s WHERE id = %s',
+        [(blob, patent_id) for patent_id, blob in pairs],
+    )
+    return len(pairs)
 
 
 def insert_patent_source(cur, patent_id: int, raw_record_id: int) -> None:
