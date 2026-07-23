@@ -286,9 +286,9 @@ class MainFigureImportTests(unittest.TestCase):
         calls: list[str] = []
         original = wips_importer.update_patent_figures
 
-        def spy(cur, pairs):
+        def spy(cur, triplets):
             calls.append("batch")
-            return original(cur, pairs)
+            return original(cur, triplets)
 
         wips_importer.update_patent_figures = spy
         try:

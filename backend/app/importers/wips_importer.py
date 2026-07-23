@@ -48,8 +48,30 @@ PATENT_IDENTIFIER_LOOKUP_ORDER = (
     UNEXAMINED_PUBLICATION_NUMBER_TRANSFORMED,
 )
 PEOPLE_FIELDS = tuple(dict.fromkeys(field for fields in PEOPLE_GROUPS.values() for field in fields.values()))
-# core_layer.patents 的代表圖欄（0026 起 bytea）；值來自 xlsx 內嵌浮動圖片，非儲存格文字。
+# core_layer.patents 的代表圖欄（0026 起 bytea）；0031 起語意降為「最新階段圖的快取」，
+# 完整保存在 core_layer.patent_figures。值來自 xlsx 內嵌浮動圖片，非儲存格文字。
 FIGURE_COLUMN = "主附圖"
+# core_layer.patents.document_kind 的欄名（PATENT_FIELDS 的目標名）；代表圖依此分階段保存。
+DOCUMENT_KIND_COLUMN = "document_kind"
+# document_kind 缺值時的佔位（patent_figures.document_kind 為 NOT NULL，不得因缺欄丟圖）。
+UNKNOWN_DOCUMENT_KIND = "UNKNOWN"
+# 文獻階段優先序：rank 越大越後期，主表快取取最大者（B 審定公告 > A 早期公開）。
+# 未知類型 rank=0，入庫保存但不覆蓋任何已知階段的快取；新增制度只加對照，不改邏輯。
+# 不得改用 ORDER BY document_kind DESC——字母序 ≠ 階段序（WIPS 另有 A1/A2/B1/B2/U/Y）。
+_KIND_RANK: dict[str, int] = {"A": 1, "B": 2}
+
+
+def figure_kind_rank(document_kind: str | None) -> int:
+    """取文獻種類的階段 rank；未知或缺值回 0（保守，不覆蓋已知階段）。
+
+    先查完整值（涵蓋 "A"／"B"），再退回首字母（涵蓋各國制度的 A1/A2/B1/B2 等同階段變體）。
+    """
+    if not document_kind:
+        return 0
+    kind = str(document_kind).strip().upper()
+    if kind in _KIND_RANK:
+        return _KIND_RANK[kind]
+    return _KIND_RANK.get(kind[:1], 0)
 CONFLICT_RESOLUTION_STRATEGY = "incoming_source_priority"
 
 # CLI importer 支援的全部來源副檔名（含 .mdb）；與 load_source_rows 的分派一致。
@@ -155,6 +177,14 @@ EMBEDDED_IMAGE_KEY = "_embedded_image"
 FIGURE_WARNINGS_KEY = "_figure_warning"
 # 同一資料列偵測到多張圖時的警告訊息（取第一張，其餘明確記錄不靜默丟棄）。
 _MULTI_IMAGE_WARNING = "第 {row_number} 列偵測到 {count} 張內嵌圖，僅取第一張（其餘未入庫）"
+# 同一 (patent_id, document_kind) 在同批出現多張圖：PK 只留一列，須明確記錄不靜默丟棄。
+_DUPLICATE_KIND_WARNING = (
+    "專利 {label} 的文獻種類「{kind}」在本批出現 {count} 張圖，僅保留第一張（其餘未入庫）"
+)
+# 未知文獻種類：仍入庫保存，但 rank=0 不覆蓋已知階段的主表快取。
+_UNKNOWN_KIND_WARNING = "專利 {label} 的文獻種類「{kind}」未列於階段對照，圖已入庫但不作為最新版快取"
+# 文獻種類缺值：以 UNKNOWN 落庫，不因缺欄丟圖。
+_MISSING_KIND_WARNING = "專利 {label} 缺文獻種類，圖以「{placeholder}」入庫（不作為最新版快取）"
 
 
 def extract_embedded_images(path: Path, sheet_name: str) -> dict[int, tuple[bytes, int]]:
@@ -517,9 +547,16 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
     # 本次涉及的 patent_ids（新建＋命中既有），保序去重，供匯入圈 workspace（2026-07-22 定案）。
     touched_patent_ids: list[int] = []
     seen_patent_ids: set[int] = set()
-    # 代表圖 (patent_id, bytes) 先蒐集、迴圈結束後一次批次寫入，避免逐列 UPDATE 造成 N+1。
-    figure_pairs: list[tuple[int, bytes]] = []
+    # 代表圖三元組 (patent_id, document_kind, bytes) 先蒐集、迴圈結束後一次批次寫入，
+    # 避免逐列 UPDATE 造成 N+1。(patent_id, kind) 為 patent_figures 主鍵，同鍵重複只留第一張。
+    figure_triplets: list[tuple[int, str, bytes]] = []
+    # 已收之 (patent_id, kind) → 該鍵在本批出現的張數；>1 者轉成 warning，不靜默丟棄。
+    figure_kind_counts: dict[tuple[int, str], int] = {}
+    # 各文獻階段入庫張數（如 {"A": 1330, "B": 576}），供 summary 可見性。
+    figure_stats: dict[str, int] = {}
     figure_warnings: list[str] = []
+    # 主表「主附圖」快取候選：patent_id → (rank, kind, bytes)，全批取 rank 最大者（B > A > 未知）。
+    latest_stage_map: dict[int, tuple[int, str, bytes]] = {}
     with psycopg.connect(**get_connection_kwargs()) as conn:
         with conn.cursor() as cur:
             if find_existing_raw_import(cur, file_hash):
@@ -545,15 +582,51 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
                 people = item["people"]
                 variant_pairs.append((people.get("申请人代表码"), people.get("申请人")))
                 variant_pairs.append((people.get("申请人代表码"), people.get("标准化申请人")))
+                # 同列多圖（load_xlsx_rows 偵測）警告；規格明文要求不得靜默丟棄。
+                row_warning = raw.get(FIGURE_WARNINGS_KEY)
+                if row_warning:
+                    figure_warnings.append(row_warning)
                 # 代表圖：只在該列真的有內嵌圖時入列（無圖／無內嵌圖的檔案自然為空清單）。
                 blob = raw.get(EMBEDDED_IMAGE_KEY)
                 if blob:
-                    figure_pairs.append((int(patent_id), blob))
-                warning = raw.get(FIGURE_WARNINGS_KEY)
-                if warning:
-                    figure_warnings.append(warning)
+                    # 文獻種類已由 normalize_record 依 PATENT_FIELDS 映射進 item["patent"]，
+                    # 與寫入 patents.document_kind 的是同一值；缺值以 UNKNOWN 佔位不丟圖。
+                    raw_kind = item["patent"].get(DOCUMENT_KIND_COLUMN)
+                    kind = str(raw_kind).strip() if raw_kind else ""
+                    label = _patent_label(item["patent"], patent_id)
+                    if not kind:
+                        kind = UNKNOWN_DOCUMENT_KIND
+                        figure_warnings.append(
+                            _MISSING_KIND_WARNING.format(
+                                label=label, placeholder=UNKNOWN_DOCUMENT_KIND
+                            )
+                        )
+                    elif figure_kind_rank(kind) == 0:
+                        figure_warnings.append(
+                            _UNKNOWN_KIND_WARNING.format(label=label, kind=kind)
+                        )
+                    key = (int(patent_id), kind)
+                    seen_count = figure_kind_counts.get(key, 0) + 1
+                    figure_kind_counts[key] = seen_count
+                    if seen_count > 1:
+                        # 同鍵重複：PK 只容一列，明確記錄後略過（保留先到者，與 upsert 語意一致）。
+                        figure_warnings.append(
+                            _DUPLICATE_KIND_WARNING.format(
+                                label=label, kind=kind, count=seen_count
+                            )
+                        )
+                        continue
+                    figure_triplets.append((int(patent_id), kind, blob))
+                    figure_stats[kind] = figure_stats.get(kind, 0) + 1
+                    # 主表快取候選：同專利取 rank 最大者；rank 相同時保留先到者（確定性）。
+                    rank = figure_kind_rank(kind)
+                    current = latest_stage_map.get(int(patent_id))
+                    if current is None or rank > current[0]:
+                        latest_stage_map[int(patent_id)] = (rank, kind, blob)
             # 全部 patent_id 確定後單次批次寫圖（executemany），不逐列往返。
-            update_patent_figures(cur, figure_pairs)
+            update_patent_figures(cur, figure_triplets)
+            # 再單次批次回寫主表快取（每專利 rank 最大者），同樣不逐列往返。
+            update_patent_figure_cache(cur, latest_stage_map)
         conn.commit()
     # 匯入成功：每列一次 upsert，inserted+matched_existing=records、skipped=0；updated 為其中確有差異更新者。
     summary["inserted"] = stats["inserted"]
@@ -563,8 +636,16 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
     summary["status"] = "imported"
     # 本次涉及專利（新建＋命中既有，去重）供 handler 圈進 workspace；空檔亦回空陣列。
     summary["patent_ids"] = touched_patent_ids
-    # 代表圖入庫統計與警告（同列多圖等）；無內嵌圖的來源為 0 與空清單，不影響匯入結果。
-    summary["figures"] = len(figure_pairs)
+    # 代表圖入庫統計與警告（同列多圖、未知/缺值 kind、同鍵重複）；
+    # 無內嵌圖的來源為 0 與空清單，不影響匯入結果。
+    summary["figures"] = len(figure_triplets)
+    # 各階段入庫張數（如 {"A": 1330, "B": 576}），讓「存了哪些階段」可見。
+    summary["figure_stages"] = dict(sorted(figure_stats.items()))
+    # 快取採用各階段的件數，讓「哪個階段被選為最新版」可見（規格「可見性」節）。
+    cache_stages: dict[str, int] = {}
+    for _, kind, _ in latest_stage_map.values():
+        cache_stages[kind] = cache_stages.get(kind, 0) + 1
+    summary["figure_cache_stages"] = dict(sorted(cache_stages.items()))
     summary["figure_warnings"] = figure_warnings
     # 報表定案 #3 接線：已知 WIPS code 的新名稱變體即時補入唯一對照表（unknown/conflicting 進 manual）。
     summary["alias_variants"] = register_known_code_variants(
@@ -787,24 +868,60 @@ def update_patent_changed_fields(cur, patent_id: int, patent_params: dict[str, A
     return cur.rowcount > 0
 
 
-def update_patent_figures(cur, pairs: list[tuple[int, bytes]]) -> int:
-    """批次寫入代表圖到 core_layer.patents."主附圖"，回實際更新列數。
+def _patent_label(patent: dict[str, Any], patent_id: int) -> str:
+    """警告訊息用的專利識別標籤：優先取專利號，皆缺時退回內部 id。
 
-    效率：一次 executemany（單次 round-trip 批送）寫完整批，不逐張發 UPDATE
-    （1900 筆時 N+1 會多出 1900 次往返）。pairs 為 (patent_id, 圖片 bytes)，
-    空清單直接回 0、不發查詢。
-
-    語意：pairs 由呼叫端只放「該列真的有圖」者（無圖列根本不入列），故此處不需再判空——
-    沿用匯入端「新值空不覆蓋既有」政策的做法是**不送**，而非送 NULL 再判。同一 patent_id
-    在同批出現多次（多列指到同一專利）時後者覆蓋前者，與其他欄「後到為準」一致。
+    不寫死單一欄——依既有 PATENT_IDENTIFIER_LOOKUP_ORDER 與申請號依序取第一個有值者。
     """
-    if not pairs:
+    for column_name in (*PATENT_IDENTIFIER_LOOKUP_ORDER, "申請號"):
+        value = patent.get(column_name)
+        if value:
+            return str(value)
+    return f"id={patent_id}"
+
+
+def update_patent_figures(cur, triplets: list[tuple[int, str, bytes]]) -> int:
+    """批次寫入代表圖到 core_layer.patent_figures（一對多保存），回寫入列數。
+
+    0031 起同一專利的各文獻階段（A 早期公開／B 審定公告／未知階段）各存一列，不再互相覆蓋。
+    主鍵 (patent_id, document_kind) 天然去重：重匯同階段走 ON CONFLICT DO UPDATE 覆蓋內容。
+
+    效率：一次 executemany（單次 round-trip 批送）寫完整批，不逐張發 INSERT
+    （1900 筆時 N+1 會多出 1900 次往返）。空清單直接回 0、不發查詢。
+
+    語意：triplets 由呼叫端只放「該列真的有圖」者（無圖列根本不入列），且同鍵重複已在
+    呼叫端過濾並記入 figure_warnings，故此處不需再判空或去重。
+    """
+    if not triplets:
+        return 0
+    cur.executemany(
+        """
+        INSERT INTO patent_figures (patent_id, document_kind, content)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (patent_id, document_kind) DO UPDATE
+        SET content = EXCLUDED.content
+        """,
+        triplets,
+    )
+    return len(triplets)
+
+
+def update_patent_figure_cache(cur, latest: dict[int, tuple[int, str, bytes]]) -> int:
+    """批次回寫主表 patents."主附圖" 最新版快取，回更新列數。
+
+    latest 為 patent_id → (rank, document_kind, 圖片 bytes)，由呼叫端以 figure_kind_rank
+    取全批 rank 最大者（B > A > 未知階段）決定，故此處只負責批次寫入，不重做階段判定。
+    前端與 API 讀主表即得最新版，無需 JOIN patent_figures（規格「主表欄位的定位」）。
+
+    效率：單次 executemany 批送，不逐列 UPDATE；空 dict 直接回 0、不發查詢。
+    """
+    if not latest:
         return 0
     cur.executemany(
         f'UPDATE patents SET "{FIGURE_COLUMN}" = %s WHERE id = %s',
-        [(blob, patent_id) for patent_id, blob in pairs],
+        [(blob, patent_id) for patent_id, (_, _, blob) in latest.items()],
     )
-    return len(pairs)
+    return len(latest)
 
 
 def insert_patent_source(cur, patent_id: int, raw_record_id: int) -> None:

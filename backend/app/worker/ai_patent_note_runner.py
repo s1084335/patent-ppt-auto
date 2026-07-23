@@ -131,6 +131,12 @@ def build_prompt(batch: Sequence[tuple[int, str]]) -> str:
     ⚠ 兩條 prompt 紅線都在這裡執行：
     - **繁中**：明寫「不論來源語言」，因為實測有全英文專利，不特別交代模型會跟著回英文。
     - **不湊字數**：只寫「100 字以內」「更少也可以」，**不寫**任何下限或「寫滿」字樣。
+
+    ⚠ **本線的安全保證來自任務設計，不是 CLI 沙箱**（2026-07-23 使用者定案）：
+    獨立項全文**直接內嵌在 prompt 內**，CLI 不需讀取任何檔案、不需連網即可完成任務——
+    「沒必要做」比「不准做」可靠。CLI 端的權限旗標（`_NOTE_TAIL_ARGS` 的空白名單、
+    Codex 的 `-s read-only` 與 config 的 `network_access`）只是額外保險，且**只在本機
+    設定得了**；使用者端機器的 CLI 設定不在本專案控制範圍內，故不得把安全性寄託於此。
     """
     blocks: list[str] = []
     for patent_id, claim in batch:
