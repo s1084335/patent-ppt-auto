@@ -50,16 +50,18 @@ class FrontendSkeletonTests(unittest.TestCase):
                 self.assertRegex(self.html, rf'id="{region_id}"')
 
     def test_nav_items_present(self):
-        """左導覽五項：專利總覽 / 分類區 / 報表種類 / 案件比對 / 匯出報告。
+        """左導覽（workspace 內功能）：分類區 / 報表種類 / 案件比對 / 匯出報告 / 系統狀態。
 
         （分群任務已移除：分群改為匯入後自動背景觸發，使用者不需手動點。）
+        （專利總覽於 2026-07-24 移至頂列：它是跨 workspace 的全庫視角，與左導覽的
+        workspace 內功能不同層——見 test_overview_moved_to_topbar_not_nav。）
         """
         for nav_key in (
-            "patents",     # 專利總覽
             "topics",      # 分類區
             "reports",     # 報表種類勾選
             "comparison",  # 案件比對
             "export",      # 匯出報告
+            "status",      # 系統狀態
         ):
             with self.subTest(nav_key=nav_key):
                 self.assertRegex(self.html, rf'data-nav="{nav_key}"')
@@ -378,6 +380,113 @@ class FrontendSkeletonTests(unittest.TestCase):
         """全庫專利分頁載入，不一次撈全部。"""
         self.assertIn("PATENTS_PAGE_SIZE", self.html)
         self.assertIn("pagePatents", self.html)
+
+    # ── B5. 專利顯示欄位（2026-07-23 定案）＋版面歸屬（2026-07-24） ──
+
+    def test_patent_columns_single_source_of_truth(self):
+        """顯示欄位以單一定義驅動表頭與資料列，不散落硬編。
+
+        使用者紅線「簡單≠寫死」：欄位清單只有一份 PATENT_COLUMNS，表頭與資料列都由它
+        map 產生；後端增減欄位時前端只改這一處。
+        """
+        self.assertIn("PATENT_COLUMNS", self.html)
+        # 表頭與資料列都必須由同一份定義 map 出來（非逐欄寫死 <th>／<td>）。
+        self.assertRegex(self.html, r"PATENT_COLUMNS\s*\n?\s*\.?\s*filter|PATENT_COLUMNS\.map")
+        # 欄位總數不得寫死（26／27 皆為規格沿革數字，非程式常數）。
+        self.assertNotRegex(self.html, r"(?:26|27)\s*(?:欄位|個欄|columns)")
+
+    def test_patent_columns_cover_spec_order(self):
+        """欄位定義涵蓋規格全部顯示欄，且照使用者指定順序排列。
+
+        順序＝使用者原始指定（主附圖→…→文圖像文件(PDF)連結），分類標籤依 2026-07-24
+        定案拆成技術分類／功效分類兩欄置於第 5、6 位。
+        """
+        m = re.search(r"const PATENT_COLUMNS\s*=\s*\[(.*?)\n\];", self.html, re.S)
+        self.assertIsNotNone(m, "找不到 PATENT_COLUMNS 定義")
+        block = m.group(1)
+        expected_order = [
+            "主附圖", "申請國家", "專利類型", "專利狀態",
+            "技術分類", "功效分類",
+            "文獻備註", "申請人", "標題", "標題(原文)", "摘要", "摘要(原文)",
+            "申請號", "申請日", "申請年", "未審查的公開號", "未審查的公開日",
+            "授權公告號", "授權公告日", "發明人", "優先權號", "優先權國家", "優先權日",
+            "最近專利權人", "Orig. IPC", "詳細查看連結", "文圖像文件(PDF)連結",
+        ]
+        positions = []
+        for label in expected_order:
+            idx = block.find("'" + label + "'")
+            with self.subTest(label=label):
+                self.assertGreaterEqual(idx, 0, f"欄位定義缺少「{label}」")
+            positions.append(idx)
+        self.assertEqual(positions, sorted(positions), "欄位順序與使用者指定順序不符")
+
+    def test_patent_columns_read_backend_field_names(self):
+        """欄位定義讀的 JSON 欄名對齊後端 GET /patents 回應（顯示欄位契約）。"""
+        for field in (
+            "patent_type", "legal_status", "patent_note", "applicant",
+            "title_original", "abstract_original", "application_number",
+            "application_date", "application_year", "publication_number",
+            "publication_date", "grant_number", "grant_date", "inventor",
+            "priority_number", "priority_country", "priority_date",
+            "current_owner", "orig_ipc_main", "detail_url", "pdf_url",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, self.html)
+
+    def test_patent_topic_columns_split_by_channel(self):
+        """技術／功效分類兩欄的欄名由 SOURCE_FIELDS 推導，不寫死兩個字面 key。"""
+        self.assertIn("topicLabelKey", self.html)
+        self.assertRegex(self.html, r"topic_label_'\s*\+|topic_label_\$\{")
+
+    def test_patent_list_shows_scan_columns_and_row_expands(self):
+        """列表只顯示辨識用欄位，點列展開完整欄位（26+ 欄橫向會爆）。"""
+        for needle in (
+            "listOnly",            # 欄位定義上的列表旗標
+            "togglePatentDetail",  # 點列展開／收合
+            "patent-detail-row",   # 詳情列
+            "patent-row-clickable",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_patent_long_text_truncated_in_list_only(self):
+        """摘要等長文字欄在列表截斷，詳情才全文。"""
+        self.assertIn("truncate", self.html)
+        self.assertIn("patentDetailHtml", self.html)
+
+    def test_patent_link_columns_render_anchor_and_skip_empty(self):
+        """連結欄輸出可點 <a target=_blank rel=noopener>；無值不輸出空連結。"""
+        self.assertIn("linkCell", self.html)
+        self.assertIn('target="_blank"', self.html)
+        self.assertIn('rel="noopener"', self.html)
+
+    def test_two_regions_share_one_table_implementation(self):
+        """專利總覽與分類區共用同一份表格實作，只以 scope 決定欄位差異（不做兩套）。"""
+        self.assertIn("function patentTableHtml(data, scope)", self.html)
+        self.assertIn("function patentColumns(scope)", self.html)
+        # 三個呼叫點都走同一個 patentTableHtml，只差 scope。
+        for scope in ("'overview'", "'topics'", "'topic'"):
+            with self.subTest(scope=scope):
+                self.assertIn("patentTableHtml(data, " + scope + ")", self.html)
+        # 「所屬 Workspace」欄只在總覽出現，且以資料驅動（不是硬寫在某個表頭字串裡）。
+        self.assertRegex(self.html, r"'所屬 Workspace',\s*key:\s*'workspaces',\s*scope:\s*\['overview'\]")
+
+    def test_overview_moved_to_topbar_not_nav(self):
+        """專利總覽為跨 workspace 層級，改掛頂列（與 workspace 選擇器同區），不放左導覽。
+
+        2026-07-24 定案：左導覽只留 workspace 內功能（分類區／報表種類／匯出報告／
+        案件比對／系統狀態）。
+        """
+        nav = re.search(r'<nav id="nav-panel">(.*?)</nav>', self.html, re.S)
+        self.assertIsNotNone(nav, "找不到 nav-panel")
+        self.assertNotIn('data-nav="patents"', nav.group(1))
+        top = re.search(r'<header id="topbar">(.*?)</header>', self.html, re.S)
+        self.assertIsNotNone(top, "找不到 topbar")
+        self.assertIn("navTo('patents')", top.group(1))
+        # 左導覽仍須保留 workspace 內五項。
+        for nav_key in ("topics", "reports", "export", "comparison", "status"):
+            with self.subTest(nav_key=nav_key):
+                self.assertIn(f'data-nav="{nav_key}"', nav.group(1))
 
     # ── C. topic 人工操作 ──
 

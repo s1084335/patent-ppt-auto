@@ -12,7 +12,9 @@ from alembic.config import Config
 
 TEST_DB = "patent_ppt_sweep"
 CURATION_DB = "patent_ppt_curation"
-HEAD_REV = "0021_derived_app_consolidation"
+# 升到 head：0030 起 company_aliases 唯一索引為 (申請人代碼, alias_lookup_key)，
+# 停在舊版本測不到「一別稱多公司」的實際約束行為。
+HEAD_REV = "head"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -275,7 +277,12 @@ class DisplayNameGovernanceTests(unittest.TestCase):
         self.assertEqual(statuses["Gamma LLC"], "confirmed")
 
     def test_apply_dedups_within_batch(self):
-        """upsert 三態之三：批內同 lookup key 只留第一個字面；跨 code 相同 canonical 也只落一列。"""
+        """upsert 三態之三：批內去重 key＝(代碼, lookup key)，同代碼字面變體去重、跨代碼各自保留。
+
+        2026-07-23「代碼是收斂依據」定案後改為代碼層級去重：
+        舊行為跨 code 共用 key 空間，會把第二個代碼的顯示名整列吃掉（C302 落 0 列），
+        那是舊單欄唯一索引的副作用而非需求——不同代碼本來就可以有相同顯示名。
+        """
         from backend.app.derived.company_alias_importer import apply_confirmed_display_names
         result = apply_confirmed_display_names(
             {
@@ -285,13 +292,13 @@ class DisplayNameGovernanceTests(unittest.TestCase):
             },
             source_label="display_name_curation_test",
             connect_kwargs=_rw(CURATION_DB))
-        # C300：丁公司＋Delta Tools 入庫，兩個大小寫/空白變體被批內去重；
-        # C302 的戊公司與 C301 同 key，也在批內去重（不會把戊公司改掛到第二個 code）。
-        self.assertEqual(result["dedup_dropped"], 3)
-        self.assertEqual(result["inserted"], 3)
+        # C300：丁公司＋Delta Tools 入庫，兩個大小寫/空白變體在同代碼內被去重（2 列丟棄）；
+        # C301／C302 的「戊公司」代碼不同，各自落一列，不再互相排擠。
+        self.assertEqual(result["dedup_dropped"], 2)
+        self.assertEqual(result["inserted"], 4)
         self.assertEqual({r[1] for r in self._rows("C300")}, {"丁公司", "Delta Tools"})
         self.assertEqual(len(self._rows("C301")), 1)
-        self.assertEqual(len(self._rows("C302")), 0)
+        self.assertEqual(len(self._rows("C302")), 1)
 
     def test_govern_needs_zh_name_detection(self):
         """治理管線：中文 canonical 不列、英文 canonical 列入、已 curation 裁決（含保留原文）不列。"""

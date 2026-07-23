@@ -248,16 +248,21 @@ class ListWorkspacePatentsTests(unittest.TestCase):
         self.assertIsNone(workspace_queries.list_workspace_patents(workspace_id=999_999_999))
 
     def test_members_from_patent_ids_json(self):
-        """WS_A 兩件成員；shape 與旗標正確、依 patent_id 升冪。"""
+        """WS_A 兩件成員；shape 與旗標正確、依 patent_id 升冪。
+
+        2026-07-24 起回應另含專利顯示欄位（分類區與總覽共用同一組，見
+        test_api_patents_display_fields），故改驗「必含這組基本欄」而非精確等於——
+        顯示欄位的增減由該檔負責，兩邊不重複維護同一份欄位清單。
+        """
         result = workspace_queries.list_workspace_patents(workspace_id=WS_A, limit=200)
         self.assertEqual(result["total"], 2)
         self.assertEqual((result["limit"], result["offset"]), (200, 0))
         items = result["items"]
-        self.assertEqual(
-            set(items[0].keys()),
+        self.assertLessEqual(
             {"patent_id", "patent_number", "title", "country_code",
              "applicant_display_name", "has_technical_text", "has_effect_text",
              "topic_key", "topic_label"},
+            set(items[0].keys()),
         )
         ids = [it["patent_id"] for it in items]
         self.assertEqual(ids, sorted(ids))

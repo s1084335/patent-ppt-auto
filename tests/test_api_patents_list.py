@@ -153,12 +153,15 @@ class PatentListTests(unittest.TestCase):
 
         has_figure 為布林旗標（0026 起）：清單只回「有無代表圖」，圖片內容不進清單回應，
         由前端逐筆走 GET /patents/{id}/figure 惰性載入。
+
+        2026-07-24 起回應另含 2026-07-23 定案的顯示欄位（見 test_api_patents_display_fields），
+        故本測試改驗「必含這組基本欄」而非精確等於——顯示欄位增減由該檔負責，
+        兩邊不重複維護同一份欄位清單。
         """
         resp = self._list(limit=200)
         self.assertEqual(resp.status_code, 200)
         item = _items_by_id(resp.json()["items"])[PIDS[0]]
-        self.assertEqual(
-            set(item.keys()),
+        self.assertLessEqual(
             {
                 "patent_id",
                 "patent_number",
@@ -168,6 +171,7 @@ class PatentListTests(unittest.TestCase):
                 "applicant_display_name",
                 "workspaces",
             },
+            set(item.keys()),
         )
         # 本測試 fixture 未寫入代表圖，故旗標為 False（不得回 bytea 內容）。
         self.assertIs(item["has_figure"], False)

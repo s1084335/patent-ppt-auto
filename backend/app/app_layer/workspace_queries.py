@@ -19,6 +19,7 @@ from typing import Any
 
 from psycopg.rows import dict_row
 
+from backend.app.app_layer import patent_queries
 from backend.app.db.connection import get_pool
 from backend.app.repositories.topic_state_repository import (
     PostgresTopicStateRepository,
@@ -112,7 +113,11 @@ ORDER BY cs.source_workspace_id
 # 以 jsonb_array_elements 取出 patent_id 後 join core_layer.patents；其餘投影欄位不變。
 # CTE 先算出這些欄位，供外層以 keyword 對 title／patent_number／applicant_display_name 做 ILIKE
 # 過濾；members 與 count 共用同一 CTE。
-_WS_PATENTS_CTE = """
+# 2026-07-23 顯示欄位定案：分類區與專利總覽**共用同一組欄位**（使用者定案「不做兩套」），
+# 故投影直接匯入 patent_queries.display_projection()，不在此重寫一份欄名清單。
+# patent_people 為一對一（PK 為 patent_id），LEFT JOIN 不放大列數；patent_attributes
+# 由 display_projection 產生的純量子查詢處理（一對多取最新非空），皆隨本 SQL 一次求值。
+_WS_PATENTS_CTE = f"""
 WITH ws_patents AS (
     SELECT
         p.id AS patent_id,
@@ -124,18 +129,33 @@ WITH ws_patents AS (
             NULLIF(BTRIM(p."申請號(轉換後)"), ''),
             NULLIF(BTRIM(p."申請號"), '')
         ) AS patent_number,
-        p.title,
-        p.country_code,
+        -- 只回「有無代表圖」布林；bytea 不進清單，圖走 GET /patents/{{id}}/figure 惰性載入。
+        (p."主附圖" IS NOT NULL) AS has_figure,
         rpb.applicant_display_name AS applicant_display_name,
         (NULLIF(BTRIM(p."獨立項[KR,JP,US,CN,EP,IN]"), '') IS NOT NULL) AS has_technical_text,
-        (NULLIF(BTRIM(p."效果 摘要[US,EP,PCT,JP,KR,CN,TW]"), '') IS NOT NULL) AS has_effect_text
+        (NULLIF(BTRIM(p."效果 摘要[US,EP,PCT,JP,KR,CN,TW]"), '') IS NOT NULL) AS has_effect_text,
+        {patent_queries.display_projection()}
     FROM app_layer.workspaces w
     JOIN LATERAL jsonb_array_elements(w.patent_ids_json) AS m(pid) ON TRUE
     JOIN core_layer.patents p ON p.id = (m.pid)::bigint
     LEFT JOIN derived_layer.report_patent_base rpb ON rpb.patent_id = p.id
+    LEFT JOIN core_layer.patent_people pp ON pp.patent_id = p.id
     WHERE w.workspace_id = %(workspace_id)s
 )
 """
+
+# 成員清單投影欄位：由顯示欄位定義推導，不逐個寫死欄名。
+_WS_PATENTS_SELECT_KEYS = ",\n       ".join(
+    (
+        "patent_id",
+        "patent_number",
+        "has_figure",
+        "applicant_display_name",
+        "has_technical_text",
+        "has_effect_text",
+        *patent_queries.display_field_keys(),
+    )
+)
 
 # keyword 為 NULL 時不過濾；否則對 title／patent_number／applicant_display_name 做 ILIKE
 # （傳入值已包 %）。
@@ -148,8 +168,7 @@ _WS_PATENTS_WHERE = (
 
 _WS_PATENTS_ITEMS_SQL = f"""
 {_WS_PATENTS_CTE}
-SELECT patent_id, patent_number, title, country_code,
-       applicant_display_name, has_technical_text, has_effect_text
+SELECT {_WS_PATENTS_SELECT_KEYS}
 FROM ws_patents
 {_WS_PATENTS_WHERE}
 ORDER BY patent_id
@@ -165,10 +184,11 @@ FROM ws_patents
 
 
 # topic patents：沿用 ws_patents CTE（同一 workspace 成員投影），再以 patent_id = ANY 交集
-# 指派到該 topic 的專利。只回分類區所需五欄（不含完整度旗標），依 patent_id 升冪、可分頁。
+# 指派到該 topic 的專利。欄位與 workspace 成員清單相同（共用同一份顯示欄位定義），
+# 依 patent_id 升冪、可分頁。
 _TOPIC_PATENTS_ITEMS_SQL = f"""
 {_WS_PATENTS_CTE}
-SELECT patent_id, patent_number, title, country_code, applicant_display_name
+SELECT {_WS_PATENTS_SELECT_KEYS}
 FROM ws_patents
 WHERE patent_id = ANY(%(pids)s)
 ORDER BY patent_id

@@ -8,6 +8,9 @@
 - applicant_display_name 由 derived_layer.report_patent_base LEFT JOIN 取（未涵蓋者回 NULL）。
 - workspace 歸屬（list_patents）以「本頁 patent_id 一次批次反查」求得，不對每筆專利另發查詢
   （避免 N+1）；查詢次數固定三條（count / items / membership），不隨資料量成長。
+- 顯示欄位（2026-07-23 定案，見 `.agents/context/patent-display-spec.md`）分散在
+  core_layer.patents／patent_attributes／patent_people 三張表，一次 JOIN 帶回，
+  前端不逐筆補查；主附圖 bytea 一律不進清單（只回 has_figure 布林）。
 """
 from __future__ import annotations
 
@@ -15,13 +18,127 @@ from typing import Any
 
 from psycopg.rows import dict_row
 
+from backend.app.clustering.sources import source_fields
 from backend.app.db.connection import get_pool
+from backend.app.repositories.topic_state_repository import (
+    PostgresTopicStateRepository,
+    TopicStateNotFoundError,
+)
+
+
+# ── 顯示欄位單一事實來源 ──────────────────────────────────────────────
+# 2026-07-23 定案的專利顯示欄位：回應 key → 取值 SQL 運算式。清單與詳情共用同一組欄位
+# （使用者定案「不做兩套」），前端亦由單一欄位定義驅動表頭與資料列。
+# 分三份 dict 對應三張表，避免把來源混在一起看不出落點：
+#   _PATENT_FIELDS    ── core_layer.patents（主表，一對一）
+#   _PEOPLE_FIELDS    ── core_layer.patent_people（一對一，LEFT JOIN）
+#   _ATTRIBUTE_FIELDS ── core_layer.patent_attributes（一對多，取「最新非空」，見 _attribute_pick）
+# 新增／移除顯示欄位只需改這三份 dict，SQL 投影與回應 key 自動跟著變（不寫死欄位數）。
+# workspace 專利清單（分類區）匯入同一份定義，兩區共用同一組欄位，不做兩套。
+
+# patents 主表欄位：直接投影，NULLIF(BTRIM(...)) 把 WIPS 的空白字元正規化成 NULL
+# （實測踩坑：WIPS 空欄填的是 ' ' 而非 NULL，不正規化會讓前端顯示一格空白而非「無值」）。
+# 運算式中的 {p} / {pp} 是表別名佔位（由 display_projection 以 str.format 填入），
+# 讓不同呼叫端（總覽 CTE、workspace 成員 CTE）能沿用同一份定義而不必統一別名。
+_PATENT_FIELDS: dict[str, str] = {
+    "country_code": "NULLIF(BTRIM({p}.country_code), '')",
+    "patent_type": "NULLIF(BTRIM({p}.patent_type), '')",
+    "legal_status": "NULLIF(BTRIM({p}.legal_status), '')",
+    "title": "NULLIF(BTRIM({p}.title), '')",
+    "title_original": "NULLIF(BTRIM({p}.title_original), '')",
+    "abstract": "NULLIF(BTRIM({p}.abstract), '')",
+    "application_number": 'NULLIF(BTRIM({p}."申請號"), \'\')',
+    "application_date": "{p}.application_date",
+    "application_year": "{p}.application_year",
+    "publication_number": 'NULLIF(BTRIM({p}."未審查的公開號"), \'\')',
+    "grant_number": 'NULLIF(BTRIM({p}."授權公告號"), \'\')',
+    "orig_ipc_main": 'NULLIF(BTRIM({p}."Orig. IPC(Main)"), \'\')',
+}
+
+# patent_people：patent_id 為 PK（一對一），LEFT JOIN 即可，不會放大列數。
+_PEOPLE_FIELDS: dict[str, str] = {
+    "applicant": 'NULLIF(BTRIM({pp}."申請人"), \'\')',
+    "inventor": 'NULLIF(BTRIM({pp}."發明人"), \'\')',
+    "current_owner": 'NULLIF(BTRIM({pp}."最近專利權人[US,JP,KR,CN,CA,AU]"), \'\')',
+}
+
+# patent_attributes：PK 為 (patent_id, raw_record_id)，同一專利可有多列（多次匯入）。
+# 取值規則沿用 refresh_report_patent_base 既有做法：**每欄各取最新非空**的 raw_record，
+# 而非「取最新列」——最新一次匯出可能是精簡版（該欄為空白），取最新列會把有值的舊資料蓋成空。
+_ATTRIBUTE_FIELDS: dict[str, str] = {
+    "abstract_original": "摘要(原文)",
+    "publication_date": "未審查的公開日",
+    "grant_date": "授權公告日",
+    "priority_number": "優先權號",
+    "priority_country": "優先權國家",
+    "priority_date": "優先權日",
+    "detail_url": "詳細查看連結(登入)",
+    "pdf_url": "文圖像文件(PDF)連結",
+    "patent_note": "文獻備註",
+}
+
+
+def topic_label_key(source_field: str) -> str:
+    """回傳某分群通道在 API 回應中的分類欄 key（如 topic_label_wips_independent_claims）。
+
+    2026-07-24 使用者定案：分類標籤拆成技術／功效兩獨立欄，不在同一欄併呈兩個值。
+    欄名由通道常數推導，新增通道時不需改此處也不需改前端（前端同樣走 source_fields()）。
+    """
+    return f"topic_label_{source_field}"
+
+
+def _attribute_pick(response_key: str, column: str, *, patents_alias: str = "p") -> str:
+    """組出「某 patent_attributes 欄取最新非空值」的相關子查詢投影。
+
+    以 raw_record_id DESC 取第一筆非空；同一專利多列時不會放大結果列數（純量子查詢），
+    也不需要對每筆專利另發查詢（隨 items SQL 一起在 DB 內求值，非 Python 層 N+1）。
+    取「最新非空」而非「最新列」：最新一次匯出可能是精簡版（該欄為空白字元），
+    取最新列會把有值的舊資料蓋成空——沿 refresh_report_patent_base 既有規則。
+    """
+    quoted = f'pa."{column}"'
+    return (
+        f"(SELECT NULLIF(BTRIM({quoted}), '') "
+        "FROM core_layer.patent_attributes pa "
+        f"WHERE pa.patent_id = {patents_alias}.id "
+        f"AND NULLIF(BTRIM({quoted}), '') IS NOT NULL "
+        "ORDER BY pa.raw_record_id DESC "
+        f"LIMIT 1) AS {response_key}"
+    )
+
+
+def display_field_keys() -> tuple[str, ...]:
+    """回傳全部顯示欄位的回應 key（欄位清單的唯一來源，供其他模組與測試取用）。
+
+    專利總覽與分類區共用同一組欄位（使用者定案「不做兩套」），兩邊都由此推導，
+    不各自維護一份欄名清單，也不寫死欄位數。
+    """
+    return (*_PATENT_FIELDS, *_PEOPLE_FIELDS, *_ATTRIBUTE_FIELDS)
+
+
+def display_projection(*, patents_alias: str = "p", people_alias: str = "pp") -> str:
+    """把三張表的顯示欄位定義攤成 SQL 投影片段（欄位清單的唯一 SQL 來源）。
+
+    alias 可覆寫，讓 workspace 專利清單（workspace_queries）用相同投影而不必改自己的
+    表別名——兩區的欄位定義因此只有這一份。呼叫端須自行 LEFT JOIN patent_people
+    （別名為 people_alias），patent_attributes 由本函式產生的純量子查詢自行處理。
+    """
+    parts = [
+        f"{expr.format(p=patents_alias)} AS {key}" for key, expr in _PATENT_FIELDS.items()
+    ]
+    parts += [
+        f"{expr.format(pp=people_alias)} AS {key}" for key, expr in _PEOPLE_FIELDS.items()
+    ]
+    parts += [
+        _attribute_pick(key, column, patents_alias=patents_alias)
+        for key, column in _ATTRIBUTE_FIELDS.items()
+    ]
+    return ",\n        ".join(parts)
 
 
 # 六欄專利號 COALESCE（與 workspace_queries 的 ws_patents CTE 同順序，唯一事實共用同一規則）。
 # 以 CTE 先算出 patent_number 與 applicant，供外層對 patent_number／title 過濾。
 # 號搜（search_patents）與全庫清單（list_patents）共用此 CTE，不重寫兩份專利號規則。
-_CANDIDATES_CTE = """
+_CANDIDATES_CTE = f"""
 WITH candidates AS (
     SELECT
         p.id AS patent_id,
@@ -33,16 +150,30 @@ WITH candidates AS (
             NULLIF(BTRIM(p."申請號(轉換後)"), ''),
             NULLIF(BTRIM(p."申請號"), '')
         ) AS patent_number,
-        p.title,
-        p.country_code,
         -- 只回「有無代表圖」布林，不把 bytea 內容帶進清單（清單一頁 200 筆會拖回數 MB）；
-        -- 實際圖片由前端逐筆走 GET /patents/{id}/figure 惰性載入。
+        -- 實際圖片由前端逐筆走 GET /patents/{{id}}/figure 惰性載入。
         (p."主附圖" IS NOT NULL) AS has_figure,
-        rpb.applicant_display_name AS applicant_display_name
+        rpb.applicant_display_name AS applicant_display_name,
+        {display_projection()}
     FROM core_layer.patents p
     LEFT JOIN derived_layer.report_patent_base rpb ON rpb.patent_id = p.id
+    -- patent_people 的 PK 為 patent_id（一對一），LEFT JOIN 不會放大列數。
+    LEFT JOIN core_layer.patent_people pp ON pp.patent_id = p.id
 )
 """
+
+
+# 清單／號搜共用的投影欄位清單：由顯示欄位定義推導，不逐個寫死欄名
+# （後端新增顯示欄位時，SELECT 清單自動跟著長）。
+_LIST_SELECT_KEYS = ",\n       ".join(
+    (
+        "patent_id",
+        "patent_number",
+        "has_figure",
+        "applicant_display_name",
+        *display_field_keys(),
+    )
+)
 
 _PATENT_SEARCH_SQL = f"""
 {_CANDIDATES_CTE}
@@ -65,7 +196,7 @@ _LIST_WHERE = (
 
 _PATENT_LIST_ITEMS_SQL = f"""
 {_CANDIDATES_CTE}
-SELECT patent_id, patent_number, title, country_code, has_figure, applicant_display_name
+SELECT {_LIST_SELECT_KEYS}
 FROM candidates
 {_LIST_WHERE}
 ORDER BY patent_id
@@ -94,6 +225,49 @@ ORDER BY (m.pid)::bigint, w.workspace_id
 
 # 單筆代表圖取回：只取 "主附圖" 一欄（不 SELECT *，避免把主表其他大欄一併拖回）。
 _PATENT_FIGURE_SQL = 'SELECT "主附圖" AS figure FROM core_layer.patents WHERE id = %(pid)s'
+
+
+def resolve_topic_workspace_id() -> int | None:
+    """**唯一切換點**：決定專利總覽的分類標籤要取哪個 workspace 的分群主題。
+
+    2026-07-24 現況：使用者尚未定案「總覽顯示全庫 workspace 的主題，還是各 workspace 的
+    主題」。暫採**全庫 workspace**（`is_global`，0028 落點）——總覽是跨 workspace 的全庫視角，
+    一件專利可屬多個 workspace、各自有不同分群，取單一 workspace 才有唯一解；全庫 workspace
+    的成員涵蓋全部專利，是唯一對每筆專利都成立的來源。
+
+    尚未建立全庫 workspace 時回 None，此時兩個分類欄一律為空（沿「尚未分群留空」定案）。
+    使用者若改採「各 workspace 主題」，只需改本函式（或由呼叫端傳
+    `list_patents(topic_workspace_id=...)` 覆寫），SQL 與前端都不用動。
+    """
+    from backend.app.app_layer import global_workspace
+
+    return global_workspace.get_global_workspace_id()
+
+
+def _topic_labels_by_patent(workspace_id: int | None) -> dict[str, dict[int, str]]:
+    """取各分群通道的 patent_id → topic label 映射，供分類標籤兩欄合併回清單。
+
+    回 {source_field: {patent_id: label}}。通道清單走 clustering.sources 的 source_fields()
+    白名單（不寫死技術／功效字串）；某通道尚無分群 run 時該通道回空 dict，對應欄位留空。
+    每個通道各取一次 topic state（通道數固定為 2，與專利筆數無關，非 N+1）。
+    """
+    labels: dict[str, dict[int, str]] = {sf: {} for sf in source_fields()}
+    if workspace_id is None:
+        return labels
+    repository = PostgresTopicStateRepository()
+    for source_field in source_fields():
+        try:
+            state = repository.get_latest_topic_state(workspace_id, source_field)
+        except (TopicStateNotFoundError, ValueError):
+            # 該通道尚未分群：沿「尚未分群留空」定案，整欄為空，總覽照常顯示。
+            continue
+        for topic in state.get("topics", []):
+            label = topic.get("label")
+            if not label:
+                continue
+            for pid in topic.get("patent_ids", []):
+                labels[source_field][int(pid)] = label
+    return labels
 
 
 def get_patent_figure(patent_id: int) -> bytes | None:
@@ -128,20 +302,31 @@ def search_patents(*, q: str, limit: int = 20) -> dict[str, Any]:
 
 
 def list_patents(
-    *, limit: int = 50, offset: int = 0, keyword: str | None = None
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    keyword: str | None = None,
+    topic_workspace_id: int | None = -1,
 ) -> dict[str, Any]:
-    """分頁列出全庫專利（不分 workspace），每筆標示所屬 workspace。
+    """分頁列出全庫專利（不分 workspace），每筆含完整顯示欄位與所屬 workspace。
 
     供專利總覽跨 workspace 顯示：資料一律分頁（limit 上限由 API 層以 le=200 擋），
     不一次撈全庫。keyword 去空白後為空視為不過濾，有值時對 patent_number／title／
     applicant_display_name 做 ILIKE。
 
-    回 {items, total, limit, offset}；每筆含 patent_id／patent_number／title／
-    country_code／applicant_display_name／workspaces（[{workspace_id, workspace_name}]，
-    不屬任何 workspace 者為空陣列）。
+    回 {items, total, limit, offset}；每筆含 patent_id／patent_number／has_figure／
+    applicant_display_name、2026-07-23 定案的顯示欄位（_PATENT_FIELDS／_PEOPLE_FIELDS／
+    _ATTRIBUTE_FIELDS 三份定義驅動，來源無值一律回 None 但 key 必在）、
+    各分群通道的分類標籤（topic_label_key(source_field)，尚未分群為 None），
+    以及 workspaces（[{workspace_id, workspace_name}]，不屬任何 workspace 者為空陣列）。
 
-    效率：固定三條查詢（count / items / 本頁 patent_id 批次反查 workspace 歸屬），
-    不對每筆專利另發查詢（無 N+1）；歸屬在 Python 層以 dict 合併回清單。
+    topic_workspace_id：分類標籤取哪個 workspace 的分群主題。預設哨兵 -1 表示「由
+    resolve_topic_workspace_id() 決定」（唯一切換點）；傳 None 則不取主題（兩欄皆空）。
+
+    效率：SQL 固定三條（count / items / 本頁 patent_id 批次反查 workspace 歸屬），
+    不對每筆專利另發查詢（無 N+1）；patent_people 以 LEFT JOIN、patent_attributes 以
+    純量子查詢隨 items SQL 一起求值，不逐筆補查；主附圖 bytea 不進清單。
+    歸屬與分類標籤在 Python 層以 dict 合併回清單。
     """
     cleaned = keyword.strip() if keyword else None
     kw = f"%{cleaned}%" if cleaned else None
@@ -162,6 +347,12 @@ def list_patents(
         membership.setdefault(row["patent_id"], []).append(
             {"workspace_id": row["workspace_id"], "workspace_name": row["workspace_name"]}
         )
+    # 分類標籤：技術／功效兩通道各一欄，在 Python 層以指派 dict 合併（不改成員查詢 SQL）。
+    # 哨兵 -1＝未指定，走唯一切換點決定來源；明確傳 None＝不取主題。
+    resolved_ws = resolve_topic_workspace_id() if topic_workspace_id == -1 else topic_workspace_id
+    topic_labels = _topic_labels_by_patent(resolved_ws)
     for it in items:
         it["workspaces"] = membership.get(it["patent_id"], [])
+        for source_field, by_patent in topic_labels.items():
+            it[topic_label_key(source_field)] = by_patent.get(it["patent_id"])
     return {"items": items, "total": total, "limit": limit, "offset": offset}

@@ -233,15 +233,19 @@ class WorkspaceCreateAndPatentsTests(unittest.TestCase):
 
     # ── 成員 shape（含新欄位）────────────────────────────
     def test_list_patents_shape(self):
-        """成員回 items/total/limit/offset；每筆含既有欄位與完整度旗標，依 patent_id 升冪。"""
+        """成員回 items/total/limit/offset；每筆含既有欄位與完整度旗標，依 patent_id 升冪。
+
+        2026-07-24 起回應另含 2026-07-23 定案的顯示欄位（分類區與專利總覽共用同一組欄位，
+        見 test_api_patents_display_fields），故改驗「必含這組基本欄」而非精確等於——
+        顯示欄位增減由該檔負責，兩邊不重複維護同一份欄位清單。
+        """
         wid = self._create_ws(self.pids[:6])
         body = self._patents(wid, limit=200).json()
         self.assertEqual(body["total"], 6)
         self.assertEqual((body["limit"], body["offset"]), (200, 0))
         self.assertEqual(len(body["items"]), 6)
         first = body["items"][0]
-        self.assertEqual(
-            set(first.keys()),
+        self.assertLessEqual(
             {
                 "patent_id",
                 "patent_number",
@@ -253,6 +257,7 @@ class WorkspaceCreateAndPatentsTests(unittest.TestCase):
                 "topic_key",
                 "topic_label",
             },
+            set(first.keys()),
         )
         # 無分群 workspace：所屬主題欄應為 None（未分類）。
         for it in body["items"]:

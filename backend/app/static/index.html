@@ -76,6 +76,18 @@ button { font-family: inherit; }
 .nav-item:hover { background: var(--panel-2); }
 .nav-item.active { background: var(--nav-active-bg); color: var(--nav-active-fg); font-weight: 600; }
 .nav-section-label { font-size: 0.72rem; color: var(--text-muted); padding: 0.4rem 0.7rem 0.2rem; text-transform: uppercase; letter-spacing: .04em; }
+/* ── 專利列表：點列展開詳情 ── */
+.patent-row-clickable { cursor: pointer; }
+.patent-row-clickable:hover { background: var(--panel-2); }
+.patent-detail { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.35rem 1.2rem; padding: 0.7rem 0.4rem; }
+.patent-detail-item { display: flex; gap: 0.5rem; align-items: baseline; font-size: 0.86rem; }
+.patent-detail-item dt { flex: 0 0 8.5rem; color: var(--text-muted); }
+.patent-detail-item dd { margin: 0; white-space: normal; word-break: break-word; }
+.patent-detail-row > td { background: var(--panel-2); }
+
+/* 頂列版的 nav-item（專利總覽）：沿用 .nav-item 的 active 樣式，但改為行內寬度。 */
+.topbar-nav { display: inline-block; width: auto; margin-bottom: 0; white-space: nowrap; }
+.topbar-divider { width: 1px; height: 1.4rem; background: var(--border); }
 
 /* ── 主內容通用 ── */
 .panel-title { font-size: 1.25rem; margin-bottom: 0.9rem; color: var(--text); }
@@ -291,9 +303,13 @@ table.data tr:hover td { background: var(--panel-2); }
 </head>
 <body>
 
-<!-- ══ 頂列：workspace 切換 ══ -->
+<!-- ══ 頂列：專利總覽（全庫）＋ workspace 切換 ══ -->
+<!-- 2026-07-24 定案：專利總覽是「跨 workspace」的全庫視角，與左導覽的 workspace 內功能
+     （分類區／報表／匯出／案件比對）不同層，故與 workspace 選擇器同列，不放左導覽。 -->
 <header id="topbar">
   <span class="brand">專利分析平台</span>
+  <button class="nav-item topbar-nav active" data-nav="patents" onclick="navTo('patents')">專利總覽（全庫）</button>
+  <span class="topbar-divider"></span>
   <label for="workspace-select" style="font-size:0.82rem;color:var(--text-muted)">Workspace</label>
   <select id="workspace-select" onchange="onWorkspaceChange()">
     <option value="">載入中…</option>
@@ -305,9 +321,9 @@ table.data tr:hover td { background: var(--panel-2); }
 
 <div id="layout">
   <!-- ══ 左欄：導覽 ══ -->
+  <!-- 左導覽只留「workspace 內」功能；跨 workspace 的專利總覽在頂列（2026-07-24 定案）。 -->
   <nav id="nav-panel">
     <div class="nav-section-label">分析</div>
-    <button class="nav-item active" data-nav="patents" onclick="navTo('patents')">專利總覽</button>
     <button class="nav-item" data-nav="topics" onclick="navTo('topics')">分類區</button>
     <div class="nav-section-label">報告</div>
     <button class="nav-item" data-nav="reports" onclick="navTo('reports')">報表種類</button>
@@ -592,7 +608,8 @@ async function renderPatents() {
   const m = el('main-panel');
   m.innerHTML = '<h2 class="panel-title">專利總覽</h2>'
     + '<p class="hint" style="padding:0 0 0.6rem">顯示全庫專利（不分 workspace）；'
-    + '「所屬 Workspace」欄標示每筆專利被哪些 workspace 收錄。</p>'
+    + '「所屬 Workspace」欄標示每筆專利被哪些 workspace 收錄。'
+    + '<strong>點任一列可展開該件的完整欄位</strong>。</p>'
     + '<div class="toolbar">'
     + '<input class="text-input" id="patent-kw" placeholder="搜尋 專利號／名稱／申請人" style="min-width:260px">'
     + '<button class="btn btn-outline" onclick="onPatentSearch()">搜尋</button>'
@@ -618,34 +635,149 @@ async function loadAllPatents() {
       + escHtml((e && e.message) || '未知錯誤') + '）。</div>';
   }
 }
-// 全庫專利表：專利欄位＋「所屬 Workspace」欄（一筆可屬多個 workspace）。
+// ── 專利顯示欄位：單一事實來源（2026-07-23 定案，2026-07-24 分類拆兩欄） ──
+// 表頭與資料列、列表與詳情**全部**由這一份定義驅動；新增／移除欄位只改這裡，
+// 不在別處重寫欄名或順序（使用者紅線：欄位清單不得散落多處硬編、不寫死欄位總數）。
+// 每欄：
+//   label    顯示欄名
+//   key      GET /patents 回應的 JSON 欄名（後端 patent_queries 的顯示欄位定義）
+//   listOnly true＝也出現在精簡列表；未標者只在點開的詳情裡出現
+//   render   自訂儲存格（省略則走 escHtml；空值一律顯示空白，不顯示提示文字）
+//   truncate 列表模式的截斷字數（詳情一律全文）
+//   wide     列表模式給較寬的欄位（長文字不擠成一直條）
+//   scope    限定只在列出的區塊出現（省略＝所有區塊都出現）。區塊：
+//            'overview' 專利總覽（全庫）／'topics' 分類區全部專利／'topic' 分類區某主題。
+//            區塊差異只有這幾欄：所屬 Workspace 只在總覽（跨 workspace 視角才需要），
+//            所屬主題與完整度旗標只在分類區。用資料驅動處理，**不拆成多份表格實作**。
+// 排序＝使用者指定順序，勿自行重排。
+function topicLabelKey(sourceField) { return 'topic_label_' + sourceField; }
+const PATENT_COLUMNS = [
+  { label: '主附圖', key: 'has_figure', listOnly: true, render: patentFigureCell },
+  { label: '申請國家', key: 'country_code', listOnly: true },
+  { label: '專利類型', key: 'patent_type' },
+  // 來源實測 0% 有值，欄位仍一律呈現（重匯有值即自動顯示，不需改前端）。
+  { label: '專利狀態', key: 'legal_status' },
+  // 分類標籤拆技術／功效兩欄（2026-07-24 定案）：欄名由 SOURCE_FIELDS 推導，不寫死兩個 key。
+  { label: '技術分類', key: topicLabelKey(SOURCE_FIELDS[0][0]), listOnly: true },
+  { label: '功效分類', key: topicLabelKey(SOURCE_FIELDS[1][0]), listOnly: true },
+  { label: '文獻備註', key: 'patent_note', truncate: 60 },
+  { label: '申請人', key: 'applicant', listOnly: true, wide: true },
+  { label: '標題', key: 'title', listOnly: true, wide: true },
+  { label: '標題(原文)', key: 'title_original' },
+  { label: '摘要', key: 'abstract', truncate: 80 },
+  { label: '摘要(原文)', key: 'abstract_original', truncate: 80 },
+  { label: '申請號', key: 'application_number' },
+  { label: '申請日', key: 'application_date' },
+  { label: '申請年', key: 'application_year' },
+  { label: '未審查的公開號', key: 'publication_number' },
+  { label: '未審查的公開日', key: 'publication_date' },
+  { label: '授權公告號', key: 'grant_number' },
+  { label: '授權公告日', key: 'grant_date' },
+  { label: '發明人', key: 'inventor' },
+  { label: '優先權號', key: 'priority_number' },
+  { label: '優先權國家', key: 'priority_country' },
+  { label: '優先權日', key: 'priority_date' },
+  // 來源實測 0% 有值，欄位仍一律呈現。
+  { label: '最近專利權人', key: 'current_owner' },
+  { label: 'Orig. IPC', key: 'orig_ipc_main' },
+  { label: '詳細查看連結', key: 'detail_url', render: p => linkCell(p.detail_url, '開啟') },
+  { label: '文圖像文件(PDF)連結', key: 'pdf_url', render: p => linkCell(p.pdf_url, 'PDF') },
+  // 只在專利總覽出現：跨 workspace 視角才需要知道這筆被哪些 workspace 收錄。
+  { label: '所屬 Workspace', key: 'workspaces', scope: ['overview'], listOnly: true, wide: true,
+    render: p => workspacesCell(p.workspaces) },
+  // 只在分類區出現：所屬主題＝當前 workspace 當前 tab 通道的歸屬（既有行為，不變）；
+  // 完整度旗標供使用者看出哪些專利缺分群來源文本。同 workspace 內才有意義。
+  // 所屬主題只在 workspace 全部專利清單（scope 'topics'）顯示；已點進某主題（scope 'topic'）
+  // 時全部同屬該主題，再列一次沒有資訊量。完整度旗標兩處都有用。
+  { label: '所屬主題', key: 'topic_label', scope: ['topics'], listOnly: true,
+    render: p => topicCell(p.topic_label) },
+  { label: '技術描述', key: 'has_technical_text', scope: ['topics', 'topic'], listOnly: true,
+    render: p => flag(p.has_technical_text) },
+  { label: '功效描述', key: 'has_effect_text', scope: ['topics', 'topic'], listOnly: true,
+    render: p => flag(p.has_effect_text) },
+];
+// 取某區塊要顯示的欄位：未標 scope 的欄位所有區塊共用；標了就只在列出的區塊出現。
+// 這是專利總覽與分類區之間**唯一**的欄位差異來源——用資料驅動，不拆成多份表格實作。
+function patentColumns(scope) {
+  return PATENT_COLUMNS.filter(c => !c.scope || c.scope.includes(scope));
+}
+// 連結欄：有值才輸出可點的 <a>；無值不輸出空連結（顯示空白）。
+function linkCell(url, text) {
+  const href = (url || '').trim();
+  if (!href) return '';
+  return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener">' + escHtml(text) + '</a>';
+}
+// 依欄位定義取一格內容。空值一律回空字串（欄位仍在，只是沒值）。
+// mode='list' 時套用 truncate（長文字欄不撐爆列高）；mode='detail' 一律全文。
+function patentCell(p, col, mode) {
+  if (col.render) return col.render(p);
+  const v = p[col.key];
+  if (v === null || v === undefined || v === '') return '';
+  const s = String(v);
+  if (mode === 'list' && col.truncate && s.length > col.truncate) {
+    return escHtml(s.slice(0, col.truncate)) + '…';
+  }
+  return escHtml(s);
+}
+// 專利表（專利總覽與分類區**共用同一份實作**，只差 scope 決定的欄位集合）：
+// 精簡列表（辨識用欄位）＋點列展開完整欄位。
+// 為何不把全部欄位攤在列表：欄位逾 25 欄橫向必爆版；使用者行為是「掃列表找目標 → 細看某件」。
+// 列表保留的是掃描時真正用得到的辨識鍵：主附圖（一眼認圖）、申請國家、
+// 技術／功效分類（分類作業的主軸）、申請人（最常用的篩選維度）、標題（這是什麼），
+// 專利總覽另加所屬 Workspace（跨 workspace 視角才需要）。
+// 日期／各種號碼／連結是「找到後才細看」的欄位，不是掃描鍵，一律收進詳情。
+function patentTableHtml(data, scope) {
+  const items = data.items || [];
+  if (items.length === 0) return '<div class="hint">查無符合的專利。</div>';
+  const cols = patentColumns(scope);
+  const listCols = cols.filter(c => c.listOnly);
+  // 詳情列的 colspan＝列表欄數（由欄位定義推導，不寫死數字）。
+  const rows = items.map((p, i) =>
+    '<tr class="patent-row-clickable" onclick="togglePatentDetail(\'' + scope + '\',' + i + ')">'
+    + listCols.map(c =>
+      '<td' + (c.wide ? ' style="white-space:normal;min-width:220px"' : '') + '>'
+      + patentCell(p, c, 'list') + '</td>'
+    ).join('')
+    + '</tr>'
+    + '<tr class="patent-detail-row" id="patent-detail-' + scope + '-' + i + '" hidden>'
+    + '<td colspan="' + listCols.length + '">' + patentDetailHtml(p, scope) + '</td></tr>'
+  ).join('');
+  return '<div class="table-wrap"><table class="data">'
+    + '<thead><tr>'
+    + listCols.map(c => '<th>' + escHtml(c.label) + '</th>').join('')
+    + '</tr></thead>'
+    + '<tbody>' + rows + '</tbody></table></div>';
+}
+// 全庫專利表（專利總覽）：共用 patentTableHtml，另加跨 workspace 的分頁器。
 function allPatentsTableHtml(data) {
   const items = data.items || [];
   if (items.length === 0) return '<div class="hint">查無符合的專利。</div>';
-  const rows = items.map(p =>
-    '<tr>'
-    + '<td>' + patentFigureCell(p) + '</td>'
-    + '<td>' + escHtml(p.patent_number) + '</td>'
-    + '<td style="white-space:normal;min-width:280px">' + escHtml(p.title) + '</td>'
-    + '<td>' + escHtml(p.country_code) + '</td>'
-    + '<td>' + escHtml(p.applicant_display_name) + '</td>'
-    + '<td style="white-space:normal;min-width:200px">' + workspacesCell(p.workspaces) + '</td>'
-    + '</tr>'
-  ).join('');
   const total = data.total ?? items.length;
   const from = (data.offset ?? 0) + 1;
   const to = (data.offset ?? 0) + items.length;
   const canPrev = (data.offset ?? 0) > 0;
   const canNext = to < total;
-  return '<div class="table-wrap"><table class="data">'
-    + '<thead><tr><th>主附圖</th><th>專利號</th><th>名稱</th><th>受理局</th><th>申請人</th>'
-    + '<th>所屬 Workspace</th></tr></thead>'
-    + '<tbody>' + rows + '</tbody></table></div>'
+  return patentTableHtml(data, 'overview')
     + '<div class="pager">'
     + '<button class="btn btn-outline" ' + (canPrev ? '' : 'disabled') + ' onclick="pagePatents(-1)">上一頁</button>'
     + '<span>' + from + '–' + to + ' / 共 ' + total + ' 件</span>'
     + '<button class="btn btn-outline" ' + (canNext ? '' : 'disabled') + ' onclick="pagePatents(1)">下一頁</button>'
     + '</div>';
+}
+// 詳情：該區塊的完整欄位（含列表已顯示者），以標籤／值兩欄清單呈現，長文字不截斷。
+// 資料在列表回應中已帶回，展開不再打 API（主附圖仍走既有 lazy load 端點）。
+function patentDetailHtml(p, scope) {
+  return '<dl class="patent-detail">'
+    + patentColumns(scope).map(c =>
+      '<div class="patent-detail-item"><dt>' + escHtml(c.label) + '</dt>'
+      + '<dd>' + patentCell(p, c, 'detail') + '</dd></div>'
+    ).join('')
+    + '</dl>';
+}
+// 點列展開／收合詳情列（同一列再點一次收合）。scope 讓兩區的列 id 不相撞。
+function togglePatentDetail(scope, index) {
+  const row = el('patent-detail-' + scope + '-' + index);
+  if (row) row.hidden = !row.hidden;
 }
 // 所屬 workspace 儲存格：列出全部所屬 workspace 名稱（可多個）；未被任何 workspace 收錄標「未加入」。
 function workspacesCell(workspaces) {
@@ -666,27 +798,15 @@ function patentFigureCell(p) {
     + ' alt="' + escHtml(p.patent_number || '') + ' 主附圖"'
     + ' onerror="this.outerHTML=\'<span class=&quot;figure-empty&quot;>無圖</span>\'">';
 }
-// workspace 專利表（分類區「全部」用；GET /workspaces/{id}/patents 回應含所屬主題與完整度旗標）。
+// workspace 專利表（分類區用；GET /workspaces/{id}/patents 與 /topics/{key}/patents 回應
+// 含與總覽相同的顯示欄位，另有所屬主題與完整度旗標）。
+// 與總覽**共用 patentTableHtml**，只差 scope 決定的欄位集合（不做兩套實作）。
 // 只顯示首頁（PATENTS_PAGE_SIZE 筆），不共用總覽的分頁器——分頁在跨 workspace 的總覽才有意義。
 function patentsTableHtml(data) {
   const items = data.items || [];
   if (items.length === 0) return '<div class="hint">此 workspace 無符合的專利。</div>';
-  // 所屬主題欄：顯示 topic_label（該專利在最新分群的歸屬），未分類者標示「未分類」。
-  const rows = items.map(p =>
-    '<tr>'
-    + '<td>' + escHtml(p.patent_number) + '</td>'
-    + '<td style="white-space:normal;min-width:280px">' + escHtml(p.title) + '</td>'
-    + '<td>' + escHtml(p.country_code) + '</td>'
-    + '<td>' + escHtml(p.applicant_display_name) + '</td>'
-    + '<td>' + topicCell(p.topic_label) + '</td>'
-    + '<td>' + flag(p.has_technical_text) + '</td>'
-    + '<td>' + flag(p.has_effect_text) + '</td>'
-    + '</tr>'
-  ).join('');
   const total = data.total ?? items.length;
-  return '<div class="table-wrap"><table class="data">'
-    + '<thead><tr><th>專利號</th><th>名稱</th><th>受理局</th><th>申請人</th><th>所屬主題</th><th>技術描述</th><th>功效描述</th></tr></thead>'
-    + '<tbody>' + rows + '</tbody></table></div>'
+  return patentTableHtml(data, 'topics')
     + '<div class="pager"><span>顯示前 ' + items.length + ' 件 / 共 ' + total + ' 件</span></div>';
 }
 // 所屬主題儲存格：有 topic_label 顯示之，否則標「未分類」（灰字）。
@@ -1295,22 +1415,13 @@ async function loadTopicAssignedPatents(topicKey) {
     }
   }
 }
-// 主題專利表（/topics/{key}/patents 回應：五欄，無所屬主題欄與完整度旗標）。
+// 主題專利表（/topics/{key}/patents 回應：與總覽相同的顯示欄位）。
+// 共用 patentTableHtml，scope='topic'——已經點進某個主題，不再重覆顯示「所屬主題」欄。
 function topicPatentsTableHtml(data) {
   const items = data.items || [];
   if (items.length === 0) return '<div class="hint">此主題尚無指派的專利。</div>';
-  const rows = items.map(p =>
-    '<tr>'
-    + '<td>' + escHtml(p.patent_number) + '</td>'
-    + '<td style="white-space:normal;min-width:280px">' + escHtml(p.title) + '</td>'
-    + '<td>' + escHtml(p.country_code) + '</td>'
-    + '<td>' + escHtml(p.applicant_display_name) + '</td>'
-    + '</tr>'
-  ).join('');
   const total = data.total ?? items.length;
-  return '<div class="table-wrap"><table class="data">'
-    + '<thead><tr><th>專利號</th><th>名稱</th><th>受理局</th><th>申請人</th></tr></thead>'
-    + '<tbody>' + rows + '</tbody></table></div>'
+  return patentTableHtml(data, 'topic')
     + '<div class="pager"><span>共 ' + total + ' 件</span></div>';
 }
 
