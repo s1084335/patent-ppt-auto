@@ -9,6 +9,7 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from backend.app import settings
+from backend.app.db import report_artifact_store
 from backend.app.api import (
     ai_tasks,
     clustering,
@@ -83,24 +84,116 @@ def _run_dirs():
     )
 
 
+# ---------------------------------------------------------------------------
+# 報表產物來源（2026-07-23 跨容器定案）
+#
+# Railway 上 worker 與 backend 是不同容器、檔案系統不共享，worker 產的報表目錄
+# backend 讀不到，故 worker 產完即整包上傳 app_layer.report_artifacts。讀取端一律
+# 先看本機檔案系統（本機開發／CLI 直接出圖的情境不變、不多打一次 DB），沒有才讀 DB。
+#
+# 兩種來源以同一個小介面包起來（name／read_bytes／exists），下面的組裝與端點只依賴
+# 介面，API 形狀完全不變（content 回結構化內容、asset 回圖檔）。
+# ---------------------------------------------------------------------------
+
+
+class _DirRunSource:
+    """本機檔案系統上的報表版本目錄。"""
+
+    def __init__(self, path):
+        self.path = path
+        self.name = path.name
+
+    def read_bytes(self, filename: str):
+        """讀取該版本目錄下的檔案；不存在回 None。"""
+        target = self.path / filename
+        if not target.is_file():
+            return None
+        return target.read_bytes()
+
+    def exists(self, filename: str) -> bool:
+        return (self.path / filename).is_file()
+
+
+class _DbRunSource:
+    """存在 app_layer.report_artifacts 的報表版本（worker 容器產、backend 容器讀）。
+
+    每個檔案單獨取回並在本次請求內快取——一次 content 組裝要問多個檔案的存在性
+    （每張圖一次），不快取會對同一版重覆打 DB。
+    """
+
+    def __init__(self, version: str, *, has_narratives: bool | None = None):
+        self.name = version
+        # list_versions 已用 SQL 聚合算出有無解讀；帶進來讓列表端點不必為一個布林值撈內容。
+        self.has_narratives_hint = has_narratives
+        self._cache: dict[str, bytes | None] = {}
+
+    def read_bytes(self, filename: str):
+        if filename not in self._cache:
+            self._cache[filename] = _db_read_artifact(self.name, filename)
+        return self._cache[filename]
+
+    def exists(self, filename: str) -> bool:
+        return self.read_bytes(filename) is not None
+
+
+def _db_read_artifact(version: str, filename: str):
+    """從 DB 取單一產物；DB 不可用（未 migrate、連線失敗）時視為「沒有」而非 500。
+
+    本機開發與測試環境不一定有 report_artifacts 表；跨容器讀取是**補位**路徑，
+    失敗只該讓端點回 404（找不到報表），不該把整個報表頁打成 500。
+    """
+    try:
+        return report_artifact_store.read_file(version, filename)
+    except Exception:  # noqa: BLE001 - 補位路徑失敗即視為無此產物
+        return None
+
+
+def _list_run_sources():
+    """所有有效報表版本（本機目錄 ＋ DB 產物），依版本名升冪＝時間序、同名以本機優先。
+
+    效率：本機只 stat 檔案存在性、DB 只查 metadata（不選 content），版本一多也不會慢。
+    """
+    sources = {p.name: _DirRunSource(p) for p in _run_dirs()}
+    try:
+        for entry in report_artifact_store.list_versions():
+            sources.setdefault(
+                entry["version"],
+                _DbRunSource(entry["version"], has_narratives=bool(entry.get("has_narratives"))),
+            )
+    except Exception:  # noqa: BLE001 - DB 不可用時仍回本機版本，不讓報表頁整個掛掉
+        pass
+    return [sources[name] for name in sorted(sources)]
+
+
 def _latest_run_dir():
-    """取最新的報表版本目錄；無有效版本回 None。"""
-    candidates = _run_dirs()
+    """取最新的報表版本來源；無有效版本回 None。"""
+    candidates = _list_run_sources()
     return candidates[-1] if candidates else None
 
 
 def _resolve_run_dir(version: str):
-    """把版本字串解析成輸出根下的版本目錄；越界或非有效版本回 None（防 path traversal）。
+    """把版本字串解析成報表版本來源；越界或非有效版本回 None（防 path traversal）。
 
-    與 asset 端點同一套防護：resolve 後必須仍在輸出根內，且需含 report_data.json。
+    先試本機：resolve 後必須仍在輸出根內，且需含 report_data.json。本機沒有才查 DB
+    產物；版本名帶路徑分隔或 .. 一律先擋掉（DB 端不走檔案系統，仍照同一套規則拒絕，
+    避免兩條路徑防護不一致）。
     """
     root = REPORT_OUTPUT_ROOT.resolve()
     target = (root / version).resolve()
-    if target == root or not target.is_relative_to(root):
+    if target != root and target.is_relative_to(root):
+        if target.is_dir() and (target / "report_data.json").exists():
+            return _DirRunSource(target)
+    if not _is_safe_version(version):
         return None
-    if not target.is_dir() or not (target / "report_data.json").exists():
-        return None
-    return target
+    source = _DbRunSource(version)
+    return source if source.exists("report_data.json") else None
+
+
+def _is_safe_version(version: str) -> bool:
+    """版本名必須是單一路徑元件（無分隔符、非 . / ..），DB 端沿用同一套防護。"""
+    if not version or version in (".", ".."):
+        return False
+    return not any(sep in version for sep in ("/", "\\")) and ".." not in version
 
 
 def _version_generated_at(name: str) -> str:
@@ -149,7 +242,7 @@ def _lookup_rows(report_data: dict, report_key: str) -> list:
 
 
 def _report_content_payload(run_dir):
-    """把一個報表版本目錄組成結構化內容（卡片＋rows＋圖 URL＋解讀）。
+    """把一個報表版本（本機目錄或 DB 產物）組成結構化內容（卡片＋rows＋圖 URL＋解讀）。
 
     最新版本與指定版本兩支端點共用同一份組裝，回傳形狀一致，前端才能用同一套渲染。
     讀不到 report_data.json 時回 JSONResponse(404)，由呼叫端直接回傳。
@@ -159,23 +252,26 @@ def _report_content_payload(run_dir):
     from fastapi.responses import JSONResponse
 
     version = run_dir.name
+    raw = run_dir.read_bytes("report_data.json")
+    if raw is None:
+        return JSONResponse(status_code=404, content={"detail": "報表內容無法讀取：缺 report_data.json"})
     try:
-        report_data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        report_data = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         return JSONResponse(status_code=404, content={"detail": f"報表內容無法讀取：{exc}"})
 
     # 解讀：版本不符即整份標記過期（對齊 chart_runner._read_narratives 契約）。
     narratives: dict = {}
     narratives_expired = False
-    narr_path = run_dir / "narratives.json"
-    if narr_path.exists():
+    narr_raw = run_dir.read_bytes("narratives.json")
+    if narr_raw is not None:
         try:
-            narr = json.loads(narr_path.read_text(encoding="utf-8"))
+            narr = json.loads(narr_raw.decode("utf-8"))
             if narr.get("based_on_version") == version:
                 narratives = narr.get("reports", {}) or {}
             else:
                 narratives_expired = True
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, UnicodeDecodeError):
             narratives = {}
 
     parameters = report_data.get("parameters", {}) or {}
@@ -198,7 +294,7 @@ def _report_content_payload(run_dir):
                 "label": variant.get("label", ""),
                 "variant_key": variant_key,
                 "file": file_name,
-                "chart_url": asset_base + file_name if (run_dir / file_name).exists() else None,
+                "chart_url": asset_base + file_name if run_dir.exists(file_name) else None,
                 "narrative": narrative,
             })
         sections_out.append({
@@ -240,24 +336,37 @@ def serve_latest_report_content():
 def list_report_versions(limit: int | None = None):
     """列出所有報表版本（新到舊），供前端「最新展開＋舊版收合」的版本清單。
 
-    效率：只讀目錄名與兩個檔案的存在性，不開任何 report_data.json——版本一多也不會慢。
+    效率：只讀版本名與 narratives 的存在性，不開任何 report_data.json——版本一多也不會慢
+    （本機端只 stat；DB 端 list_versions 不選 content，has_narratives 由 SQL 聚合直接得出）。
     卡片數等需要開檔的資訊留給展開時的 content 端點取（lazy）。
     limit 只截清單長度，total 仍回實際總數供前端「顯示更多」。
     """
-    run_dirs = list(reversed(_run_dirs()))  # 新到舊
-    total = len(run_dirs)
+    sources = list(reversed(_list_run_sources()))  # 新到舊
+    total = len(sources)
     if limit is not None and limit > 0:
-        run_dirs = run_dirs[:limit]
+        sources = sources[:limit]
     versions = [
         {
-            "version": p.name,
-            "generated_at": _version_generated_at(p.name),
+            "version": source.name,
+            "generated_at": _version_generated_at(source.name),
             "is_latest": idx == 0,
-            "has_narratives": (p / "narratives.json").exists(),
+            "has_narratives": _has_narratives(source),
         }
-        for idx, p in enumerate(run_dirs)
+        for idx, source in enumerate(sources)
     ]
     return {"versions": versions, "total": total}
+
+
+def _has_narratives(source) -> bool:
+    """該版本是否已有 AI 解讀。
+
+    DB 來源用 list_versions 已算好的旗標（不為一個布林值把 narratives.json 內容撈回來）；
+    本機來源直接 stat 檔案存在性。
+    """
+    hint = getattr(source, "has_narratives_hint", None)
+    if hint is not None:
+        return hint
+    return source.exists("narratives.json")
 
 
 @report_versions_router.get("/reports/versions/{version}/content")
@@ -274,20 +383,43 @@ def serve_report_version_content(version: str):
     return _report_content_payload(run_dir)
 
 
+# 副檔名 → Content-Type：DB 來源沒有檔案路徑可讓 FileResponse 推斷，需明確給。
+_REPORT_ASSET_MEDIA_TYPES = {
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".json": "application/json",
+    ".html": "text/html; charset=utf-8",
+}
+
+
 @app.get("/api/v1/report-latest/asset/{version}/{filename}")
 def serve_latest_report_asset(version: str, filename: str):
-    """serve 指定報表版本目錄下的圖檔／附件；限白名單副檔名且不得逃出輸出根。"""
-    from fastapi.responses import FileResponse, JSONResponse
+    """serve 指定報表版本的圖檔／附件；限白名單副檔名且不得逃出輸出根。
+
+    本機有檔就直接 serve（本機開發／CLI 出圖的情境不變）；沒有才向
+    app_layer.report_artifacts 取**單一檔案**（跨容器情境）——不為了一張圖撈整版產物。
+    """
+    from fastapi.responses import FileResponse, JSONResponse, Response
 
     from pathlib import PurePosixPath
 
-    if PurePosixPath(filename).suffix.lower() not in _REPORT_ASSET_SUFFIXES:
+    suffix = PurePosixPath(filename).suffix.lower()
+    if suffix not in _REPORT_ASSET_SUFFIXES:
         return JSONResponse(status_code=404, content={"detail": "不支援的檔案類型"})
     root = REPORT_OUTPUT_ROOT.resolve()
     target = (root / version / filename).resolve()
-    if not target.is_relative_to(root) or not target.is_file():
-        return JSONResponse(status_code=404, content={"detail": "檔案不存在"})
-    return FileResponse(str(target))
+    if target.is_relative_to(root) and target.is_file():
+        return FileResponse(str(target))
+    if _is_safe_version(version) and PurePosixPath(filename).name == filename:
+        content = _db_read_artifact(version, filename)
+        if content is not None:
+            return Response(
+                content=content,
+                media_type=_REPORT_ASSET_MEDIA_TYPES.get(suffix, "application/octet-stream"),
+            )
+    return JSONResponse(status_code=404, content={"detail": "檔案不存在"})
 
 
 @app.get("/")

@@ -2170,6 +2170,7 @@ def run_chart_trial(
     report_names: Sequence[str] | None = None,
     filters: dict[str, Any] | None = None,
     cluster_data: dict[str, Any] | None = None,
+    patent_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """渲染報表圖組（MCP reporting tools 與 CLI 共用的出圖入口）。
 
@@ -2178,13 +2179,18 @@ def run_chart_trial(
     每個產出檔登錄 app_layer.export_runs；filters 讓 patent 層報表與數據端同
     口徑（家族層報表一律全庫口徑，note 現形）。
 
+    patent_ids 由呼叫端直接指定專利範圍（worker 的 report_generate payload 走這條——
+    它帶的是 patent_ids 而非 analysis_id）；與 analysis_id 同時給時以 analysis 快照
+    為準（快照是正式口徑，不讓呼叫端的清單覆寫已定案的 analysis 範圍）。
+
     cluster_data 由呼叫端注入（見 compute_and_save_cluster_analysis 的回傳值），
     驅動分群分析區塊（主題統計表、機會矩陣、痛點矩陣）；為 None 時該區塊靜默跳過。
     """
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR
     specs = resolve_sections(report_names)
-    patent_ids = fetch_analysis_patent_ids(analysis_id) if analysis_id is not None else None
+    if analysis_id is not None:
+        patent_ids = fetch_analysis_patent_ids(analysis_id)
     prefix = f"analysis_{analysis_id}_" if analysis_id is not None else "report_trial_"
     run_dir = _create_run_dir(output_dir, prefix)
 

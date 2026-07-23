@@ -112,45 +112,51 @@ class HandlerContractTests(unittest.TestCase):
                 context,
             )
 
-    def test_report_generate_missing_names_uses_default_reports(self):
-        """確認 worker 缺少 report_names 時使用固定預設報表名單。"""
+    @staticmethod
+    def _report_generate_names(payload):
+        """跑 handle_report_generate 並回傳它實際交給出圖引擎的 report_names。
+
+        2026-07-23 起 handler 改呼叫 run_chart_trial（真的出圖＋落 DB），不再只跑
+        run_reports_batch；本組測試只驗 report_names 預設／子集合語意，故把出圖與上傳
+        都替身掉，不碰檔案系統與 DB。
+        """
         context = mock.Mock()
         context.heartbeat.return_value = None
-        with mock.patch.object(handlers, "run_reports_batch", return_value={"ok": True}) as patched:
-            result = handlers.handle_report_generate({}, context)
-        patched.assert_called_once_with(
-            list(DEFAULT_REPORT_NAMES), filters=None, limit=None, patent_ids=None
-        )
-        self.assertEqual(result, {"ok": True})
+        context.keepalive.return_value = nullcontext()
+        context.job.workspace_id = None
+        captured = {}
+
+        def _fake_run_chart_trial(**kwargs):
+            captured.update(kwargs)
+            return {"status": "ok", "output_dir": "x", "version": "v", "files": []}
+
+        with mock.patch.object(handlers, "run_chart_trial", _fake_run_chart_trial), \
+                mock.patch.object(handlers.report_artifact_store, "upload_run_dir",
+                                  return_value=0):
+            handlers.handle_report_generate(payload, context)
+        return captured["report_names"]
+
+    def test_report_generate_missing_names_uses_default_reports(self):
+        """確認 worker 缺少 report_names 時使用固定預設報表名單。"""
+        self.assertEqual(self._report_generate_names({}), list(DEFAULT_REPORT_NAMES))
 
     def test_report_generate_null_names_uses_default_reports(self):
         """確認 worker 收到 null report_names 時使用固定預設報表名單。"""
-        context = mock.Mock()
-        context.heartbeat.return_value = None
-        with mock.patch.object(handlers, "run_reports_batch", return_value={}) as patched:
-            handlers.handle_report_generate({"report_names": None}, context)
-        patched.assert_called_once_with(
-            list(DEFAULT_REPORT_NAMES), filters=None, limit=None, patent_ids=None
+        self.assertEqual(
+            self._report_generate_names({"report_names": None}), list(DEFAULT_REPORT_NAMES)
         )
 
     def test_report_generate_empty_names_uses_default_reports(self):
         """確認 worker 收到空 report_names 時使用固定預設報表名單。"""
-        context = mock.Mock()
-        context.heartbeat.return_value = None
-        with mock.patch.object(handlers, "run_reports_batch", return_value={}) as patched:
-            handlers.handle_report_generate({"report_names": []}, context)
-        patched.assert_called_once_with(
-            list(DEFAULT_REPORT_NAMES), filters=None, limit=None, patent_ids=None
+        self.assertEqual(
+            self._report_generate_names({"report_names": []}), list(DEFAULT_REPORT_NAMES)
         )
 
     def test_report_generate_explicit_subset_is_preserved(self):
         """確認 worker 明確報表子集合不會被預設名單覆蓋。"""
-        context = mock.Mock()
-        context.heartbeat.return_value = None
-        with mock.patch.object(handlers, "run_reports_batch", return_value={}) as patched:
-            handlers.handle_report_generate({"report_names": ["application_trend"]}, context)
-        patched.assert_called_once_with(
-            ["application_trend"], filters=None, limit=None, patent_ids=None
+        self.assertEqual(
+            self._report_generate_names({"report_names": ["application_trend"]}),
+            ["application_trend"],
         )
 
     def test_report_generate_non_list_names_still_rejected(self):
@@ -160,32 +166,33 @@ class HandlerContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             handlers.handle_report_generate({"report_names": "application_trend"}, context)
 
-    def test_topic_merge_resolves_codes_then_calls_engine(self):
-        """確認 merge handler 先把 topic_code 解析成 int topic_ids，才呼叫引擎（不改引擎本體）。"""
+    def test_topic_merge_passes_topic_codes_to_engine(self):
+        """確認 merge handler 把佇列的 topic_code 原樣交給引擎（引擎參數即 topic_keys）。
+
+        0021 後主題以 topic_code 為唯一識別，不再做 code→int topic_id 轉換；
+        _resolve_active_topic_ids 只留作連 DB 的前置診斷，與本測試無關故 mock 掉。
+        參數名一致性由 tests/test_topic_merge_call_contract.py 以 autospec 鎖住。
+        """
         context = mock.Mock()
         context.heartbeat.return_value = None
         context.keepalive.return_value = nullcontext()
         context.job.workspace_id = 7
         with mock.patch.object(
-            handlers, "_resolve_active_topic_ids", return_value=[11, 12]
-        ) as resolver:
-            with mock.patch.object(
-                handlers, "merge_workspace_topics", return_value={"ok": True}
-            ) as engine:
-                result = handlers.handle_topic_merge(
-                    {
-                        "source_field": SOURCE_FIELD_TECHNICAL,
-                        "topic_keys": ["T01", "T02"],
-                        "label": "合併後主題",
-                        "requested_by": "web-user",
-                    },
-                    context,
-                )
+            handlers, "_resolve_active_topic_ids", autospec=True, return_value=[11, 12]
+        ), mock.patch.object(
+            handlers, "merge_workspace_topics", autospec=True, return_value={"ok": True}
+        ) as engine:
+            result = handlers.handle_topic_merge(
+                {
+                    "source_field": SOURCE_FIELD_TECHNICAL,
+                    "topic_keys": ["T01", "T02"],
+                    "label": "合併後主題",
+                    "requested_by": "web-user",
+                },
+                context,
+            )
         self.assertEqual(result, {"ok": True})
-        resolver.assert_called_once_with(
-            workspace_id=7, source_field=SOURCE_FIELD_TECHNICAL, topic_codes=["T01", "T02"]
-        )
-        self.assertEqual(engine.call_args.kwargs["topic_ids"], [11, 12])
+        self.assertEqual(engine.call_args.kwargs["topic_keys"], ["T01", "T02"])
         self.assertEqual(engine.call_args.kwargs["merged_by"], "web-user")
         self.assertEqual(engine.call_args.kwargs["label"], "合併後主題")
 

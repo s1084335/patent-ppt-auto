@@ -7,6 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal
 import logging
 from pathlib import Path
+import tempfile
 from typing import Any, Callable
 
 import psycopg
@@ -18,15 +19,12 @@ from backend.app.clustering.workspace_service import (
     merge_workspace_topics,
     unmerge_workspace_topics,
 )
+from backend.app.db import import_blob_store, report_artifact_store
 from backend.app.db.connection import get_connection_kwargs
-from backend.app.importers.import_paths import (
-    WEB_IMPORT_SUFFIXES,
-    is_within_imports_root,
-    remove_import_dir,
-)
-from backend.app.importers.wips_importer import file_sha256, import_wips_file
+from backend.app.importers.import_paths import WEB_IMPORT_SUFFIXES
+from backend.app.importers.wips_importer import import_wips_file
+from backend.app.reports.chart_runner import run_chart_trial
 from backend.app.reports.report_definitions import DEFAULT_REPORT_NAMES
-from backend.app.reports.report_engine import run_reports_batch
 
 from . import ai_narrative_runner
 from .job_context import JobContext
@@ -130,9 +128,89 @@ def handle_clustering_incremental(payload: dict[str, Any], context: JobContext) 
     return _json_safe(summary)
 
 
+def _load_report_cluster_data(workspace_id: int, source_field: str) -> dict[str, Any] | None:
+    """取該 workspace／通道的分群資料供分群類圖表使用；無主題回 None。
+
+    走既有 backend/app/reports/cluster_data_loader.py（已對齊 0021 schema，內含合併重映
+    與 incremental fallback），不自寫 SQL。回傳形狀＝run_chart_trial 的 cluster_data 契約
+    （topics／assignments／normalized_applicants／top_applicants_ws ＋ 算好的 topic_rows／
+    opportunity_matrix／pain_point_matrix）。
+
+    與 compute_and_save_cluster_analysis 的差異：那支會把三項分析寫進
+    app_layer.analysis_outputs（需要 analysis_id）；報表 job 只是要畫圖，沒有 analysis 脈絡，
+    故只載入＋計算不落庫，避免為了出圖而產生沒有歸屬的 analysis_outputs 列。
+    """
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from backend.app.reports.cluster_analytics import (
+        build_opportunity_matrix,
+        build_pain_point_matrix,
+        build_topic_effect_table,
+    )
+    from backend.app.reports.cluster_data_loader import load_cluster_workspace_data
+
+    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row,
+                         connect_timeout=15) as conn:
+        cluster_data = load_cluster_workspace_data(workspace_id, source_field, conn)
+    if not cluster_data["topics"]:
+        # 尚未分群（或該通道無主題）：分群類圖表沒有輸入，靜默跳過。
+        return None
+    topic_rows = build_topic_effect_table(
+        cluster_data["topics"],
+        cluster_data["assignments"],
+        cluster_data["normalized_applicants"],
+    )
+    opportunity = build_opportunity_matrix(topic_rows, cluster_data.get("top_applicants_ws", []))
+    pain = build_pain_point_matrix(topic_rows, [], opportunity["patent_count_median"])
+    return {
+        **cluster_data,
+        "topic_rows": topic_rows,
+        "opportunity_matrix": opportunity,
+        "pain_point_matrix": pain,
+    }
+
+
+def _resolve_report_cluster_data(payload: dict[str, Any], context: JobContext) -> dict[str, Any] | None:
+    """解析報表 job 要用的 cluster_data；取不到一律回 None（不讓分群拖垮整張報表）。
+
+    範圍取自 job 的 workspace_id（分群一律以 workspace 為單位）；通道由 payload.source_field
+    指定，預設技術通道。沒有 workspace_id＝全庫報表，沒有分群範圍可談。
+    載入失敗（無 topic run、DB 暫時不可用等）只記 log 並回 None——確定性報表本體不該
+    因為分群輔助區塊而整張失敗。
+    """
+    workspace_id = payload.get("workspace_id") or context.job.workspace_id
+    if workspace_id is None:
+        return None
+    source_field = _source_field(payload.get("source_field"), default=SOURCE_FIELD_TECHNICAL)
+    try:
+        return _load_report_cluster_data(int(workspace_id), source_field)
+    except Exception:  # noqa: BLE001 - 分群區塊是輔助，缺了照樣出報表
+        LOGGER.exception("report cluster_data load failed: workspace_id=%s", workspace_id)
+        return None
+
+
 def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
-    """執行報表引擎批次查詢，報表 JSON 由 runner 經 workflow_outputs 版本化保存。"""
-    context.heartbeat("report_generate_started", 10)
+    """產製完整報表：跑報表引擎、渲染圖表，並把整包產物落 DB 供 backend 容器讀取。
+
+    2026-07-23 修正：原本只呼叫 run_reports_batch（純查詢、回 rows），**不產任何檔案**，
+    以致 /report-latest/content 一律 404、報表內嵌與匯出工作台沒內容、AI 解讀（需 run_dir
+    實體檔）與 PPT 產生器（需 report_data.json）全部跑不了。改為呼叫 run_chart_trial，
+    產出完整報表目錄（report_data.json ＋ SVG ＋ index.html ＋ artifact_manifest.json）。
+
+    payload 語意保留：report_names（缺省＝DEFAULT_REPORT_NAMES）、filters、patent_ids
+    直接轉給 run_chart_trial；limit 對應 ranking_limit（排名類報表的列數上限，引擎內
+    唯一吃 limit 的地方）。
+
+    分群類圖表（cluster_topic_table／opportunity_quadrant／pain_point_quadrant）需要
+    cluster_data，由 _resolve_report_cluster_data 依 job 的 workspace_id 從 0021 schema
+    取；尚未分群或載入失敗時傳 None，run_chart_trial 靜默跳過該區塊，不影響其餘報表。
+
+    跨容器（2026-07-23 定案，同 import_blobs 的成因）：Railway 上 worker 與 backend 是
+    不同容器、檔案系統不共享，worker 寫的目錄 backend 讀不到，故產完即整包上傳
+    app_layer.report_artifacts；讀取端（/report-latest/content 等）本機找不到就改讀 DB。
+    """
+    context.heartbeat("開始產製報表", 5)
     report_names_payload = payload.get("report_names")
     if report_names_payload is None or report_names_payload == []:
         report_names = list(DEFAULT_REPORT_NAMES)
@@ -140,23 +218,49 @@ def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict
         report_names = report_names_payload
     else:
         raise ValueError("report_generate report_names must be a list when provided")
-    result = run_reports_batch(
-        [str(name) for name in report_names],
-        filters=payload.get("filters"),
-        limit=payload.get("limit"),
-        patent_ids=payload.get("patent_ids"),
-    )
-    context.heartbeat("report_generate_completed", 95)
+
+    context.heartbeat("載入分群資料", 15)
+    cluster_data = _resolve_report_cluster_data(payload, context)
+
+    limit = payload.get("limit")
+    chart_kwargs: dict[str, Any] = {
+        "report_names": [str(name) for name in report_names],
+        "filters": payload.get("filters"),
+        "patent_ids": payload.get("patent_ids"),
+        "cluster_data": cluster_data,
+    }
+    if limit is not None:
+        # payload.limit＝報表列數上限；引擎內唯一吃 limit 的是排名類報表的 ranking_limit。
+        chart_kwargs["ranking_limit"] = int(limit)
+
+    # 14 報表 ＋ 約 20 張圖，查詢與渲染都可能久，背景 keeper 只補 heartbeat。
+    with context.keepalive("查詢資料並渲染圖表", 30,
+                           interval_seconds=_heartbeat_interval(payload)):
+        result = run_chart_trial(**chart_kwargs)
+
+    context.heartbeat("保存報表產物", 85)
+    run_dir = Path(result["output_dir"])
+    result["artifacts_uploaded"] = report_artifact_store.upload_run_dir(run_dir)
+    result["has_cluster_analytics"] = cluster_data is not None
+    context.heartbeat("報表產製完成", 100)
     return _json_safe(result)
 
 
 def handle_patent_import(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
     """匯入上傳的 WIPS 來源檔；複用 import_wips_file()，不重寫 mapping/去重。
 
-    匯入前重新驗證受控檔案：位於 imports root、存在且為 regular file、副檔名在 Web 白名單、
-    實際 SHA-256 等於 payload.file_hash；任一失敗直接 raise 讓 job failed，不進 importer。
+    取檔改走 DB（2026-07-23 定案）：Railway 上 backend 與 worker 是**不同容器**、檔案系統
+    不共享，原本 payload.path 指向的是 backend 容器的檔案，worker 一律找不到。改由 backend
+    把內容存進 app_layer.import_blobs，worker 依 payload.blob_id 取回、落自己的暫存檔後餵給
+    既有 import_wips_file(path)（importer 介面不動），用完即刪暫存檔。
+
+    匯入前驗證：payload 必須帶 blob_id 與 file_hash、original_filename 副檔名在 Web 白名單；
+    blob 取回時重算 SHA-256 並比對 file_hash，不符即 ValueError 讓 job failed，不進 importer。
     import_wips_file 內為單一 transaction（重複檔回 skipped_duplicate_file、錯誤整批 rollback）。
-    重複檔時安全刪除本次上傳目錄；成功匯入則保留（source_files.file_path 需追溯）。
+
+    blob 清理：匯入結束（成功或重複檔）即刪 blob——內容已無保存價值，追溯靠
+    raw_records.source_file_hash（0019 起 source_files 表已移除）。匯入失敗時保留 blob，
+    讓 job 重試可再取同一份內容。
 
     匯入圈 workspace（2026-07-22 定案）：成功匯入後，依 payload 的 new_workspace_name（新建，
     成員＝這次匯入 patent_ids）或 workspace_id（既有，union 去重）圈進 workspace；purpose
@@ -168,27 +272,34 @@ def handle_patent_import(payload: dict[str, Any], context: JobContext) -> dict[s
     細節見 _enqueue_post_import_jobs。
     """
     context.heartbeat("開始匯入專利資料", 5)
-    raw_path = payload.get("path")
-    if not raw_path:
-        raise ValueError("patent_import requires payload.path")
-    path = Path(raw_path)
-    if not is_within_imports_root(path):
-        raise ValueError(f"patent_import path escapes imports root: {raw_path}")
-    if not path.is_file():
-        raise ValueError(f"patent_import file missing or not a regular file: {raw_path}")
-    if path.suffix.lower() not in WEB_IMPORT_SUFFIXES:
-        raise ValueError(f"patent_import unsupported format for worker: {path.suffix}")
+    blob_id = payload.get("blob_id")
+    if blob_id is None:
+        raise ValueError("patent_import requires payload.blob_id")
     expected_hash = str(payload.get("file_hash") or "")
-    if not expected_hash or file_sha256(path) != expected_hash:
-        raise ValueError("patent_import file hash mismatch")
+    if not expected_hash:
+        raise ValueError("patent_import requires payload.file_hash")
+    # 副檔名決定 importer 走哪個 parser，先擋不支援格式再取內容，避免白撈一次大 blob。
+    original_filename = str(payload.get("original_filename") or "")
+    suffix = Path(original_filename).suffix.lower()
+    if suffix not in WEB_IMPORT_SUFFIXES:
+        raise ValueError(f"patent_import unsupported format for worker: {suffix or '(none)'}")
 
-    # 大檔匯入可能久，背景 keeper 只補 heartbeat，不影響匯入結果。
-    with context.keepalive("解析並寫入專利資料", 20, interval_seconds=_heartbeat_interval(payload)):
-        summary = import_wips_file(path)
-    if summary.get("status") == "skipped_duplicate_file":
-        # 重複檔不需保留這份上傳副本；只刪本次上傳目錄（remove_import_dir 會確認位於 imports root）。
-        remove_import_dir(path.parent)
-    else:
+    # 暫存檔落 worker 自己的檔案系統；用 TemporaryDirectory 確保任何結束路徑都清乾淨。
+    with tempfile.TemporaryDirectory(prefix="patent_import_") as temp_dir:
+        # 保留原檔名：importer 依副檔名選 parser，summary["file"] 也顯示得出來源。
+        path = Path(temp_dir) / (Path(original_filename).name or "import.csv")
+        # 取回內容並驗 SHA-256（不符即 raise，且不留半成品檔）。
+        import_blob_store.write_blob_to_path(int(blob_id), path, expected_hash=expected_hash)
+        # 大檔匯入可能久，背景 keeper 只補 heartbeat，不影響匯入結果。
+        with context.keepalive("解析並寫入專利資料", 20,
+                               interval_seconds=_heartbeat_interval(payload)):
+            summary = import_wips_file(path)
+
+    # 匯入已結束（暫存檔隨 with 區塊移除），blob 內容不再需要；重試情境只在失敗時發生，
+    # 失敗會在上面直接 raise 而不執行到這裡，故此處刪除不影響重試。
+    import_blob_store.delete_blob(int(blob_id))
+
+    if summary.get("status") != "skipped_duplicate_file":
         # 成功匯入才圈 workspace；把 workspace 結果併入 summary 供前端顯示。
         context.heartbeat("建立分析範圍（workspace）", 90)
         workspace_result = _attach_import_workspace(payload, summary.get("patent_ids") or [])
@@ -328,9 +439,11 @@ def _attach_import_workspace(
 def _resolve_active_topic_ids(
     *, workspace_id: int, source_field: str, topic_codes: list[str]
 ) -> list[int]:
-    """topic_code→topic_id 解析層（2026-07-21 裁決）。
+    """topic_code 的 active 驗證層（2026-07-21 裁決；原為 code→topic_id 解析層）。
 
-    佇列 request_json 存的是 topic_code（str），引擎 merge_workspace_topics 要 int topic_ids；
+    引擎 merge_workspace_topics 已改以 topic_keys（code 字串）為介面，故回傳的 int
+    topic_id 不再是必要輸出；本函式現在的價值是**指名錯誤**——查不到、非 active 或缺
+    topic_id 時可明確指出是哪個 code。呼叫端保留它作為引擎前的前置診斷。
     從最新「topic_state_json->'topics' 非空」的 derived_layer.topic_runs（該 workspace_id＋
     source_field，經 app_layer.workflow_runs 連 workspace）反查。incremental run 的 state 不帶
     topics，須沿 run_id 由大到小 fallback，否則會抓到空 state 而誤判 code 不存在。
@@ -425,10 +538,18 @@ def handle_embeddings(payload: dict[str, Any], context: JobContext) -> dict[str,
 
 
 def handle_topic_merge(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
-    """執行佇列中的主題合併：解析 topic_code→topic_id 後交給分群引擎（引擎本體不改）。
+    """執行佇列中的主題合併：topic_code 原樣交給分群引擎（引擎本體不改）。
 
     request_json 形狀依 PostgresTopicRepository.queue_merge：
     {source_field, topic_keys:[a,b], label, requested_by}；workspace_id 由 run 帶。
+
+    0021 後主題以 topic_code（字串）為唯一識別，引擎 merge_workspace_topics 的參數即
+    topic_keys，故 code 原樣往下傳，不做 code→int topic_id 轉換。
+
+    仍先跑 _resolve_active_topic_ids 當**前置診斷**：引擎的 _load_merge_topics 只會回
+    籠統的「must be active topics」，查不出是哪個 code 出問題；這裡先驗一次可在 run 的
+    error_message 指名該 code 與其實際 status（裁決：不猜、留明確錯誤）。解析出的
+    int 僅用於驗證，不傳給引擎。
     """
     context.heartbeat("topic_merge_started", 5)
     workspace_id = context.job.workspace_id
@@ -438,10 +559,11 @@ def handle_topic_merge(payload: dict[str, Any], context: JobContext) -> dict[str
     topic_keys = payload.get("topic_keys")
     if not isinstance(topic_keys, list) or len(topic_keys) != 2:
         raise ValueError("topic_merge requires topic_keys with exactly two topic codes")
-    topic_ids = _resolve_active_topic_ids(
+    topic_codes = [str(key) for key in topic_keys]
+    _resolve_active_topic_ids(
         workspace_id=int(workspace_id),
         source_field=source_field,
-        topic_codes=[str(key) for key in topic_keys],
+        topic_codes=topic_codes,
     )
     context.heartbeat("topic_merge_resolved", 15)
     # 合併會重載模型 artifact 並重算 assignment，時間隨語料量成長，需要保活。
@@ -449,7 +571,7 @@ def handle_topic_merge(payload: dict[str, Any], context: JobContext) -> dict[str
         summary = merge_workspace_topics(
             workspace_id=int(workspace_id),
             source_field=source_field,
-            topic_ids=topic_ids,
+            topic_keys=topic_codes,
             merged_by=str(payload.get("requested_by") or "worker"),
             label=payload.get("label"),
         )
