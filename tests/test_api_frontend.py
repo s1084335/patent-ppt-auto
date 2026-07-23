@@ -50,7 +50,10 @@ class FrontendSkeletonTests(unittest.TestCase):
                 self.assertRegex(self.html, rf'id="{region_id}"')
 
     def test_nav_items_present(self):
-        """左導覽五項：專利總覽 / 分類區 / 報表種類 / 案件比對 / 匯出報告。"""
+        """左導覽五項：專利總覽 / 分類區 / 報表種類 / 案件比對 / 匯出報告。
+
+        （分群任務已移除：分群改為匯入後自動背景觸發，使用者不需手動點。）
+        """
         for nav_key in (
             "patents",     # 專利總覽
             "topics",      # 分類區
@@ -298,60 +301,83 @@ class FrontendSkeletonTests(unittest.TestCase):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.html)
 
-    # ── B. 分群任務區 ──
+    # ── B. 分群任務導覽項已移除（分群改為匯入後自動背景觸發） ──
 
-    def test_nav_has_clustering_region(self):
-        """左導覽含分群任務區（data-nav="clustering"）。"""
-        self.assertRegex(self.html, r'data-nav="clustering"')
-        self.assertIn("renderClustering", self.html)
+    def test_clustering_nav_item_removed(self):
+        """左導覽不得再有「分群任務」項：分群改為匯入後自動觸發，使用者不需手動點。"""
+        self.assertNotRegex(self.html, r'data-nav="clustering"')
+        self.assertNotIn("分群任務", self.html)
+        # 手動觸發分群的入口一併移除（不再由使用者按鈕建 calibrate／finalize 工作）。
+        for needle in ("btn-run-calibrate", "btn-run-incremental", "btn-finalize-clustering"):
+            with self.subTest(needle=needle):
+                self.assertNotIn(needle, self.html)
 
-    def test_clustering_calibrate_and_incremental_wired(self):
-        """分群區可建 calibrate／incremental 工作，並選 source_field（接白名單通道，非寫死單值）。"""
+    # ── B2. 分類區：技術／功效兩分頁 ──
+
+    def test_topics_has_technical_and_effect_tabs(self):
+        """分類區以 tab 切換技術／功效兩通道，兩通道值都掛在頁面上。"""
         for needle in (
-            "btn-run-calibrate",
-            "btn-run-incremental",
-            "clustering-source-field",
-            "runCalibrate",
-            "runIncremental",
-            "source_field",
+            "topic-tabs",              # tab 容器掛點
+            "switchTopicSource",       # 切換通道
+            "wips_independent_claims",  # 技術通道
+            "effect_summary",           # 功效通道
         ):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.html)
-        # 端點以 `/clustering/` + kind（calibrate／incremental）組成，兩種 kind 都要存在。
-        self.assertIn("/clustering/", self.html)
-        self.assertRegex(self.html, r"createClusteringJob\('calibrate'")
-        self.assertRegex(self.html, r"createClusteringJob\('incremental'")
-        # 通道選項由共用常數產生（技術／功效兩通道），供分群區與分類區共用。
+
+    def test_topic_source_fields_not_hardcoded_per_site(self):
+        """兩通道集中在單一常數（SOURCE_FIELDS），分類區由它產生 tab，不在多處散寫。"""
         self.assertIn("SOURCE_FIELDS", self.html)
-        self.assertIn("effect_summary", self.html)
+        # tab 由常數 map 產生（非逐個寫死 <button> 文字）。
+        self.assertRegex(self.html, r"SOURCE_FIELDS\.map")
+        # 通道值取自 state（可切換），不再是固定的單一常數。
+        self.assertIn("state.topicSourceField", self.html)
 
-    def test_clustering_polls_job_and_reads_run_id(self):
-        """calibrate 工作沿用統一進度元件輪詢 /jobs/{id}，完成後由 result.run_id 取候選。"""
-        self.assertIn("pollClusteringJob", self.html)
-        self.assertIn("/jobs/", self.html)
-        self.assertIn("jobProgressCardHtml", self.html)
-        # run_id 來自 job.result（calibrate summary），非使用者手輸或寫死。
-        self.assertRegex(self.html, r"result\s*(\|\||&&|\.|\[)")
-        self.assertIn("run_id", self.html)
+    # ── B3. 分類區版式：標籤在上、專利清單緊接其下 ──
 
-    def test_clustering_candidates_and_finalize_wired(self):
-        """可查候選（/clustering/runs/{id}/candidates）並選定候選 finalize。"""
-        for needle in (
-            "/candidates",
-            "/finalize",
-            "loadClusteringCandidates",
-            "finalizeClustering",
-            "candidate_id",
-            "已定案",
-        ):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, self.html)
+    def test_topics_layout_tags_above_patents(self):
+        """分類區版式：主題標籤區在專利清單區之上，中間不夾主題人工操作等區塊。"""
+        tags_at = self.html.index('id="topic-tags"')
+        patents_at = self.html.index('id="topic-patents"')
+        self.assertLess(tags_at, patents_at, "主題標籤必須在專利清單之上")
+        # 人工操作區不得夾在標籤與專利清單之間（移到專利清單之後）。
+        ops_at = self.html.index('id="topic-ops"')
+        self.assertGreater(ops_at, patents_at, "主題人工操作不得擋在標籤與專利清單之間")
 
-    def test_clustering_candidate_columns_not_hardcoded(self):
-        """候選表欄位依 API 實際回傳的鍵動態產生，不寫死欄位清單。"""
-        # 以 Object.keys / 動態欄位組表為契約：改 API 欄位時前端自動跟隨。
-        self.assertIn("candidateColumnsFrom", self.html)
-        self.assertIn("Object.keys", self.html)
+    def test_topics_empty_state_message(self):
+        """workspace 無分群結果時顯示明確中文提示（不是空白、不讓使用者點到 404）。"""
+        self.assertIn("尚未分群", self.html)
+        self.assertIn("匯入後會自動進行分群", self.html)
+        # 錯誤不吞：載入失敗要顯示可讀訊息（含狀態碼／訊息）。
+        self.assertIn("topicLoadErrorHtml", self.html)
+
+    def test_topic_patents_error_readable(self):
+        """點標籤後 404／空結果要有可讀中文訊息，不吞錯。"""
+        self.assertIn("找不到此主題", self.html)
+        # fetch 失敗訊息帶 HTTP 狀態，供使用者/開發者判讀。
+        self.assertRegex(self.html, r"HTTP\s*'\s*\+")
+
+    # ── B4. 專利總覽跨所有 workspace ──
+
+    def test_overview_lists_all_patents_across_workspaces(self):
+        """專利總覽接全庫專利端點（GET /patents，不分 workspace），非只列選定 workspace。"""
+        self.assertIn("loadAllPatents", self.html)
+        # 端點：API 前綴 + '/patents'（全庫清單），帶分頁參數。
+        self.assertRegex(self.html, r"""API\s*\+\s*['"]/patents\?""")
+        for qs in ("limit=", "offset="):
+            with self.subTest(qs=qs):
+                self.assertIn(qs, self.html)
+
+    def test_overview_shows_workspace_membership(self):
+        """總覽每筆專利標示所屬 workspace（可多個）。"""
+        self.assertIn("所屬 Workspace", self.html)
+        self.assertIn("workspaces", self.html)
+        self.assertIn("workspacesCell", self.html)
+
+    def test_overview_paginated_not_full_load(self):
+        """全庫專利分頁載入，不一次撈全部。"""
+        self.assertIn("PATENTS_PAGE_SIZE", self.html)
+        self.assertIn("pagePatents", self.html)
 
     # ── C. topic 人工操作 ──
 
@@ -412,6 +438,177 @@ class FrontendSkeletonTests(unittest.TestCase):
         """AI 結果過長可捲動／摺疊，不撐爆右欄。"""
         self.assertIn("ai-result-body", self.html)
         self.assertRegex(self.html, r"\.ai-result-body\s*\{[^}]*overflow-y")
+
+    # ── E. 匯出報告：完整預覽 + 編輯模式 + 匯出 HTML/PDF ──
+
+    def test_export_has_full_report_preview_container(self):
+        """匯出報告＝預覽工作台：有預覽容器與封面區，內容由 report-latest/content 動態載入。"""
+        for needle in (
+            "export-preview",           # 完整報告預覽容器
+            "export-cover",             # 封面區掛點
+            "loadExportPreview",        # 載入結構化報表內容
+            "/report-latest/content",   # 結構化內容端點（一次取回，不逐卡打 API）
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_export_preview_cards_dynamic_not_hardcoded(self):
+        """卡片（數據表→圖→解讀三區）由回傳的 sections 動態產生，不寫死報表清單。"""
+        for needle in ("exportCardHtml", "sections", "variants", "narrative"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+        # 三區都要在卡片內：數據表 / 圖 / 解讀
+        for cls_name in ("export-card-data", "export-card-chart", "export-card-narrative"):
+            with self.subTest(cls_name=cls_name):
+                self.assertIn(cls_name, self.html)
+
+    def test_export_has_edit_mode_toggle(self):
+        """編輯模式開關：關＝純預覽、開＝可編輯。"""
+        for needle in ("export-edit-toggle", "toggleExportEditMode", "編輯模式"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_export_edit_three_editable_kinds(self):
+        """可編輯三類掛點：解讀文案／封面資訊／自由段落。"""
+        for needle in (
+            "export-narrative-edit",   # 1. 解讀文案就地編輯
+            "saveNarrativeEdit",
+            "export-cover-title",      # 2. 封面標題
+            "export-cover-scope",      # 分析範圍說明
+            "export-cover-date",       # 日期
+            "export-cover-count",      # 專利件數
+            "export-note-block",       # 3. 自由段落／備註
+            "addExportNote",
+            "removeExportNote",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_export_edit_keeps_ai_original(self):
+        """AI 原稿不得被覆蓋：人工修改另存欄位，原稿保留可還原。"""
+        for needle in ("ai_original", "manual_text", "resetNarrativeEdit"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_export_has_confirm_step_before_export(self):
+        """匯出前有確認步驟（使用者 OK 才匯出）。"""
+        for needle in (
+            "btn-export-html",       # 匯出鈕
+            "reviewExportOutput",    # 先組確認摘要
+            "export-confirm",        # 確認區掛點
+            "btn-confirm-export",    # 確認匯出
+            "confirmExportOutput",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_export_output_is_selfcontained_html_with_print_css(self):
+        """匯出單頁 HTML：自包含（圖以 data URI 內嵌）且含 @media print 列印樣式。"""
+        for needle in ("buildExportHtml", "@media print", "data:image/svg+xml", "Blob"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+        # 下載：以 a[download] 觸發，不需後端另存檔。
+        self.assertIn("download", self.html)
+
+    def test_report_page_has_inline_report_container(self):
+        """報表種類頁：job succeeded 後把完整報表直接渲染在主內容區（內嵌容器掛點）。"""
+        for needle in (
+            "report-inline-view",      # 內嵌報表容器掛點
+            "loadInlineReport",        # 載入 report-latest/content 並就地渲染
+            "/report-latest/content",  # 結構化內容端點（一次取回，不逐卡打 API）
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_report_not_opened_in_new_tab(self):
+        """報表不得以另開分頁呈現：頁面內不應有 target="_blank" 開報表的用法。"""
+        for match in re.finditer(r"<a\b[^>]*>", self.html):
+            tag = match.group(0)
+            if 'target="_blank"' not in tag and "target='_blank'" not in tag:
+                continue
+            with self.subTest(tag=tag):
+                self.assertNotIn("report-latest", tag)
+
+    def test_inline_report_reuses_export_render_functions(self):
+        """內嵌報表複用匯出工作台的渲染函式，不重寫一套（共用純渲染 + view 參數）。"""
+        for needle in ("exportCardHtml", "exportCoverHtml", "renderReportContentHtml"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+        # 渲染函式接受 view 狀態參數（read-only 供內嵌用、可編輯供工作台用），
+        # 而非直接綁死單一全域編輯狀態。
+        self.assertIn("readOnlyReportView", self.html)
+
+    def test_inline_report_loading_and_error_feedback(self):
+        """內嵌報表有載入中提示與可讀中文錯誤（不吞錯、不留白）。"""
+        for needle in ("載入報表內容中", "載入報表內容失敗"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_inline_report_shows_version_and_lazy_images(self):
+        """版本號顯示給使用者；圖以 asset 端點載入且 lazy loading。"""
+        self.assertIn("報表版本", self.html)
+        self.assertIn("/report-latest/asset/", self.html)
+        self.assertIn('loading="lazy"', self.html)
+
+    def test_inline_report_keeps_export_entry(self):
+        """保留前往匯出報告（編輯/匯出）的入口，讓使用者要編輯時能過去。"""
+        self.assertIn("navTo('export')", self.html)
+
+    def test_report_page_auto_loads_latest_on_entry(self):
+        """進「報表種類」頁即自動載入既有最新報表（不用先產製、也不重新產製）。
+
+        契約：renderReports() 內含載入呼叫（loadReportVersions），且載入路徑是
+        讀取既有內容的端點，不是 POST /reports 產製。
+        """
+        m = re.search(r"function renderReports\(\)\s*\{.*?\n\}", self.html, re.S)
+        self.assertIsNotNone(m, "找不到 renderReports() 定義")
+        body = m.group(0)
+        self.assertIn("loadReportVersions", body)
+        self.assertNotIn("submitReports()", body.replace('onclick="submitReports()"', ""))
+
+    def test_report_version_list_container_and_endpoint(self):
+        """版本列表：有掛點容器、呼叫 versions 端點、指定版本內容端點路徑片段。"""
+        for needle in (
+            "report-version-list",        # 版本列表容器掛點
+            "loadReportVersions",         # 載入版本清單
+            "/reports/versions",          # 列版本端點
+            "/content",                   # 指定版本內容端點尾段
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_old_versions_collapsed_and_expandable(self):
+        """最新版本預設展開、舊版本收合可點開（收合展開掛點與切換函式都在）。"""
+        for needle in (
+            "toggleReportVersion",        # 展開／收合切換
+            "report-version-body-",       # 各版本內容容器 id 前綴
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+        # 以 <details>/<summary> 或 open 狀態表達最新預設展開
+        self.assertRegex(self.html, r"report-version-item|report-version-row")
+
+    def test_old_version_content_lazy_loaded(self):
+        """lazy：展開舊版本才載入該版本內容，不一進頁就把所有版本載回來。"""
+        m = re.search(r"function loadReportVersions\(\)\s*\{.*?\n\}", self.html, re.S)
+        self.assertIsNotNone(m, "找不到 loadReportVersions() 定義")
+        # 清單載入函式本身不得逐版本抓 content（那是展開時才做）
+        self.assertNotIn("forEach", m.group(0).split("versions")[0])
+        self.assertIn("loadReportVersionContent", self.html)
+
+    def test_version_timestamp_is_humanized(self):
+        """版本標示可讀化（時間戳轉成 2026-07-22 00:10 之類），不是只丟目錄名。"""
+        self.assertIn("fmtReportVersionLabel", self.html)
+
+    def test_version_list_reuses_inline_render_functions(self):
+        """展開的版本內容複用既有渲染函式，不重寫一套。"""
+        m = re.search(
+            r"function loadReportVersionContent\([^)]*\)\s*\{.*?\n\}", self.html, re.S
+        )
+        self.assertIsNotNone(m, "找不到 loadReportVersionContent() 定義")
+        body = m.group(0)
+        self.assertIn("renderReportContentHtml", body)
+        self.assertIn("readOnlyReportView", body)
 
     def test_no_hardcoded_fake_patent_rows(self):
         """主內容區不得寫死假專利資料列（資料一律來自真實 API）。"""

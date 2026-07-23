@@ -1,7 +1,10 @@
-"""既有專利庫查詢 API（供案件比對選取被比對專利）。
+"""既有專利庫查詢 API（供案件比對選取被比對專利、專利總覽跨 workspace 顯示）。
 
 GET /api/v1/patents/search：以專利號機制（六欄 COALESCE）ILIKE 搜尋既有庫專利，
 回 {items:[{patent_id, patent_number, title, country_code, applicant_display_name}]}。
+
+GET /api/v1/patents：分頁列出全庫專利（不分 workspace），每筆附 workspaces 歸屬陣列，
+回 {items, total, limit, offset}。供專利總覽跨 workspace 顯示。
 
 唯讀，SQL 集中於 app_layer.patent_queries。本層只做請求驗證、呼叫 service 與回傳；
 不把 SQL 寫進 router、不綁死 workspace（供任何案件比對「從庫選被比對專利」重用）。
@@ -29,3 +32,18 @@ def search_patents(
     非法值由 FastAPI 擋成 422。回 {items}，查無回空清單。單一批次 SQL、不逐筆查。
     """
     return patent_queries.search_patents(q=q, limit=limit)
+
+
+@router.get("/patents")
+def list_patents(
+    keyword: str | None = Query(default=None, max_length=128),
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """分頁列出全庫專利（不分 workspace），每筆標示所屬 workspace。
+
+    keyword 選填（不帶＝不過濾，列全庫）；limit 上限 200（le=200，防一次撈全庫），
+    offset ge=0，非法值由 FastAPI 擋成 422。回 {items, total, limit, offset}，
+    每筆的 workspaces 為 [{workspace_id, workspace_name}]（不屬任何 workspace 者為空陣列）。
+    """
+    return patent_queries.list_patents(limit=limit, offset=offset, keyword=keyword)
