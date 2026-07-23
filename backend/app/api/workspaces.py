@@ -5,6 +5,10 @@ GET  /api/v1/workspaces/{id}            ：單一 workspace 詳情，含直接�
 GET  /api/v1/workspaces/{id}/patents    ：分頁列出 workspace 專利成員，可選 keyword。
 POST /api/v1/workspaces                 ：以明確專利集合建立一般 workspace。
 POST /api/v1/workspaces/compose         ：由多個既有 workspace 建立組合 workspace（聯集去重）。
+POST   /api/v1/workspaces/{id}/documents              ：上傳技術文獻 PDF（串流分塊存 DB）。
+GET    /api/v1/workspaces/{id}/documents              ：列出文獻 metadata（**不回 content**）。
+GET    /api/v1/workspaces/{id}/documents/{doc}/content：單筆取回文獻原始內容。
+DELETE /api/v1/workspaces/{id}/documents/{doc}        ：刪除文獻。
 
 查詢為唯讀，SQL 集中於 app_layer.workspace_queries；建立於 app_layer.workspace_create、
 compose 於 app_layer.workspace_compose（皆單一 transaction）。本層只做請求驗證、呼叫
@@ -12,12 +16,17 @@ service 與 HTTP 錯誤碼對應，不把 SQL 寫進 router。
 """
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Path, Query, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
+from backend.app import settings
 from backend.app.app_layer import workspace_compose, workspace_create, workspace_queries
+from backend.app.db import workspace_document_store
+from backend.app.importers.import_paths import DOCUMENT_SUFFIXES, validate_web_filename
 
 
 router = APIRouter(tags=["workspaces"])
@@ -138,3 +147,126 @@ def compose(request: ComposeRequest) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except workspace_compose.ComposeValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# 技術文獻（market research 線）
+#
+# 使用者上傳的產業／技術 PDF，供 CLI 推導產品定義（scope）與市場證據。內容長期保存在
+# app_layer.workspace_documents（0027），與用完即刪的 import_blobs 物理分離。
+#
+# ⚠ PDF 通道**只開在這裡**：上傳走 DOCUMENT_SUFFIXES，專利匯入端點仍用
+# WEB_IMPORT_SUFFIXES（不含 .pdf），PDF 進不了 WIPS parser。
+# ---------------------------------------------------------------------------
+
+
+@router.post("/workspaces/{workspace_id}/documents")
+async def upload_workspace_document(
+    request: Request,
+    workspace_id: int = Path(ge=1),
+    filename: str = Query(..., min_length=1, max_length=255),
+) -> dict[str, Any]:
+    """串流接收技術文獻 PDF、分塊存進 app_layer.workspace_documents。
+
+    沿用 imports.py 的串流上傳模式：先建列取 document_id → 內容逐塊 append → 落款 hash；
+    驗證／寫入／超限任一失敗都刪除本次列，不留孤兒內容。同一 workspace 可上傳多份
+    （不覆蓋既有）。空檔或非 PDF → 422；超過 MAX_IMPORT_UPLOAD_BYTES → 413。
+    """
+    max_bytes = settings.MAX_IMPORT_UPLOAD_BYTES
+
+    # Content-Length 若存在且超限，提早 413（尚未建列）；缺漏或偽造則靠串流累計強制限制。
+    declared = request.headers.get("content-length")
+    if declared:
+        try:
+            declared_int = int(declared)
+        except ValueError:
+            declared_int = None
+        if declared_int is not None and declared_int > max_bytes:
+            raise HTTPException(status_code=413, detail=f"upload exceeds {max_bytes} bytes")
+
+    # 檔名驗證（PDF 白名單、拒 traversal）先於任何落地動作。
+    try:
+        safe_name = validate_web_filename(filename, DOCUMENT_SUFFIXES)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # 先建空列取得 document_id，內容再逐塊 append；DB 寫入屬阻塞 I/O，一律走 threadpool。
+    document_id = await run_in_threadpool(
+        workspace_document_store.create_document, workspace_id, safe_name
+    )
+    try:
+        hasher = hashlib.sha256()
+        total = 0
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                raise HTTPException(status_code=413, detail=f"upload exceeds {max_bytes} bytes")
+            hasher.update(chunk)
+            await run_in_threadpool(workspace_document_store.append_chunk, document_id, chunk)
+        if total == 0:
+            raise HTTPException(status_code=422, detail="empty upload body")
+        file_hash = hasher.hexdigest()
+        await run_in_threadpool(
+            workspace_document_store.finalize_document, document_id, file_hash=file_hash
+        )
+        return {
+            "document_id": document_id,
+            "workspace_id": workspace_id,
+            "original_filename": safe_name,
+            "byte_size": total,
+            "file_hash": file_hash,
+        }
+    except BaseException:
+        # 任一失敗 → 刪除本次列（id 為本次呼叫產生，不會誤刪他人資料），不留孤兒內容。
+        await run_in_threadpool(workspace_document_store.delete_document, document_id)
+        raise
+
+
+@router.get("/workspaces/{workspace_id}/documents")
+async def list_workspace_documents(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """列出 workspace 的技術文獻 metadata（新到舊）。
+
+    ⚠ **不回 content**：護欄實作在 store 層 SQL 的選欄（明確列欄、大小以 length(content)
+    在 DB 端算），本端點只是把該結果原樣回傳，不存在「撈全欄再篩」的路徑。
+    """
+    documents = await run_in_threadpool(workspace_document_store.list_documents, workspace_id)
+    return {"documents": documents, "total": len(documents)}
+
+
+@router.get("/workspaces/{workspace_id}/documents/{document_id}/content")
+async def get_workspace_document_content(
+    workspace_id: int = Path(ge=1),
+    document_id: int = Path(ge=1),
+):
+    """單筆取回文獻原始內容，供 Companion 落本機暫存檔給 CLI 讀；查無 404。
+
+    只在這支端點碰 content——列表端點永遠不需要內容。
+    """
+    document = await run_in_threadpool(
+        workspace_document_store.read_document, workspace_id, document_id
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail=f"document not found: {document_id}")
+    return Response(
+        content=document["content"],
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{document["original_filename"]}"'
+        },
+    )
+
+
+@router.delete("/workspaces/{workspace_id}/documents/{document_id}")
+async def delete_workspace_document(
+    workspace_id: int = Path(ge=1),
+    document_id: int = Path(ge=1),
+) -> dict[str, Any]:
+    """刪除指定文獻；查無 404。帶 workspace_id 定位，不允許跨 workspace 刪除。"""
+    deleted = await run_in_threadpool(
+        workspace_document_store.delete_document, document_id, workspace_id=workspace_id
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"document not found: {document_id}")
+    return {"deleted": True, "document_id": document_id, "workspace_id": workspace_id}
