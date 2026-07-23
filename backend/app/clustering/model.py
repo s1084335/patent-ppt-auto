@@ -23,6 +23,11 @@ from backend.app.transforms.patent_numbers import (
 
 
 PATENT_SBERTA_MODEL = "AI-Growth-Lab/PatentSBERTa"
+# 釘住 commit，不用浮動的 main：雲端 worker 首次啟動會自行下載權重（見
+# backend/app/deploy.py::ensure_patent_sberta），若上游改版就會與本機既有 embedding
+# 不同源，向量無法比較。此值＝2026-07-23 查得的 HuggingFace 最新 commit，與本機
+# 快取一致；模型自 2023-02-16 起未更動。要升版時一併重算既有 embeddings。
+PATENT_SBERTA_REVISION = "3ff1d553c861d8f5bfd902333d97fc95eb6b4c8f"
 PATENT_SBERTA_VECTOR_DIM = 768
 PATENT_SBERTA_MAX_SEQ_LENGTH = 512
 REPRESENTATIVE_DOC_LIMIT_FOR_LLM = 10

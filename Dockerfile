@@ -23,11 +23,16 @@ FROM ${PYTHON_IMAGE} AS runtime
 ARG APP_UID=10001
 ARG APP_GID=10001
 
+# HF_HUB_OFFLINE／TRANSFORMERS_OFFLINE 刻意**不設**（2026-07-23 定案：方案 B）。
+# 原本兩者皆為 1，但 image 不含 PatentSBERTa（837MB，見下方 .dockerignore 排除），
+# offline 模式下找不到權重不會下載、直接拋錯，Railway worker 一跑 embeddings 必 crash。
+# 改由 backend.app.deploy 於啟動時確保權重就位（缺就下載到 MODEL_ARTIFACT_ROOT），
+# 之後推論仍走 local_files_only=True，維持「權重 SHA-256 當模型版本」的可重現性。
+# HF_HOME 指向 /app/data 之下，掛 volume 即可跨重啟保留，不必每次冷啟動重抓。
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    HF_HUB_OFFLINE=1 \
-    TRANSFORMERS_OFFLINE=1 \
+    HF_HOME=/app/data/hf_cache \
     TOKENIZERS_PARALLELISM=false
 WORKDIR /app
 
@@ -45,10 +50,12 @@ COPY --chown=patent:patent backend ./backend
 COPY --chown=patent:patent scripts ./scripts
 COPY --chown=patent:patent sql ./sql
 
-# PatentSBERTa is intentionally excluded from the image.  Mount or download it
-# under MODEL_ARTIFACT_ROOT, usually /app/data/model_artifacts/PatentSBERTa.
-RUN mkdir -p /app/data/model_artifacts /app/output \
-    && chown patent:patent /app /app/data /app/data/model_artifacts /app/output
+# PatentSBERTa is intentionally excluded from the image (837MB).  It is downloaded
+# on first start into MODEL_ARTIFACT_ROOT (/app/data/model_artifacts/PatentSBERTa).
+# Mount a volume at /app/data to keep both the weights and the HF cache across
+# restarts; without one the download repeats on every cold start.
+RUN mkdir -p /app/data/model_artifacts /app/data/hf_cache /app/output \
+    && chown -R patent:patent /app /app/data /app/output
 
 USER patent
 EXPOSE 8000
