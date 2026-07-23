@@ -1,9 +1,23 @@
-"""第一層 BERTopic 正式管線：DB corpus、k 掃描、候選與定案落庫。"""
+"""第一層 BERTopic 正式管線：DB corpus、k 掃描、候選與定案落庫。
+
+0021 落點（併表後唯一事實來源，與 PostgresTopicStateRepository 讀取語意一致）：
+- run 本體：derived_layer.topic_runs（run_id/workflow_run_id/previous_run_id/
+  source_field/topic_state_json/artifact_key）。已無 workspace_id/status/run_mode
+  等欄，run 歸屬與狀態一律經 workflow_run_id JOIN app_layer.workflow_runs 取得。
+- 候選方案：topic_runs.topic_state_json->'candidates'（0021 檔頭明示 candidates 併入
+  topic_state_json）。不寫 legacy_0021.topic_candidates：該表 run_id FK 指向 legacy_0021.topic_runs
+  這個凍結 archive，新 run 不在其中，寫入必先在 archive 補影子列＝復活已退役的表。
+  candidate_id 於 run 內由 1 起編號。
+- 正式主題：topic_runs.topic_state_json->'topics'；assignments：derived_layer.topic_assignments
+  （(run_id,patent_id) 一列，topic_key=topic_code）。
+- run 進度與錯誤：寫 app_layer.workflow_runs.status/worker_state_json，不再寫 topic_runs。
+"""
 
 from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 import json
 import logging
 import math
@@ -43,6 +57,149 @@ CANDIDATE_REFERENCE_PARAMETER_KEY = "_representative_document_references"
 
 # CLI 直接執行時載入專案 .env；容器正式部署仍可用環境變數覆蓋。
 load_dotenv(PROJECT_ROOT / ".env", override=False)
+
+
+def _ensure_workflow_run(
+    conn: Any, *, workspace_id: int | None, source_field: str, run_type: str
+) -> int:
+    """沒有既有 job 時補建一筆 app_layer.workflow_runs，回傳其 run_id。
+
+    worker 走佇列時 job 本身就是 workflow_run（job_id＝run_id），由呼叫端帶入；
+    CLI／舊版 API 直呼分群時沒有 job，需自行補建才能滿足 topic_runs.workflow_run_id NOT NULL。
+    """
+    row = conn.execute(
+        "INSERT INTO app_layer.workflow_runs (workspace_id, run_type, status, request_json) "
+        "VALUES (%s, %s, 'running', %s) RETURNING run_id",
+        (workspace_id, run_type, Jsonb({"source_field": source_field})),
+    ).fetchone()
+    return int(row[0])
+
+
+def _next_topic_run_id(conn: Any) -> int:
+    """topic_runs.run_id 非 identity 欄，需自行取號（0021 保留舊 run_id 值域）。"""
+    row = conn.execute("SELECT COALESCE(max(run_id), 0) + 1 FROM derived_layer.topic_runs").fetchone()
+    return int(row[0])
+
+
+def create_topic_run(
+    *,
+    workflow_run_id: int,
+    source_field: str,
+    state: dict[str, Any] | None = None,
+    previous_run_id: int | None = None,
+    connection: Any = None,
+) -> int:
+    """建立 derived_layer.topic_runs 一列（0021：必帶 workflow_run_id），回傳 run_id。"""
+
+    def _create(conn: Any) -> int:
+        run_id = _next_topic_run_id(conn)
+        conn.execute(
+            """
+            INSERT INTO derived_layer.topic_runs (
+                run_id, workflow_run_id, previous_run_id, source_field, topic_state_json
+            ) VALUES (%s, %s, %s, %s, %s)
+            """,
+            (run_id, workflow_run_id, previous_run_id, source_field, Jsonb(state or {})),
+        )
+        return run_id
+
+    if connection is not None:
+        return _create(connection)
+    with psycopg.connect(**get_connection_kwargs()) as conn:
+        return _create(conn)
+
+
+def load_run_scope(run_id: int, *, connection: Any = None) -> dict[str, Any]:
+    """取 run 歸屬與狀態：workspace_id/status 來自 workflow_runs JOIN（0021 已無這兩欄）。"""
+
+    def _load(conn: Any) -> dict[str, Any]:
+        row = conn.execute(
+            """
+            SELECT tr.run_id, tr.workflow_run_id, tr.previous_run_id, tr.source_field,
+                   tr.topic_state_json, tr.artifact_key,
+                   wr.workspace_id, wr.status
+            FROM derived_layer.topic_runs tr
+            JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id
+            WHERE tr.run_id = %s
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"topic run not found: {run_id}")
+        return dict(row)
+
+    if connection is not None:
+        return _load(connection)
+    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
+        return _load(conn)
+
+
+def _merge_topic_state(conn: Any, run_id: int, patch: dict[str, Any]) -> None:
+    """就地合併 topic_state_json（jsonb ||），不覆蓋既有其他鍵。"""
+    conn.execute(
+        "UPDATE derived_layer.topic_runs SET topic_state_json = topic_state_json || %s WHERE run_id = %s",
+        (Jsonb(patch), run_id),
+    )
+
+
+def _set_workflow_status(conn: Any, run_id: int, status: str, *, error: str | None = None) -> None:
+    """更新該 topic run 對應 workflow_run 的狀態（0021：status 只在 workflow_runs）。"""
+    conn.execute(
+        """
+        UPDATE app_layer.workflow_runs wr
+        SET status = %s,
+            worker_state_json = CASE WHEN %s::text IS NULL
+                THEN wr.worker_state_json - 'error_message'
+                ELSE wr.worker_state_json || jsonb_build_object('error_message', %s::text) END
+        FROM derived_layer.topic_runs tr
+        WHERE tr.workflow_run_id = wr.run_id AND tr.run_id = %s
+        """,
+        (status, error, error, run_id),
+    )
+
+
+def persist_final_topics(
+    *,
+    run_id: int,
+    topics: list[dict[str, Any]],
+    assignments: list[tuple[int, str, float | None]],
+    metrics: dict[str, Any] | None = None,
+    artifact_key: str | None = None,
+) -> tuple[int, int]:
+    """把正式主題寫進 topic_state_json、assignments 寫進 derived_layer.topic_assignments。
+
+    落點與 PostgresTopicStateRepository 讀取語意一致：topics 掛 topic_state_json->'topics'，
+    每筆 (run_id, patent_id) 一列 assignment、topic_key 存 topic_code。
+    assignments 以 executemany 批次寫入，不逐筆往返。
+    """
+    with psycopg.connect(**get_connection_kwargs()) as conn:
+        with conn.cursor() as cur:
+            patch: dict[str, Any] = {"topics": topics}
+            if metrics is not None:
+                patch["metrics"] = metrics
+            cur.execute(
+                """
+                UPDATE derived_layer.topic_runs
+                SET topic_state_json = topic_state_json || %s,
+                    artifact_key = COALESCE(%s, artifact_key)
+                WHERE run_id = %s
+                """,
+                (Jsonb(patch), artifact_key, run_id),
+            )
+            if cur.rowcount != 1:
+                raise ValueError(f"topic run not found: {run_id}")
+            cur.execute("DELETE FROM derived_layer.topic_assignments WHERE run_id = %s", (run_id,))
+            if assignments:
+                cur.executemany(
+                    """
+                    INSERT INTO derived_layer.topic_assignments (
+                        run_id, patent_id, topic_key, distance_to_centroid
+                    ) VALUES (%s, %s, %s, %s)
+                    """,
+                    [(run_id, patent_id, topic_key, distance)
+                     for patent_id, topic_key, distance in assignments],
+                )
+    return len(topics), len(assignments)
 
 
 @dataclass(frozen=True)
@@ -149,13 +306,17 @@ def load_clustering_corpus(
     spec = get_source_spec(source_field)
     embedding_schema, embedding_table = spec.embedding_table.split(".", maxsplit=1)
 
+    # 0021：app_layer.workspace_patents 已併入 workspaces.patent_ids_json，
+    # workspace 範圍改用該 JSON 陣列展開後 JOIN，不再有成員關聯表。
     workspace_join = ""
     parameters: tuple[Any, ...] = ()
     if workspace_id is not None:
         workspace_join = """
-            JOIN app_layer.workspace_patents wp
-              ON wp.patent_id = p.id
-             AND wp.workspace_id = %s
+            JOIN (
+                SELECT (jsonb_array_elements_text(w.patent_ids_json))::bigint AS patent_id
+                FROM app_layer.workspaces w
+                WHERE w.workspace_id = %s
+            ) wp ON wp.patent_id = p.id
         """
         parameters = (workspace_id,)
 
@@ -424,8 +585,13 @@ def calibrate_top_level(
     source_field: str = SOURCE_FIELD_WIPS_INDEPENDENT_CLAIMS,
     batch_size: int = 8,
     kmeans_batch_size: int = 128,
+    workflow_run_id: int | None = None,
 ) -> CalibrationSummary:
-    """建立正式 run，掃描七組 k 並將三組候選寫入 DB 等待使用者選擇。"""
+    """建立正式 run，掃描七組 k 並將三組候選寫入 DB 等待使用者選擇。
+
+    workflow_run_id：worker 走佇列時帶入該 job 的 run_id（job_id＝workflow_runs.run_id）；
+    CLI／舊版 API 直呼時留空，由 _ensure_workflow_run 補建一筆 workflow_run。
+    """
     scope = "workspace" if workspace_id is not None else "global"
     with psycopg.connect(**get_connection_kwargs()) as conn:
         corpus = load_clustering_corpus(conn, workspace_id=workspace_id, source_field=source_field)
@@ -441,18 +607,23 @@ def calibrate_top_level(
             "batch_size": batch_size,
             "kmeans_batch_size": kmeans_batch_size,
         }
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO derived_layer.topic_runs (
-                    workspace_id, source_field, run_mode, status,
-                    input_doc_count, parameters_json
-                ) VALUES (%s, %s, 'full', 'running', %s, %s)
-                RETURNING run_id
-                """,
-                (workspace_id, source_field, len(corpus.documents), Jsonb(parameters)),
+        # 0021：run 歸屬走 workflow_run_id；run_mode/status/input_doc_count 併入 topic_state_json
+        effective_workflow_run_id = workflow_run_id
+        if effective_workflow_run_id is None:
+            effective_workflow_run_id = _ensure_workflow_run(
+                conn, workspace_id=workspace_id, source_field=source_field,
+                run_type="clustering_calibrate",
             )
-            run_id = int(cur.fetchone()[0])
+        run_id = create_topic_run(
+            workflow_run_id=effective_workflow_run_id,
+            source_field=source_field,
+            state={
+                "run_mode": "full",
+                "input_doc_count": len(corpus.documents),
+                "parameters": parameters,
+            },
+            connection=conn,
+        )
 
     try:
         LOGGER.info("第一層 PCA%dD 開始：documents=%d", PCA_COMPONENTS, len(corpus.documents))
@@ -588,76 +759,65 @@ def _persist_calibration(
     scan_results: list[KScanResult],
     candidates: list[CandidateProfile],
 ) -> list[dict[str, Any]]:
-    """以單一 transaction 保存七組掃描與三組前端候選。"""
-    persisted_candidates: list[dict[str, Any]] = []
+    """以單一 transaction 保存七組掃描與三組前端候選（0021：候選落 topic_state_json）。
+
+    candidate_id 於 run 內由 1 起編號，供 finalize 指定；一次 UPDATE 寫完整份候選，
+    不逐筆 INSERT 往返。
+    """
+    persisted_candidates = [
+        {
+            "candidate_id": index,
+            "run_id": run_id,
+            "is_selected": False,
+            "selected_by": None,
+            "selected_at": None,
+            "llm_explanation": None,
+            "parameters": {
+                "small_topic_ratio": candidate.result.small_topic_ratio,
+                "topic_count": candidate.result.topic_count,
+                "elapsed_seconds": candidate.result.elapsed_seconds,
+                CANDIDATE_REFERENCE_PARAMETER_KEY: candidate.result.references,
+            },
+            **candidate.to_dict(),
+            "candidate_k": candidate.result.k,
+        }
+        for index, candidate in enumerate(candidates, start=1)
+    ]
     with psycopg.connect(**get_connection_kwargs()) as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM derived_layer.topic_candidates WHERE run_id = %s", (run_id,))
-            for candidate in candidates:
-                item = candidate.result
-                cur.execute(
-                    """
-                    INSERT INTO derived_layer.topic_candidates (
-                        run_id, candidate_type, candidate_k,
-                        coherence, diversity, balance, score, parameters_json
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING candidate_id
-                    """,
-                    (
-                        run_id,
-                        candidate.candidate_type,
-                        item.k,
-                        item.coherence,
-                        item.diversity,
-                        item.balance,
-                        item.score,
-                        Jsonb(
-                            {
-                                "small_topic_ratio": item.small_topic_ratio,
-                                "topic_count": item.topic_count,
-                                "elapsed_seconds": item.elapsed_seconds,
-                                CANDIDATE_REFERENCE_PARAMETER_KEY: item.references,
-                            }
-                        ),
-                    ),
-                )
-                persisted_candidates.append(
-                    {
-                        "candidate_id": int(cur.fetchone()[0]),
-                        **candidate.to_dict(),
-                    }
-                )
-            cur.execute(
-                """
-                UPDATE derived_layer.topic_runs
-                SET status = 'needs_review',
-                    metrics_json = %s,
-                    error_message = NULL
-                WHERE run_id = %s
-                """,
-                (Jsonb({"k_scan": [item.to_dict() for item in scan_results]}), run_id),
+            # 0021：候選、狀態與 k_scan 全部併入 topic_state_json；workflow_runs 只記 job 狀態
+            _merge_topic_state(
+                cur, run_id,
+                {
+                    "candidates": persisted_candidates,
+                    "status": "needs_review",
+                    "metrics": {"k_scan": [item.to_dict() for item in scan_results]},
+                },
             )
+            _set_workflow_status(cur, run_id, "succeeded")
     return persisted_candidates
 
 
 def _load_run_and_candidate(*, run_id: int, candidate_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
-    """取得待定案 run 與其候選，拒絕跨 run candidate。"""
-    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM derived_layer.topic_runs WHERE run_id = %s", (run_id,))
-            run_row = cur.fetchone()
-            if run_row is None:
-                raise ValueError(f"topic run not found: {run_id}")
-            if run_row["status"] not in {"needs_review", "failed"}:
-                raise ValueError(f"topic run cannot be finalized from status={run_row['status']}")
-            cur.execute(
-                "SELECT * FROM derived_layer.topic_candidates WHERE candidate_id = %s AND run_id = %s",
-                (candidate_id, run_id),
-            )
-            candidate_row = cur.fetchone()
-            if candidate_row is None:
-                raise ValueError("candidate does not belong to the requested run")
-    return dict(run_row), dict(candidate_row)
+    """取得待定案 run 與其候選，拒絕跨 run candidate。
+
+    0021：run 的 workspace_id 由 workflow_runs JOIN 取得（load_run_scope）；分群自身的
+    needs_review 狀態與候選都存在 topic_state_json。
+    """
+    run_row = load_run_scope(run_id)
+    state = dict(run_row.get("topic_state_json") or {})
+    clustering_status = state.get("status")
+    if clustering_status not in {"needs_review", "failed"}:
+        raise ValueError(f"topic run cannot be finalized from status={clustering_status}")
+    run_row["input_doc_count"] = state.get("input_doc_count")
+    run_row["artifact_version"] = state.get("artifact_version", 1)
+    candidate_row = next(
+        (c for c in (state.get("candidates") or []) if c.get("candidate_id") == candidate_id),
+        None,
+    )
+    if candidate_row is None:
+        raise ValueError("candidate does not belong to the requested run")
+    return run_row, dict(candidate_row)
 
 
 def _persist_final_topics(
@@ -689,174 +849,114 @@ def _persist_final_topics(
         vectors=reduced_matrix.vectors,
         topics=topics,
     )
-    db_topic_ids: dict[int, int] = {}
+    # 0021：run 歸屬經 workflow_runs JOIN；已定案主題改由 topic_state_json 判斷
+    scope = load_run_scope(run_id)
+    if scope["workspace_id"] is None:
+        raise ValueError("workspace run not found while persisting topics")
+    source_field = str(scope["source_field"])
+    if (dict(scope.get("topic_state_json") or {}).get("topics") or []):
+        raise ValueError("workspace source already has topics; use incremental or merge")
+
+    # 正式主題組成 topic_state_json->'topics'；topic_code 即後續 assignments 的 topic_key
+    topic_dicts: list[dict[str, Any]] = []
+    code_by_model_id: dict[int, str] = {}
+    for position, topic_id in enumerate(topic_ids, start=1):
+        indexes = [index for index, assigned in enumerate(topics) if assigned == topic_id]
+        representative_indexes = result.representative_doc_indices.get(topic_id)
+        if not representative_indexes:
+            raise ValueError(f"topic {topic_id} has no c-TF-IDF representative documents")
+        representative_indexes = representative_indexes[:REPRESENTATIVE_DOC_LIMIT_FOR_LLM]
+        keywords = [
+            {"term": term, "weight": float(weight)}
+            for term, weight in (result.topic_model.get_topic(topic_id) or [])[:10]
+        ]
+        topic_code = f"T{position:03d}"
+        code_by_model_id[topic_id] = topic_code
+        topic_dicts.append({
+            "topic_id": position,
+            "topic_code": topic_code,
+            "source_field": source_field,
+            "created_run_id": run_id,
+            "model_topic_ids": [topic_id],
+            "topic_kind": "model",
+            "doc_count": len(indexes),
+            "coherence": coherence_scores.get(topic_id),
+            "diversity": float(result.metrics.get("diversity", 0.0)),
+            "balance": float(result.metrics.get("balance", 0.0)),
+            "keywords": keywords,
+            "representative_patent_ids": [corpus.patent_ids[i] for i in representative_indexes],
+            "label": " / ".join(term["term"] for term in keywords[:3]) or f"Topic {position}",
+            "label_source": "fallback",
+            "display_order": position,
+            "status": "active",
+        })
+    # 系統桶是正式 UI 選項，但不占模型 topic_count，也沒有 model topic ID。
+    for offset, (topic_code, topic_kind, label) in enumerate(
+        (("UNCLASSIFIED", "unclassified", "未分類"), ("OTHER", "other", "其他")),
+        start=len(topic_ids) + 1,
+    ):
+        topic_dicts.append({
+            "topic_id": offset,
+            "topic_code": topic_code,
+            "source_field": source_field,
+            "created_run_id": run_id,
+            "model_topic_ids": [],
+            "topic_kind": topic_kind,
+            "doc_count": 0,
+            "label": label,
+            "label_source": "fallback",
+            "display_order": offset,
+            "status": "active",
+        })
+
+    assignment_rows = [
+        (corpus.patent_ids[index], code_by_model_id[topic_id], distances[index])
+        for index, topic_id in enumerate(topics)
+        if topic_id != -1
+    ]
+    persist_final_topics(
+        run_id=run_id,
+        topics=topic_dicts,
+        assignments=assignment_rows,
+        metrics={"selected_result": {**result.metrics, "score": selected_score},
+                 "model_artifact_hash": model_hash},
+        artifact_key=model_artifact_key,
+    )
+    # 候選選定旗標同樣記在 topic_state_json（與候選寫入端同源）
+    selected_at = datetime.now(timezone.utc).isoformat()
+    updated_candidates = [
+        {**candidate,
+         "is_selected": candidate.get("candidate_id") == candidate_id,
+         "selected_by": selected_by if candidate.get("candidate_id") == candidate_id else None,
+         "selected_at": selected_at if candidate.get("candidate_id") == candidate_id else None}
+        for candidate in (dict(scope.get("topic_state_json") or {}).get("candidates") or [])
+    ]
     with psycopg.connect(**get_connection_kwargs()) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT workspace_id, source_field FROM derived_layer.topic_runs WHERE run_id = %s",
-                (run_id,),
+            _merge_topic_state(
+                cur, run_id,
+                {"candidates": updated_candidates, "status": "completed",
+                 "topic_count": len(topic_ids), "error_message": None},
             )
-            run_scope = cur.fetchone()
-            if run_scope is None or run_scope[0] is None:
-                raise ValueError("workspace run not found while persisting topics")
-            workspace_id = int(run_scope[0])
-            source_field = str(run_scope[1])
-            cur.execute(
-                """
-                SELECT count(*)
-                FROM derived_layer.topics
-                WHERE workspace_id = %s AND source_field = %s
-                """,
-                (workspace_id, source_field),
-            )
-            if int(cur.fetchone()[0]) > 0:
-                raise ValueError("workspace source already has topics; use incremental or merge")
-            cur.execute(
-                """
-                UPDATE derived_layer.topic_candidates
-                SET is_selected = false, selected_by = NULL, selected_at = NULL
-                WHERE run_id = %s
-                """,
-                (run_id,),
-            )
-            cur.execute(
-                """
-                UPDATE derived_layer.topic_candidates
-                SET is_selected = true, selected_by = %s, selected_at = now()
-                WHERE run_id = %s AND candidate_id = %s
-                """,
-                (selected_by, run_id, candidate_id),
-            )
-            if cur.rowcount != 1:
-                raise ValueError("selected candidate was not updated")
-
-            for position, topic_id in enumerate(topic_ids, start=1):
-                indexes = [index for index, assigned in enumerate(topics) if assigned == topic_id]
-                representative_indexes = result.representative_doc_indices.get(topic_id)
-                if not representative_indexes:
-                    raise ValueError(f"topic {topic_id} has no c-TF-IDF representative documents")
-                representative_indexes = representative_indexes[:REPRESENTATIVE_DOC_LIMIT_FOR_LLM]
-                keywords = [
-                    {"term": term, "weight": float(weight)}
-                    for term, weight in (result.topic_model.get_topic(topic_id) or [])[:10]
-                ]
-                cur.execute(
-                    """
-                    INSERT INTO derived_layer.topics (
-                        workspace_id, source_field, created_run_id, topic_code,
-                        model_topic_ids, topic_kind, doc_count, coherence,
-                        diversity, balance, keywords_json,
-                        representative_patent_ids_json, label, label_source,
-                        display_order, status
-                    ) VALUES (
-                        %s, %s, %s, %s, %s, 'model', %s, %s,
-                        %s, %s, %s, %s, %s, 'fallback', %s, 'active'
-                    )
-                    RETURNING topic_id
-                    """,
-                    (
-                        workspace_id,
-                        source_field,
-                        run_id,
-                        f"T{position:03d}",
-                        [topic_id],
-                        len(indexes),
-                        coherence_scores.get(topic_id),
-                        float(result.metrics.get("diversity", 0.0)),
-                        float(result.metrics.get("balance", 0.0)),
-                        Jsonb(keywords),
-                        Jsonb([corpus.patent_ids[index] for index in representative_indexes]),
-                        " / ".join(term["term"] for term in keywords[:3]) or f"Topic {position}",
-                        position,
-                    ),
-                )
-                db_topic_ids[topic_id] = int(cur.fetchone()[0])
-
-            # 系統桶是正式 UI 選項，但不占模型 topic_count，也沒有 model topic ID。
-            for offset, (topic_code, topic_kind, label) in enumerate(
-                (
-                    ("UNCLASSIFIED", "unclassified", "未分類"),
-                    ("OTHER", "other", "其他"),
-                ),
-                start=len(topic_ids) + 1,
-            ):
-                cur.execute(
-                    """
-                    INSERT INTO derived_layer.topics (
-                        workspace_id, source_field, created_run_id, topic_code,
-                        topic_kind, label, label_source, display_order, status
-                    ) VALUES (%s, %s, %s, %s, %s, %s, 'fallback', %s, 'active')
-                    """,
-                    (workspace_id, source_field, run_id, topic_code, topic_kind, label, offset),
-                )
-
-            assignment_rows = [
-                (
-                    workspace_id,
-                    source_field,
-                    corpus.patent_ids[index],
-                    db_topic_ids[topic_id],
-                    run_id,
-                    distances[index],
-                )
-                for index, topic_id in enumerate(topics)
-                if topic_id != -1
-            ]
-            cur.executemany(
-                """
-                INSERT INTO derived_layer.topic_assignments (
-                    workspace_id, source_field, patent_id, topic_id,
-                    assigned_run_id, distance_to_centroid
-                ) VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                assignment_rows,
-            )
-            cur.execute(
-                """
-                UPDATE derived_layer.topic_runs
-                SET status = 'completed',
-                    topic_count = %s,
-                    metrics_json = metrics_json || %s,
-                    model_artifact_path = %s,
-                    model_artifact_hash = %s,
-                    error_message = NULL,
-                    completed_at = now(),
-                    updated_at = now()
-                WHERE run_id = %s
-                """,
-                (
-                    len(topic_ids),
-                    Jsonb({"selected_result": {**result.metrics, "score": selected_score}}),
-                    model_artifact_key,
-                    model_hash,
-                    run_id,
-                ),
-            )
+            _set_workflow_status(cur, run_id, "succeeded")
     return len(topic_ids), len(assignment_rows)
 
 
 def _mark_run_running(run_id: int) -> None:
-    """在耗時計算前把 run 標成 running 並清除前次錯誤。"""
+    """在耗時計算前把 run 標成 running 並清除前次錯誤（0021：狀態寫 workflow_runs）。"""
     with psycopg.connect(**get_connection_kwargs()) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE derived_layer.topic_runs SET status='running', error_message=NULL WHERE run_id=%s",
-                (run_id,),
-            )
+            _merge_topic_state(cur, run_id, {"status": "running", "error_message": None})
+            _set_workflow_status(cur, run_id, "running")
 
 
 def _mark_run_failed(run_id: int, error: Exception) -> None:
-    """任何計算或寫入錯誤都保留 run 並記錄失敗原因。"""
+    """任何計算或寫入錯誤都保留 run 並記錄失敗原因（0021：狀態寫 workflow_runs）。"""
+    message = str(error)[:4000]
     with psycopg.connect(**get_connection_kwargs()) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE derived_layer.topic_runs
-                SET status='failed', error_message=%s, completed_at=now()
-                WHERE run_id=%s
-                """,
-                (str(error)[:4000], run_id),
-            )
+            _merge_topic_state(cur, run_id, {"status": "failed", "error_message": message})
+            _set_workflow_status(cur, run_id, "failed", error=message)
 
 
 def _normalize_values(values: list[float], *, higher_is_better: bool) -> list[float]:

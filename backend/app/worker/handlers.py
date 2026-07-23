@@ -79,6 +79,8 @@ def handle_clustering_calibrate(payload: dict[str, Any], context: JobContext) ->
             source_field=_source_field(payload.get("source_field"), default=SOURCE_FIELD_TECHNICAL),
             batch_size=int(payload.get("batch_size") or 8),
             kmeans_batch_size=int(payload.get("kmeans_batch_size") or 128),
+            # 分群 job 本身就是一筆 workflow_runs（job_id＝run_id），直接當 topic_runs.workflow_run_id
+            workflow_run_id=context.job.job_id,
         )
     context.heartbeat("clustering_calibrate_completed", 95)
     return _json_safe(summary)

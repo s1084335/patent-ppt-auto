@@ -1,14 +1,17 @@
-"""斷點 B regression：clustering candidates/finalize 在 0021 應查 legacy_0021.topic_candidates。
+"""斷點 B regression：clustering candidates/finalize 在 0021 應讀 topic_state_json->'candidates'。
 
 症狀：api/clustering.py 的 GET /clustering/runs/{id}/candidates 與
-POST /clustering/runs/{id}/finalize 查 derived_layer.topic_candidates；但 0021 已把
-topic_candidates 以 SET SCHEMA 移到 legacy_0021（欄位完全相符，見 0021 migration），
-derived_layer 下已無此表，故兩端點對正式庫壞。
+POST /clustering/runs/{id}/finalize 原本查 derived_layer.topic_candidates；0021 已移除該表。
+
+落點修正（2026-07-23）：候選改讀 derived_layer.topic_runs.topic_state_json->'candidates'，
+不走 legacy_0021.topic_candidates——該表 run_id FK 參照 legacy_0021.topic_runs 這個
+0021 凍結的 archive，新 run 不在其中；要寫入必須先在 archive 補一列影子 topic_run，
+等於復活已退役的表，且寫入端（runner._persist_calibration）不會這麼做，讀寫將不同源。
+0021 migration 檔頭亦明示 topics/candidates/assignments 併入 topic_state_json。
 
 本檔用拋棄式 DB patent_ppt_clustering_di（絕不碰正式庫 patent_ppt）＋0021 fixture：
-在 legacy_0021.topic_candidates 種候選、derived_layer.topic_runs 種 run，斷言
-candidates 端點回候選、finalize 讀得到候選（回 200 建 job）。沿用 test_postgres_topic_repository
-的拋棄式 DB 模式。
+在 topic_state_json 種候選，斷言 candidates 端點回候選、finalize 讀得到候選（回 200 建 job）。
+沿用 test_postgres_topic_repository 的拋棄式 DB 模式。
 """
 from __future__ import annotations
 
@@ -88,30 +91,27 @@ def tearDownModule():
 
 
 def _seed():
-    """種 workspace + workflow_run + derived_layer.topic_run + legacy_0021.topic_candidates 候選。"""
+    """種 workspace + workflow_run + derived_layer.topic_run（候選在 topic_state_json）。"""
+    import json
+
+    # 0021 候選落點：topic_state_json->'candidates'，欄名沿用舊 topic_candidates
+    state = {
+        "status": "needs_review",
+        "candidates": [
+            {"candidate_id": CANDIDATE_ID, "run_id": RUN_ID, "candidate_type": "balanced",
+             "candidate_k": 5, "coherence": 0.5, "diversity": 0.6, "balance": 0.7,
+             "score": 0.8, "llm_explanation": "候選說明", "is_selected": False},
+        ],
+    }
     with psycopg.connect(**_kw(TEST_DB)) as c:
         c.execute("INSERT INTO app_layer.workspaces (workspace_id, workspace_name) "
                   "VALUES (940001, 'clustering_ws')")
         c.execute("INSERT INTO app_layer.workflow_runs (run_id, workspace_id, run_type, status) "
                   "VALUES (943001, 940001, 'clustering:wips_independent_claims', 'succeeded')")
-        # candidates 端點的 run 存在檢查讀 derived_layer.topic_runs（0021 仍在 derived_layer）
         c.execute("INSERT INTO derived_layer.topic_runs "
                   "(run_id, workflow_run_id, source_field, topic_state_json) "
-                  "VALUES (%s, 943001, %s, '{}'::jsonb)", (RUN_ID, WIPS))
-        # legacy_0021.topic_candidates.run_id FK 參照 legacy_0021.topic_runs（隨 0021 SET SCHEMA 一起搬），
-        # 故候選所屬 run 需先種進 legacy_0021.topic_runs（其餘欄皆有預設，只需 run_id/source_field）
-        c.execute("INSERT INTO legacy_0021.topic_runs (run_id, source_field) "
-                  "VALUES (%s, %s)", (RUN_ID, WIPS))
-        # 候選在 0021 落點 legacy_0021.topic_candidates（欄位與舊 derived 版相符）
-        c.execute(
-            """
-            INSERT INTO legacy_0021.topic_candidates
-                (candidate_id, run_id, candidate_type, candidate_k,
-                 coherence, diversity, balance, score, llm_explanation, is_selected)
-            VALUES (%s, %s, 'balanced', 5, 0.5, 0.6, 0.7, 0.8, '候選說明', false)
-            """,
-            (CANDIDATE_ID, RUN_ID),
-        )
+                  "VALUES (%s, 943001, %s, %s::jsonb)",
+                  (RUN_ID, WIPS, json.dumps(state, ensure_ascii=False)))
         c.commit()
 
 
@@ -122,7 +122,7 @@ def _client():
 
 
 class ClusteringCandidatesSchemaTests(unittest.TestCase):
-    """candidates/finalize 需命中 legacy_0021.topic_candidates（修前查 derived_layer 會壞）。"""
+    """candidates/finalize 需命中 topic_state_json->'candidates'（修前查 derived_layer 會壞）。"""
 
     def test_get_candidates_returns_seeded_candidate(self):
         r = _client().get(f"/api/v1/clustering/runs/{RUN_ID}/candidates")

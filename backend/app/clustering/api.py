@@ -203,27 +203,31 @@ def add_patents(workspace_id: int, request: AddWorkspacePatentsRequest) -> dict[
 
 @app.get("/api/workspaces/{workspace_id}/runs")
 def workspace_runs(workspace_id: int) -> list[dict[str, Any]]:
-    """取得兩通道最新 run 與候選，供前端顯示待選方案。"""
+    """取得兩通道最新 run 與候選，供前端顯示待選方案。
+
+    0021：run 屬性與候選都在 topic_state_json，一次查詢取回，不再對每個 run 另查候選。
+    """
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
         rows = conn.execute(
             """
-            SELECT DISTINCT ON (source_field) *
-            FROM derived_layer.topic_runs
-            WHERE workspace_id = %s
-              AND status IN ('needs_review', 'completed')
-            ORDER BY source_field, run_id DESC
+            SELECT DISTINCT ON (tr.source_field)
+                   tr.run_id, tr.workflow_run_id, tr.previous_run_id, tr.source_field,
+                   tr.topic_state_json, tr.artifact_key, wr.workspace_id
+            FROM derived_layer.topic_runs tr
+            JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id
+            WHERE wr.workspace_id = %s
+              AND tr.topic_state_json->>'status' IN ('needs_review', 'completed')
+            ORDER BY tr.source_field, tr.run_id DESC
             """,
             (workspace_id,),
         ).fetchall()
-        result: list[dict[str, Any]] = []
-        for row in rows:
-            item = dict(row)
-            candidates = conn.execute(
-                "SELECT * FROM derived_layer.topic_candidates WHERE run_id=%s ORDER BY candidate_k",
-                (row["run_id"],),
-            ).fetchall()
-            item["candidates"] = [dict(candidate) for candidate in candidates]
-            result.append(item)
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        state = dict(row.get("topic_state_json") or {})
+        item = {**row, **state}
+        item["candidates"] = sorted(state.get("candidates") or [],
+                                    key=lambda c: c["candidate_k"])
+        result.append(item)
     return result
 
 
@@ -247,9 +251,13 @@ def finalize_workspace_run(run_id: int, request: FinalizeRequest) -> dict[str, A
             candidate_id=request.candidate_id,
             selected_by=request.selected_by,
         )
+        # 0021：workspace_id 已移到 app_layer.workflow_runs，經 workflow_run_id join 取得
         with psycopg.connect(**get_connection_kwargs()) as conn:
             scope = conn.execute(
-                "SELECT workspace_id, source_field FROM derived_layer.topic_runs WHERE run_id=%s",
+                "SELECT wr.workspace_id, tr.source_field "
+                "FROM derived_layer.topic_runs tr "
+                "JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id "
+                "WHERE tr.run_id = %s",
                 (run_id,),
             ).fetchone()
         return {"result": summary.to_dict(), "dashboard": workspace_dashboard(int(scope[0]))}
@@ -385,26 +393,39 @@ def unmerge_topics(
 
 @app.patch("/api/topics/{topic_id}/label")
 def rename_topic(topic_id: int, request: RenameTopicRequest) -> dict[str, Any]:
-    """保存人工主題名稱，後續 LLM 不得覆寫。"""
+    """保存人工主題名稱，後續 LLM 不得覆寫（0021：主題在 topic_state_json）。"""
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
-        row = conn.execute(
+        # 主題散在各 run 的 state，先找含此 topic_id 且為 active 的最新 run
+        run = conn.execute(
             """
-            UPDATE derived_layer.topics
-            SET label=%s, label_source='manual',
-                label_metadata_json=label_metadata_json || %s,
-                updated_at=now()
-            WHERE topic_id=%s AND status='active'
-            RETURNING topic_id, label, label_source
+            SELECT run_id, topic_state_json
+            FROM derived_layer.topic_runs
+            WHERE jsonb_path_exists(topic_state_json,
+                '$.topics[*] ? (@.topic_id == $tid && @.status == "active")',
+                jsonb_build_object('tid', %s::int))
+            ORDER BY run_id DESC LIMIT 1
             """,
-            (
-                request.label.strip(),
-                Jsonb({"updated_by": request.updated_by}),
-                topic_id,
-            ),
+            (topic_id,),
         ).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="active topic not found")
-    return dict(row)
+        if run is None:
+            raise HTTPException(status_code=404, detail="active topic not found")
+        topics = list(dict(run["topic_state_json"] or {}).get("topics") or [])
+        updated: dict[str, Any] | None = None
+        for topic in topics:
+            if int(topic.get("topic_id") or 0) == topic_id and topic.get("status") == "active":
+                topic.update({"label": request.label.strip(), "label_source": "manual"})
+                topic["label_metadata"] = {**(topic.get("label_metadata") or {}),
+                                           "updated_by": request.updated_by}
+                updated = topic
+        if updated is None:
+            raise HTTPException(status_code=404, detail="active topic not found")
+        conn.execute(
+            "UPDATE derived_layer.topic_runs "
+            "SET topic_state_json = jsonb_set(topic_state_json, '{topics}', %s) WHERE run_id = %s",
+            (Jsonb(topics), run["run_id"]),
+        )
+    return {"topic_id": topic_id, "label": updated["label"],
+            "label_source": updated["label_source"]}
 
 
 @app.patch("/api/workspaces/{workspace_id}/topics/{source_field}/order")
@@ -413,26 +434,34 @@ def reorder_topics(
     source_field: str,
     request: ReorderTopicsRequest,
 ) -> dict[str, str]:
-    """以完整 active topic ID 順序更新前端排列。"""
-    with psycopg.connect(**get_connection_kwargs()) as conn:
-        actual = {
-            int(row[0])
-            for row in conn.execute(
-                """
-                SELECT topic_id FROM derived_layer.topics
-                WHERE workspace_id=%s AND source_field=%s AND status='active'
-                """,
-                (workspace_id, source_field),
-            ).fetchall()
-        }
+    """以完整 active topic ID 順序更新前端排列（0021：主題在 topic_state_json）。"""
+    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
+        run = conn.execute(
+            """
+            SELECT tr.run_id, tr.topic_state_json
+            FROM derived_layer.topic_runs tr
+            JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id
+            WHERE wr.workspace_id = %s AND tr.source_field = %s
+              AND jsonb_array_length(COALESCE(tr.topic_state_json->'topics', '[]'::jsonb)) > 0
+            ORDER BY tr.run_id DESC LIMIT 1
+            """,
+            (workspace_id, source_field),
+        ).fetchone()
+        topics = list(dict((run or {}).get("topic_state_json") or {}).get("topics") or [])
+        actual = {int(t["topic_id"]) for t in topics if t.get("status") == "active"}
         requested = [int(value) for value in request.topic_ids]
         if actual != set(requested) or len(actual) != len(requested):
             raise HTTPException(status_code=409, detail="topic order must contain every active topic exactly once")
-        with conn.cursor() as cur:
-            cur.executemany(
-                "UPDATE derived_layer.topics SET display_order=%s, updated_at=now() WHERE topic_id=%s",
-                [(index, topic_id) for index, topic_id in enumerate(requested, start=1)],
-            )
+        order_by_id = {topic_id: index for index, topic_id in enumerate(requested, start=1)}
+        for topic in topics:
+            new_order = order_by_id.get(int(topic.get("topic_id") or 0))
+            if new_order is not None:
+                topic["display_order"] = new_order
+        conn.execute(
+            "UPDATE derived_layer.topic_runs "
+            "SET topic_state_json = jsonb_set(topic_state_json, '{topics}', %s) WHERE run_id = %s",
+            (Jsonb(topics), run["run_id"]),
+        )
     return {"status": "updated"}
 
 

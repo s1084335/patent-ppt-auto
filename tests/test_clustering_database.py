@@ -21,15 +21,15 @@ from alembic.script import ScriptDirectory
 from backend.app.db.connection import get_connection_kwargs
 
 
+# 0021 併表後仍存在的分群相關表；topics/topic_candidates 併入 topic_runs.topic_state_json，
+# workspace_patents 併入 workspaces.patent_ids_json，三者已從 derived/app layer 移除。
 EXPECTED_CLUSTERING_TABLES = {
-    "app_layer.workspace_patents",
     "app_layer.workspaces",
+    "app_layer.workflow_runs",
     "core_layer.patent_effect_embeddings",
     "core_layer.patent_technical_embeddings",
     "derived_layer.topic_assignments",
-    "derived_layer.topic_candidates",
     "derived_layer.topic_runs",
-    "derived_layer.topics",
 }
 
 EXPECTED_EMBEDDING_COLUMNS = [
@@ -98,6 +98,10 @@ class ClusteringDatabaseIntegrationTests(unittest.TestCase):
                 "derived_layer.topic_quality_metrics",
                 "derived_layer.topic_candidate_selections",
                 "derived_layer.topic_labels",
+                # 0021 併表移除（僅 legacy_0021 保留凍結 archive）
+                "derived_layer.topics",
+                "derived_layer.topic_candidates",
+                "app_layer.workspace_patents",
             }
             self.assertTrue(removed_tables.isdisjoint(actual_tables))
 
@@ -305,7 +309,12 @@ class ClusteringDatabaseIntegrationTests(unittest.TestCase):
             self.assertEqual(cur.fetchone()["orphan_count"], 0)
 
     def test_full_clustering_write_path_rolls_back(self) -> None:
-        """走完雙 embedding、候選、穩定 topic、assignment 與 incremental run。"""
+        """走完雙 embedding、候選、穩定 topic、assignment 與 incremental run（0021 落點）。
+
+        0021：workspace 成員存 workspaces.patent_ids_json；topic run 需先有一筆
+        app_layer.workflow_runs（NOT NULL FK），候選與正式主題都併入 topic_state_json，
+        assignments 以 (run_id, patent_id) 一列、topic_key=topic_code 落 derived_layer.topic_assignments。
+        """
         with self.conn.cursor() as cur:
             patent = self._fetch_test_patent(cur)
             if patent is None:
@@ -314,20 +323,17 @@ class ClusteringDatabaseIntegrationTests(unittest.TestCase):
 
             cur.execute(
                 """
-                INSERT INTO app_layer.workspaces (workspace_name, description, created_by)
+                INSERT INTO app_layer.workspaces (workspace_name, patent_ids_json, settings_json)
                 VALUES (%s, %s, %s)
                 RETURNING workspace_id
                 """,
-                (f"db-integration-{suffix}", "migration integration test", "unittest"),
+                (
+                    f"db-integration-{suffix}",
+                    Jsonb([patent["id"]]),
+                    Jsonb({"description": "migration integration test", "created_by": "unittest"}),
+                ),
             )
             workspace_id = cur.fetchone()["workspace_id"]
-            cur.execute(
-                """
-                INSERT INTO app_layer.workspace_patents (workspace_id, patent_id, source_type, added_by)
-                VALUES (%s, %s, 'manual', 'unittest')
-                """,
-                (workspace_id, patent["id"]),
-            )
 
             vector_text = "[" + ",".join(["0"] * 768) + "]"
             embedding_ids: list[int] = []
@@ -353,135 +359,93 @@ class ClusteringDatabaseIntegrationTests(unittest.TestCase):
                 )
                 embedding_ids.append(cur.fetchone()["embedding_id"])
 
-            cur.execute(
-                """
-                INSERT INTO derived_layer.topic_runs (
-                    workspace_id, source_field, run_mode, status,
-                    input_doc_count, parameters_json,
-                    model_artifact_path, model_artifact_hash
-                ) VALUES (
-                    %s, 'wips_independent_claims', 'full', 'running',
-                    1, %s, %s, %s
-                ) RETURNING run_id
-                """,
-                (
-                    workspace_id,
-                    Jsonb({"n_components": 100, "coherence": "c_v"}),
-                    f"models/{suffix}",
-                    f"artifact-{suffix}",
-                ),
-            )
-            run_id = cur.fetchone()["run_id"]
-            cur.execute(
-                """
-                INSERT INTO derived_layer.topics (
-                    workspace_id, source_field, created_run_id, topic_code,
-                    model_topic_ids, topic_kind, doc_count,
-                    coherence, diversity, balance, keywords_json,
-                    representative_patent_ids_json, label, summary, label_source
-                ) VALUES (
-                    %s, 'wips_independent_claims', %s, 'T1', ARRAY[0], 'model',
-                    1, 0.5, 1.0, 1.0, %s, %s, %s, %s, 'manual'
+            # topic_runs.workflow_run_id 為 NOT NULL FK，run 的 workspace/狀態掛在 workflow_runs
+            def _new_topic_run(run_mode: str, previous_run_id: int | None, state: dict) -> int:
+                cur.execute(
+                    "INSERT INTO app_layer.workflow_runs (workspace_id, run_type, status) "
+                    "VALUES (%s, %s, 'running') RETURNING run_id",
+                    (workspace_id, f"clustering_{run_mode}"),
                 )
-                RETURNING topic_id
-                """,
-                (
-                    workspace_id,
-                    run_id,
-                    Jsonb(["test topic"]),
-                    Jsonb([patent["id"]]),
-                    "Integration test",
-                    "Rollback after validation",
-                ),
-            )
-            root_topic_id = cur.fetchone()["topic_id"]
-
-            candidate_ids: list[int] = []
-            for candidate_type, candidate_k, is_selected in (
-                ("conservative", 5, False),
-                ("balanced", 8, True),
-                ("detailed", 12, False),
-            ):
+                workflow_run_id = cur.fetchone()["run_id"]
                 cur.execute(
                     """
-                    INSERT INTO derived_layer.topic_candidates (
-                        run_id, candidate_type, candidate_k,
-                        coherence, diversity, balance, score,
-                        llm_explanation, is_selected, selected_by, selected_at
-                    ) VALUES (
-                        %s, %s, %s, 0.5, 1.0, 1.0, 1.0,
-                        %s, %s, %s,
-                        CASE WHEN %s THEN now() ELSE NULL END
-                    ) RETURNING candidate_id
+                    INSERT INTO derived_layer.topic_runs (
+                        run_id, workflow_run_id, previous_run_id, source_field,
+                        topic_state_json, artifact_key
+                    )
+                    SELECT COALESCE(max(run_id), 0) + 1, %s, %s, 'wips_independent_claims', %s, %s
+                    FROM derived_layer.topic_runs
+                    RETURNING run_id
                     """,
-                    (
-                        run_id,
-                        candidate_type,
-                        candidate_k,
-                        f"{candidate_type} explanation",
-                        is_selected,
-                        "unittest" if is_selected else None,
-                        is_selected,
-                    ),
+                    (workflow_run_id, previous_run_id, Jsonb(state), f"models/{suffix}"),
                 )
-                candidate_ids.append(cur.fetchone()["candidate_id"])
+                return cur.fetchone()["run_id"]
 
+            # 候選與正式主題都併入 topic_state_json（0021 唯一落點）
+            candidates = [
+                {"candidate_id": index, "candidate_type": candidate_type, "candidate_k": candidate_k,
+                 "coherence": 0.5, "diversity": 1.0, "balance": 1.0, "score": 1.0,
+                 "llm_explanation": f"{candidate_type} explanation",
+                 "is_selected": is_selected,
+                 "selected_by": "unittest" if is_selected else None}
+                for index, (candidate_type, candidate_k, is_selected) in enumerate(
+                    (("conservative", 5, False), ("balanced", 8, True), ("detailed", 12, False)),
+                    start=1,
+                )
+            ]
+            topics = [{
+                "topic_id": 1, "topic_code": "T1", "model_topic_ids": [0], "topic_kind": "model",
+                "doc_count": 1, "coherence": 0.5, "diversity": 1.0, "balance": 1.0,
+                "keywords": ["test topic"], "representative_patent_ids": [patent["id"]],
+                "label": "Integration test", "summary": "Rollback after validation",
+                "label_source": "manual", "status": "active", "display_order": 1,
+            }]
+            run_id = _new_topic_run("full", None, {
+                "run_mode": "full", "status": "running", "input_doc_count": 1,
+                "parameters": {"n_components": 100, "coherence": "c_v"},
+                "candidates": candidates, "topics": topics,
+            })
+            # assignments：(run_id, patent_id) 一列，topic_key 存 topic_code
             cur.execute(
                 """
                 INSERT INTO derived_layer.topic_assignments (
-                    workspace_id, source_field, patent_id, topic_id,
-                    assigned_run_id, distance_to_centroid, is_current
-                ) VALUES (%s, 'wips_independent_claims', %s, %s, %s, 0.1, true)
+                    run_id, patent_id, topic_key, distance_to_centroid
+                ) VALUES (%s, %s, 'T1', 0.1)
                 """,
-                (workspace_id, patent["id"], root_topic_id, run_id),
+                (run_id, patent["id"]),
             )
-            cur.execute(
-                """
-                INSERT INTO derived_layer.topic_runs (
-                    workspace_id, source_field, run_mode, previous_run_id,
-                    status, input_doc_count, new_doc_count, parameters_json
-                ) VALUES (
-                    %s, 'wips_independent_claims', 'incremental', %s,
-                    'pending', 2, 1, %s
-                ) RETURNING run_id
-                """,
-                (workspace_id, run_id, Jsonb({"partial_fit": True})),
-            )
-            incremental_run_id = cur.fetchone()["run_id"]
-            cur.execute(
-                """
-                INSERT INTO derived_layer.topic_runs (
-                    workspace_id, source_field, run_mode, previous_run_id,
-                    status, input_doc_count, parameters_json
-                ) VALUES (
-                    %s, 'wips_independent_claims', 'unmerge', %s,
-                    'pending', 1, %s
-                ) RETURNING run_id
-                """,
-                (
-                    workspace_id,
-                    incremental_run_id,
-                    Jsonb({"target_merge_run_id": run_id}),
-                ),
-            )
-            unmerge_run_id = cur.fetchone()["run_id"]
+            incremental_run_id = _new_topic_run("incremental", run_id, {
+                "run_mode": "incremental", "status": "pending",
+                "input_doc_count": 2, "new_doc_count": 1, "parameters": {"partial_fit": True},
+            })
+            unmerge_run_id = _new_topic_run("unmerge", incremental_run_id, {
+                "run_mode": "unmerge", "status": "pending", "input_doc_count": 1,
+                "parameters": {"target_merge_run_id": run_id},
+            })
 
             for generated_id in (
                 workspace_id,
                 *embedding_ids,
                 run_id,
-                root_topic_id,
                 incremental_run_id,
                 unmerge_run_id,
-                *candidate_ids,
             ):
                 self.assertGreater(generated_id, 0)
 
             cur.execute(
-                "SELECT count(*) AS assignment_count FROM derived_layer.topic_assignments WHERE assigned_run_id = %s",
+                "SELECT count(*) AS assignment_count FROM derived_layer.topic_assignments WHERE run_id = %s",
                 (run_id,),
             )
             self.assertEqual(cur.fetchone()["assignment_count"], 1)
+
+            # 候選與主題讀得回同一份 topic_state_json
+            cur.execute(
+                "SELECT topic_state_json AS state FROM derived_layer.topic_runs WHERE run_id = %s",
+                (run_id,),
+            )
+            state = cur.fetchone()["state"]
+            self.assertEqual([c["candidate_k"] for c in state["candidates"]], [5, 8, 12])
+            self.assertEqual([t["topic_code"] for t in state["topics"]], ["T1"])
 
             # pgvector 固定 768 維；錯誤維度必須由資料庫拒絕。
             cur.execute("SAVEPOINT invalid_vector_dimension")
@@ -500,19 +464,18 @@ class ClusteringDatabaseIntegrationTests(unittest.TestCase):
                 )
             cur.execute("ROLLBACK TO SAVEPOINT invalid_vector_dimension")
 
-            # 同一層只能有一組 is_selected 候選。
-            cur.execute("SAVEPOINT duplicate_selected_candidate")
+            # 0021：候選改存 JSON，已無 topic_candidates 的唯一索引可擋重複選定；
+            # 「同一 run 只有一組 is_selected」改由寫入端保證，這裡驗證該不變式。
+            self.assertEqual(sum(1 for c in state["candidates"] if c["is_selected"]), 1)
+
+            # topic_runs.workflow_run_id 為 NOT NULL：缺 workflow_run 必須被 DB 擋下
+            cur.execute("SAVEPOINT missing_workflow_run")
             with self.assertRaises(psycopg.Error):
                 cur.execute(
-                    """
-                    INSERT INTO derived_layer.topic_candidates (
-                        run_id, candidate_type, candidate_k,
-                        is_selected, selected_by, selected_at
-                    ) VALUES (%s, 'detailed', 20, true, 'unittest', now())
-                    """,
-                    (run_id,),
+                    "INSERT INTO derived_layer.topic_runs (run_id, source_field) "
+                    "VALUES (999999999, 'wips_independent_claims')"
                 )
-            cur.execute("ROLLBACK TO SAVEPOINT duplicate_selected_candidate")
+            cur.execute("ROLLBACK TO SAVEPOINT missing_workflow_run")
 
     @staticmethod
     def _fetch_test_patent(cur: psycopg.Cursor) -> dict[str, object] | None:

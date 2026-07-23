@@ -2,12 +2,14 @@
 
 backend 只建立工作與讀結果，不執行分群（那是 worker）。payload 欄名對齊
 worker handlers.py 的期待。source_field 以白名單驗證，未知 workspace 由 FK
-擋（轉 404）。候選查詢直接讀 legacy_0021.topic_candidates，不 import 分群
+擋（轉 404）。候選查詢直接讀 topic_runs.topic_state_json，不 import 分群
 引擎（避免把 BERTopic 等重模組載進 backend）。
 
-schema 落點：0021 併表把 topic_candidates 以 SET SCHEMA 搬到 legacy_0021（欄位不變、
-仍為實體表），derived_layer 下已無此表，故候選查詢一律走 legacy_0021.topic_candidates。
-run 的 workspace_id/status 在 0021 移到 app_layer.workflow_runs，需經 topic_runs.workflow_run_id join。
+schema 落點：0021 併表把候選併入 derived_layer.topic_runs.topic_state_json->'candidates'
+（檔頭明示 topics/candidates/assignments 併入 topic_state_json）。不讀 legacy_0021.topic_candidates：
+該表 run_id FK 指向凍結 archive legacy_0021.topic_runs，新 run 不在其中，寫入端無法落點，
+讀寫必須同源。run 的 workspace_id/status 在 0021 移到 app_layer.workflow_runs，
+需經 topic_runs.workflow_run_id join。
 專案未設 schema 常數，沿用全庫慣例直接寫字面 schema 前綴（見 refresh_report_* 等）。
 """
 from __future__ import annotations
@@ -108,17 +110,14 @@ def create_incremental(workspace_id: int, request: IncrementalRequest) -> dict[s
 def create_finalize(run_id: int, request: FinalizeRequest) -> dict[str, Any]:
     """依選定 candidate 建立定案工作；run 不存在回 404。"""
     with psycopg.connect(**get_connection_kwargs()) as conn:
+        # 一次取 run 與其候選（候選在 topic_state_json），不分兩趟查詢
         exists = conn.execute(
-            "SELECT 1 FROM derived_layer.topic_runs WHERE run_id = %s", (run_id,)
+            "SELECT jsonb_path_exists(topic_state_json, "
+            "  '$.candidates[*] ? (@.candidate_id == $cid)', jsonb_build_object('cid', %s::int)) "
+            "FROM derived_layer.topic_runs WHERE run_id = %s",
+            (request.candidate_id, run_id),
         ).fetchone()
-        candidate = conn.execute(
-            """
-            SELECT 1
-            FROM legacy_0021.topic_candidates
-            WHERE run_id = %s AND candidate_id = %s
-            """,
-            (run_id, request.candidate_id),
-        ).fetchone()
+        candidate = None if exists is None else (True if exists[0] else None)
     if exists is None:
         raise HTTPException(status_code=404, detail=f"run {run_id} not found")
     if candidate is None:
@@ -142,9 +141,11 @@ def create_finalize(run_id: int, request: FinalizeRequest) -> dict[str, Any]:
 def get_candidates(run_id: int) -> dict[str, Any]:
     """讀取某 run 的候選主題數方案（讀分群結果，不建工作）。run 不存在回 404。"""
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
-        # 0021：workspace_id/status 移到 app_layer.workflow_runs，經 workflow_run_id join 取得
+        # 0021：workspace_id/status 移到 app_layer.workflow_runs，經 workflow_run_id join 取得；
+        # 候選在 topic_state_json，與 run 同一列一次取回，不另發查詢
         run = conn.execute(
-            "SELECT tr.run_id, wr.workspace_id, tr.source_field, wr.status "
+            "SELECT tr.run_id, wr.workspace_id, tr.source_field, wr.status, "
+            "       COALESCE(tr.topic_state_json->'candidates', '[]'::jsonb) AS candidates "
             "FROM derived_layer.topic_runs tr "
             "JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id "
             "WHERE tr.run_id = %s",
@@ -152,15 +153,7 @@ def get_candidates(run_id: int) -> dict[str, Any]:
         ).fetchone()
         if run is None:
             raise HTTPException(status_code=404, detail=f"run {run_id} not found")
-        rows = conn.execute(
-            """
-            SELECT candidate_id, candidate_type, candidate_k, coherence, diversity,
-                   balance, score, llm_explanation, is_selected
-            FROM legacy_0021.topic_candidates
-            WHERE run_id = %s ORDER BY candidate_k
-            """,
-            (run_id,),
-        ).fetchall()
+        rows = sorted(run["candidates"], key=lambda r: r["candidate_k"])
     return {
         "run_id": int(run["run_id"]),
         "workspace_id": int(run["workspace_id"]) if run["workspace_id"] is not None else None,
@@ -171,12 +164,12 @@ def get_candidates(run_id: int) -> dict[str, Any]:
                 "candidate_id": int(r["candidate_id"]),
                 "candidate_type": r["candidate_type"],
                 "candidate_k": int(r["candidate_k"]),
-                "coherence": float(r["coherence"]) if r["coherence"] is not None else None,
-                "diversity": float(r["diversity"]) if r["diversity"] is not None else None,
-                "balance": float(r["balance"]) if r["balance"] is not None else None,
-                "score": float(r["score"]) if r["score"] is not None else None,
-                "llm_explanation": r["llm_explanation"],
-                "is_selected": bool(r["is_selected"]),
+                "coherence": float(r["coherence"]) if r.get("coherence") is not None else None,
+                "diversity": float(r["diversity"]) if r.get("diversity") is not None else None,
+                "balance": float(r["balance"]) if r.get("balance") is not None else None,
+                "score": float(r["score"]) if r.get("score") is not None else None,
+                "llm_explanation": r.get("llm_explanation"),
+                "is_selected": bool(r.get("is_selected")),
             }
             for r in rows
         ],
