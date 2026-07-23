@@ -16,9 +16,11 @@ workflow_outputs。
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import shutil
+import signal
 import socket
 import time
 from datetime import UTC, datetime
@@ -26,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+from psycopg import OperationalError
 
 from backend.app.db import job_repository
 
@@ -44,6 +47,29 @@ CLI_BINARIES: dict[str, str] = {
     "opencode": "opencode",
 }
 
+# ── 常駐（Companion）行為參數 ───────────────────────────────
+# DB 斷線退避：1、2、4…秒指數成長，最多 60 秒重試一次。斷線期間不退出進程，
+# 因為使用者本機的 Companion 一旦退出就沒人領 AI job，且沒有容器平台會把它拉回來。
+BASE_DB_BACKOFF_SECONDS = 1.0
+MAX_DB_BACKOFF_SECONDS = 60.0
+# heartbeat 判活門檻：超過這個秒數沒更新即視為 Companion 已死（預設輪詢 3 秒，
+# 留足夠餘裕給單筆長時 AI job——job 執行中 serve 不會更新 heartbeat）。
+HEARTBEAT_STALE_SECONDS = 900.0
+# 停止訊號：POSIX 部署與前景 Ctrl+C 用得到；Windows 排程停止收不到（見下方說明）。
+_SHUTDOWN_SIGNALS = ("SIGINT", "SIGTERM", "SIGBREAK")
+# 停止旗標檔名（放在狀態目錄，與 heartbeat 同層）。
+#
+# 為什麼需要檔案而不是只靠訊號：Windows 上實測（子行程對照）確認——
+#   os.kill(pid, SIGINT)  → exit 2、handler 不執行
+#   os.kill(pid, SIGTERM) → exit 15、handler 不執行
+#   Stop-ScheduledTask（排程器停止，即 uninstall 走的路徑）→ handler 不執行
+#   只有 CREATE_NEW_PROCESS_GROUP ＋ CTRL_BREAK_EVENT → handler 才會執行
+# 排程器不會建立 process group、也不送 CTRL_BREAK，而 Companion 是被排程器啟動的，
+# 沒有任何一方能對它送 CTRL_BREAK。因此 graceful shutdown 只能靠 serve 自己輪詢
+# 一個「有人要求停止」的旗標檔——這是唯一在所有主動停止路徑都會生效的機制，
+# 且同時適用 Windows 與 POSIX、不需要額外相依。
+STOP_FILE_NAME = "ai_bridge_stop"
+
 
 def load_local_env() -> None:
     """載入專案 .env；正式環境可用系統 env 覆蓋，不把部署位置寫死。"""
@@ -53,6 +79,138 @@ def load_local_env() -> None:
 def default_bridge_id() -> str:
     """建立可追蹤的 bridge id，會寫進 workflow_runs 的 locked_by。"""
     return os.getenv("AI_BRIDGE_ID") or f"ai-bridge-{socket.gethostname()}-{os.getpid()}"
+
+
+def default_state_dir() -> Path:
+    """狀態／heartbeat 目錄：優先 AI_BRIDGE_STATE_DIR，否則專案根目錄下的 var/。
+
+    路徑一律由環境變數或 __file__ 推導，不寫死磁碟位置——安裝腳本可把狀態與日誌
+    指到使用者可寫的位置（例如 %LOCALAPPDATA%），不必假設專案目錄可寫。
+    """
+    override = os.getenv("AI_BRIDGE_STATE_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    return PROJECT_ROOT / "var"
+
+
+def default_heartbeat_path() -> Path:
+    """heartbeat 檔完整路徑（狀態目錄下的 ai_bridge_heartbeat.json）。"""
+    return default_state_dir() / "ai_bridge_heartbeat.json"
+
+
+def default_stop_file_path() -> Path:
+    """停止旗標檔完整路徑；與 heartbeat 同目錄，安裝腳本只需指定一個 StateDir。"""
+    return default_state_dir() / STOP_FILE_NAME
+
+
+def request_stop(path: Path | None = None) -> Path:
+    """建立停止旗標檔，要求常駐 serve 做完手上的 job 後退出。
+
+    供 uninstall 腳本與手動停止使用；回傳實際寫入的路徑便於呼叫端顯示。
+    """
+    target = path if path is not None else default_stop_file_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
+    return target
+
+
+class ShutdownSignal:
+    """graceful shutdown 旗標：只記「有人要求停止」，不中斷正在跑的 job。
+
+    serve 在每輪迴圈開頭檢查；正在執行中的 AI job 一律讓它跑完再退出，
+    避免留下 running 狀態卻無人接手的半途 job（要等 30 分鐘 stale 回收才會被救）。
+    """
+
+    def __init__(self) -> None:
+        """初始化為未要求停止。"""
+        self._requested = False
+        self._reason: str | None = None
+
+    def request(self, reason: str = "manual") -> None:
+        """標記要求停止；重複呼叫保留第一個理由（第一個訊號才是真正原因）。"""
+        if not self._requested:
+            self._requested = True
+            self._reason = reason
+            LOGGER.info("AI bridge shutdown requested: reason=%s", reason)
+
+    @property
+    def requested(self) -> bool:
+        """是否已被要求停止。"""
+        return self._requested
+
+    @property
+    def reason(self) -> str | None:
+        """停止原因（訊號名或 manual）。"""
+        return self._reason
+
+    def install_handlers(self) -> None:
+        """把可用的停止訊號接到本旗標；非主執行緒或平台不支援時安靜略過。"""
+        for name in _SHUTDOWN_SIGNALS:
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                signal.signal(sig, lambda _s, _f, _n=name: self.request(_n))
+            except (ValueError, OSError):  # 非主執行緒或該平台不支援
+                LOGGER.debug("signal %s not installable on this platform", name)
+
+
+def compute_backoff_seconds(attempt: int) -> float:
+    """DB 斷線第 attempt 次重試要等幾秒（指數退避，帶上限）。"""
+    if attempt < 1:
+        return BASE_DB_BACKOFF_SECONDS
+    return min(BASE_DB_BACKOFF_SECONDS * (2 ** (attempt - 1)), MAX_DB_BACKOFF_SECONDS)
+
+
+def write_heartbeat(path: Path | None, payload: dict[str, Any]) -> None:
+    """把 heartbeat 落檔（先寫暫存再改名，避免讀到寫一半的內容）。
+
+    heartbeat 刻意落**檔案**而非資料庫：Companion 最需要被觀測的故障就是「DB 連不上」，
+    此時任何寫 DB 的心跳都寫不進去。落檔另有一個好處——不需要新表或新欄位、零 migration。
+    """
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:  # heartbeat 失敗不得拖垮常駐本體
+        LOGGER.warning("heartbeat write failed: path=%s error=%s", path, exc)
+
+
+def read_heartbeat(path: Path | None = None) -> dict[str, Any]:
+    """讀 heartbeat 檔並判斷 Companion 是否還活著（供 doctor／前端查詢）。
+
+    回傳 alive 與 reason：missing（沒跑過）、stale（太久沒更新，多半已掛）、
+    stopped（正常關閉）、unreadable（檔壞了）、ok。
+    """
+    target = path if path is not None else default_heartbeat_path()
+    if not target.exists():
+        return {"alive": False, "reason": "missing", "path": str(target)}
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+        updated_at = datetime.fromisoformat(str(data["updated_at"]))
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        return {"alive": False, "reason": "unreadable", "path": str(target), "error": str(exc)}
+
+    age = (datetime.now(UTC) - updated_at).total_seconds()
+    if age > HEARTBEAT_STALE_SECONDS:
+        reason = "stale"
+    elif str(data.get("status")) == "stopped":
+        reason = "stopped"
+    else:
+        reason = "ok"
+    return {
+        "alive": reason == "ok",
+        "reason": reason,
+        "path": str(target),
+        "age_seconds": round(age, 1),
+        "worker_id": data.get("worker_id"),
+        "pid": data.get("pid"),
+        "status": data.get("status"),
+        "stats": data.get("stats"),
+    }
 
 
 def run_once(
@@ -227,9 +385,17 @@ def _cli_check(cli_kind: str) -> dict[str, Any]:
     return {"ok": path is not None, "binary": binary, "path": path}
 
 
-def run_doctor(*, cli_kind: str = "claude") -> dict[str, Any]:
-    """正式部署前診斷 DB queue 與本機 AI CLI 條件。"""
-    return {"database": _db_check(), "cli": _cli_check(cli_kind)}
+def run_doctor(*, cli_kind: str = "claude", heartbeat_path: Path | None = None) -> dict[str, Any]:
+    """正式部署前診斷 DB queue、本機 AI CLI 與常駐 heartbeat。
+
+    heartbeat 一併回報，使用者只要跑 doctor 就知道「Companion 是否還活著」，
+    不必另外去翻工作排程器或日誌。
+    """
+    return {
+        "database": _db_check(),
+        "cli": _cli_check(cli_kind),
+        "heartbeat": read_heartbeat(heartbeat_path),
+    }
 
 
 def run_smoke(*, worker_id: str, store: WorkerQueueClient | None = None) -> dict[str, Any]:
@@ -279,13 +445,172 @@ def run_smoke(*, worker_id: str, store: WorkerQueueClient | None = None) -> dict
     return {"status": "succeeded", "job_id": claimed.job_id, "result": result}
 
 
-def serve(*, worker_id: str, poll_seconds: float, stale_after_seconds: int) -> None:
-    """常駐輪詢 AI queue；正式 bridge 由 process manager 或服務平台管理。"""
-    LOGGER.info("AI bridge started: worker_id=%s job_types=%s", worker_id, AI_JOB_TYPES)
-    while True:
-        result = run_once(worker_id=worker_id, stale_after_seconds=stale_after_seconds)
-        if result["status"] == "idle":
-            time.sleep(poll_seconds)
+def serve(
+    *,
+    worker_id: str,
+    poll_seconds: float,
+    stale_after_seconds: int,
+    shutdown: ShutdownSignal | None = None,
+    sleep=time.sleep,
+    monotonic=time.monotonic,
+    heartbeat_path: Path | None = None,
+    stop_file: Path | None = None,
+) -> dict[str, Any]:
+    """常駐輪詢 AI queue（使用者本機 Patent Companion 的主迴圈）。
+
+    正式版必要行為（缺一就會出現「沒人領 AI job」的靜默故障）：
+    - graceful shutdown：停止訊號與**停止旗標檔**只在**兩輪之間**生效，
+      手上的 job 一定跑完再退出。Windows 上排程器停止是 TerminateProcess、
+      收不到訊號，因此旗標檔（stop_file）才是真實停止路徑（見 STOP_FILE_NAME 說明）。
+    - job 失敗隔離：單筆 job 例外由 execute_ai_job 收斂；迴圈層再兜一層 try，
+      任何非預期例外都只記一次錯誤並續跑，不讓常駐進程整個死掉。
+    - DB 斷線重試：OperationalError 走指數退避（1→2→4…上限 60 秒）持續重試，
+      恢復後退避計數歸零。
+    - heartbeat：每輪落檔一次，doctor／前端可查 Companion 是否還活著。
+
+    sleep／monotonic 可注入純為測試（不真的等待）；正式執行用 time 模組。
+    回傳本次常駐的統計摘要，供結束時記錄與測試斷言。
+    """
+    signal_flag = shutdown if shutdown is not None else ShutdownSignal()
+    started_at = datetime.now(UTC)
+    stats = {
+        "jobs_claimed": 0,
+        "jobs_succeeded": 0,
+        "jobs_failed": 0,
+        "loop_errors": 0,
+        "db_errors": 0,
+    }
+    db_failures = 0
+    # 啟動時清掉上一輪殘留的旗標，否則重新登入／排程重啟後會立刻自殺，變成永遠沒人領 job。
+    if stop_file is not None and stop_file.exists():
+        try:
+            stop_file.unlink()
+        except OSError as exc:  # 清不掉就退化成「本輪不吃旗標」，不阻止啟動
+            LOGGER.warning("stale stop file not removable: path=%s error=%s", stop_file, exc)
+    LOGGER.info(
+        "AI bridge started: worker_id=%s job_types=%s heartbeat=%s stop_file=%s",
+        worker_id,
+        AI_JOB_TYPES,
+        heartbeat_path,
+        stop_file,
+    )
+
+    def _stop_requested() -> bool:
+        """兩輪之間檢查停止來源：訊號旗標或停止旗標檔（檔案先於訊號生效於 Windows）。"""
+        if signal_flag.requested:
+            return True
+        if stop_file is not None and stop_file.exists():
+            signal_flag.request("stop_file")
+            return True
+        return False
+
+    def _beat(status: str) -> None:
+        """更新 heartbeat 檔（含統計，便於日誌外的快速判活）。"""
+        write_heartbeat(
+            heartbeat_path,
+            {
+                "worker_id": worker_id,
+                "pid": os.getpid(),
+                "status": status,
+                "started_at": started_at.isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
+                "poll_seconds": poll_seconds,
+                "job_types": list(AI_JOB_TYPES),
+                "stats": dict(stats),
+            },
+        )
+
+    while not _stop_requested():
+        _beat("running")
+        loop_started = monotonic()
+        try:
+            result = run_once(worker_id=worker_id, stale_after_seconds=stale_after_seconds)
+        except OperationalError as exc:
+            # DB 斷線：不退出，退避後重試；使用者本機沒有平台會把 Companion 拉回來。
+            db_failures += 1
+            stats["db_errors"] += 1
+            wait = compute_backoff_seconds(db_failures)
+            LOGGER.warning(
+                "database unavailable (attempt %s), retrying in %.1fs: %s",
+                db_failures,
+                wait,
+                exc,
+            )
+            _beat("db_error")
+            sleep(wait)
+            continue
+        except Exception:
+            # 單輪非預期例外（含 claim 前後的邊界錯誤）只記錄，不讓常駐進程死掉。
+            stats["loop_errors"] += 1
+            LOGGER.exception("AI bridge loop error; continuing")
+            _beat("loop_error")
+            sleep(poll_seconds)
+            continue
+
+        db_failures = 0
+        status = result.get("status")
+        if status == "idle":
+            sleep(poll_seconds)
+            continue
+
+        stats["jobs_claimed"] += 1
+        elapsed = monotonic() - loop_started
+        if status == "succeeded":
+            stats["jobs_succeeded"] += 1
+        elif status == "failed":
+            stats["jobs_failed"] += 1
+        # 日誌要能看出：領到哪一筆、什麼類型、成功或失敗、整段（含 CLI 呼叫）耗時。
+        LOGGER.info(
+            "AI job finished: id=%s status=%s elapsed=%.1fs totals=%s",
+            result.get("job_id"),
+            status,
+            elapsed,
+            stats,
+        )
+
+    # 正常收尾就消耗掉旗標；留著會讓下次啟動誤判為「已被要求停止」。
+    if stop_file is not None and stop_file.exists():
+        try:
+            stop_file.unlink()
+        except OSError as exc:
+            LOGGER.warning("stop file not removable: path=%s error=%s", stop_file, exc)
+
+    stopped_at = datetime.now(UTC)
+    summary = {
+        **stats,
+        "worker_id": worker_id,
+        "stopped_by": signal_flag.reason,
+        "started_at": started_at.isoformat(),
+        "stopped_at": stopped_at.isoformat(),
+    }
+    _beat("stopped")
+    LOGGER.info("AI bridge stopped gracefully: %s", summary)
+    return summary
+
+
+def configure_logging(*, level: str, log_file: str | None, max_bytes: int, backups: int) -> None:
+    """設定 stdout ＋（可選）輪替檔案日誌。
+
+    常駐服務看不到 console，日誌必須落檔才查得出為什麼掛掉；同時**一定要輪替**，
+    否則長期常駐會把磁碟寫爆。用標準庫 RotatingFileHandler，不引入額外相依。
+    """
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if log_file:
+        from logging.handlers import RotatingFileHandler
+
+        target = Path(log_file).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(
+            RotatingFileHandler(
+                target, maxBytes=max_bytes, backupCount=backups, encoding="utf-8"
+            )
+        )
+    logging.basicConfig(
+        level=getattr(logging, str(level).upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        handlers=handlers,
+        force=True,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -297,36 +622,80 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stale-after-seconds", type=int, default=1800)
     parser.add_argument("--cli-kind", choices=tuple(CLI_BINARIES), default="claude")
     parser.add_argument("--log-level", default="INFO")
+    # 以下三項讓安裝腳本指定狀態／日誌落點，全部可設定，不寫死路徑。
+    parser.add_argument(
+        "--heartbeat-file",
+        default=None,
+        help="heartbeat JSON 路徑（預設 AI_BRIDGE_STATE_DIR 或專案 var/）",
+    )
+    parser.add_argument(
+        "--stop-file",
+        default=None,
+        help="停止旗標檔路徑（建立此檔＝要求 serve 做完手上的 job 後退出）",
+    )
+    parser.add_argument(
+        "--log-file", default=os.getenv("AI_BRIDGE_LOG_FILE"), help="輪替日誌檔路徑"
+    )
+    parser.add_argument("--log-max-bytes", type=int, default=5 * 1024 * 1024)
+    parser.add_argument("--log-backups", type=int, default=5)
     return parser
 
 
-def main() -> None:
-    """CLI 入口：單步驗收或常駐服務。"""
+def main() -> int:
+    """CLI 入口：單步驗收或常駐服務。回傳行程 exit code。"""
     load_local_env()
     parser = build_parser()
     args = parser.parse_args()
-    logging.basicConfig(level=getattr(logging, str(args.log_level).upper()))
+    configure_logging(
+        level=args.log_level,
+        log_file=args.log_file,
+        max_bytes=args.log_max_bytes,
+        backups=args.log_backups,
+    )
+    heartbeat_path = (
+        Path(args.heartbeat_file).expanduser() if args.heartbeat_file else default_heartbeat_path()
+    )
     if args.command == "doctor":
-        result = run_doctor(cli_kind=args.cli_kind)
+        result = run_doctor(cli_kind=args.cli_kind, heartbeat_path=heartbeat_path)
         LOGGER.info("ai-bridge doctor result: %s", result)
-        return
+        # doctor 用 exit code 表達健康與否，讓 PowerShell／排程可直接判斷。
+        #
+        # heartbeat 納入判定，但要分辨兩種「不 alive」：
+        #   missing（從未啟動過）、stopped（使用者自己停的）＝ 預期狀態，不算故障，
+        #     否則安裝前跑 doctor 就會回 1，使用者無從分辨環境問題與尚未安裝。
+        #   stale（曾啟動但心跳過期＝該活著卻死了）、unreadable（狀態檔壞掉）＝ 故障，
+        #     這正是「Companion 死掉但沒人發現」的靜默故障，必須回非零。
+        heartbeat = result["heartbeat"]
+        companion_ok = heartbeat.get("alive") or heartbeat.get("reason") in {
+            "missing",
+            "stopped",
+        }
+        healthy = result["database"]["ok"] and result["cli"]["ok"] and companion_ok
+        return 0 if healthy else 1
     if args.command == "smoke":
         result = run_smoke(worker_id=args.worker_id)
         LOGGER.info("ai-bridge smoke result: %s", result)
-        return
+        return 0
     if args.command == "run-once":
         result = run_once(
             worker_id=args.worker_id,
             stale_after_seconds=args.stale_after_seconds,
         )
         LOGGER.info("ai-bridge run-once result: %s", result)
-        return
+        return 0
+    shutdown = ShutdownSignal()
+    shutdown.install_handlers()
+    stop_file = Path(args.stop_file).expanduser() if args.stop_file else default_stop_file_path()
     serve(
         worker_id=args.worker_id,
         poll_seconds=args.poll_seconds,
         stale_after_seconds=args.stale_after_seconds,
+        shutdown=shutdown,
+        heartbeat_path=heartbeat_path,
+        stop_file=stop_file,
     )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
