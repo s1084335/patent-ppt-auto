@@ -38,21 +38,6 @@ def get_model_artifact_root() -> Path:
     return (PROJECT_ROOT / "data" / "model_artifacts").resolve()
 
 
-def get_imports_root() -> Path:
-    """取得 WIPS 匯入上傳落地根目錄；未設定時固定落在專案 data/imports（container 內 /app/data/imports）。
-
-    API 與 worker 共用同一份 root，用於落地路徑與 path traversal / 安全刪檔判斷。
-    可用 IMPORTS_ROOT 環境變數覆蓋（相對路徑以專案根為基準）。
-    """
-    configured = os.getenv("IMPORTS_ROOT", "").strip()
-    if configured:
-        configured_path = Path(configured).expanduser()
-        if not configured_path.is_absolute():
-            configured_path = PROJECT_ROOT / configured_path
-        return configured_path.resolve()
-    return (PROJECT_ROOT / "data" / "imports").resolve()
-
-
 API_V1_PREFIX = "/api/v1"
 WORKER_HEARTBEAT_TIMEOUT_SECONDS = get_int_env("WORKER_HEARTBEAT_TIMEOUT_SECONDS", 120)
 # 匯入上傳容量上限（bytes），預設 200 MiB；串流累計超過即 413，即使 Content-Length 缺漏或偽造。

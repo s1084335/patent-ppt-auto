@@ -677,14 +677,14 @@ class EmbeddingsEnqueueOnCaseComparisonImportTests(unittest.TestCase):
             yield
 
         fake_ctx.keepalive.side_effect = _noop_keepalive
-        # 用真實 .xlsx 副檔名路徑通過白名單檢查（不需 mock Path.suffix）。
+        # 用真實 .xlsx 原檔名通過白名單檢查（不需 mock Path.suffix）。
+        # 來源檔改由 DB blob 取得（2026-07-23）：取回／刪除都 mock 成 no-op。
         payload = {
-            "path": "imports/uuid/file.xlsx", "file_hash": "h",
+            "blob_id": 1, "original_filename": "file.xlsx", "file_hash": "h",
             "purpose": "case_comparison", "new_workspace_name": "cc-ws",
         }
-        with mock.patch.object(handlers, "is_within_imports_root", return_value=True), \
-             mock.patch("pathlib.Path.is_file", return_value=True), \
-             mock.patch.object(handlers, "file_sha256", return_value="h"), \
+        with mock.patch.object(handlers.import_blob_store, "write_blob_to_path"), \
+             mock.patch.object(handlers.import_blob_store, "delete_blob"), \
              mock.patch.object(handlers, "import_wips_file",
                                return_value={"status": "ok", "patent_ids": [SUBJECT_PIDS[0]]}), \
              mock.patch.object(handlers, "_attach_import_workspace", return_value=None), \

@@ -145,14 +145,13 @@ class ImportHandlerWorkspaceTests(unittest.TestCase):
         summary = {"status": "imported", "records": len(patent_ids),
                    "inserted": len(patent_ids), "matched_existing": 0, "updated": 0,
                    "skipped": 0, "patent_ids": list(patent_ids)}
-        base = {"path": "/x.csv", "file_hash": "h"}
+        base = {"blob_id": 1, "original_filename": "x.csv", "file_hash": "h"}
         base.update(payload_extra)
-        # 繞過受控檔驗證（本測聚焦圈 workspace 行為），直接呼叫圈 workspace 的內部步驟：
-        # 以 mock import_wips_file 回可控 summary，並停用檔案驗證。
+        # 繞過來源檔取回與驗證（本測聚焦圈 workspace 行為）：mock import_wips_file 回可控
+        # summary，並讓 blob 取回／刪除變成 no-op（2026-07-23 起來源檔改由 DB blob 取得）。
         with mock.patch.object(handlers, "import_wips_file", return_value=summary), \
-             mock.patch.object(handlers, "is_within_imports_root", return_value=True), \
-             mock.patch("pathlib.Path.is_file", return_value=True), \
-             mock.patch.object(handlers, "file_sha256", return_value="h"):
+             mock.patch.object(handlers.import_blob_store, "write_blob_to_path"), \
+             mock.patch.object(handlers.import_blob_store, "delete_blob"):
             return handlers.handle_patent_import(base, mock.MagicMock())
 
     def test_new_workspace_members_are_imported_patents(self):
@@ -278,14 +277,13 @@ class ImportApiWorkspacePurposeTests(unittest.TestCase):
         from fastapi.testclient import TestClient
         from backend.app.main import app
         self.client = TestClient(app)
-        self._tmp = tempfile.TemporaryDirectory()
-        self._root = Path(self._tmp.name)
-        self._env = mock.patch.dict(os.environ, {"IMPORTS_ROOT": str(self._root)})
-        self._env.start()
+        # 上傳內容走拋棄式 DB 的 app_layer.import_blobs（真實路徑，不 mock）。
 
     def tearDown(self):
-        self._env.stop()
-        self._tmp.cleanup()
+        # 本測只驗 payload 參數，blob 不交給 worker；清掉避免累積在拋棄式 DB。
+        with psycopg.connect(**_kw(TEST_DB)) as c:
+            c.execute("DELETE FROM app_layer.import_blobs")
+            c.commit()
 
     def _post(self, params, content=b"col\nv\n"):
         from types import SimpleNamespace

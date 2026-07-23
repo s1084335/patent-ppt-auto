@@ -1,18 +1,18 @@
 """patent_import handler 完整性驗證、import_wips_file 重複檔/rollback、與統計語意測試。
 
-全程不連真實 DB：handler 測試 mock import_wips_file；importer 重複檔/rollback 測試 mock
-psycopg.connect；統計語意測試 mock find_existing_patent_id 與 cursor。
+全程不連真實 DB：handler 測試 mock import_wips_file 與 import_blob_store；importer
+重複檔/rollback 測試 mock psycopg.connect；統計語意測試 mock find_existing_patent_id 與 cursor。
 """
 from __future__ import annotations
 
-import os
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from backend.app.importers import wips_importer
-from backend.app.importers.wips_importer import file_sha256, import_wips_file
+from backend.app.importers.wips_importer import import_wips_file
 from backend.app.worker import handlers
 
 
@@ -43,72 +43,98 @@ def _mock_conn(*, fetchone_return=None, fetchone_side_effect=None):
 
 
 class PatentImportHandlerTests(unittest.TestCase):
-    """匯入前完整性驗證：位於 root、存在、白名單副檔名、hash 一致；失敗即 job failed。"""
+    """匯入前完整性驗證：blob_id／file_hash 必填、白名單副檔名、hash 一致；失敗即 job failed。
+
+    2026-07-23 起來源檔由 DB blob 取得（backend 與 worker 在 Railway 是不同容器、檔案系統
+    不共享），payload 帶 blob_id 而非 path；blob 取回時驗 SHA-256，匯入完即刪 blob。
+    """
 
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self._root = Path(self._tmp.name)
-        self._env = mock.patch.dict(os.environ, {"IMPORTS_ROOT": str(self._root)})
-        self._env.start()
-        # 在 root 下建一份合法上傳副本。
-        self._upload_dir = self._root / "uuid123"
-        self._upload_dir.mkdir(parents=True)
-        self._file = _write_min_csv(self._upload_dir)
-        self._hash = file_sha256(self._file)
-
-    def tearDown(self):
-        self._env.stop()
-        self._tmp.cleanup()
+        self._content = "申请号,标题,申请日\nTW123456,測試,2020-01-01\n".encode("utf-8")
+        self._hash = hashlib.sha256(self._content).hexdigest()
 
     def _payload(self, **over):
-        p = {"path": str(self._file), "file_hash": self._hash}
+        p = {"blob_id": 5, "original_filename": "min.csv", "file_hash": self._hash}
         p.update(over)
         return p
+
+    def _fake_write(self, blob_id, target, *, expected_hash):
+        """模擬 blob 取回：寫出內容並比對 hash（與真實 store 同語意）。"""
+        if expected_hash != self._hash:
+            raise ValueError("import blob hash mismatch")
+        Path(target).write_bytes(self._content)
 
     def test_registered_in_dispatch(self):
         self.assertIn("patent_import", handlers.HANDLERS)
 
-    def test_requires_path(self):
+    def test_requires_blob_id(self):
         with self.assertRaises(ValueError):
             handlers.handle_patent_import({}, mock.MagicMock())
 
-    def test_rejects_path_escape(self):
-        """path 不在 imports root → ValueError，不進 importer。"""
-        outside = Path(tempfile.gettempdir()) / "escape.csv"
-        with mock.patch.object(handlers, "import_wips_file") as m:
+    def test_requires_file_hash(self):
+        """缺 file_hash → ValueError，不取 blob（無從驗證完整性）。"""
+        payload = self._payload()
+        payload.pop("file_hash")
+        with mock.patch.object(handlers.import_blob_store, "write_blob_to_path") as w:
             with self.assertRaises(ValueError):
-                handlers.handle_patent_import(self._payload(path=str(outside)), mock.MagicMock())
-        m.assert_not_called()
+                handlers.handle_patent_import(payload, mock.MagicMock())
+        w.assert_not_called()
 
-    def test_rejects_missing_file(self):
-        """path 在 root 內但檔案不存在 → ValueError。"""
-        missing = self._root / "uuidX" / "nope.csv"
-        with mock.patch.object(handlers, "import_wips_file") as m:
+    def test_rejects_unsupported_suffix(self):
+        """original_filename 副檔名不在 Web 白名單 → ValueError，不取 blob、不進 importer。"""
+        with mock.patch.object(handlers.import_blob_store, "write_blob_to_path") as w, \
+             mock.patch.object(handlers, "import_wips_file") as m:
             with self.assertRaises(ValueError):
-                handlers.handle_patent_import(self._payload(path=str(missing)), mock.MagicMock())
+                handlers.handle_patent_import(
+                    self._payload(original_filename="escape.pdf"), mock.MagicMock())
+        w.assert_not_called()
         m.assert_not_called()
 
     def test_rejects_hash_mismatch(self):
-        """實際 SHA-256 不等於 payload.file_hash → ValueError。"""
-        with mock.patch.object(handlers, "import_wips_file") as m:
+        """blob 內容 SHA-256 不等於 payload.file_hash → ValueError，不進 importer。"""
+        with mock.patch.object(handlers.import_blob_store, "write_blob_to_path",
+                               side_effect=self._fake_write), \
+             mock.patch.object(handlers.import_blob_store, "delete_blob") as d, \
+             mock.patch.object(handlers, "import_wips_file") as m:
             with self.assertRaises(ValueError):
                 handlers.handle_patent_import(self._payload(file_hash="deadbeef"), mock.MagicMock())
         m.assert_not_called()
+        # 匯入失敗保留 blob，讓 job 重試可再取同一份內容。
+        d.assert_not_called()
 
-    def test_duplicate_removes_upload_dir(self):
-        """重複檔 → 安全刪除本次上傳目錄。"""
-        with mock.patch.object(handlers, "import_wips_file", return_value={"status": "skipped_duplicate_file"}):
+    def test_duplicate_deletes_blob(self):
+        """重複檔 → blob 一樣清除（內容已無保存價值）。"""
+        with mock.patch.object(handlers.import_blob_store, "write_blob_to_path",
+                               side_effect=self._fake_write), \
+             mock.patch.object(handlers.import_blob_store, "delete_blob") as d, \
+             mock.patch.object(handlers, "import_wips_file",
+                               return_value={"status": "skipped_duplicate_file"}):
             result = handlers.handle_patent_import(self._payload(), mock.MagicMock())
         self.assertEqual(result["status"], "skipped_duplicate_file")
-        self.assertFalse(self._upload_dir.exists())
+        d.assert_called_once_with(5)
 
-    def test_success_keeps_upload_dir(self):
-        """成功匯入 → 保留來源檔（source_files.file_path 需追溯）。"""
-        summary = {"status": "imported", "records": 1, "inserted": 1, "matched_existing": 0, "updated": 0, "skipped": 0}
-        with mock.patch.object(handlers, "import_wips_file", return_value=summary):
+    def test_success_deletes_blob_and_temp(self):
+        """成功匯入 → blob 刪除，暫存檔不殘留（追溯靠 raw_records.source_file_hash）。"""
+        summary = {"status": "imported", "records": 1, "inserted": 1,
+                   "matched_existing": 0, "updated": 0, "skipped": 0}
+        seen = {}
+
+        def fake_import(path, *a, **kw):
+            seen["path"] = Path(path)
+            seen["content"] = Path(path).read_bytes()
+            return summary
+
+        with mock.patch.object(handlers.import_blob_store, "write_blob_to_path",
+                               side_effect=self._fake_write), \
+             mock.patch.object(handlers.import_blob_store, "delete_blob") as d, \
+             mock.patch.object(handlers, "import_wips_file", side_effect=fake_import):
             result = handlers.handle_patent_import(self._payload(), mock.MagicMock())
         self.assertEqual(result["status"], "imported")
-        self.assertTrue(self._file.exists())
+        # importer 收到的是內容完整的暫存檔，且副檔名保留供選 parser。
+        self.assertEqual(seen["content"], self._content)
+        self.assertEqual(seen["path"].suffix, ".csv")
+        self.assertFalse(seen["path"].exists())
+        d.assert_called_once_with(5)
 
 
 class ImportWipsFileTests(unittest.TestCase):

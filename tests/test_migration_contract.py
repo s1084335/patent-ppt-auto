@@ -21,6 +21,15 @@ HEAD_REV = "0021_derived_app_consolidation"
 
 APP_TARGET_TABLES = {"workspaces", "workflow_runs", "workflow_outputs"}
 DERIVED_TARGET_TABLES = {"company_aliases", "topic_runs", "topic_assignments"}
+# 0021 之後才新增的表：本檔驗的是「0021 併表後的骨架」，但測試 DB 一律 upgrade 到 head，
+# 故後續 migration 新增的表要在此登記，否則骨架斷言會被無關的新表誤判為失敗。
+# 新增 migration 建表時，一併在這裡補上表名與來源 revision。
+POST_0021_TABLES = {
+    # 0023_market_evidence：市場資料證據庫。
+    "derived_layer": {"market_evidence"},
+    # 0024_import_blobs：匯入上傳內容的跨容器傳輸表。
+    "app_layer": {"import_blobs"},
+}
 OLD_TABLES = {
     "app_layer": {
         "workspace_patents", "workspace_compose_sources", "processing_jobs",
@@ -179,11 +188,15 @@ class MigrationContractTests(unittest.TestCase):
 
     # ── 契約斷言 ──
     def test_chain_is_linear_single_head(self):
-        """chain 0018→0019→0020→0021 為單一線性 head。"""
+        """0018→0019→0020→0021 段為線性，且整條 chain 只有單一 head（不分叉）。
+
+        head 不寫死某個 revision：0021 之後仍會持續新增 migration，寫死會讓每次新增都誤紅。
+        真正要守的不變量是「只有一個 head」＋「本檔涵蓋的 0018~0021 段仍線性」。
+        """
         from alembic.script import ScriptDirectory
 
         script = ScriptDirectory.from_config(_alembic_cfg())
-        self.assertEqual(script.get_heads(), [HEAD_REV])
+        self.assertEqual(len(script.get_heads()), 1, f"migration 分叉：{script.get_heads()}")
         chain = {rev.revision: rev.down_revision for rev in script.walk_revisions(BASE_REV, HEAD_REV)}
         self.assertEqual(chain.get(HEAD_REV), "0020_core_layer_simplify")
         self.assertEqual(chain.get("0020_core_layer_simplify"), "0019_raw_layer_simplify")
@@ -197,12 +210,14 @@ class MigrationContractTests(unittest.TestCase):
         )
 
     def test_app_layer_three_base_tables(self):
-        """app_layer 最終只剩 workspaces/workflow_runs/workflow_outputs 三張實體表。"""
-        self.assertEqual(self._base_tables("app_layer"), APP_TARGET_TABLES)
+        """app_layer 併表後骨架＝workspaces/workflow_runs/workflow_outputs（扣掉 0021 後新增的表）。"""
+        actual = self._base_tables("app_layer") - POST_0021_TABLES["app_layer"]
+        self.assertEqual(actual, APP_TARGET_TABLES)
 
     def test_derived_layer_three_base_tables(self):
-        """derived_layer 最終只剩 company_aliases/topic_runs/topic_assignments 三張實體表。"""
-        self.assertEqual(self._base_tables("derived_layer"), DERIVED_TARGET_TABLES)
+        """derived_layer 併表後骨架＝company_aliases/topic_runs/topic_assignments（扣掉 0021 後新增的表）。"""
+        actual = self._base_tables("derived_layer") - POST_0021_TABLES["derived_layer"]
+        self.assertEqual(actual, DERIVED_TARGET_TABLES)
 
     def test_old_tables_removed(self):
         """舊表確實移除（併入新表）。"""

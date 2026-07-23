@@ -6,6 +6,7 @@
 2026-07-23 第一輪：主流程 API/後端收尾驗收。"""
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 import unittest
@@ -224,26 +225,21 @@ class ImportCreateWorkspaceQueryApiTests(unittest.TestCase):
 
 
 class HandlerEndToEndTests(unittest.TestCase):
-    """handle_patent_import 完整流程（真實 import_wips_file，不 mock import）。
+    """handle_patent_import 完整流程（真實 import_wips_file 與真實 blob store，不 mock）。
 
-    建立真實 CSV 到 IMPORTS_ROOT → 正確 SHA-256 → payload 帶 workspace 意圖 →
-    handler 完成匯入＋圈 workspace → 資料庫與 API 雙重驗證。
+    2026-07-23 起來源檔走 DB（app_layer.import_blobs），不再依賴共享檔案系統：
+    真實 CSV 內容存進 blob → 正確 SHA-256 → payload 帶 blob_id ＋ workspace 意圖 →
+    handler 由 blob 取回落暫存檔完成匯入＋圈 workspace → 資料庫與 API 雙重驗證。
     """
 
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self._root = Path(self._tmp.name)
-        self._env = mock.patch.dict(
-            os.environ,
-            {"IMPORTS_ROOT": str(self._root), "PGDATABASE": TEST_DB},
-        )
+        self._env = mock.patch.dict(os.environ, {"PGDATABASE": TEST_DB})
         self._env.start()
         self._import_ids: list[int] = []
         self._ws_ids: list[int] = []
 
     def tearDown(self):
         self._env.stop()
-        self._tmp.cleanup()
         with psycopg.connect(**_kw(TEST_DB)) as c:
             if self._ws_ids:
                 c.execute(
@@ -257,26 +253,36 @@ class HandlerEndToEndTests(unittest.TestCase):
                 )
             c.commit()
 
-    def _write_fixture(self, rows: str) -> Path:
-        uuid_dir = self._root / "handler-test-uuid"
-        uuid_dir.mkdir(parents=True, exist_ok=True)
-        p = uuid_dir / "handler_fixture.csv"
-        p.write_text(f"申请号,标题,申请日\n{rows}", encoding="utf-8")
-        return p
+    def _seed_blob(self, rows: str) -> tuple[int, str]:
+        """把 CSV 內容存進真實 import_blobs，回 (blob_id, sha256)；模擬上傳端產物。"""
+        from backend.app.db import import_blob_store
+
+        content = f"申请号,标题,申请日\n{rows}".encode("utf-8")
+        digest = hashlib.sha256(content).hexdigest()
+        blob_id = import_blob_store.create_blob("handler_fixture.csv")
+        import_blob_store.append_chunk(blob_id, content)
+        import_blob_store.finalize_blob(blob_id, file_hash=digest, byte_size=len(content))
+        return blob_id, digest
 
     def test_handler_real_import_creates_workspace(self):
-        """handler 真實匯入 CSV → 建立 workspace → DB 與 API 雙重驗證。"""
+        """handler 由 DB blob 真實匯入 CSV → 建立 workspace → DB 與 API 雙重驗證。"""
         from backend.app.worker.handlers import handle_patent_import
-        from backend.app.importers.wips_importer import file_sha256
 
-        path = self._write_fixture("TWE2EA,案子甲,2020-01-01\nTWE2EB,案子乙,2020-02-02\n")
+        blob_id, digest = self._seed_blob("TWE2EA,案子甲,2020-01-01\nTWE2EB,案子乙,2020-02-02\n")
         payload = {
-            "path": str(path),
-            "file_hash": file_sha256(path),
+            "blob_id": blob_id,
+            "original_filename": "handler_fixture.csv",
+            "file_hash": digest,
             "new_workspace_name": "e2e-ws",
             "purpose": "general",
         }
         result = handle_patent_import(payload, mock.MagicMock())
+        # 匯入完成後 blob 已清除（內容無保存價值，追溯靠 raw_records.source_file_hash）。
+        with psycopg.connect(**_kw(TEST_DB)) as c:
+            left = c.execute(
+                "SELECT count(*) FROM app_layer.import_blobs WHERE blob_id = %s",
+                (blob_id,)).fetchone()[0]
+        self.assertEqual(left, 0)
         self.assertEqual(result["status"], "imported")
         self.assertIn("workspace_id", result)
         wid = result["workspace_id"]
@@ -301,13 +307,13 @@ class HandlerEndToEndTests(unittest.TestCase):
     def test_handler_real_import_updates_existing_workspace(self):
         """handler 真實匯入兩批 → 先建 workspace → 第二批 union 進既有 workspace。"""
         from backend.app.worker.handlers import handle_patent_import
-        from backend.app.importers.wips_importer import file_sha256
 
         # 第一批：直接匯入＋建 workspace
-        path1 = self._write_fixture("TWE2EA1,首批,2020-01-01\n")
+        blob1, digest1 = self._seed_blob("TWE2EA1,首批,2020-01-01\n")
         payload1 = {
-            "path": str(path1),
-            "file_hash": file_sha256(path1),
+            "blob_id": blob1,
+            "original_filename": "handler_fixture.csv",
+            "file_hash": digest1,
             "new_workspace_name": "e2e-update-ws",
             "purpose": "case_comparison",
         }
@@ -318,10 +324,11 @@ class HandlerEndToEndTests(unittest.TestCase):
         self._import_ids.extend(r1.get("patent_ids", []))
 
         # 第二批：匯入 + 指向既有 workspace
-        path2 = self._write_fixture("TWE2EA2,次批,2020-03-03\n")
+        blob2, digest2 = self._seed_blob("TWE2EA2,次批,2020-03-03\n")
         payload2 = {
-            "path": str(path2),
-            "file_hash": file_sha256(path2),
+            "blob_id": blob2,
+            "original_filename": "handler_fixture.csv",
+            "file_hash": digest2,
             "workspace_id": wid,
         }
         r2 = handle_patent_import(payload2, mock.MagicMock())
@@ -346,10 +353,10 @@ class HandlerEndToEndTests(unittest.TestCase):
     def test_handler_skips_workspace_without_params(self):
         """無 workspace 參數 → handler 只匯入不圈 workspace。"""
         from backend.app.worker.handlers import handle_patent_import
-        from backend.app.importers.wips_importer import file_sha256
 
-        path = self._write_fixture("TWE2EA3,無workspace,2020-01-01\n")
-        payload = {"path": str(path), "file_hash": file_sha256(path)}
+        blob_id, digest = self._seed_blob("TWE2EA3,無workspace,2020-01-01\n")
+        payload = {"blob_id": blob_id, "original_filename": "handler_fixture.csv",
+                   "file_hash": digest}
         result = handle_patent_import(payload, mock.MagicMock())
         self.assertEqual(result["status"], "imported")
         self.assertIsNone(result.get("workspace_id"))

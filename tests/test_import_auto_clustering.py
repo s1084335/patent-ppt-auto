@@ -57,12 +57,12 @@ class ImportAutoClusteringTests(unittest.TestCase):
 
         recorder = recorder or _JobRecorder()
         summary = {"status": "imported", "patent_ids": list(patent_ids)}
-        payload = {"path": "imports/uuid/file.xlsx", "file_hash": "h"}
+        payload = {"blob_id": 1, "original_filename": "file.xlsx", "file_hash": "h"}
         payload.update(payload_extra)
         # handler 內是 lazy import 同一個模組物件，patch 其屬性即可攔截（不碰 DB）。
-        with mock.patch.object(handlers, "is_within_imports_root", return_value=True), \
-             mock.patch("pathlib.Path.is_file", return_value=True), \
-             mock.patch.object(handlers, "file_sha256", return_value="h"), \
+        # 來源檔改由 DB blob 取得（2026-07-23）：取回／刪除都 mock 成 no-op。
+        with mock.patch.object(handlers.import_blob_store, "write_blob_to_path"), \
+             mock.patch.object(handlers.import_blob_store, "delete_blob"), \
              mock.patch.object(handlers, "import_wips_file", return_value=summary), \
              mock.patch.object(handlers, "_attach_import_workspace",
                                return_value=workspace_result), \
@@ -249,10 +249,10 @@ class ClusteringJobWorkspaceLinkTests(unittest.TestCase):
 
         recorder = _JobRecorder()
         summary = {"status": "imported", "patent_ids": [1, 2]}
-        payload = {"path": "imports/u/f.xlsx", "file_hash": "h", "new_workspace_name": "w"}
-        with mock.patch.object(handlers, "is_within_imports_root", return_value=True), \
-             mock.patch("pathlib.Path.is_file", return_value=True), \
-             mock.patch.object(handlers, "file_sha256", return_value="h"), \
+        payload = {"blob_id": 1, "original_filename": "f.xlsx", "file_hash": "h",
+                   "new_workspace_name": "w"}
+        with mock.patch.object(handlers.import_blob_store, "write_blob_to_path"), \
+             mock.patch.object(handlers.import_blob_store, "delete_blob"), \
              mock.patch.object(handlers, "import_wips_file", return_value=summary), \
              mock.patch.object(handlers, "_attach_import_workspace",
                                return_value={"workspace_id": 91}), \

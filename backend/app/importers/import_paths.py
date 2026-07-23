@@ -1,34 +1,20 @@
-"""匯入上傳的受控路徑、Web 白名單與安全刪檔 helper。
+"""匯入上傳的檔名驗證與 Web 副檔名白名單。
 
-API 與 worker 共用同一份規則（imports root、副檔名白名單、path traversal 判斷、
-只刪本次上傳目錄），避免兩邊各寫一套而失守。實際 root 由 settings.get_imports_root()
-單一提供。
+API 與 worker 共用同一份規則（副檔名白名單、path traversal 判斷），避免兩邊各寫一套而失守。
+
+2026-07-23：上傳內容改存 DB（app_layer.import_blobs）不再落地到 imports root——Railway 上
+backend 與 worker 是不同容器、檔案系統不共享。原本的 imports_root()／is_within_imports_root()／
+remove_import_dir() 隨之無用而移除；檔名白名單與 traversal 驗證仍保留（上傳端擋副檔名、
+worker 端依 original_filename 再驗一次）。
 """
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
-
-from backend.app import settings
 
 
 # Web 上傳與 worker 接受的副檔名白名單：**不含 .mdb**。Linux worker 常缺 pyodbc/Access
 # driver，讓 .mdb 在上傳階段就被擋（422），而非匯入時才失敗；CLI importer 仍支援 .mdb。
 WEB_IMPORT_SUFFIXES = (".xlsx", ".csv", ".txt", ".xml")
-
-
-def imports_root() -> Path:
-    """匯入落地根目錄（已 resolve）；委派 settings.get_imports_root()。"""
-    return settings.get_imports_root()
-
-
-def is_within_imports_root(path: Path) -> bool:
-    """path 解析後是否位於 imports root 之下（path traversal 防禦）。"""
-    try:
-        Path(path).resolve().relative_to(imports_root())
-        return True
-    except ValueError:
-        return False
 
 
 def validate_web_filename(filename: str) -> str:
@@ -48,12 +34,3 @@ def validate_web_filename(filename: str) -> str:
             f"unsupported import format: {suffix or '(none)'}; allowed={list(WEB_IMPORT_SUFFIXES)}"
         )
     return name
-
-
-def remove_import_dir(dir_path: Path) -> None:
-    """只刪位於 imports root 下、且非 root 本身的本次上傳目錄；其餘一律拒絕，不做任意刪路徑。"""
-    root = imports_root()
-    target = Path(dir_path).resolve()
-    if target == root or not is_within_imports_root(target):
-        return
-    shutil.rmtree(target, ignore_errors=True)
