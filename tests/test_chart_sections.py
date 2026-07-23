@@ -234,7 +234,7 @@ class DisplaySpecTests(unittest.TestCase):
         """IPC/CPC 三次修正沿革（2026-07-21）：①初版 L4/L5 toggle 全列→②二次修正誤解
         「不收合」為 stacked 堆疊不切換＋每階 20→③三次修正定版：**恢復 L4/L5 切換鈕**
         （兩階對照是核心價值；「不收合」只指不用查看全部式展開，不禁 toggle），每階仍各截前 20。"""
-        rows = [{"Curr. IPC(Main)": f"A{i:02d}B {i}/00", "patent_count": 30 - i} for i in range(25)]
+        rows = [{"Orig. IPC(Main)": f"A{i:02d}B {i}/00", "patent_count": 30 - i} for i in range(25)]
         reports = {"ipc_main_distribution": {"label_zh": "IPC 分布", "rows": rows}}
         with tempfile.TemporaryDirectory() as tmp:
             ctx = self._fake_ctx(tmp, reports, ipc_levels=(4, 5))
@@ -411,7 +411,9 @@ class PersistenceTruncationTests(unittest.TestCase):
     @staticmethod
     def _stub_run_report(name, filters=None, limit=None, patent_ids=None):
         if name in ("ipc_main_distribution", "cpc_main_distribution"):
-            rows = [{"Curr. IPC(Main)": f"A{i:02d}B {i}/00", "patent_count": 30 - i} for i in range(25)]
+            # 2026-07-23 定案：分類來源改 Orig. Main，stub 的 row key 須跟著報表定義走
+            source = REPORT_DEFINITIONS[name].columns[0]
+            rows = [{source: f"A{i:02d}B {i}/00", "patent_count": 30 - i} for i in range(25)]
         elif name in ("application_trend", "publication_trend"):
             key = "application_year" if name == "application_trend" else "publication_year"
             rows = [{key: 1990 + i, "patent_count": i + 1} for i in range(30)]  # 30 年
@@ -972,6 +974,77 @@ class SelectiveRenderTests(unittest.TestCase):
         # left margin 擴大（340 使 SVG 寬度擴大，原 width 約 250+NumYears*82+34）
         svg_width = float(re.search(r'<svg[^>]+width="([0-9.]+)"', svg).group(1))
         self.assertGreaterEqual(svg_width, 340 + 1 * 82 + 34)
+
+
+class ClassificationSourceColumnTests(unittest.TestCase):
+    """IPC/CPC 分析來源欄（2026-07-23 使用者定案）：一律改用 Orig. Main。
+
+    定案要點：來源固定為 `Orig. IPC(Main)`／`Orig. CPC(Main)`，
+    **不因該欄目前無值而 fallback 回 Curr.**——空值是資料批次問題，
+    報表出空是正確行為。四階／五階支援維持不變。
+    """
+
+    def test_report_definitions_use_orig_main(self):
+        """報表定義的分類來源欄（columns/group_by/order/exclude_blank）須為 Orig.。"""
+        for report_name, column in (
+            ("ipc_main_distribution", "Orig. IPC(Main)"),
+            ("cpc_main_distribution", "Orig. CPC(Main)"),
+        ):
+            definition = REPORT_DEFINITIONS[report_name]
+            self.assertEqual(definition.columns, (column,))
+            self.assertEqual(definition.group_by, (column,))
+            self.assertEqual(definition.exclude_blank_columns, (column,))
+            self.assertIn(column, [col for col, _ in definition.default_order])
+
+    def test_classification_sections_read_orig_main(self):
+        """_build_ipc_section／_build_cpc_section 取的 row key 須為 Orig. Main。"""
+        for builder, report_key, column in (
+            (chart_runner._build_ipc_section, "ipc_main_distribution", "Orig. IPC(Main)"),
+            (chart_runner._build_cpc_section, "cpc_main_distribution", "Orig. CPC(Main)"),
+        ):
+            rows = [{column: "H04L-051/02", "patent_count": 3}]
+            with tempfile.TemporaryDirectory() as tmp:
+                ctx = self._fake_ctx(tmp, {report_key: {"label_zh": "分布", "rows": rows}})
+                builder(ctx)
+            collapsed = ctx.chart_rows[f"{report_key}_L4"]
+            self.assertEqual(collapsed, [{column: "H04L", "patent_count": 3}])
+
+    def test_allowed_filter_columns_use_orig_main(self):
+        """filter 白名單同步改 Orig.，否則前端／API 帶分類 filter 會被擋。"""
+        from backend.app.reports.report_definitions import (
+            ALLOWED_FILTER_COLUMNS,
+            allowed_filter_columns_for_report,
+        )
+
+        self.assertIn("Orig. IPC(Main)", ALLOWED_FILTER_COLUMNS)
+        self.assertIn("Orig. CPC(Main)", ALLOWED_FILTER_COLUMNS)
+        self.assertNotIn("Curr. IPC(Main)", ALLOWED_FILTER_COLUMNS)
+        self.assertNotIn("Curr. CPC(Main)", ALLOWED_FILTER_COLUMNS)
+        trend = allowed_filter_columns_for_report(REPORT_DEFINITIONS["application_trend"])
+        self.assertIn("Orig. IPC(Main)", trend)
+        self.assertIn("Orig. CPC(Main)", trend)
+
+    def test_orig_cpc_format_levels(self):
+        """合成資料驗 Orig. CPC 分階：該欄實測 0% 填充，無法用實資料驗證。
+
+        涵蓋 CPC 4 位群組（H10P-0072/0616）、IPC 3 位群組（H04L-051/02），
+        以及 Orig. CPC 可能出現的無前導零／無分隔／帶 suffix 寫法。
+        """
+        cases = [
+            # (原始碼, L4 subclass, L5 main group)
+            ("H10P-0072/0616", "H10P", "H10P-0072"),  # CPC 4 位群組
+            ("H04L-051/02", "H04L", "H04L-051"),      # IPC 3 位群組
+            ("H10P-72/0616", "H10P", "H10P-72"),      # 無前導零
+            ("H01M 10/0525", "H01M", "H01M 10"),      # 空白分隔
+            ("A01D-0034/416", "A01D", "A01D-0034"),
+            ("Y02E-0060/10", "Y02E", "Y02E-0060"),    # Y 段 CPC-only
+        ]
+        for symbol, level4, level5 in cases:
+            self.assertEqual(chart_runner.classification_level_key(symbol, 4), level4, symbol)
+            self.assertEqual(chart_runner.classification_level_key(symbol, 5), level5, symbol)
+
+    def _fake_ctx(self, tmp: str, reports: dict):
+        return DisplaySpecTests._fake_ctx(tmp, reports, ipc_levels=(4, 5))
 
 
 if __name__ == "__main__":

@@ -9,12 +9,13 @@
 | Patent Application Trend | 統計申請年度趨勢 | `application_year`, `patent_id` | 依 `application_year` group by，計算 `patent_id` 數量 | 可支援 |
 | Patent Publication Trend | 統計公開/公告年度趨勢 | `publication_year`, `patent_id` | 依 `publication_year` group by，計算 `patent_id` 數量 | 可支援 |
 | Patent Jurisdiction Distribution | 統計專利布局國別 | `country_code`, `patent_id` | 依 `country_code` group by，計算 `patent_id` 數量 | 可支援 |
-| IPC Classification Distribution | 統計 IPC Main 分布 | `Curr. IPC(Main)`, `patent_id` | 先查完整 main code，再由報表 runner 依使用者選擇輸出 4 階或 5 階 | 可支援 |
-| CPC Classification Distribution | 統計 CPC Main 分布 | `Curr. CPC(Main)`, `patent_id` | 先查完整 main code，再由報表 runner 依使用者選擇輸出 4 階或 5 階 | 可支援 |
+| IPC Classification Distribution | 統計 IPC Main 分布 | `Orig. IPC(Main)`, `patent_id` | 先查完整 main code，再由報表 runner 依使用者選擇輸出 4 階或 5 階 | 可支援 |
+| CPC Classification Distribution | 統計 CPC Main 分布 | `Orig. CPC(Main)`, `patent_id` | 先查完整 main code，再由報表 runner 依使用者選擇輸出 4 階或 5 階 | 可支援 |
 
 ### IPC / CPC 階層定義
 
-報表 runner 依使用者選擇的階層 collapse 完整 main code，來源 `Curr. IPC(Main)` / `Curr. CPC(Main)` 不改寫。
+報表 runner 依使用者選擇的階層 collapse 完整 main code，來源 `Orig. IPC(Main)` / `Orig. CPC(Main)` 不改寫
+（2026-07-23 使用者定案：分析來源由 Curr. 改為 Orig.；該欄若無值即出空表，不 fallback 回 Curr.）。
 
 | 階 | 語意 | IPC 範例 `A01D-034/416` | CPC 範例 `A01D-0034/416` |
 | --- | --- | --- | --- |
@@ -115,8 +116,8 @@ title
 | Publication Year | `publication_year` |
 | Application Date | `application_date` |
 | Jurisdiction | `country_code` |
-| IPC Main | `Curr. IPC(Main)` |
-| CPC Main | `Curr. CPC(Main)` |
+| IPC Main | `Orig. IPC(Main)` |
+| CPC Main | `Orig. CPC(Main)` |
 | Applicant Display Name | `applicant_display_name` |
 | Current Assignee Display Name | `current_assignee_display_name` |
 

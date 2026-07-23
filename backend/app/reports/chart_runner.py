@@ -1443,11 +1443,11 @@ def _build_classification_section(
 
 
 def _build_ipc_section(ctx: ChartContext) -> None:
-    _build_classification_section(ctx, "ipc_main_distribution", "Curr. IPC(Main)", ctx.ipc_levels)
+    _build_classification_section(ctx, "ipc_main_distribution", "Orig. IPC(Main)", ctx.ipc_levels)
 
 
 def _build_cpc_section(ctx: ChartContext) -> None:
-    _build_classification_section(ctx, "cpc_main_distribution", "Curr. CPC(Main)", ctx.cpc_levels)
+    _build_classification_section(ctx, "cpc_main_distribution", "Orig. CPC(Main)", ctx.cpc_levels)
 
 
 def _build_applicant_ranking_section(ctx: ChartContext) -> None:

@@ -66,9 +66,15 @@ class ClusteringReportsApiTests(unittest.TestCase):
                 ws = conn.execute(
                     "SELECT workspace_id FROM app_layer.workspaces ORDER BY workspace_id LIMIT 1"
                 ).fetchone()
+                # 候選自 0021 併表起存在 topic_runs.topic_state_json->'candidates'，
+                # 舊表 derived_layer.topic_candidates 已移除；沿用舊表會讓整個 class
+                # 因 relation does not exist 被靜默 skip（等於沒驗）。
                 run = conn.execute(
-                    "SELECT run_id, candidate_id FROM derived_layer.topic_candidates "
-                    "ORDER BY run_id, candidate_id LIMIT 1"
+                    "SELECT tr.run_id, (c.value ->> 'candidate_id')::int "
+                    "FROM derived_layer.topic_runs tr "
+                    "CROSS JOIN LATERAL jsonb_array_elements("
+                    "    COALESCE(tr.topic_state_json -> 'candidates', '[]'::jsonb)) AS c(value) "
+                    "ORDER BY tr.run_id, 2 LIMIT 1"
                 ).fetchone()
         except Exception as exc:  # noqa: BLE001
             raise unittest.SkipTest(f"DB unreachable: {exc}")
@@ -88,10 +94,12 @@ class ClusteringReportsApiTests(unittest.TestCase):
         return psycopg.connect(**get_connection_kwargs())
 
     def tearDown(self):
+        # 佇列表自 0021 起為 app_layer.workflow_runs（job_id 即 run_id）；
+        # 舊表 app_layer.processing_jobs 已移除，沿用舊名會讓每個建 job 的測試在 tearDown 炸掉。
         if self._created:
             with self._connect() as conn:
                 conn.execute(
-                    "DELETE FROM app_layer.processing_jobs WHERE job_id = ANY(%s)",
+                    "DELETE FROM app_layer.workflow_runs WHERE run_id = ANY(%s)",
                     (self._created,),
                 )
                 conn.commit()
