@@ -73,9 +73,13 @@ class ApplyCandidateExplanationsRequest(BaseModel):
 
 
 class MergeRequest(BaseModel):
-    """人工合併兩個 active model topics。"""
+    """人工合併兩個 active model topics。
 
-    topic_ids: list[int] = Field(min_length=2, max_length=2)
+    0021 後主題以 topic_code（字串）為唯一識別，故用 topic_keys 而非 int topic_ids；
+    順序即語意：第一個是目標（吸收方），第二個是來源（被合併方）。
+    """
+
+    topic_keys: list[str] = Field(min_length=2, max_length=2)
     merged_by: str = Field(default="demo-user", min_length=1, max_length=120)
     label: str | None = Field(default=None, max_length=120)
 
@@ -353,7 +357,7 @@ def merge_topics(workspace_id: int, source_field: str, request: MergeRequest) ->
         result = merge_workspace_topics(
             workspace_id=workspace_id,
             source_field=source_field,
-            topic_ids=request.topic_ids,
+            topic_keys=request.topic_keys,
             merged_by=request.merged_by,
             label=request.label,
         )

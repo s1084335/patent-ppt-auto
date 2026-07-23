@@ -350,12 +350,12 @@ class TopicMergeEndToEndTests(unittest.TestCase):
         self.assertEqual(claimed.workspace_id, MERGE_WS)
 
         fake_summary = {"merge_run_id": 999, "merged_topic_ids": [913001, 913002]}
-        with mock.patch.object(handlers, "merge_workspace_topics",
+        with mock.patch.object(handlers, "merge_workspace_topics", autospec=True,
                                return_value=fake_summary) as engine:
             outcome = runner.execute_job(claimed, worker_id="w-e2e", store=client)
         self.assertEqual(outcome["status"], "succeeded")
-        # 解析層把 topic_code 轉成引擎需要的 int topic_ids（裁決：只認 active 條目）
-        self.assertEqual(engine.call_args.kwargs["topic_ids"], [913001, 913002])
+        # 引擎以 topic_code（topic_keys）為介面，佇列的 code 原樣傳入，不轉 int
+        self.assertEqual(engine.call_args.kwargs["topic_keys"], ["M01", "M02"])
         self.assertEqual(engine.call_args.kwargs["workspace_id"], MERGE_WS)
         self.assertEqual(engine.call_args.kwargs["source_field"], WIPS)
 

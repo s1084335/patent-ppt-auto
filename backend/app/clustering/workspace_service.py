@@ -17,7 +17,6 @@ from psycopg.types.json import Jsonb
 from backend.app.db.connection import get_connection_kwargs
 
 from .artifacts import (
-    WorkspaceTopicArtifact,
     artifact_key,
     artifact_path,
     load_artifact,
@@ -788,83 +787,43 @@ def merge_workspace_topics(
     merged_by: str,
     label: str | None = None,
 ) -> MergeSummary:
-    """以 BERTopic 官方 merge_topics 更新模型，另建新版 run 保留合併歷史。
+    """純結構 JSON 操作完成主題合併：目標吸收來源指派、來源標 merged、產新 run。
 
     0021：主題以 topic_code 識別（＝assignments 的 topic_key）；合併結果寫新 run，
-    不覆蓋前一版。
+    不覆蓋前一版。無需重新載入或執行 BERTopic 模型。
+
+    topic_keys 順序即語意：**第一個是目標（吸收方，維持 active）、第二個是來源
+    （被合併方，標 status='merged' 並記 merged_into_topic_id）**。
     """
     selected_codes = list(dict.fromkeys(str(value) for value in topic_keys))
     if len(selected_codes) != 2:
         raise ValueError("exactly two active topics are required for a merge")
-    selected = _load_merge_topics(
+    target_code, source_code = selected_codes
+    _load_merge_topics(
         workspace_id=workspace_id,
         source_field=source_field,
         topic_keys=selected_codes,
     )
     latest = _latest_completed_run(workspace_id=workspace_id, source_field=source_field)
-    artifact = load_artifact(
-        resolve_artifact_path(str(latest["model_artifact_path"])),
-        expected_hash=str(latest["model_artifact_hash"]),
-    )
-    with psycopg.connect(**get_connection_kwargs()) as conn:
-        corpus = load_clustering_corpus(conn, workspace_id=workspace_id, source_field=source_field)
-    reduced = artifact.reducer.transform(np.asarray(corpus.matrix.vectors, dtype=float))
-    predictions, _ = artifact.topic_model.transform(corpus.documents, embeddings=reduced)
-    artifact.topic_model.topics_ = [int(value) for value in predictions]
-    model_topic_ids = sorted(
-        {int(value) for row in selected for value in (row.get("model_topic_ids") or [])}
-    )
-    if len(model_topic_ids) < 2:
-        raise ValueError("selected topics no longer map to two distinct model topics")
+    artifact_version = int(latest["artifact_version"]) + 1
 
     run_id = _create_merge_run(
-        latest=latest, source_topic_keys=selected_codes, merged_by=merged_by)
+        latest=latest,
+        target_topic_key=target_code,
+        source_topic_keys=[source_code],
+        merged_by=merged_by,
+    )
     try:
-        artifact.topic_model.merge_topics(corpus.documents, model_topic_ids)
-        merged_predictions = [int(value) for value in artifact.topic_model.topics_]
-        root_by_patent = _resolved_topic_by_patent(workspace_id=workspace_id, source_field=source_field)
-        selected_indexes = [
-            index
-            for index, patent_id in enumerate(corpus.patent_ids)
-            if root_by_patent.get(patent_id) in selected_codes
-        ]
-        merged_model_ids = sorted({merged_predictions[index] for index in selected_indexes})
-        if len(merged_model_ids) != 1:
-            raise ValueError(f"BERTopic merge did not resolve to one topic: {merged_model_ids}")
-        merged_topic_code = _persist_topic_merge(
+        _persist_topic_merge(
             run_id=run_id,
             workspace_id=workspace_id,
             source_field=source_field,
             previous_run_id=int(latest["run_id"]),
-            selected=selected,
-            selected_codes=selected_codes,
-            merged_model_id=merged_model_ids[0],
-            selected_patent_ids=[corpus.patent_ids[index] for index in selected_indexes],
+            target_code=target_code,
+            source_codes=[source_code],
             merged_by=merged_by,
             label=label,
-            topic_model=artifact.topic_model,
-            corpus_patent_ids=corpus.patent_ids,
-            merged_predictions=merged_predictions,
-            root_by_patent=root_by_patent,
-        )
-        artifact.run_id = run_id
-        artifact.artifact_version = int(latest["artifact_version"]) + 1
-        next_key = artifact_key(
-            workspace_id=workspace_id,
-            source_field=source_field,
-            run_id=run_id,
-        )
-        next_path = artifact_path(
-            workspace_id=workspace_id,
-            source_field=source_field,
-            run_id=run_id,
-        )
-        next_hash = save_artifact(artifact, next_path)
-        _complete_merge_run(
-            run_id=run_id,
-            artifact_key_value=next_key,
-            file_hash=next_hash,
-            artifact_version=artifact.artifact_version,
+            artifact_version=artifact_version,
         )
         refresh_topic_counts(workspace_id=workspace_id, source_field=source_field)
     except Exception as exc:
@@ -875,9 +834,9 @@ def merge_workspace_topics(
         run_id=run_id,
         workspace_id=workspace_id,
         source_field=source_field,
-        source_topic_keys=selected_codes,
-        merged_topic_code=merged_topic_code,
-        artifact_version=artifact.artifact_version,
+        source_topic_keys=[source_code],
+        merged_topic_code=target_code,
+        artifact_version=artifact_version,
         status="completed",
     )
 
@@ -942,7 +901,7 @@ def unmerge_workspace_topics(
     merge_run_id: int,
     reverted_by: str,
 ) -> UnmergeSummary:
-    """從基底 artifact 重播其餘 merge，獨立復原指定合併紀錄。"""
+    """獨立復原指定 merge 記錄：從前一版重播其餘 merge 鏈（純 JSON 轉換）。"""
     history = merge_history(workspace_id=workspace_id, source_field=source_field)
     target = next((item for item in history if item["merge_run_id"] == merge_run_id), None)
     if target is None:
@@ -953,23 +912,7 @@ def unmerge_workspace_topics(
     restored_topic_keys = [str(code) for code in target["source_topics"]]
     reverted_topic_code = str(target["result_topic"])
     latest = _latest_completed_run(workspace_id=workspace_id, source_field=source_field)
-    base_run = _unmerge_base_run(
-        workspace_id=workspace_id,
-        source_field=source_field,
-    )
-    artifact = load_artifact(
-        resolve_artifact_path(str(base_run["model_artifact_path"])),
-        expected_hash=str(base_run["model_artifact_hash"]),
-    )
-    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
-        corpus = load_clustering_corpus(conn, workspace_id=workspace_id, source_field=source_field)
-        with conn.cursor() as cur:
-            # 0021：指派以 topic_key（＝topic_code）識別，取每個 patent 的最新一筆
-            original_topic_by_patent = {
-                patent_id: topic_key
-                for patent_id, topic_key, _distance in _latest_assignments(
-                    cur, workspace_id=workspace_id, source_field=source_field)
-            }
+    artifact_version = int(latest["artifact_version"]) + 1
 
     run_id = _create_unmerge_run(
         latest=latest,
@@ -979,40 +922,6 @@ def unmerge_workspace_topics(
         reverted_by=reverted_by,
     )
     try:
-        predictions, groups = _replay_active_merges(
-            artifact=artifact,
-            corpus=corpus,
-            original_topic_by_patent=original_topic_by_patent,
-            workspace_id=workspace_id,
-            source_field=source_field,
-            excluded_merge_run_id=merge_run_id,
-        )
-        desired_active_topic_keys = _desired_active_model_topic_keys(
-            workspace_id=workspace_id,
-            source_field=source_field,
-            restored_topic_keys=restored_topic_keys,
-            reverted_topic_code=reverted_topic_code,
-        )
-        model_ids_by_topic = _model_ids_for_stable_topics(
-            stable_topic_keys=desired_active_topic_keys,
-            groups=groups,
-            corpus_patent_ids=corpus.patent_ids,
-            original_topic_by_patent=original_topic_by_patent,
-            predictions=predictions,
-        )
-        artifact.run_id = run_id
-        artifact.artifact_version = int(latest["artifact_version"]) + 1
-        next_key = artifact_key(
-            workspace_id=workspace_id,
-            source_field=source_field,
-            run_id=run_id,
-        )
-        next_path = artifact_path(
-            workspace_id=workspace_id,
-            source_field=source_field,
-            run_id=run_id,
-        )
-        next_hash = save_artifact(artifact, next_path)
         _persist_unmerge(
             run_id=run_id,
             workspace_id=workspace_id,
@@ -1022,10 +931,7 @@ def unmerge_workspace_topics(
             restored_topic_keys=restored_topic_keys,
             reverted_topic_code=reverted_topic_code,
             reverted_by=reverted_by,
-            model_ids_by_topic=model_ids_by_topic,
-            artifact_key_value=next_key,
-            file_hash=next_hash,
-            artifact_version=artifact.artifact_version,
+            artifact_version=artifact_version,
         )
         refresh_topic_counts(workspace_id=workspace_id, source_field=source_field)
     except Exception as exc:
@@ -1039,7 +945,7 @@ def unmerge_workspace_topics(
         target_merge_run_id=merge_run_id,
         restored_topic_keys=restored_topic_keys,
         reverted_topic_code=reverted_topic_code,
-        artifact_version=artifact.artifact_version,
+        artifact_version=artifact_version,
         status="completed",
     )
 
@@ -1379,7 +1285,10 @@ def _load_merge_topics(
     source_field: str,
     topic_keys: list[str],
 ) -> list[dict[str, Any]]:
-    """取兩個 active model topics，拒絕跨 workspace 或系統桶合併。
+    """取合併用的兩個 active topics（第一個為目標、第二個為來源），拒絕跨 workspace。
+
+    目標（吸收方）必須是 model 主題，避免系統桶（未分類等）反過來吞掉正式主題；
+    來源（被合併方）只要目前是 active 即可，系統桶可以被併進 model 主題。
 
     0021：主題在 JSON 內無列可 FOR UPDATE 鎖；併發安全改由 append-only 新版本
     達成（見 _new_topic_run），此處只負責驗證選定主題目前確實 active。
@@ -1389,23 +1298,26 @@ def _load_merge_topics(
             run = _require_latest_state_run(
                 cur, workspace_id=workspace_id, source_field=source_field)
     by_code = _active_topic_keys(_state_topics(run))
-    rows = [
-        dict(by_code[code])
-        for code in topic_keys
-        if code in by_code and by_code[code].get("topic_kind", "model") == "model"
-    ]
-    if len(rows) != 2:
-        raise ValueError("merge topics must be active model topics in the same workspace source")
+    rows = [dict(by_code[code]) for code in topic_keys if code in by_code]
+    if len(rows) != len(topic_keys):
+        raise ValueError("merge topics must be active topics in the same workspace source")
+    if rows[0].get("topic_kind", "model") != "model":
+        raise ValueError("merge target topic must be a model topic")
     return rows
 
 
 def _create_merge_run(
     *,
     latest: dict[str, Any],
+    target_topic_key: str,
     source_topic_keys: list[str],
     merged_by: str,
 ) -> int:
-    """建立人工 merge run，保留來源 topics 與操作者。"""
+    """建立人工 merge run，保留目標／來源 topics 與操作者。
+
+    target_topic_key 另存一欄，讓 _unmerge_blocked_reason 能判斷「後續 merge 是否
+    動到本次的合併結果」（目標被當成後續合併的任一邊都算下游依賴）。
+    """
     return _new_topic_run(
         latest=latest,
         run_type="topic_merge",
@@ -1413,8 +1325,9 @@ def _create_merge_run(
             "run_mode": "merge",
             "status": "running",
             "input_doc_count": latest["input_doc_count"],
-            "topic_count": max(0, int(latest["topic_count"]) - 1),
+            "topic_count": max(0, int(latest["topic_count"]) - len(source_topic_keys)),
             "parameters": {
+                "target_topic_key": target_topic_key,
                 "source_topic_keys": source_topic_keys,
                 "merged_by": merged_by,
             },
@@ -1429,29 +1342,24 @@ def _persist_topic_merge(
     workspace_id: int,
     source_field: str,
     previous_run_id: int,
-    selected: list[dict[str, Any]],
-    selected_codes: list[str],
-    merged_model_id: int,
-    selected_patent_ids: list[int],
+    target_code: str,
+    source_codes: list[str],
     merged_by: str,
     label: str | None,
-    topic_model: Any,
-    corpus_patent_ids: list[int],
-    merged_predictions: list[int],
-    root_by_patent: dict[int, str],
-) -> str:
-    """在新 run 寫入合併後的完整主題快照與指派，回傳合併後主題的 topic_code。
+    artifact_version: int,
+) -> None:
+    """在新 run 寫入合併後的完整主題快照與指派。
 
     0021：不就地改舊 run（舊版保留可追溯），而是把前一版 topics 複製過來後套用
     合併結果，整份寫進新 run 的 topic_state_json->'topics'；指派同樣寫成新 run 的
-    完整快照，讀取端一律取最新 run。
+    完整快照，讀取端一律取最新 run。不再依賴 BERTopic 模型或從表。
+
+    語意：目標主題（target_code）維持 active 並吸收來源指派；來源主題保留但標
+    status='merged' 並記 merged_into_topic_id。label 只寫目標主題，來源主題不動
+    label／label_source（避免對已 merged 的主題誤標 manual）。
     """
-    terms = [
-        {"term": term, "weight": float(weight)}
-        for term, weight in (topic_model.get_topic(merged_model_id) or [])[:10]
-    ]
-    fallback_label = label or " / ".join(item["term"] for item in terms[:3]) or "合併主題"
-    merged_code = f"M{run_id:05d}"
+    from .runner import _set_workflow_status
+
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1462,60 +1370,52 @@ def _persist_topic_merge(
                 dict(topic)
                 for topic in (dict(cur.fetchone()["topic_state_json"] or {}).get("topics") or [])
             ]
-            next_topic_id = max(
-                (int(t.get("topic_id") or 0) for t in previous_topics), default=0) + 1
-            display_order = max(
-                (int(t.get("display_order") or 0) for t in previous_topics), default=0) + 1
+            target_topic = next(
+                (t for t in previous_topics if str(t.get("topic_code")) == target_code), None)
+            if target_topic is None:
+                raise ValueError(f"merge target topic not found in previous run: {target_code}")
+            target_topic_id = target_topic.get("topic_id")
 
-            # BERTopic merge 後可能重編未合併的 topic ID；若只更新新主題，
-            # 下一批 partial_fit 會把既有模型 ID 對到錯誤的永久 topic。
-            model_ids_by_code: dict[str, set[int]] = {}
-            for patent_id, model_topic_id in zip(
-                corpus_patent_ids,
-                merged_predictions,
-                strict=True,
-            ):
-                root_code = root_by_patent.get(patent_id)
-                if root_code in selected_codes:
-                    root_code = merged_code
-                if root_code is not None:
-                    model_ids_by_code.setdefault(root_code, set()).add(model_topic_id)
-
-            merged_topic = {
-                "topic_id": next_topic_id,
-                "topic_code": merged_code,
-                "topic_kind": "model",
-                "status": "active",
-                "label": fallback_label,
-                "label_source": "manual" if label else "fallback",
-                "display_order": display_order,
-                "doc_count": len(selected_patent_ids),
-                "model_topic_ids": sorted(model_ids_by_code.get(merged_code, {merged_model_id})),
-                "keywords": terms,
-                "representative_patent_ids": selected_patent_ids[:LLM_REPRESENTATIVE_DOC_LIMIT],
-                "created_run_id": run_id,
-            }
+            sources = set(source_codes)
             topics: list[dict[str, Any]] = []
             for topic in previous_topics:
                 code = str(topic.get("topic_code"))
-                if code in selected_codes and topic.get("status", "active") == "active":
-                    # 來源主題保留但標 merged 並指向合併結果，供讀取端沿鏈併回
+                if code in sources and topic.get("status", "active") == "active":
+                    # 來源主題保留但標 merged 並指向目標，供讀取端沿鏈併回
                     topic = {
                         **topic,
                         "status": "merged",
-                        "merged_into_topic_id": next_topic_id,
+                        "merged_into_topic_id": target_topic_id,
                         "merged_by": merged_by,
                     }
-                elif code in model_ids_by_code:
-                    topic = {**topic, "model_topic_ids": sorted(model_ids_by_code[code])}
+                elif code == target_code and label is not None:
+                    # 帶 label 才改名；不帶則沿用目標主題現有名稱與 label_source
+                    topic = {**topic, "label": label, "label_source": "manual"}
                 topics.append(topic)
-            topics.append(merged_topic)
 
             # merged_topic_code 一併記進 state，供 merge_history 穩定辨識合併結果
             _merge_topic_state(
-                cur, run_id, {"topics": topics, "merged_topic_code": merged_code})
+                cur,
+                run_id,
+                {
+                    "topics": topics,
+                    "merged_topic_code": target_code,
+                    "status": "completed",
+                    "artifact_version": artifact_version,
+                },
+            )
+            # 純結構合併不動模型，沿用前一版 artifact_key，讓 _latest_completed_run
+            # 能把本次 merge run 視為最新完成版（否則會退回合併前的 run）
+            cur.execute(
+                """
+                UPDATE derived_layer.topic_runs SET artifact_key = (
+                    SELECT artifact_key FROM derived_layer.topic_runs WHERE run_id = %s
+                ) WHERE run_id = %s
+                """,
+                (previous_run_id, run_id),
+            )
 
-            # 指派：把前一版最新指派整份帶到新 run，來源主題的專利改指向合併結果
+            # 指派：把前一版最新指派整份帶到新 run，來源主題的專利改指向目標主題
             assignments = _latest_assignments(
                 cur, workspace_id=workspace_id, source_field=source_field)
             cur.executemany(
@@ -1528,35 +1428,11 @@ def _persist_topic_merge(
                     (
                         run_id,
                         patent_id,
-                        merged_code if topic_key in selected_codes else topic_key,
+                        target_code if topic_key in sources else topic_key,
                         distance,
                     )
                     for patent_id, topic_key, distance in assignments
                 ],
-            )
-    return merged_code
-
-
-def _complete_merge_run(
-    *, run_id: int, artifact_key_value: str, file_hash: str, artifact_version: int
-) -> None:
-    """完成 merge run 並保存新版 artifact（0021：狀態進 state，位置進 artifact_key）。"""
-    from .runner import _set_workflow_status
-
-    with psycopg.connect(**get_connection_kwargs()) as conn:
-        with conn.cursor() as cur:
-            _merge_topic_state(
-                cur,
-                run_id,
-                {
-                    "status": "completed",
-                    "model_artifact_hash": file_hash,
-                    "artifact_version": artifact_version,
-                },
-            )
-            cur.execute(
-                "UPDATE derived_layer.topic_runs SET artifact_key = %s WHERE run_id = %s",
-                (artifact_key_value, run_id),
             )
             _set_workflow_status(cur, run_id, "succeeded")
 
@@ -1582,65 +1458,18 @@ def _unmerge_blocked_reason(
             return "合併後已有 full 或 incremental 更新，需先建立重建策略"
         if run_mode != "merge" or row.get("reverted_at") is not None:
             continue
-        source_codes = [
-            str(value)
-            for value in dict(row.get("parameters") or {}).get("source_topic_keys", [])
-        ]
-        if result_topic_code in source_codes:
+        # 後續 merge 只要動到本次的合併結果（不論當來源或當吸收方的目標），
+        # 本次就不能單獨復原，必須先處理下游紀錄
+        parameters = dict(row.get("parameters") or {})
+        involved_codes = {
+            str(value) for value in parameters.get("source_topic_keys", [])
+        }
+        target_code = parameters.get("target_topic_key")
+        if target_code is not None:
+            involved_codes.add(str(target_code))
+        if result_topic_code in involved_codes:
             return "此合併結果已被後續合併使用，需先復原下游紀錄"
     return None
-
-
-def _unmerge_base_run(*, workspace_id: int, source_field: str) -> dict[str, Any]:
-    """取得第一筆仍有效 merge 前的最近 full/incremental artifact。
-
-    0021：run_mode／status／reverted_at 都在 topic_state_json，改在 Python 依 run_id
-    掃一次完成（同一 workspace/通道的 run 數量有限，不必為此加索引）。
-    """
-    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
-        rows = conn.execute(
-            """
-            SELECT tr.run_id, tr.workflow_run_id, tr.previous_run_id, tr.source_field,
-                   tr.topic_state_json, tr.artifact_key, wr.workspace_id
-            FROM derived_layer.topic_runs tr
-            JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id
-            WHERE wr.workspace_id = %s AND tr.source_field = %s
-            ORDER BY tr.run_id
-            """,
-            (workspace_id, source_field),
-        ).fetchall()
-
-    runs = []
-    for row in rows:
-        item = dict(row)
-        state = dict(item.pop("topic_state_json") or {})
-        runs.append({**state, **item, "model_artifact_path": item.get("artifact_key")})
-    first_merge = next(
-        (
-            int(run["run_id"])
-            for run in runs
-            if run.get("run_mode") == "merge"
-            and run.get("status") == "completed"
-            and run.get("reverted_at") is None
-        ),
-        None,
-    )
-    if first_merge is None:
-        raise ValueError("workspace source has no active merge history")
-    base = next(
-        (
-            run
-            for run in reversed(runs)
-            if run.get("run_mode") in {"full", "incremental"}
-            and run.get("status") == "completed"
-            and int(run["run_id"]) < first_merge
-            and run.get("artifact_key") is not None
-        ),
-        None,
-    )
-    if base is None:
-        raise ValueError("unmerge base full/incremental artifact not found")
-    return base
 
 
 def _create_unmerge_run(
@@ -1671,100 +1500,6 @@ def _create_unmerge_run(
     )
 
 
-def _replay_active_merges(
-    *,
-    artifact: WorkspaceTopicArtifact,
-    corpus: ClusteringCorpus,
-    original_topic_by_patent: dict[int, str],
-    workspace_id: int,
-    source_field: str,
-    excluded_merge_run_id: int,
-) -> tuple[list[int], dict[str, set[str]]]:
-    """從基底模型依時間重播其他有效 merge，產生排除目標後的模型狀態。
-
-    0021：merge 紀錄改讀各 run 的 topic_state_json，主題以 topic_code 識別。
-    """
-    merges = [
-        item
-        for item in merge_history(workspace_id=workspace_id, source_field=source_field)
-        if not item["is_reverted"] and item["merge_run_id"] != excluded_merge_run_id
-    ]
-    merges.sort(key=lambda item: item["merge_run_id"])
-
-    reduced = artifact.reducer.transform(np.asarray(corpus.matrix.vectors, dtype=float))
-    predictions, _ = artifact.topic_model.transform(corpus.documents, embeddings=reduced)
-    current_predictions = [int(value) for value in predictions]
-    artifact.topic_model.topics_ = current_predictions
-    groups: dict[str, set[str]] = {
-        topic_code: {topic_code}
-        for topic_code in set(original_topic_by_patent.values())
-    }
-
-    for item in merges:
-        source_codes = [str(value) for value in item["source_topics"]]
-        missing = [code for code in source_codes if code not in groups]
-        if missing:
-            raise ValueError(f"merge replay source topics are unavailable: {missing}")
-        original_group = set().union(*(groups[code] for code in source_codes))
-        indexes = [
-            index
-            for index, patent_id in enumerate(corpus.patent_ids)
-            if original_topic_by_patent.get(patent_id) in original_group
-        ]
-        model_ids = sorted({current_predictions[index] for index in indexes})
-        if len(model_ids) < 2:
-            raise ValueError(
-                f"merge replay run {item['merge_run_id']} no longer maps to two model topics"
-            )
-        artifact.topic_model.merge_topics(corpus.documents, model_ids)
-        current_predictions = [int(value) for value in artifact.topic_model.topics_]
-        groups[str(item["result_topic"])] = original_group
-    return current_predictions, groups
-
-
-def _desired_active_model_topic_keys(
-    *,
-    workspace_id: int,
-    source_field: str,
-    restored_topic_keys: list[str],
-    reverted_topic_code: str,
-) -> list[str]:
-    """計算 unmerge 完成後應保持 active 的 model topic_code（0021：讀最新 state）。"""
-    active_codes = {
-        str(topic["topic_code"])
-        for topic in _active_model_topics(
-            workspace_id=workspace_id, source_field=source_field)
-    }
-    active_codes.discard(reverted_topic_code)
-    active_codes.update(restored_topic_keys)
-    return sorted(active_codes)
-
-
-def _model_ids_for_stable_topics(
-    *,
-    stable_topic_keys: list[str],
-    groups: dict[str, set[str]],
-    corpus_patent_ids: list[int],
-    original_topic_by_patent: dict[int, str],
-    predictions: list[int],
-) -> dict[str, list[int]]:
-    """把重播後模型 topic IDs 對回每個 active 永久 topic（0021：以 topic_code 為鍵）。"""
-    result: dict[str, list[int]] = {}
-    for stable_topic_code in stable_topic_keys:
-        original_group = groups.get(stable_topic_code)
-        if not original_group:
-            raise ValueError(f"stable topic lacks replay group: {stable_topic_code}")
-        model_ids = {
-            predictions[index]
-            for index, patent_id in enumerate(corpus_patent_ids)
-            if original_topic_by_patent.get(patent_id) in original_group
-        }
-        if not model_ids:
-            raise ValueError(f"stable topic has no model predictions: {stable_topic_code}")
-        result[stable_topic_code] = sorted(model_ids)
-    return result
-
-
 def _persist_unmerge(
     *,
     run_id: int,
@@ -1775,9 +1510,6 @@ def _persist_unmerge(
     restored_topic_keys: list[str],
     reverted_topic_code: str,
     reverted_by: str,
-    model_ids_by_topic: dict[str, list[int]],
-    artifact_key_value: str,
-    file_hash: str,
     artifact_version: int,
 ) -> None:
     """在新 run 寫入還原後的主題快照與指派，並把目標 merge run 標記為已復原。
@@ -1786,6 +1518,10 @@ def _persist_unmerge(
     達成——還原結果寫進新 run（previous_run_id 指前一版），舊版原樣保留可追溯；
     目標 merge run 的 reverted_at 以「僅在尚未復原時才寫入」的條件式 UPDATE 保護，
     確保同一 merge 不會被重複復原。
+
+    語意：來源主題（restored_topic_keys）復原成 active 並取回原本的指派；
+    合併目標（reverted_topic_code）本來就是既有主題，維持 active，只是不再持有
+    來源的專利，因此不做封存。
     """
     from .runner import _set_workflow_status
 
@@ -1835,12 +1571,6 @@ def _persist_unmerge(
                         if key not in {"merged_into_topic_id", "merged_by"}
                     }
                     topic["status"] = "active"
-                elif code == reverted_topic_code:
-                    # 合併結果封存，不再參與計數與顯示
-                    topic = {**topic, "status": "reverted",
-                             "reverted_by": reverted_by, "doc_count": 0}
-                if code in model_ids_by_topic:
-                    topic = {**topic, "model_topic_ids": model_ids_by_topic[code]}
                 topics.append(topic)
 
             _merge_topic_state(
@@ -1849,13 +1579,17 @@ def _persist_unmerge(
                 {
                     "topics": topics,
                     "status": "completed",
-                    "model_artifact_hash": file_hash,
                     "artifact_version": artifact_version,
                 },
             )
+            # 純結構還原不動模型，沿用前一版 artifact_key（同 _persist_topic_merge）
             cur.execute(
-                "UPDATE derived_layer.topic_runs SET artifact_key = %s WHERE run_id = %s",
-                (artifact_key_value, run_id),
+                """
+                UPDATE derived_layer.topic_runs SET artifact_key = (
+                    SELECT artifact_key FROM derived_layer.topic_runs WHERE run_id = %s
+                ) WHERE run_id = %s
+                """,
+                (previous_run_id, run_id),
             )
 
             # 指派：把合併結果的專利依原始指派還原回各來源主題
