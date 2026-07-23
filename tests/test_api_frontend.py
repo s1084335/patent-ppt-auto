@@ -610,6 +610,89 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("renderReportContentHtml", body)
         self.assertIn("readOnlyReportView", body)
 
+    # ── F. 分群候選：後端自解析最新 run（不再掃全域 /tasks） ──
+
+    def test_candidates_use_backend_latest_resolution(self):
+        """候選查詢直接打後端解析端點（帶 workspace_id + source_field），不繞 /tasks 過濾。"""
+        self.assertIn("/clustering/candidates?", self.html)
+        for qs in ("workspace_id=", "source_field="):
+            with self.subTest(qs=qs):
+                self.assertIn(qs, self.html)
+        # 舊繞路已移除：不得再掃 /tasks 找 clustering_calibrate 的 run_id。
+        self.assertNotIn("findLatestCalibrateRunId", self.html)
+        self.assertNotIn("CANDIDATE_TASK_SCAN_LIMIT", self.html)
+        # 候選載入函式內不得再出現以 job_type 過濾 /tasks 的邏輯。
+        m = re.search(
+            r"async function loadTopicCandidates\([^)]*\)\s*\{.*?\n\}", self.html, re.S
+        )
+        self.assertIsNotNone(m, "找不到 loadTopicCandidates() 定義")
+        body = m.group(0)
+        self.assertNotIn("/tasks", body)
+        self.assertNotIn("clustering_calibrate", body)
+        self.assertIn("/clustering/candidates?", body)
+
+    def test_candidates_distinguish_no_run_from_query_error(self):
+        """找不到候選要能區分「真的沒跑過分群」（404）與「查詢失敗」（其他錯誤）。"""
+        self.assertIn("尚未分群", self.html)
+        self.assertIn("查詢分群候選失敗", self.html)
+
+    # ── G. 全域 timer 註冊表：切 workspace／切頁一次清空 ──
+
+    def test_timer_registry_api_present(self):
+        """有註冊／註銷／清空 API 的統一 timer 註冊表（非各自散管 setTimeout）。"""
+        for needle in ("registerTimer", "clearTimer", "clearAllTimers"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_all_polls_go_through_registry(self):
+        """六個輪詢點的 setTimeout 一律經註冊表；不得留裸 setTimeout(tick, …)。"""
+        # 排程重試一律走 registerTimer(…, tick, ms)，不得再出現直接 setTimeout(tick, …)
+        self.assertNotRegex(self.html, r"setTimeout\(\s*tick\s*,")
+        self.assertRegex(self.html, r"registerTimer\([^)]*tick")
+        # 舊的單一 import 專用 timer 變數已併入註冊表，不留兩套機制
+        self.assertNotIn("importPollTimer", self.html)
+
+    def test_registry_cleared_on_workspace_and_nav_change(self):
+        """兩個清空時機：切 workspace（onWorkspaceChange）與切導覽頁（navTo）。"""
+        for fn_name in ("onWorkspaceChange", "navTo"):
+            with self.subTest(fn_name=fn_name):
+                m = re.search(
+                    rf"function {fn_name}\([^)]*\)\s*\{{.*?\n\}}", self.html, re.S
+                )
+                self.assertIsNotNone(m, f"找不到 {fn_name}() 定義")
+                self.assertIn("clearAllTimers", m.group(0))
+
+    def test_registry_really_clears_timeout_not_just_flag(self):
+        """清空必須真的 clearTimeout（旗標擋不住已排程的 tick）。"""
+        m = re.search(r"function clearAllTimers\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
+        self.assertIsNotNone(m, "找不到 clearAllTimers() 定義")
+        self.assertIn("clearTimeout", m.group(0))
+
+    def test_registry_not_hardcoded_poll_names(self):
+        """註冊表不得寫死既有輪詢函式名（日後新增輪詢自動受管）。"""
+        m = re.search(
+            r"function registerTimer\([^)]*\)\s*\{.*?\n\}"
+            r".*?function clearAllTimers\([^)]*\)\s*\{.*?\n\}",
+            self.html,
+            re.S,
+        )
+        self.assertIsNotNone(m, "找不到 registerTimer()…clearAllTimers() 區段")
+        registry_src = m.group(0)
+        for poll_name in (
+            "pollFinalizeJob", "pollTopicOpJob", "pollReportJob",
+            "pollExportJob", "pollAiTask", "pollImportJob",
+        ):
+            with self.subTest(poll_name=poll_name):
+                self.assertNotIn(poll_name, registry_src)
+
+    def test_object_url_cleanup_not_registered(self):
+        """revokeObjectURL 是資源清理不是輪詢，不得收進註冊表（清掉會洩漏 objectURL）。"""
+        m = re.search(r".*revokeObjectURL[^\n]*", self.html)
+        self.assertIsNotNone(m, "找不到 revokeObjectURL 呼叫")
+        line = m.group(0)
+        self.assertIn("setTimeout(", line)
+        self.assertNotIn("registerTimer", line)
+
     def test_no_hardcoded_fake_patent_rows(self):
         """主內容區不得寫死假專利資料列（資料一律來自真實 API）。"""
         # 佔位提示允許；但不得出現硬寫的假專利號樣式（如 US1234567B2 之類寫死列）

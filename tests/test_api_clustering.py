@@ -37,8 +37,17 @@ warnings.filterwarnings(
 TEST_DB = "patent_ppt_clustering_di"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WIPS = "wips_independent_claims"
+EFFECT = "effect_summary"
 RUN_ID = 941001
 CANDIDATE_ID = 942001
+# 同 workspace＋同通道的較新 run（驗「最新 run 解析」不會回舊的 RUN_ID）
+NEWER_RUN_ID = 941002
+NEWER_CANDIDATE_ID = 942002
+# 另一通道的 run（驗 source_field 有真的過濾，不會跨通道拿錯）
+EFFECT_RUN_ID = 941003
+EFFECT_CANDIDATE_ID = 942003
+WORKSPACE_ID = 940001
+EMPTY_WORKSPACE_ID = 940002
 
 _prev_env: dict[str, str | None] = {}
 
@@ -90,28 +99,46 @@ def tearDownModule():
         pass
 
 
-def _seed():
-    """種 workspace + workflow_run + derived_layer.topic_run（候選在 topic_state_json）。"""
+def _state(candidate_id: int, run_id: int, k: int) -> str:
+    """組 topic_state_json：候選落 'candidates'，欄名沿用舊 topic_candidates。"""
     import json
 
-    # 0021 候選落點：topic_state_json->'candidates'，欄名沿用舊 topic_candidates
-    state = {
-        "status": "needs_review",
-        "candidates": [
-            {"candidate_id": CANDIDATE_ID, "run_id": RUN_ID, "candidate_type": "balanced",
-             "candidate_k": 5, "coherence": 0.5, "diversity": 0.6, "balance": 0.7,
-             "score": 0.8, "llm_explanation": "候選說明", "is_selected": False},
-        ],
-    }
+    return json.dumps(
+        {
+            "status": "needs_review",
+            "candidates": [
+                {"candidate_id": candidate_id, "run_id": run_id, "candidate_type": "balanced",
+                 "candidate_k": k, "coherence": 0.5, "diversity": 0.6, "balance": 0.7,
+                 "score": 0.8, "llm_explanation": "候選說明", "is_selected": False},
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _seed():
+    """種 workspace + workflow_run + derived_layer.topic_run（候選在 topic_state_json）。
+
+    種三個 run：同 workspace 同通道的舊／新兩個（驗最新解析）、另一通道一個
+    （驗 source_field 過濾），外加一個沒有 run 的空 workspace（驗 404）。
+    """
     with psycopg.connect(**_kw(TEST_DB)) as c:
         c.execute("INSERT INTO app_layer.workspaces (workspace_id, workspace_name) "
-                  "VALUES (940001, 'clustering_ws')")
+                  "VALUES (%s, 'clustering_ws'), (%s, 'clustering_ws_empty')",
+                  (WORKSPACE_ID, EMPTY_WORKSPACE_ID))
         c.execute("INSERT INTO app_layer.workflow_runs (run_id, workspace_id, run_type, status) "
-                  "VALUES (943001, 940001, 'clustering:wips_independent_claims', 'succeeded')")
+                  "VALUES (943001, %s, 'clustering:wips_independent_claims', 'succeeded'), "
+                  "       (943002, %s, 'clustering:wips_independent_claims', 'succeeded'), "
+                  "       (943003, %s, 'clustering:effect_summary', 'succeeded')",
+                  (WORKSPACE_ID, WORKSPACE_ID, WORKSPACE_ID))
         c.execute("INSERT INTO derived_layer.topic_runs "
                   "(run_id, workflow_run_id, source_field, topic_state_json) "
-                  "VALUES (%s, 943001, %s, %s::jsonb)",
-                  (RUN_ID, WIPS, json.dumps(state, ensure_ascii=False)))
+                  "VALUES (%s, 943001, %s, %s::jsonb), "
+                  "       (%s, 943002, %s, %s::jsonb), "
+                  "       (%s, 943003, %s, %s::jsonb)",
+                  (RUN_ID, WIPS, _state(CANDIDATE_ID, RUN_ID, 5),
+                   NEWER_RUN_ID, WIPS, _state(NEWER_CANDIDATE_ID, NEWER_RUN_ID, 8),
+                   EFFECT_RUN_ID, EFFECT, _state(EFFECT_CANDIDATE_ID, EFFECT_RUN_ID, 3)))
         c.commit()
 
 
@@ -154,6 +181,66 @@ class ClusteringCandidatesSchemaTests(unittest.TestCase):
             json={"candidate_id": -1, "selected_by": "tester"},
         )
         self.assertEqual(r.status_code, 422, r.text)
+
+
+class LatestCandidatesByWorkspaceTests(unittest.TestCase):
+    """GET /clustering/candidates?workspace_id=&source_field=：後端自解析最新 run。
+
+    前端原本要拉全域 /tasks?limit=100 再自己過濾找 run_id；/tasks 不分 workspace，
+    多 workspace 併用時舊 workspace 會被擠出視窗，前端誤報「尚未跑過分群」。
+    此端點讓後端直接以 workspace_id + source_field 解析最新 run。
+    """
+
+    def test_resolves_latest_run_for_workspace_and_source(self):
+        r = _client().get(
+            "/api/v1/clustering/candidates",
+            params={"workspace_id": WORKSPACE_ID, "source_field": WIPS},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        # 同 workspace 同通道有兩個 run，必須回較新的那個（不得回 RUN_ID）
+        self.assertEqual(body["run_id"], NEWER_RUN_ID)
+        self.assertEqual(body["workspace_id"], WORKSPACE_ID)
+        self.assertEqual(body["source_field"], WIPS)
+        ids = [c["candidate_id"] for c in body["candidates"]]
+        self.assertEqual(ids, [NEWER_CANDIDATE_ID])
+
+    def test_source_field_filters_channel(self):
+        # 通道要真的過濾：功效通道只能拿到功效 run，不得拿到技術通道的最新 run
+        r = _client().get(
+            "/api/v1/clustering/candidates",
+            params={"workspace_id": WORKSPACE_ID, "source_field": EFFECT},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual(body["run_id"], EFFECT_RUN_ID)
+        self.assertEqual([c["candidate_id"] for c in body["candidates"]], [EFFECT_CANDIDATE_ID])
+
+    def test_workspace_without_run_returns_404(self):
+        # 真的沒跑過分群 → 404，讓前端能與「查詢失敗」區分
+        r = _client().get(
+            "/api/v1/clustering/candidates",
+            params={"workspace_id": EMPTY_WORKSPACE_ID, "source_field": WIPS},
+        )
+        self.assertEqual(r.status_code, 404, r.text)
+
+    def test_unknown_source_field_422(self):
+        # source_field 白名單沿用既有驗證
+        r = _client().get(
+            "/api/v1/clustering/candidates",
+            params={"workspace_id": WORKSPACE_ID, "source_field": "not_a_channel"},
+        )
+        self.assertEqual(r.status_code, 422, r.text)
+
+    def test_existing_run_id_endpoint_contract_unchanged(self):
+        # 既有 by-run_id 契約不得被新端點破壞（路由順序／型別都要仍可用）
+        r = _client().get(f"/api/v1/clustering/runs/{RUN_ID}/candidates")
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual(body["run_id"], RUN_ID)
+        self.assertEqual([c["candidate_id"] for c in body["candidates"]], [CANDIDATE_ID])
+        r404 = _client().get("/api/v1/clustering/runs/99999999/candidates")
+        self.assertEqual(r404.status_code, 404, r404.text)
 
 
 if __name__ == "__main__":

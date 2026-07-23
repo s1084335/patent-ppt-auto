@@ -120,6 +120,18 @@ table.data tr:hover td { background: var(--panel-2); }
 .topic-advanced { margin-top: 1.2rem; border-top: 1px solid var(--border); padding-top: 0.6rem; }
 .topic-advanced > summary { cursor: pointer; font-size: 0.9rem; color: var(--text-muted); padding: 0.35rem 0; }
 .topic-advanced > summary:hover { color: var(--accent); }
+/* 分群候選挑選卡（尚未採用分類時顯示；每組候選一張卡，可點選） */
+.cand-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0.6rem; margin: 0.7rem 0; }
+.cand-card {
+  border: 1px solid var(--border); border-radius: 0.45rem; padding: 0.7rem 0.85rem;
+  background: var(--panel-2); cursor: pointer;
+}
+.cand-card:hover { border-color: var(--accent); }
+.cand-card.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.cand-card-title { font-weight: 600; margin-bottom: 0.35rem; display: flex; justify-content: space-between; gap: 0.5rem; }
+.cand-metrics { font-size: 0.8rem; color: var(--text-muted); display: grid; gap: 0.15rem; }
+.cand-metrics .m-name { display: inline-block; min-width: 6.5rem; }
+.cand-explain { margin-top: 0.4rem; font-size: 0.78rem; color: var(--text-muted); white-space: pre-wrap; }
 /* 總覽的所屬 workspace 標記（一筆專利可屬多個） */
 .ws-chip {
   display: inline-block; padding: 0.1rem 0.5rem; margin: 0.1rem 0.15rem 0.1rem 0;
@@ -411,6 +423,10 @@ const state = {
   topicFilterKey: null,   // 分類區選定的 topic_key（前端篩選用）
   // 分類區目前分頁的通道（技術／功效）；由 tab 切換，所有 topic 相關呼叫共用同一值。
   topicSourceField: DEFAULT_TOPIC_SOURCE_FIELD,
+  // 分群候選挑選：使用者在候選卡上選定的 candidate_id（尚未送出 finalize 前的暫存）。
+  candidatePickId: null,
+  // 已有正式主題時，使用者是否手動打開「重新挑選分類」入口（預設關閉，顯示正常分類）。
+  candidatePickerOpen: false,
   reportSelection: new Set(),
   comparison: { jobId: null, understandingVersion: null },
 };
@@ -432,6 +448,34 @@ async function getJson(url, opts) {
     throw err;
   }
   return resp.json();
+}
+
+// ══════════ 全域 timer 註冊表（輪詢生命週期管理） ══════════
+// 問題：各輪詢原本各自 setTimeout，只靠「節點還在嗎 / state.nav 是不是這一頁」當守衛。
+// 切 workspace 不改 state.nav，重畫又會生出同 id 的節點，於是舊 workspace 的輪詢
+// 抓得到節點、繼續打舊 job，成功時還會把新 workspace 的畫面覆寫掉。
+// 解法：所有輪詢一律經此註冊表排程，切 workspace／切導覽頁時一次清空。
+// 註冊表用 Set 存 timer id，不記函式名——日後新增輪詢只要呼叫 registerTimer 就自動受管。
+const activeTimers = new Set();
+// 排程一次重試並登記；回傳 timer id。tick 執行時先自我註銷（該次已觸發，無須再清）。
+function registerTimer(fn, delayMs) {
+  const id = setTimeout(function () {
+    activeTimers.delete(id);
+    fn();
+  }, delayMs);
+  activeTimers.add(id);
+  return id;
+}
+// 註銷單一 timer（例如對話框關閉時只停自己那條）。
+function clearTimer(id) {
+  if (id === null || id === undefined) return;
+  clearTimeout(id);
+  activeTimers.delete(id);
+}
+// 一次清空所有輪詢：必須真的 clearTimeout——只靠旗標擋不住已排程好的 tick。
+function clearAllTimers() {
+  activeTimers.forEach(id => clearTimeout(id));
+  activeTimers.clear();
 }
 
 // ══════════ AI 任務金鑰（bearer token） ══════════
@@ -500,6 +544,8 @@ async function loadWorkspaces() {
   }
 }
 function onWorkspaceChange() {
+  // 切 workspace 先停掉所有輪詢：舊 workspace 的 job 不得繼續寫入新 workspace 的畫面。
+  clearAllTimers();
   const v = el('workspace-select').value;
   state.workspaceId = v ? parseInt(v, 10) : null;
   state.patentsOffset = 0;
@@ -509,6 +555,8 @@ function onWorkspaceChange() {
 
 // ══════════ 左導覽切換 ══════════
 function navTo(nav) {
+  // 切導覽頁先停掉所有輪詢：離開的那頁不需要再更新，重畫也會生新的節點。
+  clearAllTimers();
   state.nav = nav;
   document.querySelectorAll('.nav-item').forEach(b => {
     b.classList.toggle('active', b.dataset.nav === nav);
@@ -672,18 +720,20 @@ function topicTabsHtml() {
     ).join('')
     + '</div>';
 }
-// 切換通道：換分頁等同換一組主題，清掉已選主題後重畫整區。
+// 切換通道：換分頁等同換一組主題，清掉已選主題與候選挑選狀態後重畫整區。
 function switchTopicSource(sourceField) {
   if (state.topicSourceField === sourceField) return;
   state.topicSourceField = sourceField;
   state.topicFilterKey = null;
+  state.candidatePickId = null;
+  state.candidatePickerOpen = false;
   renderTopics();
 }
 // 主題載入失敗的可讀訊息：404／無分群結果與其他錯誤分開講，不吞錯也不留白。
 function topicLoadErrorHtml(e) {
   if (e && e.status === 404) {
-    return '<div class="card">此 workspace 尚未分群（' + escHtml(currentSourceLabel()) + '通道），'
-      + '匯入後會自動進行分群，完成後主題會出現在這裡。</div>';
+    return '<div class="card">查無此 workspace 的' + escHtml(currentSourceLabel())
+      + '通道主題；若已完成分群，請在上方挑選一組分類候選並採用。</div>';
   }
   return '<div class="card">主題載入失敗（' + escHtml((e && e.message) || '未知錯誤') + '）。</div>';
 }
@@ -698,6 +748,8 @@ async function renderTopics() {
     + topicTabsHtml()
     + '<p class="hint" style="padding:0 0 0.6rem">點選主題以列出指派到該主題的專利'
     + '（目前分頁：' + escHtml(currentSourceLabel()) + '）。</p>'
+    // 分群候選挑選區：尚未採用分類時在最前面顯示候選卡；已採用時只留重新挑選入口。
+    + '<div id="topic-candidates"></div>'
     // 版式：標籤 → 概覽 → 專利清單（三者相鄰）
     + '<div id="topic-tags"><div class="hint">載入主題中…</div></div>'
     + '<div id="topic-overview"></div>'
@@ -718,6 +770,8 @@ async function renderTopics() {
     renderTopicOps();
     loadMergeSuggestions();
     loadMergeHistory();
+    // 已採用主題＝顯示正常分類，只保留重新挑選入口；尚無主題＝顯示候選挑選介面。
+    loadTopicCandidates({ hasTopics: topicListCache.length > 0 });
   } catch (e) {
     // 無分群結果／載入失敗：給明確中文提示，並隱藏無意義的進階操作區。
     topicListCache = [];
@@ -725,7 +779,238 @@ async function renderTopics() {
     el('topic-patents').innerHTML = '';
     const adv = el('topic-advanced');
     if (adv) adv.hidden = true;
+    // 主題查詢失敗時仍嘗試列候選：多半是「還沒 finalize」而非真的壞掉，讓使用者能直接採用。
+    loadTopicCandidates({ hasTopics: false });
   }
+}
+
+// ══════════ 分群候選挑選 → 採用（finalize） ══════════
+// 目的：匯入後系統自動跑 clustering_calibrate 產生「主題候選」，但正式主題要由使用者
+// 選一組候選再 finalize 才會產生。沒有這個入口，分類區會永遠是空的。
+//
+// 端點（皆已存在於 backend/app/api/）：
+//   GET  /api/v1/clustering/candidates?workspace_id=&source_field=
+//                                                    → clustering.py get_latest_candidates（後端自解析最新 run）
+//   GET  /api/v1/clustering/runs/{run_id}/candidates → clustering.py get_candidates（指定 run）
+//   POST /api/v1/clustering/runs/{run_id}/finalize   → clustering.py create_finalize
+//   GET  /api/v1/jobs/{job_id}                       → jobs.py get_job（輪詢採用進度）
+//
+// run_id 取得方式：由後端解析。前端不再拉全域 /tasks 再自行過濾——/tasks 不分 workspace，
+// 多 workspace 併用時舊 workspace 的 calibrate 會被擠出掃描視窗，前端便誤報「尚未跑過分群」，
+// 但候選其實還在 DB 裡，使用者會被誤導去重跑一次昂貴的分群。
+let candidateRunId = null;               // 目前候選來源 run_id（由候選端點回傳）
+let candidateListCache = [];             // 候選原樣快取（欄位不重組，後端回什麼就留什麼）
+
+// 候選卡上要顯示的數值指標：以「後端實際回了哪些數值欄」動態決定，不寫死指標清單。
+// 這些鍵是候選物件的識別／非指標欄，顯示時排除；其餘數值欄一律顯示。
+const CANDIDATE_NON_METRIC_KEYS = new Set([
+  'candidate_id', 'candidate_type', 'candidate_k', 'is_selected', 'llm_explanation',
+]);
+// 已知指標的中文名；沒對到的鍵直接顯示原欄名（後端新增指標不必改前端）。
+const CANDIDATE_METRIC_LABELS = {
+  coherence: '一致性 coherence',
+  diversity: '多樣性 diversity',
+  balance: '均衡度 balance',
+  score: '綜合分數 score',
+};
+// 候選類型中文名；沒對到的直接顯示原值（後端新增類型不必改前端）。
+const CANDIDATE_TYPE_LABELS = {
+  conservative: '保守（主題較少）',
+  balanced: '平衡',
+  detailed: '細分（主題較多）',
+};
+
+// 載入並呈現候選；hasTopics 為 true 時預設收合成一行入口，不擋住正常分類顯示。
+// 一次呼叫即取回最新 run 與其候選（run 由後端解析），不再先掃 /tasks 找 run_id。
+// 錯誤分兩類：404＝這個 workspace＋通道真的沒跑過分群；其餘＝查詢失敗（可重試）。
+async function loadTopicCandidates(opts) {
+  const wrap = el('topic-candidates');
+  if (!wrap) return;
+  const hasTopics = !!(opts && opts.hasTopics);
+  // 已有正式主題且使用者沒有點開重新挑選：只放入口，不打候選 API（省一次往返）。
+  if (hasTopics && !state.candidatePickerOpen) {
+    wrap.innerHTML = '<div class="toolbar" style="margin-bottom:0.8rem">'
+      + '<button class="btn btn-outline" onclick="openCandidatePicker()">重新挑選分類</button>'
+      + '<span class="hint">目前顯示已採用的分類；如需改用其他主題數，可重新挑選候選。</span>'
+      + '</div>';
+    return;
+  }
+  wrap.innerHTML = '<div class="hint">載入分群候選中…</div>';
+  const retryBtn = '<button class="btn btn-outline" style="margin-left:0.6rem" onclick="reloadTopicCandidates('
+    + (hasTopics ? 'true' : 'false') + ')">重試</button>';
+  try {
+    const data = await getJson(API + '/clustering/candidates?workspace_id='
+      + encodeURIComponent(state.workspaceId)
+      + '&source_field=' + encodeURIComponent(state.topicSourceField));
+    candidateRunId = data.run_id;
+    candidateListCache = data.candidates || [];
+    renderCandidatePicker(data, hasTopics);
+  } catch (e) {
+    candidateRunId = null;
+    candidateListCache = [];
+    if (e.status === 404) {
+      // 真的沒跑過分群：明確講「尚未分群」，不要讓使用者以為是系統壞掉。
+      wrap.innerHTML = hasTopics
+        ? candidatePickerCloseHtml('此 workspace 的' + currentSourceLabel()
+          + '通道尚未分群，沒有可挑選的候選。')
+        : '<div class="card">此 workspace 的' + escHtml(currentSourceLabel())
+          + '通道尚未分群。匯入後會自動進行分群，完成後候選會出現在這裡。</div>';
+      return;
+    }
+    // 其他狀況一律是查詢失敗（連線／伺服器錯誤），保留狀態碼並提供重試，
+    // 不得說成「沒跑過分群」——候選可能好好躺在 DB 裡。
+    wrap.innerHTML = '<div class="card">查詢分群候選失敗（' + escHtml(e.message) + '）。'
+      + retryBtn + '</div>';
+  }
+}
+function reloadTopicCandidates(hasTopics) { loadTopicCandidates({ hasTopics: hasTopics }); }
+// 已有主題時的「關閉重新挑選」列（附帶一段說明文字）。
+function candidatePickerCloseHtml(msg) {
+  return '<div class="card">' + escHtml(msg)
+    + '<button class="btn btn-outline" style="margin-left:0.6rem" onclick="closeCandidatePicker()">'
+    + '回到目前分類</button></div>';
+}
+function openCandidatePicker() {
+  state.candidatePickerOpen = true;
+  state.candidatePickId = null;
+  loadTopicCandidates({ hasTopics: true });
+}
+function closeCandidatePicker() {
+  state.candidatePickerOpen = false;
+  state.candidatePickId = null;
+  loadTopicCandidates({ hasTopics: topicListCache.length > 0 });
+}
+
+// 候選卡清單：後端回幾組就畫幾組；指標欄由回傳內容決定，不假設固定三組或固定指標。
+function renderCandidatePicker(data, hasTopics) {
+  const wrap = el('topic-candidates');
+  if (!wrap) return;
+  const list = data.candidates || [];
+  if (list.length === 0) {
+    wrap.innerHTML = hasTopics
+      ? candidatePickerCloseHtml('此分群結果（run #' + candidateRunId + '）沒有可挑選的候選。')
+      : '<div class="card">此分群結果（run #' + escHtml(candidateRunId)
+        + '）沒有可挑選的候選，請重新執行分群。</div>';
+    return;
+  }
+  // 預設選取：後端已標 is_selected 的那組（重新挑選時對應目前採用的），否則不預選。
+  if (state.candidatePickId === null) {
+    const marked = list.find(c => c.is_selected);
+    if (marked) state.candidatePickId = marked.candidate_id;
+  }
+  const cards = list.map(c => candidateCardHtml(c)).join('');
+  wrap.innerHTML = '<div class="card">'
+    + '<div style="font-weight:600;margin-bottom:0.3rem">挑選分類方式（'
+    + escHtml(currentSourceLabel()) + '通道，run #' + escHtml(data.run_id) + '）</div>'
+    + '<p class="hint" style="padding:0 0 0.2rem">系統已算出下列分類候選，各組主題數與指標不同。'
+    + '選一組後按「採用這組分類」，系統會據此建立正式主題。</p>'
+    + '<div class="cand-list">' + cards + '</div>'
+    + '<div class="toolbar">'
+    + '<button class="btn btn-primary" id="btn-finalize-candidate" onclick="submitFinalizeCandidate()">'
+    + '採用這組分類</button>'
+    + (hasTopics ? '<button class="btn btn-outline" onclick="closeCandidatePicker()">取消</button>' : '')
+    + '</div>'
+    + '<div id="candidate-finalize-job"></div>'
+    + '</div>';
+}
+// 單張候選卡：主題數用 candidate_k；其餘數值欄一律當指標列出（欄名不寫死）。
+function candidateCardHtml(c) {
+  const typeLabel = CANDIDATE_TYPE_LABELS[c.candidate_type] || c.candidate_type || '候選';
+  const metrics = Object.keys(c)
+    .filter(k => !CANDIDATE_NON_METRIC_KEYS.has(k) && typeof c[k] === 'number')
+    .map(k => '<div><span class="m-name">' + escHtml(CANDIDATE_METRIC_LABELS[k] || k)
+      + '</span>' + formatCandidateMetric(c[k]) + '</div>')
+    .join('');
+  const sel = state.candidatePickId === c.candidate_id ? ' selected' : '';
+  return '<div class="cand-card' + sel + '" onclick="pickCandidate(' + escHtml(c.candidate_id) + ')">'
+    + '<div class="cand-card-title"><span>' + escHtml(typeLabel) + '</span>'
+    + '<span>' + escHtml(c.candidate_k) + ' 個主題</span></div>'
+    + '<div class="cand-metrics">' + (metrics || '<div>（此候選未附指標）</div>') + '</div>'
+    + (c.llm_explanation ? '<div class="cand-explain">' + escHtml(c.llm_explanation) + '</div>' : '')
+    + (c.is_selected ? '<div class="cand-explain">（目前採用中）</div>' : '')
+    + '</div>';
+}
+// 指標數值顯示：整數原樣、小數取四位，不硬綁特定欄位的位數。
+function formatCandidateMetric(v) {
+  return Number.isInteger(v) ? String(v) : v.toFixed(4);
+}
+function pickCandidate(candidateId) {
+  state.candidatePickId = candidateId;
+  // 只重畫候選卡的選取狀態，不重打 API。
+  const list = candidateListCache;
+  const wrap = document.querySelector('#topic-candidates .cand-list');
+  if (wrap) wrap.innerHTML = list.map(c => candidateCardHtml(c)).join('');
+}
+
+// 採用候選（POST /clustering/runs/{run_id}/finalize）：建 clustering_finalize job 後輪詢進度。
+const CANDIDATE_FINALIZE_ACTOR = 'web-user';
+async function submitFinalizeCandidate() {
+  const box = el('candidate-finalize-job');
+  if (state.candidatePickId === null) {
+    if (box) box.innerHTML = '<div class="task-detail-error">請先選一組分類候選。</div>';
+    return;
+  }
+  const btn = el('btn-finalize-candidate');
+  if (btn) { btn.disabled = true; btn.textContent = '採用中…'; }
+  try {
+    const resp = await fetch(API + '/clustering/runs/' + encodeURIComponent(candidateRunId) + '/finalize', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        candidate_id: state.candidatePickId,
+        selected_by: CANDIDATE_FINALIZE_ACTOR,
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      if (box) {
+        box.innerHTML = '<div class="task-detail-error">採用分類失敗：'
+          + escHtml(err.detail || ('HTTP ' + resp.status)) + '</div>';
+      }
+      if (btn) { btn.disabled = false; btn.textContent = '採用這組分類'; }
+      return;
+    }
+    const job = await resp.json();
+    // job 期間按鈕保持 disable，直到輪詢結束（成功會整區重畫，失敗才解鎖重試）。
+    pollFinalizeJob(job.job_id);
+  } catch (e) {
+    if (box) box.innerHTML = '<div class="task-detail-error">連線錯誤：' + escHtml(e.message) + '</div>';
+    if (btn) { btn.disabled = false; btn.textContent = '採用這組分類'; }
+  }
+}
+// 輪詢 clustering_finalize job：沿用統一進度卡（0→100）；成功後重畫分類區顯示正式主題。
+async function pollFinalizeJob(jobId) {
+  const started = Date.now();
+  async function tick() {
+    const box = el('candidate-finalize-job');
+    // 使用者已離開分類區或已重畫：停止輪詢，不對已不存在的節點寫入。
+    if (!box || state.nav !== 'topics') return;
+    try {
+      const j = await getJson(API + '/jobs/' + jobId);
+      box.innerHTML = jobProgressCardHtml(j, started);
+      if (j.status === 'succeeded') {
+        // 採用完成：關閉候選挑選、清暫存，重畫成正常分類顯示（標籤＋專利）。
+        state.candidatePickerOpen = false;
+        state.candidatePickId = null;
+        state.topicFilterKey = null;
+        await renderTopics();
+        return;
+      }
+      if (['failed', 'cancelled'].includes(j.status)) {
+        box.innerHTML += '<div class="task-detail-error">採用分類未完成：'
+          + escHtml(j.error_message || '（無錯誤訊息）') + '</div>';
+        const btn = el('btn-finalize-candidate');
+        if (btn) { btn.disabled = false; btn.textContent = '採用這組分類'; }
+        return;
+      }
+    } catch (e) {
+      box.innerHTML = '<div class="task-detail-error">查詢採用進度失敗（' + escHtml(e.message) + '）。</div>';
+      const btn = el('btn-finalize-candidate');
+      if (btn) { btn.disabled = false; btn.textContent = '採用這組分類'; }
+      return;
+    }
+    registerTimer(tick, 2000);
+  }
+  tick();
 }
 // ── topic 人工操作：重命名（PATCH）、手動合併（POST merge） ──
 // 主題下拉一律由 topicListCache（真實 API 結果）產生，不寫死主題。
@@ -869,7 +1154,7 @@ async function pollTopicOpJob(runId, opLabel) {
       wrap.innerHTML = '<div class="hint">查詢' + escHtml(opLabel) + '狀態失敗（' + escHtml(e.message) + '）。</div>';
       return;
     }
-    setTimeout(tick, 2000);
+    registerTimer(tick, 2000);
   }
   tick();
 }
@@ -933,9 +1218,11 @@ async function loadMergeHistory() {
 function renderTopicTags(topics) {
   const wrap = el('topic-tags');
   if (topics.length === 0) {
-    // 有分群 run 但該通道沒有主題：與「尚未分群」同樣給明確提示，不留白也不讓人點到 404。
-    wrap.innerHTML = '<div class="card">此 workspace 尚未分群（' + escHtml(currentSourceLabel())
-      + '通道），匯入後會自動進行分群，完成後主題會出現在這裡。</div>';
+    // 尚未採用分類：主要引導交給上方候選挑選區（它自行說明有無候選），這裡只說明現況。
+    // 「尚未分群」一詞保留（前端契約測試 test_topics_empty_state_message 斷言其存在），
+    // 但語氣改為「尚未分群或尚未採用分類」，避免與「已有候選待挑選」的情境矛盾。
+    wrap.innerHTML = '<div class="card">此 workspace 於' + escHtml(currentSourceLabel())
+      + '通道尚未分群或尚未採用分類，請先在上方挑選一組分類候選並採用。</div>';
     const pw = el('topic-patents');
     if (pw) pw.innerHTML = '';
     const adv = el('topic-advanced');
@@ -1129,7 +1416,7 @@ async function pollReportJob(jobId) {
       wrap.innerHTML = '<div class="hint">查詢報表狀態失敗（' + escHtml(e.message) + '）。</div>';
       return;
     }
-    setTimeout(tick, 2000);
+    registerTimer(tick, 2000);
   }
   tick();
 }
@@ -1771,7 +2058,7 @@ async function pollExportJob(jobId) {
       wrap.innerHTML = '<div class="hint">查詢匯出狀態失敗（' + escHtml(e.message) + '）。</div>';
       return;
     }
-    setTimeout(tick, 2000);
+    registerTimer(tick, 2000);
   }
   tick();
 }
@@ -2195,7 +2482,7 @@ async function pollAiTask(runId) {
       wrap.innerHTML = '<div class="hint" style="padding:0.4rem 0">查詢 AI 任務失敗（' + escHtml(e.message) + '）。</div>';
       return;
     }
-    setTimeout(tick, 3000);
+    registerTimer(tick, 3000);
   }
   tick();
 }
@@ -2271,7 +2558,7 @@ function openImportDialog() {
 function closeImportDialog() {
   const ov = el('import-overlay');
   if (ov) ov.hidden = true;
-  if (importPollTimer) { clearTimeout(importPollTimer); importPollTimer = null; }
+  clearTimer(importTimerId); importTimerId = null;
 }
 // 重置對話框：清錯誤、確認摘要、進度、結果與檔案選擇，恢復按鈕與模式。
 function resetImportDialog() {
@@ -2443,7 +2730,9 @@ function importErrorMessage(status, err) {
   return '匯入失敗（' + status + '）：' + (detail || '請稍後再試。');
 }
 // 輪詢匯入 job（GET /jobs/{id}）：以統一進度元件呈現進度／階段／已耗時；完成顯示匯入統計並刷新 workspace 下拉。
-let importPollTimer = null;
+// 匯入是對話框（不隨 nav／workspace 切換而消失），故另記自己那條 timer id，
+// 關閉對話框時以 clearTimer 單獨停掉；排程本身仍走同一個註冊表，不另立機制。
+let importTimerId = null;
 async function pollImportJob(jobId) {
   const prog = el('import-progress');
   const started = Date.now();
@@ -2473,7 +2762,7 @@ async function pollImportJob(jobId) {
       showImportError('查詢匯入狀態失敗：' + e.message);
       return;
     }
-    importPollTimer = setTimeout(tick, 2000);
+    importTimerId = registerTimer(tick, 2000);
   }
   tick();
 }
