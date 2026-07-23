@@ -1,6 +1,10 @@
-"""SSE events + AI task enqueue + tasks list API。
+"""SSE events + tasks list API。
 
 轉承 decisions.md「AI 通道維持原架構＋SSE」「長時任務前端進度顯示」兩節。
+
+⚠ 原本這裡另有一支 `POST /ai-tasks`，與 `companion.py` 的建任務端點語意重疊；
+已整併到 `backend/app/api/ai_tasks.py`（該端點需 bearer token），本檔不再提供
+建任務入口，只保留唯讀的 tasks 列表與 SSE。
 
 Windows ProactorEventLoop 與 psycopg async 不相容，SSE LISTEN 採
 thread ＋ psycopg sync notifies(timeout=0.5) 輪詢 ＋ asyncio.Queue 遞送。
@@ -21,30 +25,7 @@ from backend.app.db import job_repository as jr
 from backend.app.db.connection import get_connection_kwargs
 
 
-router = APIRouter(tags=["events", "ai-tasks"])
-
-AI_TASK_TYPES: frozenset[str] = frozenset({"ai:narrative"})
-
-
-@router.post("/ai-tasks", status_code=201)
-def enqueue_ai_task(body: dict[str, Any]) -> dict[str, Any]:
-    task_type = body.get("task_type", "")
-    params = body.get("params", {})
-
-    if not task_type or not isinstance(task_type, str):
-        raise HTTPException(status_code=422, detail="task_type is required")
-    if task_type not in AI_TASK_TYPES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"unsupported task_type: {task_type}",
-        )
-
-    try:
-        job = jr.create_job(task_type, payload=params)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    return {"run_id": job.job_id, "status": job.status}
+router = APIRouter(tags=["events"])
 
 
 @router.get("/tasks")

@@ -26,6 +26,27 @@ class ClusteringReportsConstantTests(unittest.TestCase):
         self.assertEqual(len(DEFAULT_REPORT_NAMES), 14)
         self.assertEqual(DEFAULT_REPORT_NAMES, tuple(REPORT_DEFINITIONS))
 
+    def test_get_report_definitions_returns_catalog(self):
+        """GET /report-definitions 必須回傳完整報表目錄（前端探索入口）。"""
+        from fastapi.testclient import TestClient
+        from backend.app.main import app
+
+        client = TestClient(app)
+        resp = client.get(f"{PREFIX}/report-definitions")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("reports", data)
+        self.assertIn("default_report_names", data)
+        self.assertIn("allowed_filter_columns", data)
+        names = [item["name"] for item in data["reports"]]
+        self.assertEqual(sorted(names), sorted(REPORT_DEFINITIONS))
+        self.assertEqual(data["default_report_names"], list(DEFAULT_REPORT_NAMES))
+        self.assertIn("country_code", data["allowed_filter_columns"])
+        for item in data["reports"]:
+            self.assertIn("label_zh", item)
+            self.assertIn("report_type", item)
+            self.assertIn(item["filter_mode"], ("patent_level", "family_translated"))
+
 
 @unittest.skipUnless(os.environ.get("RUN_DB_TESTS") == "1",
                      "set RUN_DB_TESTS=1 to run clustering/reports API tests")

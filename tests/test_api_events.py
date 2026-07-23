@@ -1,7 +1,11 @@
-"""AI tasks enqueue API + SSE events + tasks list 測試。
+"""SSE events + tasks list 測試。
 
 未接真 DB 時以 mock 測契約行為；接真 DB（patent_ppt_apievents 拋棄式）測整趟，
 不碰 patent_ppt。
+
+註：原本此檔另有 `POST /api/v1/ai-tasks` 的 enqueue 測試；該端點已與
+`companion.py` 的建任務端點整併到 `backend/app/api/ai_tasks.py`（需 bearer token），
+對應契約測試移至 `tests/test_api_ai_tasks.py`，此處只留唯讀列表與 SSE。
 """
 from __future__ import annotations
 
@@ -94,53 +98,21 @@ def _cleanup():
         conn.commit()
 
 
-class AiTaskEnqueueTests(unittest.TestCase):
-    """POST /api/v1/ai-tasks 契約。"""
+class AiTaskEnqueueNoLongerUnauthenticatedTests(unittest.TestCase):
+    """regression：建 AI 任務不得再有零認證入口。
 
-    @classmethod
-    def setUpClass(cls):
-        _cleanup()
+    整併前 events.py 的 POST /ai-tasks 無任何認證，公網可達等同任何人可建任務。
+    整併後同路徑由 ai_tasks.py 提供且掛 bearer token 依賴，未帶 token 不得成功建任務。
+    """
 
-    def tearDown(self):
-        _cleanup()
-
-    def test_enqueue_ai_narrative_returns_run_id(self):
-        """合法的 ai:narrative → 201 + run_id。"""
+    def test_enqueue_without_token_is_rejected(self):
+        """未帶 token 呼叫 POST /ai-tasks 不得建立任務（401 或未設 token 的 503）。"""
         resp = client.post(
             f"{PREFIX}/ai-tasks",
             json={"task_type": "ai:narrative", "params": {"patent_ids": [1]}},
         )
-        self.assertEqual(resp.status_code, 201)
-        body = resp.json()
-        self.assertIn("run_id", body)
-        self.assertIsInstance(body["run_id"], int)
-        self.assertEqual(body["status"], "queued")
-
-        # 確認實際落庫且 type 正確
-        job = jr.get_job(body["run_id"])
-        self.assertIsNotNone(job)
-        self.assertEqual(job.job_type, "ai:narrative")
-
-    def test_enqueue_invalid_task_type_returns_422(self):
-        """不支援的 task_type → 422。"""
-        resp = client.post(
-            f"{PREFIX}/ai-tasks",
-            json={"task_type": "ai:invalid", "params": {}},
-        )
-        self.assertEqual(resp.status_code, 422)
-
-    def test_enqueue_missing_task_type_returns_422(self):
-        """缺少 task_type → 422。"""
-        resp = client.post(
-            f"{PREFIX}/ai-tasks",
-            json={"params": {}},
-        )
-        self.assertEqual(resp.status_code, 422)
-
-    def test_enqueue_empty_body_returns_422(self):
-        """空 body → 422。"""
-        resp = client.post(f"{PREFIX}/ai-tasks", json={})
-        self.assertEqual(resp.status_code, 422)
+        self.assertIn(resp.status_code, (401, 503))
+        self.assertNotIn("run_id", resp.json())
 
 
 class TasksListTests(unittest.TestCase):

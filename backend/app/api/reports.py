@@ -34,6 +34,26 @@ class ReportRequest(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=200)
 
 
+@router.get("/report-definitions")
+def list_report_definitions() -> dict[str, Any]:
+    """列出可用報表定義與篩選白名單——前端探索報表的入口。"""
+    reports = [
+        {
+            "name": name,
+            "label_zh": definition.label_zh,
+            "label": definition.label,
+            "report_type": definition.report_type,
+            "filter_mode": "patent_level" if definition.supports_patent_ids else "family_translated",
+        }
+        for name, definition in sorted(REPORT_DEFINITIONS.items())
+    ]
+    return {
+        "reports": reports,
+        "default_report_names": list(DEFAULT_REPORT_NAMES),
+        "allowed_filter_columns": sorted(ALLOWED_FILTER_COLUMNS),
+    }
+
+
 @router.post("/reports")
 def create_report(request: ReportRequest) -> dict[str, Any]:
     """建立報表產生工作；未知報表名或篩選欄回 422。"""

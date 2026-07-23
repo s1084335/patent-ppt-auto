@@ -81,12 +81,27 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("current_stage", self.html)
 
     def test_ai_panel_channel_wired(self):
-        """右欄 AI 助手接 Companion / tasks / events(SSE)。"""
-        self.assertIn("/companion/narrative-tasks", self.html)
-        self.assertIn("/companion/tasks/", self.html)
+        """右欄 AI 助手接 AI 任務入口 /ai-tasks / tasks / events(SSE)。"""
+        self.assertIn("/ai-tasks", self.html)
+        self.assertIn("/ai-tasks/", self.html)
         self.assertIn("/tasks", self.html)
         self.assertIn("/events", self.html)
         self.assertIn("ai:narrative", self.html)
+        # 改名澄清：不得再出現舊的 companion 端點路徑。
+        self.assertNotIn("/companion/", self.html)
+
+    def test_ai_token_field_and_header_wired(self):
+        """AI 任務金鑰：有輸入框、存 localStorage、呼叫時帶 Bearer 標頭。"""
+        for needle in ("ai-token", "saveAiToken", "aiAuthHeaders", "patent_api_token"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+        self.assertIn("'Bearer '", self.html)
+
+    def test_ai_token_not_hardcoded_in_page(self):
+        """token 不得寫死在公開 HTML：只能由使用者填入 localStorage。"""
+        # 頁面內不得出現任何寫死的 Bearer 值（Bearer 後只接變數串接）。
+        self.assertNotRegex(self.html, r"Bearer\s+[A-Za-z0-9_\-]{8,}")
+        self.assertIn("localStorage", self.html)
 
     def test_comparison_has_create_form(self):
         """案件比對有建立比對案件表單（案件名稱、文字、建立按鈕）。"""
@@ -259,6 +274,144 @@ class FrontendSkeletonTests(unittest.TestCase):
         for field in ("inserted", "matched_existing", "updated", "patent_ids"):
             with self.subTest(field=field):
                 self.assertIn(field, self.html)
+
+    # ── A. 匯入確認（送出前摘要 + 送出後結果卡 + 前往該 workspace） ──
+
+    def test_import_has_confirm_summary_before_upload(self):
+        """匯入送出前先顯示確認摘要（檔名／大小／目標 workspace／用途），按確認才送出。"""
+        for needle in (
+            "import-confirm",         # 確認摘要區掛點
+            "btn-confirm-import",     # 「確認匯入」鈕
+            "buildImportConfirm",     # 組摘要（讀真實選擇，不寫死）
+            "確認匯入",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_import_result_card_shows_target_workspace_and_shortcut(self):
+        """匯入結果卡提示已加入哪個 workspace，並提供前往該 workspace 專利總覽的快捷。"""
+        for needle in (
+            "btn-goto-imported-ws",   # 快捷鈕掛點
+            "gotoImportedWorkspace",  # 切 workspace + navTo('patents')
+            "已加入 workspace",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    # ── B. 分群任務區 ──
+
+    def test_nav_has_clustering_region(self):
+        """左導覽含分群任務區（data-nav="clustering"）。"""
+        self.assertRegex(self.html, r'data-nav="clustering"')
+        self.assertIn("renderClustering", self.html)
+
+    def test_clustering_calibrate_and_incremental_wired(self):
+        """分群區可建 calibrate／incremental 工作，並選 source_field（接白名單通道，非寫死單值）。"""
+        for needle in (
+            "btn-run-calibrate",
+            "btn-run-incremental",
+            "clustering-source-field",
+            "runCalibrate",
+            "runIncremental",
+            "source_field",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+        # 端點以 `/clustering/` + kind（calibrate／incremental）組成，兩種 kind 都要存在。
+        self.assertIn("/clustering/", self.html)
+        self.assertRegex(self.html, r"createClusteringJob\('calibrate'")
+        self.assertRegex(self.html, r"createClusteringJob\('incremental'")
+        # 通道選項由共用常數產生（技術／功效兩通道），供分群區與分類區共用。
+        self.assertIn("SOURCE_FIELDS", self.html)
+        self.assertIn("effect_summary", self.html)
+
+    def test_clustering_polls_job_and_reads_run_id(self):
+        """calibrate 工作沿用統一進度元件輪詢 /jobs/{id}，完成後由 result.run_id 取候選。"""
+        self.assertIn("pollClusteringJob", self.html)
+        self.assertIn("/jobs/", self.html)
+        self.assertIn("jobProgressCardHtml", self.html)
+        # run_id 來自 job.result（calibrate summary），非使用者手輸或寫死。
+        self.assertRegex(self.html, r"result\s*(\|\||&&|\.|\[)")
+        self.assertIn("run_id", self.html)
+
+    def test_clustering_candidates_and_finalize_wired(self):
+        """可查候選（/clustering/runs/{id}/candidates）並選定候選 finalize。"""
+        for needle in (
+            "/candidates",
+            "/finalize",
+            "loadClusteringCandidates",
+            "finalizeClustering",
+            "candidate_id",
+            "已定案",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_clustering_candidate_columns_not_hardcoded(self):
+        """候選表欄位依 API 實際回傳的鍵動態產生，不寫死欄位清單。"""
+        # 以 Object.keys / 動態欄位組表為契約：改 API 欄位時前端自動跟隨。
+        self.assertIn("candidateColumnsFrom", self.html)
+        self.assertIn("Object.keys", self.html)
+
+    # ── C. topic 人工操作 ──
+
+    def test_topic_rename_wired(self):
+        """主題可人工重命名（PATCH /workspaces/{id}/topics/{key}，label_source=manual）。"""
+        for needle in ("renameTopic", "'PATCH'", "renamed_by", "重新命名"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_topic_merge_suggestions_wired(self):
+        """合併建議區接 /topics/merge-suggestions，列相近主題對與 distance，可一鍵合併。"""
+        for needle in (
+            "/topics/merge-suggestions",
+            "loadMergeSuggestions",
+            "topic-merge-suggestions",
+            "distance",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_topic_manual_merge_wired(self):
+        """可手動選兩個主題送出合併（POST /topics/merge，body 帶 topic_keys 兩個）。"""
+        for needle in (
+            "/topics/merge",
+            "submitTopicMerge",
+            "topic_keys",
+            "requested_by",
+            "topic-merge-a",
+            "topic-merge-b",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_topic_merge_history_and_unmerge_wired(self):
+        """合併歷史區接 /topics/merge-history，可對某筆 unmerge 還原（帶 merge_run_id）。"""
+        for needle in (
+            "/topics/merge-history",
+            "/topics/unmerge",
+            "loadMergeHistory",
+            "submitTopicUnmerge",
+            "merge_run_id",
+            "can_unmerge",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    # ── D. AI 任務結果顯示 ──
+
+    def test_ai_task_result_rendered_not_discarded(self):
+        """AI 任務完成後結果要 render 在 AI 助手區，不得抓完丟棄。"""
+        for needle in ("ai-task-result", "renderAiTaskResult", "pollAiTask"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+        # 既有缺陷：取回 /ai-tasks/{run_id} 後用 .catch(() => null) 丟棄，不得再出現。
+        self.assertNotRegex(self.html, r"/ai-tasks/'\s*\+[^;]*\.catch\(\(\)\s*=>\s*null\)")
+
+    def test_ai_task_result_scrollable(self):
+        """AI 結果過長可捲動／摺疊，不撐爆右欄。"""
+        self.assertIn("ai-result-body", self.html)
+        self.assertRegex(self.html, r"\.ai-result-body\s*\{[^}]*overflow-y")
 
     def test_no_hardcoded_fake_patent_rows(self):
         """主內容區不得寫死假專利資料列（資料一律來自真實 API）。"""
