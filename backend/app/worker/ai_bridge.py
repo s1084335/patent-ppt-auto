@@ -125,11 +125,49 @@ def _run_ai_topic_label_job(payload: dict[str, Any], context: JobContext) -> dic
     return result
 
 
+def _run_ai_patent_note_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """執行文獻備註任務：驅動 headless CLI 讀專利獨立項摘要成備註後回填。
+
+    payload：workspace_id（可選，不給＝全庫）、char_budget／limit／skip_existing（可選）、
+    cli_kind／model／cli_timeout_seconds（沿用 ai:narrative 的 payload 慣例）。
+
+    進度：runner 內部每批回報一次（5→95，帶「第 n/N 批」文字），直接轉成 heartbeat；
+    1900 件會分成數十批，使用者看得到 0→100 推進，不是無限 spinner。
+    """
+    from . import ai_patent_note_runner
+
+    context.heartbeat("開始產生文獻備註", 1)
+
+    def _progress(stage: str, percent: int) -> None:
+        """把 runner 的分批進度轉成 worker heartbeat（繁中階段文字直接沿用）。"""
+        context.heartbeat(stage, percent)
+
+    workspace_id = payload.get("workspace_id")
+    return ai_patent_note_runner.run_patent_note(
+        workspace_id=int(workspace_id) if workspace_id is not None else None,
+        cli_kind=str(payload.get("cli_kind") or "claude"),
+        model=payload.get("model") or None,
+        # _cli_runner 供測試／Companion 注入假或替代執行器；正式跑真實 subprocess。
+        cli_runner=payload.get("_cli_runner"),
+        char_budget=int(
+            payload.get("char_budget") or ai_patent_note_runner.DEFAULT_CHAR_BUDGET
+        ),
+        skip_existing=bool(payload.get("skip_existing", True)),
+        limit=int(payload["limit"]) if payload.get("limit") else None,
+        timeout_seconds=float(
+            payload.get("cli_timeout_seconds")
+            or ai_patent_note_runner.DEFAULT_CLI_TIMEOUT_SECONDS
+        ),
+        progress=_progress,
+    )
+
+
 # job_type → 執行函式。值存「函式名」而非函式物件，讓 execute_ai_job 在呼叫當下才解析到
 # 模組屬性——測試以 mock.patch.object 換掉 _run_ai_* 時才會生效（存物件會綁死原函式）。
 _AI_JOB_RUNNERS: dict[str, str] = {
     "ai:narrative": "_run_ai_narrative_job",
     "ai:topic_label": "_run_ai_topic_label_job",
+    "ai:patent_note": "_run_ai_patent_note_job",
 }
 
 
