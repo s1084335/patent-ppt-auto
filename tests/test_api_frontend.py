@@ -280,18 +280,20 @@ class FrontendSkeletonTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertIn(field, self.html)
 
-    # ── A. 匯入確認（送出前摘要 + 送出後結果卡 + 前往該 workspace） ──
+    # ── A. 匯入單一動作鈕（無二次確認 + 送出後結果卡 + 前往該 workspace） ──
 
-    def test_import_has_confirm_summary_before_upload(self):
-        """匯入送出前先顯示確認摘要（檔名／大小／目標 workspace／用途），按確認才送出。"""
-        for needle in (
-            "import-confirm",         # 確認摘要區掛點
-            "btn-confirm-import",     # 「確認匯入」鈕
-            "buildImportConfirm",     # 組摘要（讀真實選擇，不寫死）
-            "確認匯入",
-        ):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, self.html)
+    def test_import_modal_is_single_action_no_confirm_step(self):
+        """匯入 Modal 只留單一動作鈕（decisions.md 2026-07-23「匯入 Modal 只留單一動作鈕」）：
+        移除兩段式的「確認匯入／返回修改」與送出前確認摘要，選檔後按「開始匯入」直接上傳。"""
+        # 兩段式殘留一律不得再出現。
+        for gone in ("btn-confirm-import", "btn-back-import", "確認匯入", "import-confirm"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, self.html)
+        # 只留單一動作鈕，直接呼叫實際上傳邏輯 startImport。
+        self.assertIn("btn-start-import", self.html)
+        self.assertIn('id="btn-start-import" onclick="startImport()"', self.html)
+        # 送出後 disable 防連點並改字「匯入中…」。
+        self.assertIn("匯入中…", self.html)
 
     def test_import_result_card_shows_target_workspace_and_shortcut(self):
         """匯入結果卡提示已加入哪個 workspace，並提供前往該 workspace 專利總覽的快捷。"""

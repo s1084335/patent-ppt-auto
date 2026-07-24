@@ -229,10 +229,6 @@ table.data tr:hover td { background: var(--panel-2); }
 .import-result { font-size: 0.88rem; }
 .import-result .stat-grid { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; margin-top: 0.5rem; }
 .import-result .stat-grid .k { color: var(--text-muted); }
-/* 匯入確認摘要：送出前先讓使用者核對檔名／大小／目標 workspace／用途 */
-.import-confirm { background: var(--panel-2); border: 1px solid var(--border); border-radius: 0.45rem; padding: 0.7rem 0.85rem; font-size: 0.88rem; }
-.import-confirm .stat-grid { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; margin-top: 0.4rem; }
-.import-confirm .stat-grid .k { color: var(--text-muted); }
 
 /* ── AI 結果顯示：過長可捲動 ── */
 .ai-result-body { max-height: 16rem; overflow-y: auto; white-space: pre-wrap; word-break: break-word; font-size: 0.83rem; background: var(--panel-2); border: 1px solid var(--border); border-radius: 0.4rem; padding: 0.55rem 0.65rem; }
@@ -403,16 +399,15 @@ table.data tr:hover td { background: var(--panel-2); }
       </div>
 
       <div class="import-error" id="import-error" hidden></div>
-      <!-- 送出前確認摘要：按「開始匯入」先組摘要於此，使用者按「確認匯入」才真的上傳 -->
-      <div id="import-confirm"></div>
+      <!-- 選檔後即可送出，不做二次確認：匯入為非破壞性（差異即更新、新值空不覆蓋），
+           送出後有 0→100 進度顯示可回饋狀態。摘要（檔名／workspace／用途）本就在
+           上方表單可見，無需再組一次確認摘要，故移除兩段式確認流程。 -->
       <div id="import-progress"></div>
       <div id="import-result"></div>
     </div>
     <div class="modal-foot">
       <button class="btn btn-outline" onclick="closeImportDialog()">取消</button>
-      <button class="btn btn-outline" id="btn-back-import" onclick="cancelImportConfirm()" hidden>返回修改</button>
-      <button class="btn btn-primary" id="btn-start-import" onclick="reviewImport()">開始匯入</button>
-      <button class="btn btn-primary" id="btn-confirm-import" onclick="startImport()" hidden>確認匯入</button>
+      <button class="btn btn-primary" id="btn-start-import" onclick="startImport()">開始匯入</button>
     </div>
   </div>
 </div>
@@ -2671,7 +2666,7 @@ function closeImportDialog() {
   if (ov) ov.hidden = true;
   clearTimer(importTimerId); importTimerId = null;
 }
-// 重置對話框：清錯誤、確認摘要、進度、結果與檔案選擇，恢復按鈕與模式。
+// 重置對話框：清錯誤、進度、結果與檔案選擇，恢復按鈕與模式。
 function resetImportDialog() {
   showImportError('');
   const prog = el('import-progress'); if (prog) prog.innerHTML = '';
@@ -2679,12 +2674,11 @@ function resetImportDialog() {
   const f = el('import-file'); if (f) f.value = '';
   const btn = el('btn-start-import');
   if (btn) { btn.disabled = false; btn.textContent = '開始匯入'; }
-  cancelImportConfirm();
   const modeNew = el('import-ws-mode-new'); if (modeNew) modeNew.checked = true;
   onImportWsModeChange();
 }
-// ── 匯入確認：送出前先組摘要讓使用者核對，按「確認匯入」才真的上傳 ──
-// 目標 workspace 顯示「新建名稱」或「既有 workspace 名稱」，皆讀當下真實選擇，不寫死。
+// ── 匯入選擇讀取：送出時直接讀當下真實表單（檔案／workspace 二選一／用途），不寫死。──
+// 讀取檔案／workspace 二選一／用途，皆讀當下真實選擇；缺漏回 error 讓呼叫端顯示。
 function collectImportChoice() {
   const fileInput = el('import-file');
   const file = fileInput && fileInput.files && fileInput.files[0];
@@ -2692,66 +2686,18 @@ function collectImportChoice() {
   const mode = importWsMode();
   const purposeSel = el('import-purpose');
   const purposeValue = purposeSel ? purposeSel.value : 'general';
-  const purposeLabel = (purposeSel && purposeSel.selectedOptions.length)
-    ? purposeSel.selectedOptions[0].textContent : purposeValue;
-  const choice = { file: file, mode: mode, purposeValue: purposeValue, purposeLabel: purposeLabel };
+  const choice = { file: file, mode: mode, purposeValue: purposeValue };
   if (mode === 'new') {
     const name = (el('import-new-ws-name').value || '').trim();
     if (!name) return { error: '請輸入新 workspace 名稱。' };
     choice.newWorkspaceName = name;
-    choice.workspaceLabel = '新建「' + name + '」';
   } else {
     const sel = el('import-existing-ws');
     const wsId = sel ? sel.value : '';
     if (!wsId) return { error: '請選擇要加入的既有 workspace。' };
     choice.workspaceId = wsId;
-    choice.workspaceLabel = '既有「'
-      + ((sel.selectedOptions.length ? sel.selectedOptions[0].textContent : wsId)) + '」';
   }
   return { choice: choice };
-}
-// 檔案大小顯示：以 KB／MB 呈現，避免直接甩位元組數。
-function fmtFileSize(bytes) {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / 1024 / 1024).toFixed(2) + ' MB';
-}
-function buildImportConfirm(choice) {
-  return '<div class="import-confirm">'
-    + '<div style="font-weight:600">請確認匯入內容</div>'
-    + '<div class="stat-grid">'
-    + '<span class="k">檔名</span><span>' + escHtml(choice.file.name) + '</span>'
-    + '<span class="k">大小</span><span>' + escHtml(fmtFileSize(choice.file.size)) + '</span>'
-    + '<span class="k">目標 workspace</span><span>' + escHtml(choice.workspaceLabel) + '</span>'
-    + '<span class="k">用途</span><span>' + escHtml(choice.purposeLabel) + '</span>'
-    + '</div></div>';
-}
-// 待確認的匯入選擇（按「確認匯入」時使用，避免重複讀取表單）
-let pendingImportChoice = null;
-// 「開始匯入」→ 驗證選擇並顯示確認摘要，切換為「確認匯入／返回修改」按鈕。
-function reviewImport() {
-  showImportError('');
-  const res = el('import-result'); if (res) res.innerHTML = '';
-  const outcome = collectImportChoice();
-  if (outcome.error) { showImportError(outcome.error); return; }
-  pendingImportChoice = outcome.choice;
-  const box = el('import-confirm');
-  if (box) box.innerHTML = buildImportConfirm(outcome.choice);
-  toggleImportConfirmButtons(true);
-}
-// 「返回修改」→ 收掉摘要，回到可改表單的狀態。
-function cancelImportConfirm() {
-  pendingImportChoice = null;
-  const box = el('import-confirm'); if (box) box.innerHTML = '';
-  toggleImportConfirmButtons(false);
-}
-function toggleImportConfirmButtons(confirming) {
-  const start = el('btn-start-import');
-  const confirm = el('btn-confirm-import');
-  const back = el('btn-back-import');
-  if (start) start.hidden = confirming;
-  if (confirm) { confirm.hidden = !confirming; confirm.disabled = false; confirm.textContent = '確認匯入'; }
-  if (back) back.hidden = !confirming;
 }
 // 二選一互斥：new 模式啟用名稱輸入、停用既有下拉；existing 模式反之。
 function onImportWsModeChange() {
@@ -2790,14 +2736,15 @@ function showImportError(msg) {
   if (!msg) { box.hidden = true; box.textContent = ''; return; }
   box.hidden = false; box.textContent = msg;
 }
-// 確認匯入：以已確認的選擇組 query（filename/purpose + workspace 二選一其一）
-// → 以檔案 raw body POST /imports → 拿 job_id 輪詢 /jobs。422/413 顯示可讀中文，不吞錯。
+// 開始匯入（單一動作鈕直接觸發）：讀當下表單 → 組 query（filename/purpose + workspace
+// 二選一其一）→ 以檔案 raw body POST /imports → 拿 job_id 輪詢 /jobs。
+// 不做二次確認；送出後立即 disable 按鈕並改字「匯入中…」防連點。422/413 顯示可讀中文，不吞錯。
 async function startImport() {
   showImportError('');
   const res = el('import-result'); if (res) res.innerHTML = '';
-  // 未經確認直接呼叫時（例如程式流程改動），退回確認步驟而非直接上傳。
-  if (!pendingImportChoice) { reviewImport(); return; }
-  const choice = pendingImportChoice;
+  const outcome = collectImportChoice();
+  if (outcome.error) { showImportError(outcome.error); return; }
+  const choice = outcome.choice;
   const file = choice.file;
 
   // 組 query：filename／purpose 固定，workspace 二選一其一（new_workspace_name 或 workspace_id）。
@@ -2812,8 +2759,8 @@ async function startImport() {
   }
   const queryString = qsParts.join('&');
 
-  const btn = el('btn-confirm-import');
-  if (btn) { btn.disabled = true; btn.textContent = '上傳中…'; }
+  const btn = el('btn-start-import');
+  if (btn) { btn.disabled = true; btn.textContent = '匯入中…'; }
   try {
     // body 直送檔案本體（raw body 串流）；Content-Type 隨檔（瀏覽器以 File 型別帶出）。
     const resp = await fetch(API + '/imports?' + queryString, {
@@ -2823,14 +2770,14 @@ async function startImport() {
     });
     if (!resp.ok) {
       showImportError(importErrorMessage(resp.status, await resp.json().catch(() => ({}))));
-      if (btn) { btn.disabled = false; btn.textContent = '確認匯入'; }
+      if (btn) { btn.disabled = false; btn.textContent = '開始匯入'; }
       return;
     }
     const job = await resp.json();
     pollImportJob(job.job_id);
   } catch (e) {
     showImportError('連線錯誤：' + e.message);
-    if (btn) { btn.disabled = false; btn.textContent = '確認匯入'; }
+    if (btn) { btn.disabled = false; btn.textContent = '開始匯入'; }
   }
 }
 // 錯誤碼轉可讀中文：422（副檔名／workspace 二選一互斥／空檔）、413（過大），其餘照原訊息。
@@ -2858,15 +2805,14 @@ async function pollImportJob(jobId) {
         renderImportResult(j);
         // 匯入完成刷新頂列 workspace 下拉（新建的要出現、圈進的可選）。
         await loadWorkspaces();
-        cancelImportConfirm();
         const btn = el('btn-start-import');
         if (btn) { btn.disabled = false; btn.textContent = '再次匯入'; }
         return;
       }
       if (['failed', 'cancelled'].includes(j.status)) {
         showImportError('匯入工作失敗：' + (j.error_message || '（無錯誤訊息）'));
-        const btn = el('btn-confirm-import');
-        if (btn) { btn.disabled = false; btn.textContent = '確認匯入'; }
+        const btn = el('btn-start-import');
+        if (btn) { btn.disabled = false; btn.textContent = '開始匯入'; }
         return;
       }
     } catch (e) {
