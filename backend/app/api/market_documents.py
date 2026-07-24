@@ -19,6 +19,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel
 
 from backend.app import settings
 from backend.app.importers.import_paths import DOCUMENT_SUFFIXES, validate_web_filename
@@ -130,6 +131,42 @@ async def list_market_documents(workspace_id: int = Query(..., ge=1)) -> dict[st
     store = market_doc_store.MarketDocumentStore()
     documents = await run_in_threadpool(store.list_documents, workspace_id)
     return {"documents": documents, "total": len(documents)}
+
+
+class AcceptSummaryRequest(BaseModel):
+    """確認某市場摘要（逐筆確認落款）；只需 summary_id。"""
+
+    summary_id: int
+
+
+@router.get("/market-summaries/current")
+async def get_current_market_summary(
+    workspace_id: int = Query(..., ge=1),
+    accepted_only: bool = Query(default=False),
+) -> dict[str, Any]:
+    """取某 workspace 的現行版市場摘要，供前端顯示。
+
+    無摘要回 {"summary": null}——前端據此隱藏市場區塊（不顯示空表、不留佔位）。
+    - accepted_only=False（預設）：回「現行版」（可能尚未 accept），供逐筆確認前端顯示草稿。
+    - accepted_only=True：回「已確認現行版」（未確認草稿回 null）——報表／並排區只讀此結果，
+      未確認草稿實體上進不了報表（實體隔離）。
+    """
+    store = market_doc_store.MarketDocSummaryStore()
+    getter = store.get_accepted_current if accepted_only else store.get_current
+    summary = await run_in_threadpool(getter, workspace_id)
+    return {"summary": summary}
+
+
+@router.post("/market-summaries/accept")
+async def accept_market_summary(body: AcceptSummaryRequest) -> dict[str, Any]:
+    """確認落款某市場摘要（accepted_at）；回 {"accepted": bool}。
+
+    accepted=False 表示該摘要已確認過（不重複落款）或不存在——確認為冪等，重按不改時間。
+    確認後報表側 get_accepted_current 才拿得到（未確認草稿實體上進不了報表）。
+    """
+    store = market_doc_store.MarketDocSummaryStore()
+    accepted = await run_in_threadpool(store.accept, body.summary_id)
+    return {"accepted": accepted}
 
 
 def _unlink_quiet(path: Path) -> None:

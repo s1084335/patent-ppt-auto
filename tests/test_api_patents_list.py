@@ -148,6 +148,21 @@ class PatentListTests(unittest.TestCase):
         self.assertTrue(set(PIDS).issubset(ids))
         self.assertGreaterEqual(body["total"], len(PIDS))
 
+    def test_global_list_no_500_when_no_global_workspace(self):
+        """全庫路徑不因「尚未建立全庫 workspace／無分群」而 500（2026-07-24 空狀態修復）。
+
+        本測試 fixture 未建立 is_global workspace，故 resolve_topic_workspace_id() 回 None，
+        分類標籤兩欄應留空而非拋錯。回 200，且兩個 topic_label 欄存在且為 None（尚未分群留空）。
+        """
+        resp = self._list(limit=50, offset=0)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        item = _items_by_id(resp.json()["items"])[PIDS[0]]
+        # 分類標籤欄名由分群通道推導（topic_label_<source_field>）；無全庫／無分群時為 None。
+        topic_cols = [k for k in item if k.startswith("topic_label_")]
+        self.assertTrue(topic_cols, "應有分類標籤欄（尚未分群為 None）")
+        for k in topic_cols:
+            self.assertIsNone(item[k])
+
     def test_item_shape_includes_workspaces(self):
         """每筆含專利欄位＋workspaces（所屬 workspace 陣列，含 id 與名稱）＋has_figure。
 

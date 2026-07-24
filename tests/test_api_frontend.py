@@ -473,22 +473,152 @@ class FrontendSkeletonTests(unittest.TestCase):
         # 「所屬 Workspace」欄只在總覽出現，且以資料驅動（不是硬寫在某個表頭字串裡）。
         self.assertRegex(self.html, r"'所屬 Workspace',\s*key:\s*'workspaces',\s*scope:\s*\['overview'\]")
 
-    def test_overview_moved_to_topbar_not_nav(self):
-        """專利總覽為跨 workspace 層級，改掛頂列（與 workspace 選擇器同區），不放左導覽。
+    def test_overview_merged_into_workspace_dropdown_not_topbar(self):
+        """專利總覽併進 Workspace 下拉，全庫為第一項；頂列獨立藍鈕收掉（2026-07-24 定案，
+        推翻 07-23「總覽放頂列」）。
 
-        2026-07-24 定案：左導覽只留 workspace 內功能（分類區／報表種類／匯出報告／
-        案件比對／系統狀態）。
+        - 頂列不得再有 navTo('patents') 的獨立按鈕（藍鈕收掉）。
+        - Workspace 下拉第一項＝全庫（固定哨兵 GLOBAL_WS_VALUE '__global__'）。
+        - 選全庫＝原總覽視角（renderPatents 全庫）；左導覽仍留 workspace 內五項。
         """
+        top = re.search(r'<header id="topbar">(.*?)</header>', self.html, re.S)
+        self.assertIsNotNone(top, "找不到 topbar")
+        self.assertNotIn("navTo('patents')", top.group(1), "頂列獨立總覽藍鈕須收掉")
+        # 全庫哨兵常數與「全庫（所有專利）」下拉項文案。
+        self.assertRegex(self.html, r"GLOBAL_WS_VALUE\s*=\s*'__global__'")
+        self.assertIn("全庫（所有專利）", self.html)
+        # 左導覽保留 workspace 內五項，不放 patents。
         nav = re.search(r'<nav id="nav-panel">(.*?)</nav>', self.html, re.S)
         self.assertIsNotNone(nav, "找不到 nav-panel")
         self.assertNotIn('data-nav="patents"', nav.group(1))
-        top = re.search(r'<header id="topbar">(.*?)</header>', self.html, re.S)
-        self.assertIsNotNone(top, "找不到 topbar")
-        self.assertIn("navTo('patents')", top.group(1))
-        # 左導覽仍須保留 workspace 內五項。
         for nav_key in ("topics", "reports", "export", "comparison", "status"):
             with self.subTest(nav_key=nav_key):
                 self.assertIn(f'data-nav="{nav_key}"', nav.group(1))
+
+    def test_selecting_global_shows_overview(self):
+        """選全庫（下拉第一項）＝原總覽視角：切到 patents 頁並走全庫 renderPatents。
+
+        onWorkspaceChange 判斷選到全庫哨兵時，導向專利總覽（跨 workspace 全庫清單）。
+        """
+        self.assertIn("isGlobalSelected", self.html)
+        # onWorkspaceChange 內含全庫哨兵判斷與導向 patents。
+        m = re.search(r"function onWorkspaceChange\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
+        self.assertIsNotNone(m, "找不到 onWorkspaceChange() 定義")
+        self.assertIn("GLOBAL_WS_VALUE", m.group(0))
+
+    def test_no_empty_workspace_state_since_global_always_present(self):
+        """全庫恆為可選第一項後，不得再有「尚無 workspace」空狀態／「請先選擇 workspace」。
+
+        2026-07-24 定案第 3 點：全庫永遠可選，空狀態與 HTTP 500 一併解掉。
+        """
+        self.assertNotIn("（尚無 workspace）", self.html)
+        self.assertNotIn("請先選擇 workspace", self.html)
+        # loadWorkspaces 仍把全庫哨兵置頂（第一項）。
+        m = re.search(r"function loadWorkspaces\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
+        self.assertIsNotNone(m, "找不到 loadWorkspaces() 定義")
+        self.assertIn("GLOBAL_WS_VALUE", m.group(0))
+
+    # ── c. 市場資料上傳區塊（綁 workspace；全庫隱藏） ──
+
+    def test_market_upload_block_present_and_wired(self):
+        """市場資料上傳區塊：接 POST /market-documents（綁 workspace）、GET 列清單，
+        並有「產市場摘要」鈕送 POST /ai-tasks（task_type=ai:market_summary）。"""
+        for needle in (
+            "market-upload",            # 上傳區塊掛點
+            "uploadMarketDocument",     # 上傳函式
+            "loadMarketDocuments",      # 列清單
+            "/market-documents",        # 端點
+            "btn-gen-market-summary",   # 產摘要鈕
+            "submitMarketSummary",      # 送 ai-task
+            "ai:market_summary",        # task_type
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+        # ⚠關鍵：workspace_id 必須放進 params（to_payload exclude 具名 workspace_id）。
+        m = re.search(r"function submitMarketSummary\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
+        self.assertIsNotNone(m, "找不到 submitMarketSummary() 定義")
+        self.assertIn("params", m.group(0))
+        self.assertIn("workspace_id", m.group(0))
+        self.assertIn("ai:market_summary", m.group(0))
+
+    def test_market_upload_hidden_for_global_workspace(self):
+        """全庫 workspace 不提供市場資料：選全庫時市場上傳區隱藏／禁用（全庫產摘要後端會 raise）。"""
+        m = re.search(r"function renderMarketUpload\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
+        self.assertIsNotNone(m, "找不到 renderMarketUpload() 定義")
+        # 全庫時直接隱藏（判斷全庫哨兵）。
+        self.assertIn("isGlobalSelected", m.group(0))
+
+    def test_market_upload_supports_new_and_existing_workspace(self):
+        """市場上傳綁 workspace：既有 ws 可上傳、也要能對新建 workspace 上傳。"""
+        for needle in ("market-ws-mode", "market-new-ws-name", "market-existing-ws"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    # ── d. 市場並排＋融合解讀（報表顯示區；只讀已確認現行版） ──
+
+    def test_report_shows_market_side_by_side_accepted_only(self):
+        """報表顯示區並排市場側摘要（只讀已確認現行版）與 AI 融合解讀。"""
+        for needle in (
+            "market-side-by-side",         # 並排容器
+            "loadMarketSummaryForReport",  # 載入市場側
+            "accepted_only=true",          # 只讀已確認現行版
+            "market-fusion",               # AI 融合解讀顯示
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+
+    def test_report_market_hidden_when_no_accepted_summary(self):
+        """無市場資料或現行版未確認時，市場區塊整區隱藏（不顯示空表、不留佔位）。"""
+        m = re.search(
+            r"function loadMarketSummaryForReport\([^)]*\)\s*\{.*?\n\}", self.html, re.S
+        )
+        self.assertIsNotNone(m, "找不到 loadMarketSummaryForReport() 定義")
+        body = m.group(0)
+        # summary 為 null 時不渲染（整區隱藏）。
+        self.assertIn("summary", body)
+        self.assertRegex(body, r"if\s*\(!.*summary")
+
+    # ── e. 移除舊 market_evidence 前端 ──
+
+    def test_no_market_evidence_frontend_usage(self):
+        """前端不得引用舊 market-evidence（v3 deep-research）API 或區塊。"""
+        self.assertNotIn("/market-evidence", self.html)
+        self.assertNotIn("marketEvidence", self.html)
+
+    # ── f. 報表種類列出現況全部可用報表 ──
+
+    def test_report_types_list_all_backend_definitions(self):
+        """報表種類清單須列出 report_definitions 全部可用報表（含分群三支），不隱藏任一種。"""
+        from backend.app.reports.report_definitions import REPORT_DEFINITIONS
+
+        m = re.search(r"const REPORT_TYPES\s*=\s*\[(.*?)\n\];", self.html, re.S)
+        self.assertIsNotNone(m, "找不到 REPORT_TYPES 定義")
+        block = m.group(1)
+        for name in REPORT_DEFINITIONS:
+            with self.subTest(report=name):
+                self.assertIn("'" + name + "'", block, f"報表種類缺少 {name}")
+
+    # ── g. AI 助手欄縮窄 ──
+
+    def test_ai_panel_narrowed(self):
+        """右側 AI 助手欄縮窄（讓中間專利顯示更寬）：flex-basis 不得再是舊的 300px。"""
+        m = re.search(r"#ai-panel\s*\{[^}]*\}", self.html)
+        self.assertIsNotNone(m, "找不到 #ai-panel 樣式")
+        css = m.group(0)
+        # 取 flex 基準寬度數字，須明顯小於原 300px。
+        w = re.search(r"flex:\s*0\s+0\s+(\d+)px", css)
+        self.assertIsNotNone(w, "#ai-panel 須有固定 flex-basis 寬度")
+        self.assertLess(int(w.group(1)), 300, "AI 助手欄須比原 300px 窄")
+
+    # ── h. 專利顯示加捲軸、body 不橫向捲動 ──
+
+    def test_patent_table_scroll_container_capped(self):
+        """專利顯示表格在自身 overflow-x:auto 容器內捲動，且容器 max-width 不撐爆版面。"""
+        m = re.search(r"\.table-wrap\s*\{[^}]*\}", self.html)
+        self.assertIsNotNone(m, "找不到 .table-wrap 樣式")
+        css = m.group(0)
+        self.assertIn("overflow-x", css)
+        self.assertIn("max-width", css)
 
     # ── C. topic 人工操作 ──
 
