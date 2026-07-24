@@ -4,6 +4,8 @@ import argparse
 import csv
 import hashlib
 import json
+import posixpath
+import zipfile
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -156,8 +158,9 @@ def load_xlsx_rows(path: Path) -> tuple[list[str], str, list[dict[str, Any]], li
         if has_value:
             raw["_row_number"] = row_number
             records.append(raw)
-    # 內嵌代表圖：openpyxl read_only 模式不載入 drawing，需另開一次非 read_only workbook。
-    # 回 {列號: (圖片 bytes, 該列圖片張數)}；張數 >1 由 import_wips_file 轉成 summary 警告。
+    # 內嵌代表圖：以 zipfile 直接解析 drawing XML 取列號與圖片（不再全載 workbook；
+    # B-1 維運修復），大檔不 hang。回 {列號: (圖片 bytes, 該列圖片張數)}；
+    # 張數 >1 由 import_wips_file 轉成 summary 警告。
     embedded = extract_embedded_images(path, selected_sheet)
     for raw in records:
         found = embedded.get(raw["_row_number"])
@@ -187,65 +190,206 @@ _UNKNOWN_KIND_WARNING = "專利 {label} 的文獻種類「{kind}」未列於階�
 _MISSING_KIND_WARNING = "專利 {label} 缺文獻種類，圖以「{placeholder}」入庫（不作為最新版快取）"
 
 
+# drawing XML／關聯檔命名空間無關解析用的原子標籤名（去掉 xdr:/r: 等前綴後比對）。
+# 真檔（Excel/WIPS 匯出）多用 xdr: 前綴＋twoCellAnchor；openpyxl 產的檔用預設命名空間
+# ＋oneCellAnchor。兩者的 <from><row>、<blip r:embed>、<Relationship> 結構一致，
+# 故一律以 local name（去命名空間）比對，不寫死任一種前綴。
+_DRAWING_ROW_TAG = "row"
+_DRAWING_FROM_TAG = "from"
+_DRAWING_BLIP_TAG = "blip"
+_DRAWING_EMBED_ATTR = "embed"
+_RELATIONSHIP_TAG = "Relationship"
+
+
+def _local_name(tag: str) -> str:
+    """去掉 XML 標籤的命名空間前綴（`{ns}row`→`row`），供命名空間無關比對。"""
+    return tag.rsplit("}", 1)[-1]
+
+
+def _local_attr(attrib: dict[str, str], name: str) -> str | None:
+    """以 local name 取屬性值（`r:embed` 序列化後為 `{ns}embed`），找不到回 None。"""
+    for key, value in attrib.items():
+        if _local_name(key) == name:
+            return value
+    return None
+
+
+def _parse_relationships(zf: zipfile.ZipFile, rels_path: str) -> dict[str, str]:
+    """讀一份 .rels，回 {Id: 解析後的 zip 內部路徑}；缺檔或解析失敗回空 dict。
+
+    Target 可能是絕對（/xl/...）或相對（../media/image1.png）；以 rels 檔所在目錄的
+    上一層（package part 慣例）為基準解析成 zip 內的正規化路徑，供 zf.read 直接取用。
+    """
+    try:
+        data = zf.read(rels_path)
+    except KeyError:
+        return {}
+    try:
+        root = ElementTree.fromstring(data)
+    except ElementTree.ParseError:
+        return {}
+    # rels 檔位於 <part 所在目錄>/_rels/<part>.rels；相對 Target 以 part 所在目錄為基準。
+    base_dir = posixpath.dirname(posixpath.dirname(rels_path))
+    mapping: dict[str, str] = {}
+    for element in root:
+        if _local_name(element.tag) != _RELATIONSHIP_TAG:
+            continue
+        rel_id = element.attrib.get("Id")
+        target = element.attrib.get("Target")
+        if not rel_id or not target:
+            continue
+        if target.startswith("/"):
+            resolved = target.lstrip("/")
+        else:
+            resolved = posixpath.normpath(posixpath.join(base_dir, target))
+        mapping[rel_id] = resolved
+    return mapping
+
+
+def _resolve_sheet_part(zf: zipfile.ZipFile, sheet_name: str) -> str | None:
+    """由工作表顯示名解析出其 zip 內的 worksheet part 路徑（xl/worksheets/sheetN.xml）。
+
+    鏈路：workbook.xml 的 <sheet name r:id> → workbook.xml.rels 的 rId→Target。
+    sheetN 的 N 與工作表順序無必然關係，故必經 rels 解析，不可用 index 推。
+    """
+    try:
+        workbook_xml = zf.read("xl/workbook.xml")
+    except KeyError:
+        return None
+    try:
+        root = ElementTree.fromstring(workbook_xml)
+    except ElementTree.ParseError:
+        return None
+    rels = _parse_relationships(zf, "xl/_rels/workbook.xml.rels")
+    for element in root.iter():
+        if _local_name(element.tag) != "sheet":
+            continue
+        if element.attrib.get("name") != sheet_name:
+            continue
+        rel_id = _local_attr(element.attrib, "id")
+        if rel_id and rel_id in rels:
+            return rels[rel_id]
+    return None
+
+
+def _resolve_drawing_part(zf: zipfile.ZipFile, sheet_part: str) -> str | None:
+    """由 worksheet part 找出其 drawing part 路徑（xl/drawings/drawingN.xml）。
+
+    鏈路：sheetN.xml 的 <drawing r:id> → sheetN.xml.rels 的 rId→Target。無 drawing 回 None。
+    """
+    try:
+        sheet_xml = zf.read(sheet_part)
+    except KeyError:
+        return None
+    try:
+        root = ElementTree.fromstring(sheet_xml)
+    except ElementTree.ParseError:
+        return None
+    drawing_rel_id: str | None = None
+    for element in root.iter():
+        if _local_name(element.tag) == "drawing":
+            drawing_rel_id = _local_attr(element.attrib, "id")
+            if drawing_rel_id:
+                break
+    if not drawing_rel_id:
+        return None
+    sheet_dir = posixpath.dirname(sheet_part)
+    rels_path = f"{sheet_dir}/_rels/{posixpath.basename(sheet_part)}.rels"
+    rels = _parse_relationships(zf, rels_path)
+    return rels.get(drawing_rel_id)
+
+
+def _anchor_row_number(anchor: ElementTree.Element) -> int | None:
+    """由一個 anchor 元素取 1-based 列號：<from><row>{0-based}</row></from> + 1。
+
+    oneCellAnchor／twoCellAnchor 皆有 <from><row>；命名空間無關比對。缺 from/row 回 None。
+    """
+    for child in anchor:
+        if _local_name(child.tag) != _DRAWING_FROM_TAG:
+            continue
+        for marker in child:
+            if _local_name(marker.tag) == _DRAWING_ROW_TAG and marker.text is not None:
+                try:
+                    return int(marker.text.strip()) + 1
+                except ValueError:
+                    return None
+    return None
+
+
+def _anchor_embed_id(anchor: ElementTree.Element) -> str | None:
+    """由一個 anchor 元素取其圖片關聯 Id（<blip r:embed="rId"/>）；無圖回 None。"""
+    for element in anchor.iter():
+        if _local_name(element.tag) == _DRAWING_BLIP_TAG:
+            embed = _local_attr(element.attrib, _DRAWING_EMBED_ATTR)
+            if embed:
+                return embed
+    return None
+
+
 def extract_embedded_images(path: Path, sheet_name: str) -> dict[int, tuple[bytes, int]]:
     """取出 xlsx 指定工作表的內嵌圖片，回 {1-based 列號: (第一張圖 bytes, 該列圖片張數)}。
 
     WIPS 匯出的「主附圖」是錨在資料列的**浮動圖片物件**，與儲存格文字值無關
-    （儲存格值為單一空白字元），故需由 openpyxl 的 `ws._images` 取得。錨點
-    `anchor._from.row` 為 0-based，+1 後即為 xlsx 的 1-based 列號，可直接對上
-    load_xlsx_rows 的 `_row_number`。
+    （儲存格值為單一空白字元）。**改用 zipfile 直接解析 drawing XML**，不再
+    load_workbook 全載整個 workbook（B-1 維運修復：read_only=False 全載會解析全部
+    drawing/樣式/公式，53.8MB 檔 hang/爆記憶體）。
+
+    對映與舊版完全一致：drawing XML 的 <from><row>（0-based）+1 = 1-based 列號，
+    對上 load_xlsx_rows 的 `_row_number`；圖片 bytes 直接由 xl/media/imageN.xxx 讀出。
+
+    解析鏈：workbook.xml→sheet part→drawingN.xml（列號＋blip embed id）＋
+    drawingN.xml.rels（embed id→media 路徑）。命名空間無關比對，兼容 Excel 產的
+    xdr:/twoCellAnchor 與 openpyxl 產的預設命名空間/oneCellAnchor。
 
     通用性：不假設圖片在哪一欄、不假設每列都有圖、不假設圖片數等於資料列數。
-    完全沒有內嵌圖（或檔案結構不支援 drawing）時回空 dict，匯入照常進行。
+    完全沒有內嵌圖、檔案結構不支援 drawing、非 zip 或損毀時回空 dict，匯入照常進行。
     同一列多張圖時回傳第一張並附上張數，由呼叫端轉成警告，不靜默丟棄。
     """
     images: dict[int, bytes] = {}
     counts: dict[int, int] = {}
     try:
-        # read_only=True 不解析 drawing，故此處必須用一般模式；只取 drawing 不讀值。
-        workbook = load_workbook(path, read_only=False, data_only=True)
-    except Exception:
-        # 某些來源（非 zip、加密、損毀 drawing 關聯）無法完整開啟；圖片屬加值資料，
-        # 取不到就當作無圖，不得讓整批匯入失敗。
+        with zipfile.ZipFile(path) as zf:
+            sheet_part = _resolve_sheet_part(zf, sheet_name)
+            if not sheet_part:
+                return {}
+            drawing_part = _resolve_drawing_part(zf, sheet_part)
+            if not drawing_part:
+                return {}
+            try:
+                drawing_xml = zf.read(drawing_part)
+            except KeyError:
+                return {}
+            drawing_root = ElementTree.fromstring(drawing_xml)
+            drawing_dir = posixpath.dirname(drawing_part)
+            drawing_rels = _parse_relationships(
+                zf,
+                f"{drawing_dir}/_rels/{posixpath.basename(drawing_part)}.rels",
+            )
+            # 逐 anchor（文件序＝Excel 錨點序）取列號與圖片；同列多張時 setdefault
+            # 保留先到者（第一張），counts 累加該列張數——與舊版 openpyxl 走訪語意一致。
+            for anchor in drawing_root:
+                row_number = _anchor_row_number(anchor)
+                if row_number is None:
+                    continue
+                embed_id = _anchor_embed_id(anchor)
+                if not embed_id:
+                    continue
+                media_path = drawing_rels.get(embed_id)
+                if not media_path:
+                    continue
+                try:
+                    blob = zf.read(media_path)
+                except KeyError:
+                    continue
+                if not blob:
+                    continue
+                counts[row_number] = counts.get(row_number, 0) + 1
+                images.setdefault(row_number, blob)
+    except (zipfile.BadZipFile, ElementTree.ParseError, OSError):
+        # 非 zip、加密、損毀 drawing／關聯：圖片屬加值資料，取不到就當作無圖，
+        # 不得讓整批匯入失敗（沿舊版容錯）。
         return {}
-    try:
-        if sheet_name not in workbook.sheetnames:
-            return {}
-        worksheet = workbook[sheet_name]
-        for image in getattr(worksheet, "_images", []) or []:
-            row_number = _image_row_number(image)
-            if row_number is None:
-                continue
-            blob = _image_bytes(image)
-            if blob is None:
-                continue
-            counts[row_number] = counts.get(row_number, 0) + 1
-            images.setdefault(row_number, blob)
-    finally:
-        workbook.close()
     return {row: (blob, counts[row]) for row, blob in images.items()}
-
-
-def _image_row_number(image: Any) -> int | None:
-    """由圖片錨點求得 1-based 列號；錨點形態不支援時回 None（該圖略過）。"""
-    anchor = getattr(image, "anchor", None)
-    marker = getattr(anchor, "_from", None)
-    row = getattr(marker, "row", None)
-    if row is None:
-        return None
-    return int(row) + 1
-
-
-def _image_bytes(image: Any) -> bytes | None:
-    """取出圖片原始位元組；openpyxl 的 `ref` 可能是 bytes、BytesIO 或 PIL 影像。"""
-    ref = getattr(image, "_data", None)
-    if callable(ref):
-        try:
-            data = ref()
-        except Exception:
-            return None
-        return bytes(data) if data else None
-    return None
 
 
 def load_delimited_rows(path: Path, source_name: str) -> tuple[list[str], str, list[dict[str, Any]], list[str]]:
