@@ -11,12 +11,16 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from backend.app.api import market_documents
 from backend.app.market.evidence_model import MarketEvidenceError
 from backend.app.market import evidence_runs
 from backend.app.mcp_server import tools_market
 
 
 router = APIRouter(tags=["market-evidence"])
+
+# 市場 PDF 上傳線（0034 底層）：掛在已註冊的 market router 下，不必另改 main.py 掛新 router。
+router.include_router(market_documents.router)
 
 
 class MarketEvidenceTaskRequest(BaseModel):

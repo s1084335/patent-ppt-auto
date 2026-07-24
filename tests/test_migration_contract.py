@@ -26,7 +26,8 @@ DERIVED_TARGET_TABLES = {"company_aliases", "topic_runs", "topic_assignments"}
 # 新增 migration 建表時，一併在這裡補上表名與來源 revision。
 POST_0021_TABLES = {
     # 0023_market_evidence：市場資料證據庫。
-    "derived_layer": {"market_evidence"},
+    # 0034_market_doc_summary：市場 PDF metadata 與 AI 摘要版本（新市場線底層）。
+    "derived_layer": {"market_evidence", "market_documents", "market_doc_summaries"},
     # 0024_import_blobs：匯入上傳內容的跨容器傳輸表。
     # 0025_report_artifacts：報表產物的跨容器共享表。
     # 0027_workspace_documents：workspace 的技術文獻（PDF）內容保存表。
