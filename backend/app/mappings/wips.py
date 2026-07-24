@@ -413,7 +413,10 @@ FIELD_GROUPS = {
         "审判管辖类型[US,JP,KR,EP]", "诉讼总数[US]", "管辖法院类型[US]",
     },
     "documents": {
-        "文图像文件(PDF)链接", "详细查看链接(登录)", "个别图数量", "文献备注", "纠正公告存在[JP,KR]",
+        # 「文献备注」(文獻備註) 0032 起改為 AI 產出欄、落 core_layer.patents 主表，
+        # 不再是 patent_attributes 屬性欄，故從此 group 移除——否則 ATTRIBUTE_FIELDS 會含它，
+        # 匯入時 replace_attributes 會 INSERT 到已被 0032 移除的 patent_attributes 欄而爆。
+        "文图像文件(PDF)链接", "详细查看链接(登录)", "个别图数量", "纠正公告存在[JP,KR]",
         "食品药品专利记载[US]", "所有权利要求[JP,KR,CN]",
     },
     "standard": {"标准化机构", "标准号码", "申报日", "申报（登记）人", "申报（登记）人国籍"},

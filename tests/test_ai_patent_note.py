@@ -4,7 +4,7 @@
 本檔鎖住使用者定案的五條線：
 
 1. **來源＝獨立項**（`core_layer.patents."主權項"`），不是 abstract 摘要欄。
-2. **落點＝`core_layer.patent_attributes."文獻備註"`** 既有 text 欄，不新增欄位。
+2. **落點＝`core_layer.patents."文獻備註"`**（0032 起搬主表；一專利一列，回寫直接 WHERE id）。
 3. **一律輸出繁體中文**：來源獨立項中英混雜（實測有全英文專利），prompt 必須明確要求繁中。
 4. **100 字是上限不是目標**：prompt 不得要求寫滿或設下限（避免 AI 灌水湊字數）。
 5. **批次按字數切、不得按件數切**：獨立項中位 1,000 字、p95 2,905、最長 10,008，
@@ -171,7 +171,7 @@ class PromptContractTests(unittest.TestCase):
 
 
 class WriteBackTests(unittest.TestCase):
-    """備註寫回 patent_attributes."文獻備註"，且不重複燒 token。"""
+    """備註寫回 patents."文獻備註"（主表，回寫直接 WHERE id），且不重複燒 token。"""
 
     def test_run_writes_notes_via_store_in_batches(self):
         """整條流程：讀候選 → 分批呼 CLI → 批次寫回，寫入不得 N+1。"""
@@ -201,15 +201,21 @@ class WriteBackTests(unittest.TestCase):
         self.assertIs(store.skip_existing_seen, True)
 
     def test_note_store_targets_文獻備註_column(self):
-        """落點鎖死：SQL 必須寫 core_layer.patent_attributes 的 "文獻備註" 欄。"""
+        """落點鎖死（0032 搬主表）：WRITE 必須是 UPDATE core_layer.patents ... WHERE id，
+        不再寫 patent_attributes、不再選 MAX(raw_record_id)——一專利一列直接命中。"""
         sql = ai_patent_note_runner.PatentNoteStore.WRITE_SQL
-        self.assertIn("patent_attributes", sql)
-        self.assertIn('"文獻備註"', sql)
         self.assertIn("UPDATE", sql.upper())
-        # 來源必須是主權項（獨立項），不是 abstract。
+        self.assertIn("core_layer.patents", sql)
+        self.assertIn('"文獻備註"', sql)
+        self.assertIn("WHERE id", sql)
+        # 回寫可靠性關鍵：不再落 patent_attributes，也不再選 raw_record 列。
+        self.assertNotIn("patent_attributes", sql)
+        self.assertNotIn("MAX", sql.upper())
+        # 來源必須是主權項（獨立項），不是 abstract；skip_existing 讀主表備註，不 JOIN attributes。
         read_sql = ai_patent_note_runner.PatentNoteStore.READ_SQL
         self.assertIn('"主權項"', read_sql)
         self.assertNotIn("abstract", read_sql.lower())
+        self.assertNotIn("patent_attributes", read_sql)
 
     def test_read_sql_uses_current_workspace_membership_source(self):
         """regression：0021 後成員在 workspaces.patent_ids_json，明細表已下沉 legacy_0021。
@@ -290,8 +296,10 @@ class JobRegistrationTests(unittest.TestCase):
         )
         store = mock.MagicMock()
         fake_note_store = FakeNoteStore([(1, "獨立項甲")])
+        # patch 整個 PatentNoteStore 符號（呼叫回 fake），不 patch slot __new__——
+        # mock.patch.object 對 __new__ 這種 C-level slot 還原不乾淨，會洩漏到同 session 後續測試。
         with mock.patch.object(
-            ai_patent_note_runner.PatentNoteStore, "__new__", return_value=fake_note_store
+            ai_patent_note_runner, "PatentNoteStore", return_value=fake_note_store
         ):
             outcome = ai_bridge.execute_ai_job(job, worker_id="ai-bridge-test", store=store)
         self.assertEqual(outcome["status"], "succeeded", outcome.get("error"))

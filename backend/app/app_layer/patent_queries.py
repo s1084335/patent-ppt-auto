@@ -53,6 +53,9 @@ _PATENT_FIELDS: dict[str, str] = {
     "publication_number": 'NULLIF(BTRIM({p}."未審查的公開號"), \'\')',
     "grant_number": 'NULLIF(BTRIM({p}."授權公告號"), \'\')',
     "orig_ipc_main": 'NULLIF(BTRIM({p}."Orig. IPC(Main)"), \'\')',
+    # 文獻備註 0032 起搬到 patents 主表（一專利一列，AI 回寫直接 WHERE id）；
+    # 不再從 patent_attributes「最新非空」取，避免多列選列不一致。
+    "patent_note": 'NULLIF(BTRIM({p}."文獻備註"), \'\')',
 }
 
 # patent_people：patent_id 為 PK（一對一），LEFT JOIN 即可，不會放大列數。
@@ -74,7 +77,6 @@ _ATTRIBUTE_FIELDS: dict[str, str] = {
     "priority_date": "優先權日",
     "detail_url": "詳細查看連結(登入)",
     "pdf_url": "文圖像文件(PDF)連結",
-    "patent_note": "文獻備註",
 }
 
 

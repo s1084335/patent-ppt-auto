@@ -75,10 +75,10 @@ def _seed():
             INSERT INTO core_layer.patents
                 (id, "授權公告號", "未審查的公開號", "申請號", country_code, patent_type,
                  application_date, application_year, title, title_original, abstract,
-                 legal_status, "Orig. IPC(Main)")
+                 legal_status, "Orig. IPC(Main)", "文獻備註")
             VALUES (%s, 'US94000001B2', 'US2019000001A1', 'US16/000001', 'US', '發明專利',
                     DATE '2019-03-04', 2019, 'Full patent', 'Full patent original',
-                    'An abstract body.', 'ALIVE', 'H04L-051/02')
+                    'An abstract body.', 'ALIVE', 'H04L-051/02', 'AI 產生的文獻備註。')
             """,
             (PID_FULL,),
         )
@@ -112,11 +112,10 @@ def _seed():
             INSERT INTO core_layer.patent_attributes
                 (patent_id, raw_record_id, "摘要(原文)", "未審查的公開日", "授權公告日",
                  "優先權號", "優先權國家", "優先權日", "詳細查看連結(登入)",
-                 "文圖像文件(PDF)連結", "文獻備註")
+                 "文圖像文件(PDF)連結")
             VALUES (%s, %s, 'Original abstract.', '2019-09-05', '2021-01-12',
                     'US62/000001', 'US', DATE '2018-03-05'::text,
-                    'https://wips.example/doc/1', 'https://wips.example/pdf/1.pdf',
-                    'AI 產生的文獻備註。')
+                    'https://wips.example/doc/1', 'https://wips.example/pdf/1.pdf')
             """,
             (PID_FULL, RAW_OLD),
         )

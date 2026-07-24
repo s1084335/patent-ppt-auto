@@ -1,7 +1,7 @@
 """文獻備註 headless CLI runner（ai:patent_note 任務的核心）。
 
 用途：把每件專利的**獨立項**交給 headless CLI 摘要成一段簡短的「文獻備註」，
-寫回 `core_layer.patent_attributes."文獻備註"`（既有 text 欄，不新增欄位）。
+寫回 `core_layer.patents."文獻備註"`（0032 起搬到主表；一專利一列，回寫直接 WHERE id）。
 
 規格唯一來源：`.agents/context/patent-display-spec.md`「文獻備註（#6）」節。定案重點：
 
@@ -188,24 +188,17 @@ def _extract_notes(parsed: dict[str, Any]) -> list[dict[str, Any]]:
 class PatentNoteStore:
     """文獻備註的 DB 落點（讀候選＋批次寫回）。
 
-    落點語意：`patent_attributes` 主鍵為 (patent_id, raw_record_id)，同一專利可有多列
-    （多次匯入）。讀候選與寫回一律鎖定**該專利 raw_record_id 最大者**（最新匯入列），
-    與 `comparison/target_source.py`、`refresh_report_patent_base` 的取列規則一致，
-    避免備註散落在舊列上而前端讀不到。
+    落點語意（0032 起）：文獻備註欄在 `core_layer.patents` 主表（一專利一列）。回寫直接
+    `UPDATE ... WHERE id = %s`，保證命中該專利那一列、不需選 raw_record 列，也不會 UPDATE 0 列
+    靜默失敗。搬主表理由（回寫可靠性）見 0032 migration 頂部說明，與 0026 主附圖同一模式。
     """
 
     # 讀候選：來源＝patents."主權項"（獨立項），非 abstract。
-    # skip_existing 為 True 時排除最新屬性列已有備註者（可重跑但不重複燒 token）。
+    # skip_existing 為 True 時排除**主表**已有備註者（0032 後備註在 patents，不再 JOIN
+    # patent_attributes 取 latest note）——可重跑但不重複燒 token。
     READ_SQL = f"""
         SELECT p.id, p."{CLAIM_COLUMN}"
         FROM core_layer.patents p
-        JOIN LATERAL (
-            SELECT a.raw_record_id, a."{NOTE_COLUMN}" AS note
-            FROM core_layer.patent_attributes a
-            WHERE a.patent_id = p.id
-            ORDER BY a.raw_record_id DESC
-            LIMIT 1
-        ) latest ON TRUE
         WHERE NULLIF(BTRIM(p."{CLAIM_COLUMN}"), '') IS NOT NULL
           AND (%(workspace_id)s::bigint IS NULL OR EXISTS (
               -- 0021：workspace 成員為 workspaces.patent_ids_json 陣列
@@ -216,20 +209,15 @@ class PatentNoteStore:
               WHERE w.workspace_id = %(workspace_id)s::bigint
                 AND (m.pid)::bigint = p.id
           ))
-          AND (NOT %(skip_existing)s OR NULLIF(BTRIM(latest.note), '') IS NULL)
+          AND (NOT %(skip_existing)s OR NULLIF(BTRIM(p."{NOTE_COLUMN}"), '') IS NULL)
         ORDER BY p.id
     """
 
-    # 批次寫回：只更新該專利最新的屬性列，一次 executemany 送整批（不逐筆往返）。
+    # 批次寫回：主表一專利一列，直接 WHERE id，一次 executemany 送整批（不逐筆往返、不選 raw_record 列）。
     WRITE_SQL = f"""
-        UPDATE core_layer.patent_attributes AS a
+        UPDATE core_layer.patents
         SET "{NOTE_COLUMN}" = %s
-        WHERE a.patent_id = %s
-          AND a.raw_record_id = (
-              SELECT MAX(a2.raw_record_id)
-              FROM core_layer.patent_attributes a2
-              WHERE a2.patent_id = a.patent_id
-          )
+        WHERE id = %s
     """
 
     def __init__(self, connect_kwargs: dict[str, Any] | None = None) -> None:
