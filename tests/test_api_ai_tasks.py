@@ -308,9 +308,12 @@ def test_get_task_rejects_non_ai_job(token_set, monkeypatch):
     assert resp.status_code == 404
 
 
-def test_old_companion_routes_are_gone(token_set):
-    """舊 /companion/* 路徑不得殘留，避免兩個語意重疊的入口。"""
-    assert client.get(f"{PREFIX}/companion/status", headers=AUTH).status_code == 404
+def test_old_companion_narrative_route_is_gone(token_set):
+    """舊 POST /companion/narrative-tasks 入口不得殘留（與 /ai-tasks 語意重疊）。
+
+    ⚠ 2026-07-24 定案：GET /companion/status 予以保留（launcher 健檢需要），故不再斷言其消失；
+    僅斷言重疊的 narrative-tasks 入口已移除。原 test_old_companion_routes_are_gone 對
+    /companion/status 回 404 的斷言已隨此定案刪除。"""
     assert (
         client.post(
             f"{PREFIX}/companion/narrative-tasks", json={"cli_kind": "claude"}, headers=AUTH
