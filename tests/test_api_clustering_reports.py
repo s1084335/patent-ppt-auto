@@ -23,7 +23,8 @@ class ClusteringReportsConstantTests(unittest.TestCase):
     def test_default_report_names_match_definitions(self):
         """確認固定預設報表名單與定義順序完全一致。"""
         self.assertIsInstance(DEFAULT_REPORT_NAMES, tuple)
-        self.assertEqual(len(DEFAULT_REPORT_NAMES), 14)
+        # 14 現有屬性統計 ＋ 3 分群報表＝17 種全列（2026-07-24 報表種類定案）。
+        self.assertEqual(len(DEFAULT_REPORT_NAMES), 17)
         self.assertEqual(DEFAULT_REPORT_NAMES, tuple(REPORT_DEFINITIONS))
 
     def test_get_report_definitions_returns_catalog(self):

@@ -233,6 +233,13 @@ def run_report(
     definition = REPORT_DEFINITIONS.get(report_name)
     if not definition:
         raise ValueError(f"Unknown report: {report_name}")
+    if definition.report_type == "cluster":
+        # cluster 型報表不吃單表 SQL：資料源＝分群定案（topic_assignments→主題）JOIN 申請人，
+        # 由 chart_runner 的 cluster_analytics section 吃注入的 cluster_data 出圖。此處 fail loud，
+        # 讓 run_reports_batch 以 skipped_reason 現形，不誤把 cluster 名餵進 build_report_sql。
+        raise ValueError(
+            f"cluster report {report_name} is rendered from cluster_data, not single-table SQL"
+        )
 
     import psycopg
     from psycopg.rows import dict_row

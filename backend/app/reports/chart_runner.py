@@ -157,9 +157,10 @@ CHART_FILE_REPORTS: dict[str, list[str]] = {
     "lifecycle.svg": ["lifecycle"],
     "application_growth.svg": ["application_trend"],
     "family_quality.json": ["family_quality_detail"],
-    "opportunity_quadrant.svg": ["cluster_analytics"],
-    "pain_point_quadrant.svg": ["cluster_analytics"],
-    "cluster_topic_table.html": ["cluster_analytics"],
+    # 三個分群 artifact 各自對回自己的報表名（供 manifest／解讀查找定位到正確報表）。
+    "cluster_topic_table.html": ["cluster_topic_table"],
+    "opportunity_quadrant.svg": ["opportunity_quadrant"],
+    "pain_point_quadrant.svg": ["pain_point_quadrant"],
 }
 
 
@@ -172,7 +173,15 @@ def report_names_for_artifact(filename: str) -> list[str]:
         return [filename[:-4]]
     if filename == "report_data.json":
         return ["all_fetched_reports"]
-    return CHART_FILE_REPORTS.get(filename, [])
+    mapped = CHART_FILE_REPORTS.get(filename)
+    if mapped is not None:
+        return mapped
+    # 分群象限板多來源時帶 slug 後綴（opportunity_quadrant_tech.svg 等）；
+    # 對回基底報表名，讓 manifest／解讀查找不因分段檔名而落空。
+    for base in ("opportunity_quadrant", "pain_point_quadrant"):
+        if filename.startswith(f"{base}_") and filename.endswith(".svg"):
+            return [base]
+    return []
 
 
 def build_artifact_manifest(
@@ -2130,7 +2139,14 @@ SECTION_SPECS: tuple[SectionSpec, ...] = (
     SectionSpec("applicant_country", ("applicant_country_distribution",), _build_applicant_country_section),
     SectionSpec("lifecycle", ("lifecycle",), _build_lifecycle_section),
     SectionSpec("application_growth", ("application_trend",), _build_growth_section),
-    SectionSpec("cluster_analytics", ("cluster_analytics",), _build_cluster_analytics_section),
+    # 分群卡片＝一張 section 出三個 artifact（主題統計表＋機會板＋痛點板）。三個報表名
+    # 都掛在此 spec：requestreport_names 帶其中任一就渲染整張分群卡（三者同源、一體呈現）；
+    # 保留 "cluster_analytics" 虛擬別名，相容既有「無對應報表的特殊 section」契約與呼叫端。
+    SectionSpec(
+        "cluster_analytics",
+        ("cluster_analytics", "cluster_topic_table", "opportunity_quadrant", "pain_point_quadrant"),
+        _build_cluster_analytics_section,
+    ),
 )
 
 def resolve_sections(report_names: Sequence[str] | None) -> tuple[SectionSpec, ...]:

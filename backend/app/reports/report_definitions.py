@@ -25,6 +25,9 @@ class ReportDefinition:
     # 函式白名單見 report_engine.AGGREGATE_FUNCTIONS（sum / count_distinct / avg / max）。
     # 例：(("sum", "(F1)引用文獻數", "cited_total"),) → COALESCE(SUM("(F1)引用文獻數"), 0) AS cited_total
     aggregates: tuple[tuple[str, str, str], ...] = ()
+    # 資料來源備註：cluster 型報表用來標明分群／市場線等外部依賴（如「待市場線痛點資料」）；
+    # 只作說明用途，不影響引擎行為。
+    data_source_note: str = ""
 
 
 REPORT_SOURCE_TABLE = "derived_layer.report_patent_base"
@@ -242,6 +245,53 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         ),
         default_order=(("family_incomplete", "desc"), ("family_id", "asc")),
         supports_patent_ids=False,
+    ),
+    # ── 分群相關報表（report_type="cluster"）──────────────────────────────
+    # 這三支不吃單表 SQL：資料源＝分群定案（topic_assignments→主題）JOIN 申請人，由
+    # chart_runner 的 cluster_analytics section（吃注入的 cluster_data）出圖，不走
+    # report_engine.build_report_sql。前端「報表種類」需列出它們，故在此註冊定義；
+    # run_report/run_reports_batch 對 cluster 型一律跳過（回 skipped_reason），不進 SQL。
+    #
+    # cluster_topic_table：每主題一列＝件數＋獨立申請人廣度（關鍵欄，件數第一層、
+    # 競爭者廣度才見結構）＋前三大申請人＋年份跨度。件數與獨立申請人數由
+    # cluster_analytics.build_topic_effect_table 以 set 去重一次算完（非 N+1）；
+    # 主題→專利歸屬取自 topic_assignments（見 topic_state_repository），不是
+    # topic_state_json 的 patent_ids（後者在 repository 被覆寫丟棄）。
+    "cluster_topic_table": ReportDefinition(
+        name="cluster_topic_table",
+        report_type="cluster",
+        label="Cluster Topic Table",
+        label_zh="主題分類統計表",
+        source_table="",
+        columns=(),
+        supports_patent_ids=False,
+        data_source_note="分群定案（topic_assignments→主題）JOIN report_patent_base 申請人；技術／功效兩通道各自主題",
+    ),
+    # opportunity_quadrant：四象限（x 專利密度、y 競爭者結構強度），中位數切象限。
+    # 中位數門檻由 build_opportunity_matrix 一併回傳並隨 chart_rows 落 report_data.json
+    # （報表可重現，不每次重算）。
+    "opportunity_quadrant": ReportDefinition(
+        name="opportunity_quadrant",
+        report_type="cluster",
+        label="Opportunity Quadrant",
+        label_zh="機會四象限",
+        source_table="",
+        columns=(),
+        supports_patent_ids=False,
+        data_source_note="依 cluster_topic_table；x 專利密度、y 競爭者結構強度，中位數門檻入庫",
+    ),
+    # pain_point_quadrant：痛點 × 專利佈局交叉。痛點資料須走市場線（市場資料上傳→
+    # AI 摘要→使用者確認），該線尚未實作；缺痛點資料時 build_pain_point_matrix 以空
+    # pain_data 產出（severity 全部 unknown＝待調查灰帶），優雅回空、不假造痛點。
+    "pain_point_quadrant": ReportDefinition(
+        name="pain_point_quadrant",
+        report_type="cluster",
+        label="Pain Point Quadrant",
+        label_zh="痛點四象限",
+        source_table="",
+        columns=(),
+        supports_patent_ids=False,
+        data_source_note="待市場線痛點資料（市場資料上傳→AI 摘要→使用者確認）；缺資料時痛點軸全標待調查，不假造",
     ),
 }
 
