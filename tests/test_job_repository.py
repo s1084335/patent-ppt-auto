@@ -324,6 +324,142 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(jr.get_job(claimed.job_id).status, "queued")
 
 
+class ImportBlobTerminalCleanupTests(unittest.TestCase):
+    """patent_import job 進入不會再重試的終結態時，自動刪對應 import_blob（維運：防表膨脹）。
+
+    紅線雙重保護：cancelled／失敗至上限一律刪；還會重試的 failed 保留（重試要取同一份 blob）。
+    以拋棄式庫的真實 import_blobs 列驗證，不 mock；每測結尾清 blob 與 run（_cleanup）。
+    """
+
+    def tearDown(self):
+        _cleanup()
+        with _connect() as conn:
+            conn.execute("DELETE FROM app_layer.import_blobs")
+            conn.commit()
+
+    def _make_blob(self) -> int:
+        """在拋棄式庫建一列 import_blob，回 blob_id（內容非重點，驗的是收尾刪除）。"""
+        with _connect() as conn:
+            blob_id = conn.execute(
+                "INSERT INTO app_layer.import_blobs (original_filename, content) "
+                "VALUES (%s, %s) RETURNING blob_id",
+                ("verify.csv", b"col\nval\n"),
+            ).fetchone()[0]
+            conn.commit()
+        return int(blob_id)
+
+    def _blob_exists(self, blob_id: int) -> bool:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM app_layer.import_blobs WHERE blob_id = %s", (blob_id,)
+            ).fetchone()
+        return row is not None
+
+    def _make_import_job(self, blob_id: int, *, max_attempts: int = 3) -> jr.ProcessingJob:
+        return jr.create_job(
+            "patent_import",
+            _make_payload(blob_id=blob_id, file_hash="x", original_filename="verify.csv"),
+            max_attempts=max_attempts,
+        )
+
+    def test_backend_cancel_deletes_blob(self):
+        """backend cancel_job：queued patent_import 收斂 cancelled → blob 刪除。"""
+        blob_id = self._make_blob()
+        job = self._make_import_job(blob_id)
+        cancelled = jr.cancel_job(job.job_id)
+        self.assertEqual(cancelled.status, "cancelled")
+        self.assertFalse(self._blob_exists(blob_id))
+
+    def test_worker_cancel_deletes_blob(self):
+        """worker cancel_job：running patent_import 收斂 cancelled → blob 刪除。"""
+        blob_id = self._make_blob()
+        job = self._make_import_job(blob_id)
+        client = jr.WorkerQueueClient()
+        claimed = client.claim_next_job(worker_id="w-imp-cancel",
+                                        job_types=("patent_import",))
+        self.assertEqual(claimed.job_id, job.job_id)
+        client.cancel_job(job_id=claimed.job_id, worker_id="w-imp-cancel",
+                          error_message="user cancelled")
+        self.assertEqual(jr.get_job(claimed.job_id).status, "cancelled")
+        self.assertFalse(self._blob_exists(blob_id))
+
+    def test_fail_at_max_attempts_deletes_blob(self):
+        """失敗且已達 max_attempts（不再重試）→ blob 刪除。"""
+        blob_id = self._make_blob()
+        job = self._make_import_job(blob_id, max_attempts=1)
+        client = jr.WorkerQueueClient()
+        claimed = client.claim_next_job(worker_id="w-imp-fail",
+                                        job_types=("patent_import",))
+        # max_attempts=1，claim 後 attempt_count=1，fail 即終結不重試。
+        self.assertEqual(claimed.job_id, job.job_id)
+        client.fail_job(job_id=claimed.job_id, worker_id="w-imp-fail", error_message="boom")
+        self.assertEqual(jr.get_job(claimed.job_id).status, "failed")
+        self.assertFalse(self._blob_exists(blob_id))
+
+    def test_fail_with_retries_remaining_keeps_blob(self):
+        """🔴 失敗但未達 max_attempts（還會重試）→ blob 必須保留，否則重試取不到內容。"""
+        blob_id = self._make_blob()
+        job = self._make_import_job(blob_id, max_attempts=3)
+        client = jr.WorkerQueueClient()
+        claimed = client.claim_next_job(worker_id="w-imp-retry",
+                                        job_types=("patent_import",))
+        # max_attempts=3，claim 後 attempt_count=1 < 3，fail 後仍會重試。
+        self.assertEqual(claimed.job_id, job.job_id)
+        client.fail_job(job_id=claimed.job_id, worker_id="w-imp-retry", error_message="boom")
+        self.assertEqual(jr.get_job(claimed.job_id).status, "failed")
+        self.assertTrue(self._blob_exists(blob_id))
+
+    def test_stale_failed_at_max_attempts_deletes_blob(self):
+        """requeue_stale：達上限標 stale_failed（不再重試）→ blob 刪除。"""
+        blob_id = self._make_blob()
+        job = self._make_import_job(blob_id, max_attempts=1)
+        client = jr.WorkerQueueClient()
+        claimed = client.claim_next_job(worker_id="w-imp-stale",
+                                        job_types=("patent_import",))
+        self.assertEqual(claimed.job_id, job.job_id)
+        with _connect() as conn:
+            conn.execute(
+                "UPDATE app_layer.workflow_runs "
+                "SET worker_state_json = worker_state_json "
+                "    || jsonb_build_object('heartbeat_at', to_jsonb(now() - interval '1 hour')) "
+                "WHERE run_id = %s",
+                (claimed.job_id,))
+            conn.commit()
+        result = client.requeue_stale_jobs(stale_after_seconds=60)
+        self.assertGreaterEqual(result["failed_count"], 1)
+        self.assertEqual(jr.get_job(claimed.job_id).status, "failed")
+        self.assertFalse(self._blob_exists(blob_id))
+
+    def test_stale_requeue_with_retries_keeps_blob(self):
+        """🔴 requeue_stale：未達上限退回 queued（會重試）→ blob 必須保留。"""
+        blob_id = self._make_blob()
+        job = self._make_import_job(blob_id, max_attempts=3)
+        client = jr.WorkerQueueClient()
+        claimed = client.claim_next_job(worker_id="w-imp-stale-retry",
+                                        job_types=("patent_import",))
+        self.assertEqual(claimed.job_id, job.job_id)
+        with _connect() as conn:
+            conn.execute(
+                "UPDATE app_layer.workflow_runs "
+                "SET worker_state_json = worker_state_json "
+                "    || jsonb_build_object('heartbeat_at', to_jsonb(now() - interval '1 hour')) "
+                "WHERE run_id = %s",
+                (claimed.job_id,))
+            conn.commit()
+        result = client.requeue_stale_jobs(stale_after_seconds=60)
+        self.assertGreaterEqual(result["requeued_count"], 1)
+        self.assertEqual(jr.get_job(claimed.job_id).status, "queued")
+        self.assertTrue(self._blob_exists(blob_id))
+
+    def test_non_import_terminal_ignores_blob(self):
+        """非 patent_import job 收尾不碰 import_blobs（其他型別不持 blob）。"""
+        blob_id = self._make_blob()
+        job = jr.create_job("report_generate", _make_payload(blob_id=blob_id))
+        jr.cancel_job(job.job_id)
+        # report_generate 收尾不應誤刪這顆 blob（就算 payload 巧合帶了 blob_id）。
+        self.assertTrue(self._blob_exists(blob_id))
+
+
 class TopicMergeEndToEndTests(unittest.TestCase):
     """e2e merge 一態：佇列排入 → 認領 → handler 解析（真 SQL 反查）→ succeeded → 歷史可讀。
 

@@ -14,9 +14,17 @@ worker 找不到 backend 寫的上傳檔。兩容器共用同一個 PostgreSQL�
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 
 from backend.app.db.connection import get_pool
+
+
+LOGGER = logging.getLogger(__name__)
+
+# 孤兒掃描的預設保留時數：blob 建立未滿此時數者一律不刪，避免刪到「剛 create_blob、
+# 還沒建 job（或 job 還沒把 blob_id 寫進 request_json）」的上傳中內容。可由呼叫端覆寫。
+DEFAULT_ORPHAN_MIN_AGE_HOURS = 24
 
 
 # 取回內容寫檔的分塊大小（1 MiB）：與 wips_importer.file_sha256 同級，避免一次 write 大 buffer。
@@ -101,8 +109,96 @@ def write_blob_to_path(blob_id: int, target: Path, *, expected_hash: str) -> Non
 
 
 def delete_blob(blob_id: int) -> None:
-    """刪除內容列；匯入結束（成功或重複檔）即呼叫，不長期佔用 DB 空間。"""
+    """刪除內容列；匯入結束（成功或重複檔）即呼叫，不長期佔用 DB 空間。
+
+    冪等：DELETE 不存在的 blob_id 不報錯（成功路徑可能已刪過，終結態清理重複刪也安全）。
+    """
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM app_layer.import_blobs WHERE blob_id = %s", (blob_id,))
         conn.commit()
+
+
+def cleanup_orphan_blobs(*, min_age_hours: float = DEFAULT_ORPHAN_MIN_AGE_HOURS,
+                         dry_run: bool = False) -> dict[str, object]:
+    """掃描並刪除「無主」import_blobs：無任何非終結態 patent_import job 引用、且夠舊者。
+
+    無主判定（雙重保護，缺一不可）：
+    1. 該 blob_id 未被任何**非終結態**（status IN ('queued','running')）的 patent_import job
+       的 request_json->>'blob_id' 引用。仍會被重試（queued/running）的 job，其 blob 必須留著，
+       否則重試取不到內容——這是最高風險，故排除的是「還活著」的 job，不是全部 job。
+    2. created_at 已超過 min_age_hours。保護「剛 create_blob、job 還沒建（或 blob_id 還沒寫進
+       request_json）」的上傳中內容——那種 blob 此刻確實無 job 引用，但不是孤兒，時間門檻擋掉它。
+
+    只處理 run_type='patent_import'：其他 job 型別不持有 blob。
+    dry_run=True 時只回報將刪的 blob_id 與筆數，不真的刪，供人工先確認。
+    回傳 {"deleted_count", "blob_ids", "dry_run", "min_age_hours"}。
+    """
+    if min_age_hours < 0:
+        raise ValueError("min_age_hours must be >= 0")
+    # 引用子查詢只認「活著的」patent_import job：終結態（succeeded/failed/cancelled）的 job
+    # 不再需要 blob，故不納入保護；活著的（queued/running）才是「重試/進行中會用到」的引用。
+    # make_interval 用秒數（secs）才能支援小數時數（測試常用小門檻），hours 只吃整數。
+    interval_seconds = float(min_age_hours) * 3600.0
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT b.blob_id
+                FROM app_layer.import_blobs AS b
+                WHERE b.created_at < now() - make_interval(secs => %s)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM app_layer.workflow_runs AS r
+                      WHERE r.run_type = 'patent_import'
+                        AND r.status IN ('queued', 'running')
+                        AND (r.request_json->>'blob_id')::bigint = b.blob_id
+                  )
+                ORDER BY b.blob_id
+                """,
+                (interval_seconds,),
+            )
+            blob_ids = [int(row[0]) for row in cur.fetchall()]
+            if not dry_run and blob_ids:
+                cur.execute(
+                    "DELETE FROM app_layer.import_blobs WHERE blob_id = ANY(%s)",
+                    (blob_ids,),
+                )
+        if not dry_run:
+            conn.commit()
+    LOGGER.info(
+        "orphan import_blobs scan: %s %d blob(s) (min_age_hours=%s)",
+        "would delete" if dry_run else "deleted", len(blob_ids), min_age_hours)
+    return {
+        "deleted_count": 0 if dry_run else len(blob_ids),
+        "blob_ids": blob_ids,
+        "dry_run": dry_run,
+        "min_age_hours": min_age_hours,
+    }
+
+
+def _build_cli_parser():
+    """孤兒掃描 CLI 參數解析器（供 python -m 手動觸發）。"""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Scan and delete orphan app_layer.import_blobs (no active patent_import job).")
+    parser.add_argument(
+        "--min-age-hours", type=float, default=DEFAULT_ORPHAN_MIN_AGE_HOURS,
+        help="只刪 created_at 超過此時數的 blob，保護上傳中／剛建的內容（預設 24）。")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="只列出將刪的 blob_id，不真的刪除，供人工先確認。")
+    return parser
+
+
+def main() -> None:
+    """手動觸發孤兒掃描：uv run python -m backend.app.db.import_blob_store [--dry-run]。"""
+    logging.basicConfig(level=logging.INFO)
+    args = _build_cli_parser().parse_args()
+    result = cleanup_orphan_blobs(min_age_hours=args.min_age_hours, dry_run=args.dry_run)
+    verb = "would delete" if result["dry_run"] else "deleted"
+    print(f"{verb} {len(result['blob_ids'])} orphan blob(s): {result['blob_ids']}")
+
+
+if __name__ == "__main__":
+    main()

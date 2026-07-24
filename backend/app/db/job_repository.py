@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -29,6 +30,9 @@ from backend.app.db.connection import get_connection_kwargs, get_pool
 from backend.app.repositories.workflow_outputs_repository import (
     PostgresWorkflowOutputsRepository,
 )
+
+
+_LOGGER = logging.getLogger(__name__)
 
 # 需要外部 AI CLI 的工作類型（唯一事實來源）。
 # 這些任務只由 host-side ai_bridge 領取，一般 worker 不領——一般 worker 容器沒有
@@ -96,6 +100,40 @@ _RESULT_OUTPUT_PREFIX = "job_result:"
 
 def _result_output_type(run_type: str) -> str:
     return f"{_RESULT_OUTPUT_PREFIX}{run_type}"
+
+
+def _cleanup_import_blob_for_run(cur: "psycopg.Cursor[Any]", run_id: int) -> None:
+    """job 進入不會再重試的終結態時，刪掉它持有的 import_blob（維運：清孤兒、防表膨脹）。
+
+    只處理 run_type='patent_import' 且 request_json 帶 blob_id 者；其餘 job 型別不持 blob，
+    直接略過。此函式在 fail_job（已達 max_attempts）、cancel_job、requeue_stale（失敗分支）
+    的同一交易內、狀態已收斂後呼叫。
+
+    ⚠ 失敗隔離：blob 清理是收尾附帶動作，任何例外只記 log、不 raise——job 狀態必須先收斂，
+    刪 blob 失敗留下的孤兒之後可由 cleanup_orphan_blobs 補刪，絕不可讓 job 收尾本身出錯。
+    ⚠ 冪等：blob 可能已被成功路徑或前次收尾刪過，DELETE 不存在的 blob_id 不報錯。
+    走傳入的同一 cursor（同交易）：blob 刪除與 job 狀態收斂同進同退，不另開連線。
+    呼叫端 cursor 的 row_factory 不一（backend 走 dict_row、worker 走 tuple），故 SELECT
+    以具名欄位取回、讀值時同時相容 mapping 與 sequence，不綁死單一 row 型別。
+    """
+    try:
+        cur.execute(
+            "SELECT (request_json->>'blob_id')::bigint AS blob_id "
+            "FROM app_layer.workflow_runs "
+            "WHERE run_id = %s AND run_type = 'patent_import' "
+            "AND request_json ? 'blob_id'",
+            (run_id,))
+        row = cur.fetchone()
+        if row is None:
+            return
+        # dict_row 回 mapping、預設 tuple 回 sequence；兩種都取得到 blob_id。
+        blob_id = row["blob_id"] if isinstance(row, dict) else row[0]
+        if blob_id is None:
+            return
+        cur.execute(
+            "DELETE FROM app_layer.import_blobs WHERE blob_id = %s", (int(blob_id),))
+    except Exception:  # noqa: BLE001 - blob 清理是收尾附帶動作，失敗不得擋 job 終態收斂
+        _LOGGER.exception("terminal-state import_blob cleanup failed: run_id=%s", run_id)
 
 
 def _request_fingerprint(*, job_type: str, payload: dict[str, Any],
@@ -252,7 +290,10 @@ def cancel_job(job_id: int) -> ProcessingJob | None:
                 """,
                 (job_id,))
             row = cur.fetchone()
-            if row is None:
+            if row is not None:
+                # 真的收斂成 cancelled（終結態、不會再重試）才清 blob；同交易內收尾。
+                _cleanup_import_blob_for_run(cur, job_id)
+            else:
                 cur.execute(
                     f"SELECT {_SELECT_COLUMNS} FROM app_layer.workflow_runs WHERE run_id = %s",
                     (job_id,))
@@ -412,7 +453,13 @@ class WorkerQueueClient:
 
     def fail_job(self, *, job_id: int, worker_id: str, error_message: str,
                  current_stage: str = "failed") -> None:
-        """標記失敗並保存可讀錯誤訊息（只認持鎖 worker）。"""
+        """標記失敗並保存可讀錯誤訊息（只認持鎖 worker）。
+
+        blob 清理（維運）：失敗**且已達 max_attempts**（不會再重試）才刪對應 import_blob。
+        ⚠ 還會重試的 failed 絕不可刪——重試要取同一份 blob；attempt_count 在 claim 時已 +1，
+        故此處 attempt_count 即「已用掉的嘗試次數」，>= max_attempts 代表這是最後一次、不再重試。
+        RETURNING 帶回簿記在同交易內判斷，刪 blob 與失敗收斂同進同退。
+        """
         with psycopg.connect(**get_connection_kwargs()) as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -423,8 +470,14 @@ class WorkerQueueClient:
                             'current_stage', %s::text, 'error_message', %s::text,
                             'heartbeat_at', to_jsonb(now()), 'finished_at', to_jsonb(now()))
                     WHERE run_id = %s AND worker_state_json->>'locked_by' = %s AND status = 'running'
+                    RETURNING COALESCE((worker_state_json->>'attempt_count')::int, 0),
+                              COALESCE((worker_state_json->>'max_attempts')::int, 3)
                     """,
                     (current_stage, error_message[:4000], job_id, worker_id))
+                row = cur.fetchone()
+                if row is not None and int(row[0]) >= int(row[1]):
+                    # 已達嘗試上限＝不會再重試，blob 可安全刪；未達上限則保留供重試取用。
+                    _cleanup_import_blob_for_run(cur, job_id)
 
     def cancel_job(self, *, job_id: int, worker_id: str, error_message: str) -> None:
         """把已被外部取消的工作收斂成 cancelled 終態（worker 端）。"""
@@ -441,6 +494,9 @@ class WorkerQueueClient:
                       AND status IN ('running', 'cancelled')
                     """,
                     (error_message[:4000], job_id, worker_id))
+                if cur.rowcount >= 1:
+                    # cancelled 一律終結態、不會再重試，blob 可安全刪（同交易收尾）。
+                    _cleanup_import_blob_for_run(cur, job_id)
 
     def is_cancelled(self, *, job_id: int) -> bool:
         """確認工作是否已被 backend 或使用者標記為 cancelled。"""
@@ -452,7 +508,12 @@ class WorkerQueueClient:
         return row is not None and row[0] == "cancelled"
 
     def requeue_stale_jobs(self, *, stale_after_seconds: int) -> dict[str, int]:
-        """回收 heartbeat 逾時的 running 工作：達嘗試上限標 failed，否則退回 queued。"""
+        """回收 heartbeat 逾時的 running 工作：達嘗試上限標 failed，否則退回 queued。
+
+        blob 清理（維運）：失敗分支的 WHERE 已限定 attempt_count >= max_attempts＝不會再重試，
+        故此處 failed 的每一筆都可安全刪對應 import_blob；requeued 分支退回 queued 仍會重試，
+        絕不刪其 blob。以 RETURNING 取 failed 的 run_id 在同交易內逐筆清理。
+        """
         stale_interval = timedelta(seconds=stale_after_seconds)
         with psycopg.connect(**get_connection_kwargs()) as conn:
             with conn.cursor() as cur:
@@ -468,9 +529,14 @@ class WorkerQueueClient:
                       AND (worker_state_json->>'heartbeat_at')::timestamptz < now() - %s::interval
                       AND COALESCE((worker_state_json->>'attempt_count')::int, 0)
                           >= COALESCE((worker_state_json->>'max_attempts')::int, 3)
+                    RETURNING run_id
                     """,
                     (stale_interval,))
-                failed_count = cur.rowcount
+                failed_run_ids = [int(r[0]) for r in cur.fetchall()]
+                failed_count = len(failed_run_ids)
+                for failed_run_id in failed_run_ids:
+                    # 達上限的 stale_failed＝不會再重試，清其持有的 blob（同交易收尾）。
+                    _cleanup_import_blob_for_run(cur, failed_run_id)
                 cur.execute(
                     """
                     UPDATE app_layer.workflow_runs
