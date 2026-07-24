@@ -751,6 +751,64 @@ class FrontendSkeletonTests(unittest.TestCase):
         # 下載：以 a[download] 觸發，不需後端另存檔。
         self.assertIn("download", self.html)
 
+    # ── E2. 匯出報告：輸出 PPT（預覽閘門後送 ai:report_ppt → SSE 回流 → 下載連結） ──
+
+    def test_export_has_output_ppt_button(self):
+        """匯出工作台除既有「匯出報告」（單頁 HTML）外，新增「輸出 PPT」鈕。
+
+        接線非重寫：既有 reviewExportOutput()／單頁 HTML 保留；PPT 是新增分支。
+        """
+        for needle in ("btn-export-ppt", "requestExportPpt"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.html)
+        # 既有單頁 HTML 匯出鈕與流程仍在（兩種都給）。
+        self.assertIn("btn-export-html", self.html)
+        self.assertIn("reviewExportOutput", self.html)
+        self.assertIn("buildExportHtml", self.html)
+
+    def test_export_ppt_sends_ai_report_ppt_task(self):
+        """輸出 PPT＝送 POST /ai-tasks，task_type=ai:report_ppt，帶 report version／workspace_id。
+
+        ⚠ workspace_id 放進 params（to_payload exclude 具名 workspace_id）；
+        報表版本以 based_on_version 帶入（runner 解析報表目錄）。
+        """
+        self.assertIn("ai:report_ppt", self.html)
+        m = re.search(r"function requestExportPpt\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
+        self.assertIsNotNone(m, "找不到 requestExportPpt() 定義")
+        body = m.group(0)
+        self.assertIn("/ai-tasks", body)
+        self.assertIn("ai:report_ppt", body)
+        self.assertIn("params", body)
+        self.assertIn("based_on_version", body)
+
+    def test_export_ppt_preview_gate_not_skipped(self):
+        """預覽閘門不跳過：輸出 PPT 需已有預覽內容（exportPreview.content）才送。"""
+        m = re.search(r"function requestExportPpt\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
+        self.assertIsNotNone(m, "找不到 requestExportPpt() 定義")
+        self.assertIn("exportPreview.content", m.group(0))
+
+    def test_export_ppt_polls_and_shows_download_link(self):
+        """PPT job 完成後（經輪詢／SSE 回流）顯示 .pptx 下載連結（打下載路由）。"""
+        self.assertIn("pollExportPptJob", self.html)
+        # 下載連結走 report-latest/ppt 下載路由。
+        self.assertIn("/report-latest/ppt/", self.html)
+
+    # ── E3. 市場×專利同列並排（對標範例第 9 頁；報表顯示區同一 flex row） ──
+
+    def test_market_and_patent_reports_same_row(self):
+        """市場側摘要與專利側報表卡同一列左右並排（非上下分區）。
+
+        report-inline-view 併進與 market-side-by-side 同一 flex row 容器。
+        """
+        # 同列容器掛點存在。
+        self.assertIn("report-market-row", self.html)
+        # CSS：該容器為橫向 flex row（左右並排）。
+        m = re.search(r"#report-market-row\s*\{[^}]*\}", self.html)
+        self.assertIsNotNone(m, "找不到 #report-market-row 樣式")
+        css = m.group(0)
+        self.assertIn("flex", css)
+        self.assertNotIn("column", css)
+
     def test_report_page_has_inline_report_container(self):
         """報表種類頁：job succeeded 後把完整報表直接渲染在主內容區（內嵌容器掛點）。"""
         for needle in (

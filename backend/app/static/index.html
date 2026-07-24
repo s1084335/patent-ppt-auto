@@ -264,9 +264,17 @@ table.data tr:hover td { background: var(--panel-2); }
 .export-cover .cover-meta .k { white-space: nowrap; }
 .export-card { border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem 1.15rem; margin-bottom: 1.1rem; background: var(--panel-2); }
 .export-card > h3 { font-size: 1.05rem; margin-bottom: 0.7rem; color: var(--text); }
-/* 市場側摘要與專利側報表並排（範例第 9 頁版面並排；窄螢幕自動換行堆疊）。 */
-#market-side-by-side { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-start; }
-.market-side-panel { flex: 1 1 320px; min-width: 0; }
+/* 市場側摘要與專利側報表卡「同一列」左右並排（對標範例第 9 頁；窄螢幕自動換行堆疊）。
+   report-market-row 為橫向 flex row：市場側一欄、專利側報表卡一欄，各查各的確定性組版。 */
+#report-market-row { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-start; margin-top: 0.9rem; }
+#report-market-row > #market-side-by-side:empty,
+#report-market-row > #report-inline-view:empty { display: none; }
+/* 市場側欄：無內容時不占位（:empty 隱藏）；有內容時為較窄的一欄。 */
+#market-side-by-side { display: flex; flex-direction: column; gap: 1rem; align-items: stretch; flex: 1 1 320px; min-width: 0; }
+#market-side-by-side:empty { display: none; }
+/* 專利側報表卡欄：占剩餘寬度。 */
+#report-market-row > #report-inline-view { flex: 2 1 480px; min-width: 0; margin-top: 0; }
+.market-side-panel { min-width: 0; }
 .market-fusion { margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px dashed var(--border); }
 .export-card-data { overflow-x: auto; margin-bottom: 0.8rem; }
 .export-card-data table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
@@ -1511,9 +1519,12 @@ function renderReports() {
     // 市場資料上傳／產摘要區（綁 workspace；全庫隱藏）。
     + '<div id="market-upload"></div>'
     + '<div id="report-version-list"></div>'
-    // 報表顯示區：市場側摘要（只讀已確認現行版）與專利側報表並排＋AI 融合解讀。
+    // 報表顯示區：市場側摘要（只讀已確認現行版）與專利側報表卡「同一列」左右並排，
+    // 對標範例 PPT 第 9 頁版型（非上下分區）。兩者各查各的、確定性組版，AI 不融合。
+    + '<div id="report-market-row">'
     + '<div id="market-side-by-side"></div>'
-    + '<div id="report-inline-view"></div>';
+    + '<div id="report-inline-view"></div>'
+    + '</div>';
   // 進頁即載入既有報表版本清單（只讀既有產出，不觸發任何產製）。
   renderMarketUpload();
   loadMarketSummaryForReport();
@@ -1941,9 +1952,11 @@ function renderExport() {
     + '<button class="btn btn-outline" id="btn-reload-preview" onclick="loadExportPreview()">重新載入預覽</button>'
     + '<button class="btn btn-outline" id="btn-export" onclick="triggerExport()">重新產製報表資料</button>'
     + '<span style="flex:1"></span>'
-    + '<button class="btn btn-primary" id="btn-export-html" onclick="reviewExportOutput()">匯出報告</button>'
+    + '<button class="btn btn-outline" id="btn-export-html" onclick="reviewExportOutput()">匯出單頁 HTML</button>'
+    + '<button class="btn btn-primary" id="btn-export-ppt" onclick="requestExportPpt()">輸出 PPT</button>'
     + '</div>'
     + '<div id="export-job"></div>'
+    + '<div id="export-ppt-result"></div>'
     + '<div id="export-confirm"></div>'
     + '<div id="export-preview"><div class="hint">載入報告內容中…</div></div>';
   loadExportPreview();
@@ -2395,6 +2408,78 @@ async function pollExportJob(jobId) {
       return;
     }
     registerTimer(tick, 2000);
+  }
+  tick();
+}
+
+// ══════════ 輸出 PPT（預覽閘門後送 ai:report_ppt → 回流 → 下載連結） ══════════
+// 分工：AI 只產各頁確認槽文案 → CLI 順手呼 deterministic build_ppt.py 組版 →
+// .pptx 進 report_artifacts → 打下載路由取回。與單頁 HTML 匯出並存（兩種都給）。
+// ⚠ 預覽閘門不跳過：必須先有預覽內容（exportPreview.content）＝使用者已預覽，才送。
+// ⚠ workspace_id 放進 params（to_payload 會 exclude 具名 workspace_id）；報表版本以
+//    based_on_version 帶入（runner 據以解析報表版本目錄）。
+async function requestExportPpt() {
+  const wrap = el('export-ppt-result');
+  if (!exportPreview.content) { alert('請先於下方預覽報告內容，再輸出 PPT。'); return; }
+  const btn = el('btn-export-ppt');
+  if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
+  try {
+    const params = { based_on_version: exportPreview.content.version };
+    if (state.workspaceId) params.workspace_id = state.workspaceId;
+    const created = await getJson(API + '/ai-tasks', {
+      method: 'POST',
+      headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ task_type: 'ai:report_ppt', params: params }),
+    });
+    if (wrap) wrap.innerHTML = '<div class="hint">已送出輸出 PPT 任務（run '
+      + escHtml(created.run_id) + '）；完成後於此顯示下載連結。</div>';
+    pollExportPptJob(created.run_id);
+  } catch (e) {
+    if (wrap) wrap.innerHTML = '<div class="card">輸出 PPT 失敗（' + escHtml(e.message) + '）。</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '輸出 PPT'; }
+  }
+}
+// 輪詢 PPT 任務（GET /ai-tasks/{run_id}）；SSE 回流時 updateTaskFromEvent 也會推進，
+// 這裡的輪詢是保底。完成後從 result.pptx_filename 組下載連結（打 /report-latest/ppt 路由）。
+async function pollExportPptJob(runId) {
+  const wrap = el('export-ppt-result');
+  if (!wrap) return;
+  async function tick() {
+    if (state.nav !== 'export') return;
+    try {
+      const t = await getJson(API + '/ai-tasks/' + runId, { headers: aiAuthHeaders() });
+      if (t.status === 'succeeded') {
+        const r = t.result || {};
+        const version = r.based_on_version || (exportPreview.content && exportPreview.content.version);
+        const filename = r.pptx_filename;
+        if (version && filename) {
+          const url = API + '/report-latest/ppt/' + encodeURIComponent(version)
+            + '/' + encodeURIComponent(filename);
+          wrap.innerHTML = '<div class="card"><strong>PPT 已產出</strong>'
+            + '<div class="export-edit-actions" style="margin-top:0.6rem">'
+            + '<a class="btn btn-primary" href="' + url + '" download="' + escHtml(filename) + '">下載 PPT</a>'
+            + '</div>'
+            + '<p class="hint" style="padding:0.4rem 0 0">已填文案 '
+            + escHtml(r.slots_filled) + '／' + escHtml(r.slots_total) + ' 槽；未填槽於該頁標「待確認」浮水印。</p>'
+            + '</div>';
+        } else {
+          wrap.innerHTML = '<div class="hint">PPT 任務完成，但未回報檔名。</div>';
+        }
+        return;
+      }
+      if (['failed', 'cancelled'].includes(t.status)) {
+        wrap.innerHTML = '<div class="card">輸出 PPT ' + escHtml(t.status)
+          + '（' + escHtml(t.error_message || '無錯誤訊息') + '）。</div>';
+        return;
+      }
+      wrap.innerHTML = '<div class="hint">輸出 PPT #' + escHtml(runId) + ' '
+        + escHtml(t.status) + '　' + escHtml(t.current_stage || '') + '</div>';
+    } catch (e) {
+      wrap.innerHTML = '<div class="hint">查詢 PPT 任務失敗（' + escHtml(e.message) + '）。</div>';
+      return;
+    }
+    registerTimer(tick, 3000);
   }
   tick();
 }
