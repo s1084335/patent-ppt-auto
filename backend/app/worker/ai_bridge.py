@@ -388,6 +388,42 @@ def _run_ai_company_zh_name_job(payload: dict[str, Any], context: JobContext) ->
     )
 
 
+def _run_ai_market_summary_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """執行市場資料 AI 摘要任務：讀該 workspace 已上傳市場 PDF，交 headless CLI 產結構化＋敘述摘要草稿。
+
+    payload：workspace_id（必要，市場摘要綁 workspace）、cli_kind／model／cli_timeout_seconds
+    （沿用 ai:narrative 的 payload 慣例）。
+
+    ⚠ 全庫 workspace 由 runner 內部護欄直接 raise（全庫不提供市場資料）；
+      無市場 PDF 時回傳 summary_id=None，不硬產。
+    ⚠ AI 只產草稿（create_summary，accepted_at=NULL）——不代為 accept，確認是使用者的事（批3 前端）。
+    ⚠ CLI 白名單為空（不讀檔／不連網）：PDF 文字由 runner 以 pymupdf 抽出後內嵌 prompt。
+    """
+    from . import ai_market_summary_runner
+
+    context.heartbeat("開始產生市場資料摘要", 1)
+
+    def _progress(stage: str, percent: int) -> None:
+        """把 runner 的進度轉成 worker heartbeat（繁中階段文字直接沿用）。"""
+        context.heartbeat(stage, percent)
+
+    workspace_id = payload.get("workspace_id")
+    if workspace_id is None:
+        raise ValueError("ai:market_summary payload requires workspace_id")
+    return ai_market_summary_runner.run_market_summary(
+        workspace_id=int(workspace_id),
+        cli_kind=str(payload.get("cli_kind") or "claude"),
+        model=payload.get("model") or None,
+        # _cli_runner 供測試／Companion 注入假或替代執行器；正式跑真實 subprocess。
+        cli_runner=payload.get("_cli_runner"),
+        timeout_seconds=float(
+            payload.get("cli_timeout_seconds")
+            or ai_market_summary_runner.DEFAULT_CLI_TIMEOUT_SECONDS
+        ),
+        progress=_progress,
+    )
+
+
 # job_type → 執行函式。值存「函式名」而非函式物件，讓 execute_ai_job 在呼叫當下才解析到
 # 模組屬性——測試以 mock.patch.object 換掉 _run_ai_* 時才會生效（存物件會綁死原函式）。
 _AI_JOB_RUNNERS: dict[str, str] = {
@@ -396,6 +432,7 @@ _AI_JOB_RUNNERS: dict[str, str] = {
     "ai:patent_note": "_run_ai_patent_note_job",
     "ai:candidate_explanation": "_run_ai_candidate_explanation_job",
     "ai:company_zh_name": "_run_ai_company_zh_name_job",
+    "ai:market_summary": "_run_ai_market_summary_job",
 }
 
 

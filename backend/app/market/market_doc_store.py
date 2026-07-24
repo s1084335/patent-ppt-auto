@@ -79,6 +79,26 @@ class MarketDocSummaryStore:
                 row = cur.fetchone()
         return _summary_row_to_dict(row) if row is not None else None
 
+    def get_accepted_current(self, workspace_id: int) -> dict[str, Any] | None:
+        """回傳該 workspace 「現行版且已確認」的摘要；否則 None。
+
+        報表／PPT 只讀此結果——現行版尚未 accept（accepted_at IS NULL）即拿不到，
+        未確認草稿實體上進不了報表（沿文獻備註／中文名護欄的實體隔離精神）。
+        """
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT summary_id, workspace_id, version, status, payload_json, "
+                    "       narrative, source_document, accepted_at, created_at "
+                    "FROM derived_layer.market_doc_summaries "
+                    "WHERE workspace_id = %s AND status = 'current' "
+                    "  AND accepted_at IS NOT NULL "
+                    "ORDER BY version DESC LIMIT 1",
+                    (workspace_id,),
+                )
+                row = cur.fetchone()
+        return _summary_row_to_dict(row) if row is not None else None
+
     def accept(self, summary_id: int) -> bool:
         """逐筆確認落款 accepted_at（未確認為 NULL）；回傳是否真的落到款。
 

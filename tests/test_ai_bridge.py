@@ -89,6 +89,22 @@ def _ai_job() -> ProcessingJob:
     )
 
 
+def _market_summary_job(payload: dict | None = None) -> ProcessingJob:
+    """建立一筆 ai:market_summary 測試 job（市場摘要綁 workspace，payload 帶 workspace_id）。"""
+    return ProcessingJob(
+        job_id=91,
+        job_type="ai:market_summary",
+        status="queued",
+        workspace_id=7,
+        payload_json={"workspace_id": 7} if payload is None else payload,
+        result_json=None,
+        progress_percent=0,
+        current_stage="queued",
+        attempt_count=0,
+        max_attempts=3,
+    )
+
+
 class AiBridgeTests(unittest.TestCase):
     """AI bridge 只消費 AI 任務，並沿用既有 execute_job 流程。"""
 
@@ -150,6 +166,26 @@ class AiBridgeTests(unittest.TestCase):
         self.assertEqual(store.heartbeats[0], ("running", 1))
         self.assertEqual(store.completed[0], {"ok": True})
         self.assertEqual(result, {"job_id": job.job_id, "status": "succeeded", "result": {"ok": True}})
+
+    def test_execute_ai_job_routes_market_summary_job(self):
+        """ai:market_summary 必須路由到 _run_ai_market_summary_job（dispatch 表接對）。"""
+        job = _market_summary_job()
+        store = FakeAiQueue(job)
+        with mock.patch.object(ai_bridge, "_run_ai_market_summary_job", return_value={"summary_id": None}) as patched:
+            result = ai_bridge.execute_ai_job(job, worker_id="ai-bridge-test", store=store)
+
+        patched.assert_called_once()
+        self.assertEqual(store.completed[0], {"summary_id": None})
+        self.assertEqual(result, {"job_id": job.job_id, "status": "succeeded", "result": {"summary_id": None}})
+
+    def test_market_summary_dispatch_requires_workspace_id(self):
+        """市場摘要綁 workspace：payload 缺 workspace_id 時 dispatch 直接 raise，不空跑 CLI。"""
+        job = _market_summary_job(payload={})
+        store = FakeAiQueue(job)
+        result = ai_bridge.execute_ai_job(job, worker_id="ai-bridge-test", store=store)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("workspace_id", store.failed[0]["error_message"])
 
     def test_execute_ai_job_rejects_non_ai_job(self):
         """橋接器只處理 AI job，避免錯吃一般 worker 任務。"""

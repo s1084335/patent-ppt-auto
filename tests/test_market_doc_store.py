@@ -149,6 +149,26 @@ class MarketDocSummaryStoreTests(unittest.TestCase):
         ws = _new_workspace("ws-empty")
         self.assertIsNone(self.store.get_current(ws))
 
+    def test_get_accepted_current_only_when_accepted(self):
+        """報表只讀 accepted：現行版未確認時 get_accepted_current 回 None，確認後才回。"""
+        ws = _new_workspace("ws-accepted-current")
+        sid = self.store.create_summary(ws, payload_json={"a": 1}, source_document="v.pdf")
+        # 未確認草稿：現行版存在但 get_accepted_current 拿不到（實體隔離）。
+        self.assertIsNone(self.store.get_accepted_current(ws))
+        self.store.accept(sid)
+        got = self.store.get_accepted_current(ws)
+        self.assertIsNotNone(got)
+        self.assertEqual(got["summary_id"], sid)
+
+    def test_get_accepted_current_ignores_superseded(self):
+        """舊版即使曾確認，被新版取代後 get_accepted_current 不回它（只讀現行版）。"""
+        ws = _new_workspace("ws-accepted-superseded")
+        first = self.store.create_summary(ws, payload_json={"a": 1}, source_document="v1.pdf")
+        self.store.accept(first)
+        # 重產：新現行版未確認 → 報表拿不到（舊版已 superseded，也不回）。
+        self.store.create_summary(ws, payload_json={"a": 2}, source_document="v2.pdf")
+        self.assertIsNone(self.store.get_accepted_current(ws))
+
 
 class MarketDocumentStoreTests(unittest.TestCase):
     def setUp(self):
