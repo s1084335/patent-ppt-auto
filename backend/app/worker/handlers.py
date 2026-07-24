@@ -91,7 +91,40 @@ def handle_clustering_calibrate(payload: dict[str, Any], context: JobContext) ->
             workflow_run_id=context.job.job_id,
         )
     context.heartbeat(f"{channel}分群候選已產生", 100)
+    # 候選產出後自動觸發「候選方案 AI 輔助說明」（讀法一，2026-07-24）：
+    # AI 只解釋三組候選的指標取捨，輔助使用者判斷。失敗不得擋候選挑選（見 _enqueue_candidate_explanation）。
+    _enqueue_candidate_explanation(summary)
     return _json_safe(summary)
+
+
+def _summary_field(summary: Any, name: str) -> Any:
+    """從 calibrate 回傳讀欄位：CalibrationSummary（dataclass）走屬性，dict（測試）走鍵。"""
+    if isinstance(summary, dict):
+        return summary.get(name)
+    return getattr(summary, name, None)
+
+
+def _enqueue_candidate_explanation(summary: Any) -> None:
+    """calibrate 完成、候選產出後 enqueue 一筆 ai:candidate_explanation（走 Companion）。
+
+    ⚠ 失敗隔離（沿既有 enqueue 失敗隔離模式）：分群本體已成功落庫，這裡的 AI 說明只是輔助；
+    任何例外都只記 log、不 raise——AI 失敗時候選卡片照常顯示只是沒說明，絕不擋挑選。
+    沒有候選（k 掃描無結果）就不 enqueue，沒東西可解釋。
+    """
+    from backend.app.db import job_repository as jr
+
+    try:
+        run_id = _summary_field(summary, "run_id")
+        candidates = _summary_field(summary, "candidates") or []
+        if run_id is None or not candidates:
+            return
+        jr.create_job(
+            "ai:candidate_explanation",
+            {"run_id": int(run_id)},
+            workspace_id=_summary_field(summary, "workspace_id"),
+        )
+    except Exception:  # noqa: BLE001 - AI 說明是輔助，缺了照樣能挑候選
+        LOGGER.exception("candidate explanation enqueue failed after calibrate")
 
 
 def handle_clustering_finalize(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
@@ -242,8 +275,38 @@ def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict
     run_dir = Path(result["output_dir"])
     result["artifacts_uploaded"] = report_artifact_store.upload_run_dir(run_dir)
     result["has_cluster_analytics"] = cluster_data is not None
+    # 報表產完自動接 AI 解讀（2026-07-24 定案）：綁定該次報表版本 enqueue ai:narrative，
+    # 由既有 handle_ai_narrative／ai_narrative_runner 消費（不另寫解讀邏輯）。解讀為非同步後續
+    # job，報表本身已產完並上傳，不等解讀；enqueue 失敗只記 log、不擋報表（失敗隔離）。
+    _enqueue_report_narrative(result, context)
     context.heartbeat("報表產製完成", 100)
     return _json_safe(result)
+
+
+def _enqueue_report_narrative(result: dict[str, Any], context: JobContext) -> None:
+    """報表產物落庫後 enqueue 一筆 ai:narrative，based_on_version 綁定該次報表版本。
+
+    ⚠ 失敗隔離（沿 _enqueue_post_import_jobs／_enqueue_candidate_explanation 模式）：報表本體已
+    產完並上傳，這裡的解讀只是後續補充；任何例外都只記 log、不 raise——AI 掛掉時報表照常看得到，
+    使用者可重新觸發解讀。based_on_version＝run_chart_trial 回傳的 version（＝報表版本目錄名），
+    對齊 ai_narrative_runner.resolve_run_dir 的版本識別（report_narrative_v1 契約）。缺 version
+    （理論上不會，run_chart_trial 一律回）時不 enqueue，沒有可綁定的版本。
+    """
+    from backend.app.db import job_repository as jr
+
+    try:
+        version = result.get("version")
+        if not version:
+            return
+        jr.create_job(
+            "ai:narrative",
+            {"based_on_version": version},
+            workspace_id=context.job.workspace_id,
+        )
+        result["narrative_job_enqueued"] = True
+    except Exception:  # noqa: BLE001 - 解讀是輔助，缺了報表照常顯示
+        LOGGER.exception("report narrative enqueue failed after report_generate")
+        result["narrative_job_enqueued"] = False
 
 
 def handle_patent_import(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
@@ -418,6 +481,35 @@ def _enqueue_post_import_jobs(payload: dict[str, Any], summary: dict[str, Any]) 
         # 不 raise：匯入已成功，後續 job 可由使用者或下次匯入重新觸發。
         LOGGER.exception("post-import job enqueue failed: workspace_id=%s", workspace_id)
         summary["auto_jobs_error"] = f"{type(exc).__name__}: {exc}"
+    # 文獻備註 AI 任務獨立 try/except：與 embeddings／分群互不牽連，任一失敗不影響其餘。
+    _enqueue_patent_note(summary)
+
+
+def _enqueue_patent_note(summary: dict[str, Any]) -> None:
+    """匯入成功後自動 enqueue 一筆 ai:patent_note（走 Companion 領取，headless CLI 產生備註）。
+
+    ⚠ 失敗隔離（沿 _enqueue_candidate_explanation 範本）：匯入本體已成功落庫，文獻備註只是
+    後續便利；任何例外都只記 log 並回填 summary.patent_note_error，不 raise——絕不把已成功的
+    匯入 job 標成 failed。沒有新專利（重複檔／dry-run）就不 enqueue，沒東西可產生備註。
+
+    skip_existing 沿預設 True：runner 只挑主表尚無備註者，重匯不重複燒 token。
+    範圍帶批次 workspace_id（無圈 workspace 時為 None＝全庫），與其餘 post-import job 一致。
+    """
+    from backend.app.db import job_repository as jr
+
+    try:
+        if not (summary.get("patent_ids") or []):
+            return
+        workspace_id = summary.get("workspace_id")
+        job = jr.create_job(
+            "ai:patent_note",
+            {"workspace_id": int(workspace_id)} if workspace_id is not None else {},
+            workspace_id=int(workspace_id) if workspace_id is not None else None,
+        )
+        summary["patent_note_job_id"] = job.job_id
+    except Exception as exc:  # noqa: BLE001 - 文獻備註是輔助，缺了照樣完成匯入
+        LOGGER.exception("patent note enqueue failed after import")
+        summary["patent_note_error"] = f"{type(exc).__name__}: {exc}"
 
 
 def _enqueue_workspace_clustering(workspace_id: int, summary: dict[str, Any]) -> list[int]:

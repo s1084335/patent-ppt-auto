@@ -46,6 +46,10 @@ AI_JOB_TYPES: frozenset[str] = frozenset(
         # 文獻備註：AI 讀專利獨立項（patents."主權項"）摘要成備註，寫回
         # patent_attributes."文獻備註"。批次按字數切（獨立項最長逾萬字），不按件數。
         "ai:patent_note",
+        # 候選方案 AI 輔助說明：calibrate 完成後 AI 讀三組候選的指標
+        # （coherence／diversity／balance／score／k／document_count，不含專利內容/keywords/refs）
+        # 產生取捨說明，寫回 topic_state_json->'candidates' 的 llm_explanation。
+        "ai:candidate_explanation",
     }
 )
 

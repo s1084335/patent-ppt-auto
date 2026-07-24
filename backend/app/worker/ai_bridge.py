@@ -320,12 +320,50 @@ def _run_ai_patent_note_job(payload: dict[str, Any], context: JobContext) -> dic
     )
 
 
+def _run_ai_candidate_explanation_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """執行候選方案 AI 輔助說明：驅動 headless CLI 解釋分群候選的指標意義後回填。
+
+    payload：run_id（必要，calibrate 完成後由 _enqueue_candidate_explanation 帶入）、
+    cli_kind／model／cli_timeout_seconds（沿用 ai:narrative 的 payload 慣例）。
+
+    ⚠ 底層取指標／寫回一律走 ai_candidate_explanation_runner 的既有 domain 函式
+    （candidate_review_payload／apply_candidate_explanations，＝tools_clustering 薄包的同一份）；
+    未來全線切 MCP 時只換該 runner 的注入入口，此 dispatch 不動。
+
+    進度：runner 內部 0→100 緩進（AI 任務無內部百分比），直接轉成 heartbeat。
+    """
+    from . import ai_candidate_explanation_runner
+
+    context.heartbeat("開始產生候選方案說明", 1)
+
+    def _progress(stage: str, percent: int) -> None:
+        """把 runner 的緩進進度轉成 worker heartbeat（繁中階段文字直接沿用）。"""
+        context.heartbeat(stage, percent)
+
+    run_id = payload.get("run_id")
+    if run_id is None:
+        raise ValueError("ai:candidate_explanation payload requires run_id")
+    return ai_candidate_explanation_runner.run_candidate_explanation(
+        run_id=int(run_id),
+        cli_kind=str(payload.get("cli_kind") or "claude"),
+        model=payload.get("model") or None,
+        # _cli_runner 供測試／Companion 注入假或替代執行器；正式跑真實 subprocess。
+        cli_runner=payload.get("_cli_runner"),
+        timeout_seconds=float(
+            payload.get("cli_timeout_seconds")
+            or ai_candidate_explanation_runner.DEFAULT_CLI_TIMEOUT_SECONDS
+        ),
+        progress=_progress,
+    )
+
+
 # job_type → 執行函式。值存「函式名」而非函式物件，讓 execute_ai_job 在呼叫當下才解析到
 # 模組屬性——測試以 mock.patch.object 換掉 _run_ai_* 時才會生效（存物件會綁死原函式）。
 _AI_JOB_RUNNERS: dict[str, str] = {
     "ai:narrative": "_run_ai_narrative_job",
     "ai:topic_label": "_run_ai_topic_label_job",
     "ai:patent_note": "_run_ai_patent_note_job",
+    "ai:candidate_explanation": "_run_ai_candidate_explanation_job",
 }
 
 
