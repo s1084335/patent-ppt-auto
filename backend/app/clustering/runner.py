@@ -55,6 +55,31 @@ PCA_COMPONENTS = 100
 MIN_CLUSTERING_DOCUMENTS = 50
 CANDIDATE_REFERENCE_PARAMETER_KEY = "_representative_document_references"
 
+# ⚠ 分析用 workspace 取成員的 SQL 收口（單一 %s＝workspace_id）：
+# 展開 workspaces.patent_ids_json 為 patent_id，並**扣除不相干排除清單**
+# （0035 derived_layer.workspace_excluded_patents），與 clustering/exclusions.py
+# analysis_member_patent_ids 為同一收口語意（Python 讀取點走該函式，SQL 讀取點走此常數）：
+# - 一般 workspace：扣除排除清單（NOT EXISTS）。
+# - **全庫 workspace 不扣除**（規格第 62-64 行）：排除是 workspace 級，同一 patent_id 在特定
+#   ws 被排除、在全庫仍照常。故 `w.is_global` 為真時整段 OR 恆真，不扣任何專利。
+# 供 load_clustering_corpus 內嵌，亦供收口正確性測試直接執行（單一事實來源、不各自複製 SQL）。
+ANALYSIS_MEMBER_SUBQUERY = """
+    SELECT member.patent_id
+    FROM app_layer.workspaces w
+    CROSS JOIN LATERAL (
+        SELECT (jsonb_array_elements_text(w.patent_ids_json))::bigint AS patent_id
+    ) member
+    WHERE w.workspace_id = %s
+      AND (
+          w.is_global
+          OR NOT EXISTS (
+              SELECT 1 FROM derived_layer.workspace_excluded_patents ex
+              WHERE ex.workspace_id = w.workspace_id
+                AND ex.patent_id = member.patent_id
+          )
+      )
+"""
+
 # CLI 直接執行時載入專案 .env；容器正式部署仍可用環境變數覆蓋。
 load_dotenv(PROJECT_ROOT / ".env", override=False)
 
@@ -308,15 +333,13 @@ def load_clustering_corpus(
 
     # 0021：app_layer.workspace_patents 已併入 workspaces.patent_ids_json，
     # workspace 範圍改用該 JSON 陣列展開後 JOIN，不再有成員關聯表。
+    # 分群是分析用取成員，須扣除不相干排除清單——SQL 收口於 ANALYSIS_MEMBER_SUBQUERY
+    # （見該常數說明；與 clustering/exclusions.analysis_member_patent_ids 同語意）。
     workspace_join = ""
     parameters: tuple[Any, ...] = ()
     if workspace_id is not None:
-        workspace_join = """
-            JOIN (
-                SELECT (jsonb_array_elements_text(w.patent_ids_json))::bigint AS patent_id
-                FROM app_layer.workspaces w
-                WHERE w.workspace_id = %s
-            ) wp ON wp.patent_id = p.id
+        workspace_join = f"""
+            JOIN ({ANALYSIS_MEMBER_SUBQUERY}) wp ON wp.patent_id = p.id
         """
         parameters = (workspace_id,)
 

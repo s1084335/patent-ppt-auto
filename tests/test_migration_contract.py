@@ -27,7 +27,11 @@ DERIVED_TARGET_TABLES = {"company_aliases", "topic_runs", "topic_assignments"}
 POST_0021_TABLES = {
     # 0023_market_evidence：市場資料證據庫。
     # 0034_market_doc_summary：市場 PDF metadata 與 AI 摘要版本（新市場線底層）。
-    "derived_layer": {"market_evidence", "market_documents", "market_doc_summaries"},
+    # 0035_workspace_excluded_patents：不相干專利排除清單（workspace 級）。
+    "derived_layer": {
+        "market_evidence", "market_documents", "market_doc_summaries",
+        "workspace_excluded_patents",
+    },
     # 0024_import_blobs：匯入上傳內容的跨容器傳輸表。
     # 0025_report_artifacts：報表產物的跨容器共享表。
     # 0027_workspace_documents：workspace 的技術文獻（PDF）內容保存表。

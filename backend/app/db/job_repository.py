@@ -54,6 +54,14 @@ AI_JOB_TYPES: frozenset[str] = frozenset(
         # 寫回 company_aliases 的 ai_suggested 態列（不進正式顯示欄），待使用者逐筆確認。
         # 內嵌待中文化清單於 prompt，CLI 不需讀檔/連網；prompt 明令不硬翻、允許查無保留原文。
         "ai:company_zh_name",
+        # 市場資料摘要：AI 讀 workspace 的市場 PDF（pymupdf 抽文字內嵌 prompt），產「結構化
+        # ＋敘述」摘要草稿（accepted_at=NULL 待逐筆確認）。CLI 白名單為空（不讀檔/不連網）；
+        # 全庫 workspace 不提供市場資料，runner 拒為全庫產。報表只讀已確認現行版。
+        "ai:market_summary",
+        # 不相干專利篩選：分群後每主題取 c-TF-IDF 最低 N 筆，AI 讀其文獻備註逐筆判讀
+        # （相干/可疑/不相干），輔助使用者決定是否剔除。🔴 prompt 只含文獻備註，不含
+        # c-TF-IDF keywords/分數/主題 label；各筆獨立判讀、不混批。CLI 白名單為空。
+        "ai:irrelevant_filter",
     }
 )
 

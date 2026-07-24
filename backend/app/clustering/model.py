@@ -607,6 +607,97 @@ def rank_ctfidf_representative_documents(
     return ranked
 
 
+# ── 不相干專利篩選：反向取樣（每主題 c-TF-IDF 最低 N 筆） ─────────────────
+#
+# 規格唯一來源：irrelevant-patent-filter-spec.md 第 25-86 行（c-TF-IDF 最低 N 筆方案）。
+# 🔴 紅線：相似度**分數**只用來「挑哪 N 筆」，keywords 與分數都**絕不外流給 CLI**。
+# 本節函式只回傳 corpus index（供上層轉 patent_id），不回傳任何分數。
+
+# 反向取樣每主題預設取樣比例：取主題內最不像的這一比例當「候選剔除」給使用者過目。
+# 依主題大小按比例（非寫死單一數字，沿「簡單≠寫死」原則）。
+IRRELEVANT_SAMPLE_RATIO = 0.20
+# 取樣數上限：超大主題不隨資料量無限膨脹（AI 判讀成本可控、使用者過目量有限）。
+IRRELEVANT_SAMPLE_MAX = 30
+# 取樣數下限（主題夠大時至少取這麼多，避免大主題只取到 1 筆）。
+IRRELEVANT_SAMPLE_MIN = 5
+
+
+def irrelevant_sample_size(topic_size: int) -> int:
+    """依主題大小決定反向取樣（候選剔除）筆數。
+
+    規格第 78-81 行：**不固定單一數字**——小主題總數不到預設 N 時不得取到整題。
+    公式（可解釋）：
+    - 取 topic_size × 比例，四捨五入取整；
+    - 夾在 [下限, 上限] 之間（主題夠大時至少取下限，超大主題封頂）；
+    - **強制 ≤ topic_size - 1**：至少保留一筆在主題內，永不取整題（小主題安全閥）；
+    - 只有 1 筆或空主題回 0（無法既保留成員又取樣）。
+    """
+    if topic_size <= 1:
+        return 0
+    scaled = round(topic_size * IRRELEVANT_SAMPLE_RATIO)
+    # 夾上下限；下限對小主題可能超過 topic_size-1，故最後再統一封在 topic_size-1。
+    bounded = max(IRRELEVANT_SAMPLE_MIN, min(IRRELEVANT_SAMPLE_MAX, scaled))
+    # 小主題安全閥：永遠留一筆在主題內，不取整題。
+    return max(1, min(bounded, topic_size - 1))
+
+
+def rank_ctfidf_least_representative_documents(
+    *,
+    topic_model: Any,
+    documents: list[str],
+    topics: list[int],
+    limit: int | None = None,
+) -> dict[int, list[int]]:
+    """反向取樣：每主題取 c-TF-IDF cosine similarity **最低**（最不像該主題）的 N 筆。
+
+    與 rank_ctfidf_representative_documents 同源、同空間、同一 cosine 演算法，**只把排序
+    方向反過來**（規格第 32 行：函式邏輯不必重寫）。用途：找出每主題最不典型的候選，
+    交 AI 讀文獻備註輔助使用者判斷是否剔除。
+
+    limit=None（預設）時，每主題依 irrelevant_sample_size(topic_size) 決定取樣數
+    （依主題大小調整、小主題不取整題）；limit 明給時各主題統一取該數（測試用）。
+
+    🔴 只回傳 corpus index（供上層映射 patent_id）；**不回傳相似度分數**——分數只在此
+    函式內用於排序，不外流（避免與 keywords 一同誤傳給 CLI）。
+    """
+    if len(documents) != len(topics):
+        raise ValueError("documents and topics must have the same length")
+    if limit is not None and limit < 1:
+        raise ValueError("representative document limit must be positive")
+
+    try:
+        from sklearn.metrics.pairwise import cosine_similarity
+    except ImportError as exc:
+        raise RuntimeError("scikit-learn is required to rank representative documents") from exc
+
+    model_topic_ids = sorted(int(topic_id) for topic_id in topic_model.get_topics())
+    topic_row = {topic_id: row for row, topic_id in enumerate(model_topic_ids)}
+    assigned_topic_ids = sorted({topic_id for topic_id in topics if topic_id != -1})
+    missing = [topic_id for topic_id in assigned_topic_ids if topic_id not in topic_row]
+    if missing:
+        raise ValueError(f"BERTopic c-TF-IDF rows missing assigned topics: {missing}")
+
+    ranked: dict[int, list[int]] = {}
+    for topic_id in assigned_topic_ids:
+        indexes = [index for index, assigned in enumerate(topics) if assigned == topic_id]
+        selected_documents = [documents[index] for index in indexes]
+        bow = topic_model.vectorizer_model.transform(selected_documents)
+        document_ctfidf = topic_model.ctfidf_model.transform(bow)
+        similarities = cosine_similarity(
+            document_ctfidf,
+            topic_model.c_tf_idf_[topic_row[topic_id] : topic_row[topic_id] + 1],
+        ).ravel()
+        # ⚠ 排序方向與正向相反：以「+similarity」為主鍵 → 相似度**低**者排前。
+        # 同分時仍以 corpus index 遞增穩定排序（與正向同一 tie-break 規則）。
+        ordered = sorted(
+            range(len(indexes)),
+            key=lambda local_index: (float(similarities[local_index]), indexes[local_index]),
+        )
+        take = limit if limit is not None else irrelevant_sample_size(len(indexes))
+        ranked[topic_id] = [indexes[local_index] for local_index in ordered[:take]]
+    return ranked
+
+
 def partial_fit_bertopic(
     topic_model: Any,
     documents: list[str],
