@@ -3075,25 +3075,61 @@ async function startImport() {
   const queryString = qsParts.join('&');
 
   const btn = el('btn-start-import');
-  if (btn) { btn.disabled = true; btn.textContent = '匯入中…'; }
-  try {
-    // body 直送檔案本體（raw body 串流）；Content-Type 隨檔（瀏覽器以 File 型別帶出）。
-    const resp = await fetch(API + '/imports?' + queryString, {
-      method: 'POST',
-      headers: file.type ? { 'Content-Type': file.type } : {},
-      body: file,
-    });
-    if (!resp.ok) {
-      showImportError(importErrorMessage(resp.status, await resp.json().catch(() => ({}))));
-      if (btn) { btn.disabled = false; btn.textContent = '開始匯入'; }
-      return;
+  if (btn) { btn.disabled = true; btn.textContent = '上傳中…'; }
+  // 方案 B（2026-07-24）：上傳階段用 XHR 顯示真實進度條——fetch 無 upload 進度回調，
+  // 大檔（如 53MB）上傳可能數分鐘，改用 XMLHttpRequest 的 upload.onprogress 讓使用者看到
+  // 「上傳 X%」而非黑箱「匯入中…」；上傳完（onload）拿 job 無縫接 pollImportJob（處理階段進度）。
+  uploadImportViaXhr(API + '/imports?' + queryString, file, btn);
+}
+
+// XHR 上傳＋即時進度條：raw body 直送檔案，upload.onprogress 填 #import-progress。
+// 上傳完成後解析回應接處理進度輪詢；任一錯誤路徑都復原按鈕、顯示可讀訊息。
+function uploadImportViaXhr(url, file, btn) {
+  const prog = el('import-progress');
+  const restoreBtn = function () { if (btn) { btn.disabled = false; btn.textContent = '開始匯入'; } };
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', url);
+  if (file.type) xhr.setRequestHeader('Content-Type', file.type);
+
+  // 上傳進度：loaded/total → 百分比進度條（沿用既有 .progress-bar-* 樣式）。
+  xhr.upload.onprogress = function (e) {
+    if (!prog) return;
+    if (e.lengthComputable) {
+      const pct = Math.round((e.loaded / e.total) * 100);
+      const mb = (e.loaded / 1048576).toFixed(1);
+      const totalMb = (e.total / 1048576).toFixed(1);
+      prog.innerHTML = '<div class="hint">上傳檔案中… ' + pct + '%（' + mb + ' / ' + totalMb
+        + ' MB，大檔需數分鐘，請勿關閉）</div>'
+        + '<div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:' + pct + '%"></div></div>';
+    } else {
+      prog.innerHTML = '<div class="hint">上傳檔案中…（請勿關閉）</div>';
     }
-    const job = await resp.json();
-    pollImportJob(job.job_id);
-  } catch (e) {
-    showImportError('連線錯誤：' + e.message);
-    if (btn) { btn.disabled = false; btn.textContent = '開始匯入'; }
-  }
+  };
+  // 上傳完成、等後端建 job：切到「處理中」提示，避免使用者以為卡住。
+  xhr.upload.onload = function () {
+    if (prog) prog.innerHTML = '<div class="hint">上傳完成，後端建立匯入工作中…</div>';
+  };
+
+  xhr.onload = function () {
+    if (xhr.status >= 200 && xhr.status < 300) {
+      let job = null;
+      try { job = JSON.parse(xhr.responseText); } catch (_) {}
+      if (job && job.job_id) {
+        pollImportJob(job.job_id);  // 無縫接處理階段進度（右側統一進度卡）
+      } else {
+        showImportError('匯入回應解析失敗');
+        restoreBtn();
+      }
+    } else {
+      let err = {};
+      try { err = JSON.parse(xhr.responseText); } catch (_) {}
+      showImportError(importErrorMessage(xhr.status, err));
+      restoreBtn();
+    }
+  };
+  xhr.onerror = function () { showImportError('連線錯誤：上傳失敗'); restoreBtn(); };
+  xhr.ontimeout = function () { showImportError('上傳逾時，請重試'); restoreBtn(); };
+  xhr.send(file);
 }
 // 錯誤碼轉可讀中文：422（副檔名／workspace 二選一互斥／空檔）、413（過大），其餘照原訊息。
 function importErrorMessage(status, err) {
