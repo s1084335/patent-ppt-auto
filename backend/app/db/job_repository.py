@@ -50,6 +50,10 @@ AI_JOB_TYPES: frozenset[str] = frozenset(
         # （coherence／diversity／balance／score／k／document_count，不含專利內容/keywords/refs）
         # 產生取捨說明，寫回 topic_state_json->'candidates' 的 llm_explanation。
         "ai:candidate_explanation",
+        # 公司中文名草稿：AI 讀「缺市場慣用中文名的公司（代碼＋英文名）」，產中文名草稿
+        # 寫回 company_aliases 的 ai_suggested 態列（不進正式顯示欄），待使用者逐筆確認。
+        # 內嵌待中文化清單於 prompt，CLI 不需讀檔/連網；prompt 明令不硬翻、允許查無保留原文。
+        "ai:company_zh_name",
     }
 )
 

@@ -357,6 +357,37 @@ def _run_ai_candidate_explanation_job(payload: dict[str, Any], context: JobConte
     )
 
 
+def _run_ai_company_zh_name_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """執行公司中文名草稿任務：驅動 headless CLI 為待中文化的公司產市場慣用中文名草稿。
+
+    payload：limit（可選）、cli_kind／model／cli_timeout_seconds（沿用 ai:narrative 的 payload 慣例）。
+    無 workspace_id——全庫掃 needs_zh_name 的公司代碼（見 CompanyZhNameStore.fetch_pending）。
+
+    ⚠ AI 只產草稿（review_status='ai_suggested'），不進正式顯示欄；使用者確認才走
+    apply_confirmed_display_names。refresh 的 code_alias_names 只採 confirmed，草稿天然被排除。
+    """
+    from . import ai_company_zh_name_runner
+
+    context.heartbeat("開始產生公司中文名草稿", 1)
+
+    def _progress(stage: str, percent: int) -> None:
+        """把 runner 的進度轉成 worker heartbeat（繁中階段文字直接沿用）。"""
+        context.heartbeat(stage, percent)
+
+    return ai_company_zh_name_runner.run_company_zh_name(
+        cli_kind=str(payload.get("cli_kind") or "claude"),
+        model=payload.get("model") or None,
+        # _cli_runner 供測試／Companion 注入假或替代執行器；正式跑真實 subprocess。
+        cli_runner=payload.get("_cli_runner"),
+        limit=int(payload["limit"]) if payload.get("limit") else None,
+        timeout_seconds=float(
+            payload.get("cli_timeout_seconds")
+            or ai_company_zh_name_runner.DEFAULT_CLI_TIMEOUT_SECONDS
+        ),
+        progress=_progress,
+    )
+
+
 # job_type → 執行函式。值存「函式名」而非函式物件，讓 execute_ai_job 在呼叫當下才解析到
 # 模組屬性——測試以 mock.patch.object 換掉 _run_ai_* 時才會生效（存物件會綁死原函式）。
 _AI_JOB_RUNNERS: dict[str, str] = {
@@ -364,6 +395,7 @@ _AI_JOB_RUNNERS: dict[str, str] = {
     "ai:topic_label": "_run_ai_topic_label_job",
     "ai:patent_note": "_run_ai_patent_note_job",
     "ai:candidate_explanation": "_run_ai_candidate_explanation_job",
+    "ai:company_zh_name": "_run_ai_company_zh_name_job",
 }
 
 
