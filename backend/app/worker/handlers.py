@@ -143,8 +143,36 @@ def handle_clustering_finalize(payload: dict[str, Any], context: JobContext) -> 
             batch_size=int(payload.get("batch_size") or 8),
             kmeans_batch_size=int(payload.get("kmeans_batch_size") or 128),
         )
+    # finalize 完成後自動接續不相干篩選（2026-07-24 第 2 題定案：分群完成自動觸發）。
+    # 失敗隔離：只記 log、不 raise——篩選是輔助，缺了分群照樣成立。
+    _enqueue_irrelevant_filter(summary)
     context.heartbeat("clustering_finalize_completed", 95)
     return _json_safe(summary)
+
+
+def _enqueue_irrelevant_filter(summary: Any) -> None:
+    """分群 finalize 完成後 enqueue 一筆 ai:irrelevant_filter（走 Companion）。
+
+    2026-07-24 定案（第 2 題）：分群完成自動接續——不需使用者手動點篩選。runner 內部會取
+    每主題 c-TF-IDF 最低 N 筆、逐筆獨立判讀（見 ai_irrelevant_filter_runner）。
+
+    ⚠ 失敗隔離（沿 _enqueue_candidate_explanation 模式）：分群本體已成功落庫，篩選只是輔助；
+    任何例外都只記 log、不 raise——AI 失敗時分類區照常顯示、只是沒有可疑標記，絕不擋分群。
+    無 workspace_id（理論上 finalize 一定有）時不 enqueue。
+    """
+    from backend.app.db import job_repository as jr
+
+    try:
+        workspace_id = _summary_field(summary, "workspace_id")
+        if workspace_id is None:
+            return
+        jr.create_job(
+            "ai:irrelevant_filter",
+            {"workspace_id": int(workspace_id)},
+            workspace_id=int(workspace_id),
+        )
+    except Exception:  # noqa: BLE001 - 篩選是輔助，缺了照樣有分群
+        LOGGER.exception("irrelevant filter enqueue failed after finalize")
 
 
 def handle_clustering_incremental(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:

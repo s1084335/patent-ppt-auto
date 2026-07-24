@@ -182,5 +182,62 @@ class HandlerRegistrationTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
 
 
+
+class ClusteringFinalizeEnqueueTests(unittest.TestCase):
+    """分群 finalize 完成後自動 enqueue ai:irrelevant_filter（2026-07-24 第 2 題定案）。
+
+    ⚠ 失敗隔離：enqueue 失敗只記 log，不得讓 finalize 本體失敗（沿 _enqueue_candidate_explanation 模式）。
+    """
+
+    def _finalize_context(self, store: FakeStore) -> JobContext:
+        job = ProcessingJob(
+            job_id=77, job_type="clustering_finalize", status="running",
+            workspace_id=930077, payload_json={"run_id": 5, "candidate_id": 3},
+            result_json=None, progress_percent=0, current_stage="queued",
+            attempt_count=1, max_attempts=3,
+        )
+        return JobContext(job=job, worker_id="worker-finalize", store=store)
+
+    def test_finalize_enqueues_irrelevant_filter(self):
+        """finalize 完成後對該 workspace enqueue 一筆 ai:irrelevant_filter。"""
+        from unittest import mock
+        from backend.app.db import job_repository as jr
+
+        fake_summary = {"run_id": 5, "workspace_id": 930077,
+                        "source_field": "wips_independent_claims"}
+        store = FakeStore()
+        ctx = self._finalize_context(store)
+        with (
+            mock.patch.object(handlers, "finalize_top_level", return_value=fake_summary),
+            mock.patch.object(jr, "create_job") as create_job,
+        ):
+            handlers.handle_clustering_finalize(
+                {"run_id": 5, "candidate_id": 3}, ctx)
+
+        # 至少有一筆 create_job 是 ai:irrelevant_filter（且帶 workspace_id）
+        irr_calls = [c for c in create_job.call_args_list
+                     if c.args and c.args[0] == "ai:irrelevant_filter"]
+        self.assertEqual(len(irr_calls), 1, "finalize 未 enqueue ai:irrelevant_filter")
+        self.assertEqual(irr_calls[0].kwargs.get("workspace_id"), 930077)
+
+    def test_finalize_survives_enqueue_failure(self):
+        """enqueue 失敗（AI 輔助）不得讓 finalize 本體失敗——只記 log，仍回 summary。"""
+        from unittest import mock
+        from backend.app.db import job_repository as jr
+
+        fake_summary = {"run_id": 5, "workspace_id": 930077,
+                        "source_field": "wips_independent_claims"}
+        store = FakeStore()
+        ctx = self._finalize_context(store)
+        with (
+            mock.patch.object(handlers, "finalize_top_level", return_value=fake_summary),
+            mock.patch.object(jr, "create_job", side_effect=RuntimeError("queue down")),
+        ):
+            # 不得 raise
+            result = handlers.handle_clustering_finalize(
+                {"run_id": 5, "candidate_id": 3}, ctx)
+        self.assertEqual(result["workspace_id"], 930077)
+
+
 if __name__ == "__main__":
     unittest.main()
