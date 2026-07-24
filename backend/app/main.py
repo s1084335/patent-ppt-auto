@@ -422,6 +422,37 @@ def serve_latest_report_asset(version: str, filename: str):
     return JSONResponse(status_code=404, content={"detail": "檔案不存在"})
 
 
+# 報告 PPT 的 MIME（openxml presentation）；DB 來源無檔案路徑，需明確指定。
+_PPTX_MEDIA_TYPE = (
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+)
+
+
+@app.get("/api/v1/report-latest/ppt/{version}/{filename}")
+def download_report_ppt(version: str, filename: str):
+    """下載某報表版本的 .pptx（deterministic、Web 直呼、不經 AI）。
+
+    ai:report_ppt runner 把 build_ppt.py 組出的 .pptx 一起 upload 進 report_artifacts；
+    本路由沿既有 read_file 單檔取回（不自造新表／新存取）。本機有檔就直接 serve，
+    沒有才向 DB 取（跨容器補位，同 asset 端點）。只接 .pptx、版本名防穿越；不存在回 404。
+    """
+    from pathlib import PurePosixPath
+
+    from fastapi.responses import FileResponse, JSONResponse, Response
+
+    if PurePosixPath(filename).suffix.lower() != ".pptx":
+        return JSONResponse(status_code=404, content={"detail": "不支援的檔案類型"})
+    root = REPORT_OUTPUT_ROOT.resolve()
+    target = (root / version / filename).resolve()
+    if target.is_relative_to(root) and target.is_file():
+        return FileResponse(str(target), media_type=_PPTX_MEDIA_TYPE, filename=filename)
+    if _is_safe_version(version) and PurePosixPath(filename).name == filename:
+        content = _db_read_artifact(version, filename)
+        if content is not None:
+            return Response(content=content, media_type=_PPTX_MEDIA_TYPE)
+    return JSONResponse(status_code=404, content={"detail": "PPT 不存在"})
+
+
 @app.get("/")
 def serve_frontend():
     """前端最小頁（單一 HTML + 原生 JS）。"""

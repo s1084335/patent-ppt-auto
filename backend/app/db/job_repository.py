@@ -62,6 +62,11 @@ AI_JOB_TYPES: frozenset[str] = frozenset(
         # （相干/可疑/不相干），輔助使用者決定是否剔除。🔴 prompt 只含文獻備註，不含
         # c-TF-IDF keywords/分數/主題 label；各筆獨立判讀、不混批。CLI 白名單為空。
         "ai:irrelevant_filter",
+        # 報告 PPT 產製：AI 只產各頁確認槽（slot）文案草稿（報表數據內嵌 prompt），
+        # 寫 approvals.json → CLI 順手呼 deterministic 的 build_ppt.py 組 .pptx →
+        # 進 report_artifacts（跨容器必須進 DB）。⚠ AI 不碰排版、不碰數字；組版一律
+        # deterministic。全庫也能產（只市場章節第 7/9/10 頁在全庫空著）。CLI 白名單為空。
+        "ai:report_ppt",
     }
 )
 

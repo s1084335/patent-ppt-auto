@@ -424,6 +424,41 @@ def _run_ai_market_summary_job(payload: dict[str, Any], context: JobContext) -> 
     )
 
 
+def _run_ai_report_ppt_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """執行報告 PPT 產製任務：AI 產各頁確認槽文案 → 寫 approvals.json → CLI 順手呼
+    deterministic 的 build_ppt.py 組 .pptx → 進 report_artifacts。
+
+    payload：based_on_version（可選，不給＝最新 report_trial_）、workspace_id（可選，
+    全庫也能產、不擋）、cli_kind／model／cli_timeout_seconds（沿 ai:narrative 慣例）。
+
+    ⚠ 分工：AI 只產文案 slots（不碰排版、不碰數字）；組版一律 deterministic build_ppt。
+    ⚠ slot 命名／組版沿用既有 build_ppt.py（PAGE_LAYOUT 唯一來源），runner 不重寫。
+    進度：runner 內部 0→100 緩進，直接轉成 heartbeat。
+    """
+    from . import ai_report_ppt_runner
+
+    context.heartbeat("開始產生報告 PPT", 1)
+
+    def _progress(stage: str, percent: int) -> None:
+        """把 runner 的進度轉成 worker heartbeat（繁中階段文字直接沿用）。"""
+        context.heartbeat(stage, percent)
+
+    workspace_id = payload.get("workspace_id")
+    return ai_report_ppt_runner.run_report_ppt(
+        based_on_version=payload.get("based_on_version") or None,
+        workspace_id=int(workspace_id) if workspace_id is not None else None,
+        cli_kind=str(payload.get("cli_kind") or "claude"),
+        model=payload.get("model") or None,
+        # _cli_runner 供測試／Companion 注入假或替代執行器；正式跑真實 subprocess。
+        cli_runner=payload.get("_cli_runner"),
+        timeout_seconds=float(
+            payload.get("cli_timeout_seconds")
+            or ai_report_ppt_runner.DEFAULT_CLI_TIMEOUT_SECONDS
+        ),
+        progress=_progress,
+    )
+
+
 # job_type → 執行函式。值存「函式名」而非函式物件，讓 execute_ai_job 在呼叫當下才解析到
 # 模組屬性——測試以 mock.patch.object 換掉 _run_ai_* 時才會生效（存物件會綁死原函式）。
 _AI_JOB_RUNNERS: dict[str, str] = {
@@ -433,6 +468,7 @@ _AI_JOB_RUNNERS: dict[str, str] = {
     "ai:candidate_explanation": "_run_ai_candidate_explanation_job",
     "ai:company_zh_name": "_run_ai_company_zh_name_job",
     "ai:market_summary": "_run_ai_market_summary_job",
+    "ai:report_ppt": "_run_ai_report_ppt_job",
 }
 
 
