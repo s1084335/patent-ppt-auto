@@ -3384,7 +3384,11 @@ function uploadImportViaXhr(url, file, fileLabel) {
   const label = fileLabel ? ('<span style="color:var(--text-muted)">（' + escHtml(fileLabel) + '）</span>') : '';
   const xhr = new XMLHttpRequest();
   xhr.open('POST', url);
-  if (file.type) xhr.setRequestHeader('Content-Type', file.type);
+  // ⚠ 必須用 application/octet-stream（raw body 串流）：後端 imports 端點以 request.stream()
+  //   讀原始 bytes（第一版刻意不引 python-multipart）。若帶 xlsx 的 file.type MIME，
+  //   某些代理/ASGI 層會把 body 當需 multipart 解析而讀不到內容 → blob 存成 0 bytes、匯入 0 筆
+  //   （2026-07-26 實測：python 直送 octet-stream 成功存 blob，前端帶 file.type 則 blob 空）。
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
 
   // 上傳進度：loaded/total → 百分比進度條（沿用既有 .progress-bar-* 樣式）。
   xhr.upload.onprogress = function (e) {
