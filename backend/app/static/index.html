@@ -101,8 +101,16 @@ button { font-family: inherit; }
   background: var(--detail-label-bg); padding: 0.42rem 0.6rem; text-align: right;
   border-right: 1px solid var(--border); }
 .patent-detail-item dd { flex: 1 1 auto; margin: 0; padding: 0.42rem 0.75rem;
-  white-space: pre-wrap; word-break: break-word; min-width: 0; }
-.patent-detail-row > td { background: var(--panel); padding: 0; }
+  white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; min-width: 0; }
+/* 詳情層固定在可視寬度內（2026-07-26）：詳情 td 在超寬 table 內，若不 sticky+限寬，
+   內容會跟著 table 總寬跑到右邊、越過 AI 助手被切掉。sticky left:0 黏在可視區左緣；
+   寬度＝視窗寬扣掉左導覽(#nav-panel 200px)＋右 AI 助手(#ai-panel 240px)＋main-panel 左右
+   padding(約 2.7rem)，讓詳情剛好落在 AI 助手前面、長文在此範圍內換行到完整顯示，不越界。 */
+.patent-detail-row > td { background: var(--panel); padding: 0;
+  position: sticky; left: 0;
+  width: calc(100vw - 200px - 240px - 2.7rem);
+  max-width: calc(100vw - 200px - 240px - 2.7rem); }
+.patent-detail { box-sizing: border-box; max-width: 100%; }
 
 /* 頂列版的 nav-item（專利總覽）：沿用 .nav-item 的 active 樣式，但改為行內寬度。 */
 .topbar-nav { display: inline-block; width: auto; margin-bottom: 0; white-space: nowrap; }
@@ -132,7 +140,11 @@ button { font-family: inherit; }
 /* ── 表格 ── */
 /* 專利顯示（27 欄）在自身容器內橫向捲動；max-width 上限＝父容器寬，避免撐爆版面、
    page body 不橫向捲動（2026-07-24 定案：專利顯示加捲軸）。縱向依內容，不強制。 */
-.table-wrap { overflow-x: auto; max-width: 100%; border: 1px solid var(--border); border-radius: 0.5rem; }
+/* 表格容器：橫向捲軸黏在「當前可視畫面底緣」，不固定在整個表格最底部。
+   做法：table-wrap 同時可橫捲＋直捲，並把最大高度限成可視區高度——如此水平捲軸
+   永遠出現在可視區底部，垂直捲到哪都能就近左右捲，不必拉到表尾。頂部不另加捲軸。 */
+.table-wrap { max-width: 100%; border: 1px solid var(--border); border-radius: 0.5rem;
+  overflow: auto; max-height: calc(100vh - 15rem); }
 table.data { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
 /* 短欄預設不換行（國別／類型／年份等），避免被切碎；長文字欄另以 .cell-wrap 覆寫可換行。
    加直向框線（border-right）讓每欄邊界清楚，值不會視覺上混到隔壁欄（2026-07-26）。 */
@@ -785,7 +797,7 @@ const PATENT_COLUMNS = [
   // 分類標籤拆技術／功效兩欄（2026-07-24 定案）：欄名由 SOURCE_FIELDS 推導，不寫死兩個 key。
   { label: '技術分類', key: topicLabelKey(SOURCE_FIELDS[0][0]), listOnly: true },
   { label: '功效分類', key: topicLabelKey(SOURCE_FIELDS[1][0]), listOnly: true },
-  { label: '文獻備註', key: 'patent_note', truncate: 60, wrap: true },
+  { label: '文獻備註', key: 'patent_note', wrap: true },
   // 公司名欄（申請人／專利權人／受讓人）顯示**正規化收斂名**（與報表同一口徑，
   // 來自 report_patent_base 的 COALESCE）；原始 WIPS 字面另立 *(原文) 欄留在詳情層，
   // 沿「標題／標題(原文)」模式（2026-07-26 定案）。搜尋亦走正規化名，兩者一致。
