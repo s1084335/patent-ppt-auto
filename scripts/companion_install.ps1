@@ -111,7 +111,7 @@ $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$launcher`"
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 # 以目前使用者身分、互動式執行——這是拿得到 Claude CLI 登入 token 的關鍵。
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
-$settings = New-ScheduledTaskSettings `
+$settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `

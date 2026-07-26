@@ -202,7 +202,11 @@ FROM base b
 LEFT JOIN LATERAL (
     SELECT ca."公司名稱"
     FROM derived_layer.company_aliases ca
-    WHERE lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) IN (
+    -- 只採 confirmed：未裁決／AI 草稿（ai_suggested）不得經別稱路徑滲進正式顯示名。
+    -- 沿 code_alias_names 同一護欄；缺這行時 keep_original 草稿的「別稱」＝英文原文，
+    -- 會被下面的字面比對命中（2026-07-26 修）。
+    WHERE ca.review_status = 'confirmed'
+      AND lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) IN (
         lower(regexp_replace(BTRIM(COALESCE(b."標準化申請人", '')), '\\s+', ' ', 'g')),
         lower(regexp_replace(BTRIM(COALESCE(b."申請人", '')), '\\s+', ' ', 'g'))
     )
@@ -217,7 +221,9 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT ca."公司名稱"
     FROM derived_layer.company_aliases ca
-    WHERE lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) IN (
+    -- 只採 confirmed（同 applicant_alias 理由）。
+    WHERE ca.review_status = 'confirmed'
+      AND lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) IN (
         lower(regexp_replace(BTRIM(COALESCE(b."標準當前專利權人[US,JP,KR,CN,CA,AU]", '')), '\\s+', ' ', 'g')),
         lower(regexp_replace(BTRIM(COALESCE(b."最近專利權人[US,JP,KR,CN,CA,AU]", '')), '\\s+', ' ', 'g'))
     )
@@ -232,7 +238,10 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT ca."公司名稱"
     FROM derived_layer.company_aliases ca
-    WHERE lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) = lower(regexp_replace(BTRIM(COALESCE(b."最近受讓人[US,KR,CN]", '')), '\\s+', ' ', 'g'))
+    -- 只採 confirmed（同 applicant_alias 理由）。受讓人無代碼欄，只有這條別稱路徑，
+    -- 缺護欄時草稿是**唯一**能命中的來源，風險比另兩欄更高。
+    WHERE ca.review_status = 'confirmed'
+      AND lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) = lower(regexp_replace(BTRIM(COALESCE(b."最近受讓人[US,KR,CN]", '')), '\\s+', ' ', 'g'))
     ORDER BY ca.id
     LIMIT 1
 ) assignee_alias ON true

@@ -158,6 +158,25 @@ class PromptContractTests(unittest.TestCase):
         for banned in ("寫滿", "至少", "不少於", "字數下限", "務必達到"):
             self.assertNotIn(banned, prompt, f"prompt 不得出現湊字數指示：{banned}")
 
+    def test_prompt_states_70_chars_as_target_line(self):
+        """兩層字數線（2026-07-26 定案）：70 字為目標線，讓模型自己收在完整句子。
+
+        動因：實測 8 筆備註幾乎每筆都寫到逾 100 字後被 `note[:100]` 硬切，
+        斷在句中（「…第二段減小，形」）。只寫上限模型會當成目標寫滿，
+        故補一條較低的目標線，把死線留給程式當保底。
+        """
+        prompt = ai_patent_note_runner.build_prompt([(1, "一種阻力調節機構……")])
+        self.assertIn("70", prompt)
+        self.assertIn("100", prompt, "死線 100 仍須在 prompt 中載明")
+
+    def test_prompt_requires_complete_sentence_ending(self):
+        """要求最後一句完整：寧可短，也不要寫到被截斷。"""
+        prompt = ai_patent_note_runner.build_prompt([(1, "一種阻力調節機構……")])
+        self.assertTrue(
+            any(k in prompt for k in ("完整", "句號")),
+            f"prompt 未要求輸出完整句子：{prompt}",
+        )
+
     def test_prompt_carries_claim_text_and_patent_ids(self):
         """prompt 必須帶獨立項全文與 patent_id，讓回吐可對回專利。"""
         prompt = ai_patent_note_runner.build_prompt([(11, "獨立項甲"), (22, "獨立項乙")])

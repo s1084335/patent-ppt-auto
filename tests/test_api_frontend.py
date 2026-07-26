@@ -95,18 +95,30 @@ class FrontendSkeletonTests(unittest.TestCase):
         # 改名澄清：不得再出現舊的 companion 端點路徑。
         self.assertNotIn("/companion/", self.html)
 
-    def test_ai_token_field_and_header_wired(self):
-        """AI 任務金鑰：有輸入框、存 localStorage、呼叫時帶 Bearer 標頭。"""
-        for needle in ("ai-token", "saveAiToken", "aiAuthHeaders", "patent_api_token"):
+    def test_ai_token_ui_removed(self):
+        """AI 任務金鑰 UI 已移除（2026-07-26 定案）。
+
+        端點改為 opt-in 認證（未設 PATENT_API_TOKEN 即不驗證），使用者不需填金鑰。
+        原測試守的是「有輸入框＋存 localStorage＋帶 Bearer」的舊契約，已隨定案作廢。
+        """
+        for needle in ("ai-token", "saveAiToken", "getAiToken", "AI_TOKEN_KEY"):
+            with self.subTest(needle=needle):
+                self.assertTrue(needle not in self.html, f"金鑰相關程式碼未清除：{needle}")
+
+    def test_ai_auth_header_injection_point_kept(self):
+        """保留 aiAuthHeaders 單一注入點：要重啟保護時只需改這一處。"""
+        self.assertIn("aiAuthHeaders", self.html)
+
+    def test_ai_send_button_kept(self):
+        """送出功能保留（使用者要求）：ai:narrative 任務仍可從前端建立。"""
+        for needle in ("btn-ai-send", "sendAiRequest", "ai-input"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.html)
-        self.assertIn("'Bearer '", self.html)
 
     def test_ai_token_not_hardcoded_in_page(self):
-        """token 不得寫死在公開 HTML：只能由使用者填入 localStorage。"""
+        """token 不得寫死在公開 HTML（本頁對所有人可見）。"""
         # 頁面內不得出現任何寫死的 Bearer 值（Bearer 後只接變數串接）。
         self.assertNotRegex(self.html, r"Bearer\s+[A-Za-z0-9_\-]{8,}")
-        self.assertIn("localStorage", self.html)
 
     def test_comparison_has_create_form(self):
         """案件比對有建立比對案件表單（案件名稱、文字、建立按鈕）。"""
