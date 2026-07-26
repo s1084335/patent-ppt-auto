@@ -116,6 +116,16 @@ button { font-family: inherit; }
   width: calc(100vw - 200px - 240px - 2.7rem);
   max-width: calc(100vw - 200px - 240px - 2.7rem); }
 .patent-detail { box-sizing: border-box; max-width: 100%; }
+/* 書目資料左右兩欄（2026-07-27）：左＝文字欄位逐列（佔約 55%）、右半＝主附圖放大。
+   窄畫面（左右擠不下）自動換行堆疊，圖不被壓成細條。 */
+.patent-detail-biblio { display: flex; gap: 0.9rem; align-items: flex-start; flex-wrap: wrap; }
+.patent-detail-biblio > .patent-detail { flex: 1 1 55%; min-width: 18rem; }
+.patent-detail-figure { flex: 1 1 38%; min-width: 14rem; text-align: center;
+  padding: 0.6rem; border: 1px solid var(--border); border-radius: 0.4rem;
+  background: var(--panel-2); align-self: stretch;
+  display: flex; align-items: center; justify-content: center; }
+.patent-detail-figure img { max-width: 100%; max-height: 24rem; height: auto;
+  background: #fff; border-radius: 0.3rem; }
 
 /* 頂列版的 nav-item（專利總覽）：沿用 .nav-item 的 active 樣式，但改為行內寬度。 */
 .topbar-nav { display: inline-block; width: auto; margin-bottom: 0; white-space: nowrap; }
@@ -954,7 +964,29 @@ function patentDetailHtml(p, scope) {
       ? cols.filter(c => section.keys.includes(c.key))
       : cols.filter(c => !claimed.has(c.key));
     if (secCols.length === 0) return '';
-    return '<div class="patent-detail-section">' + escHtml(section.title) + '</div>'
+    const title = '<div class="patent-detail-section">' + escHtml(section.title) + '</div>';
+    // 書目資料節（keys=null 的 catch-all）採左右兩欄（2026-07-27 使用者定案）：
+    // 左＝文字欄位逐列；右半＝主附圖放大顯示（圖從逐列中抽出，不再擠在一格小圖）。
+    if (section.keys === null) {
+      const textCols = secCols.filter(c => c.key !== 'has_figure');
+      const figureHtml = p.has_figure
+        ? '<img loading="lazy" decoding="async" src="' + API + '/patents/'
+          + encodeURIComponent(p.patent_id) + '/figure"'
+          + ' alt="' + escHtml(p.patent_number || '') + ' 主附圖"'
+          + ' onerror="this.outerHTML=\'<span class=&quot;figure-empty&quot;>無圖</span>\'">'
+        : '<span class="figure-empty">無圖</span>';
+      return title
+        + '<div class="patent-detail-biblio">'
+        + '<dl class="patent-detail">'
+        + textCols.map(c =>
+          '<div class="patent-detail-item"><dt>' + escHtml(c.label) + '</dt>'
+          + '<dd>' + patentCell(p, c, 'detail') + '</dd></div>'
+        ).join('')
+        + '</dl>'
+        + '<div class="patent-detail-figure">' + figureHtml + '</div>'
+        + '</div>';
+    }
+    return title
       + '<dl class="patent-detail">'
       + secCols.map(c =>
         '<div class="patent-detail-item"><dt>' + escHtml(c.label) + '</dt>'
