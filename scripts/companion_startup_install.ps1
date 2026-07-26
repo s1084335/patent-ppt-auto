@@ -124,8 +124,13 @@ $vbsLines = @(
     $vbsCwdLine,
     $vbsRunLine
 )
-# vbs 走 wscript，UTF-8 with BOM 可正確處理中文路徑（與 cmd 的 Big5 限制不同）。
-[System.IO.File]::WriteAllLines($vbsLauncher, $vbsLines, (New-Object System.Text.UTF8Encoding($true)))
+# ⚠ .vbs 必須存成系統 ANSI（繁中機器＝cp950），不得用 UTF-8／不得帶 BOM。
+# 2026-07-27 實測踩雷：wscript.exe 讀 .vbs 一律以系統 ANSI 解碼，不認 UTF-8 BOM。
+# 存成 UTF-8 with BOM 時，cp950 解讀會把 BOM 變成「嚜?」並吃掉首行換行，使下一行的
+# `Dim sh` 被併進註解（變數未宣告），中文專案路徑也整段變亂碼（D:\力山\… → D:\?控\…），
+# wscript 遂**靜默失敗**（無錯誤視窗、無 log），Companion 開機後完全不啟動。
+# 用 Default（系統 ANSI）存檔，與同目錄 .cmd 的處理方式一致。
+[System.IO.File]::WriteAllLines($vbsLauncher, $vbsLines, [System.Text.Encoding]::Default)
 Write-Host "[startup_install] 隱藏啟動器：$vbsLauncher"
 
 # ---------- 3. 在啟動資料夾建立捷徑 ----------

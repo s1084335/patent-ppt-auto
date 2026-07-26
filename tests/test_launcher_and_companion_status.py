@@ -33,6 +33,11 @@ STARTUP_SCRIPT = PROJECT_ROOT / "scripts" / "companion_startup_install.ps1"
 client = TestClient(app)
 PREFIX = "/api/v1"
 
+# Windows PowerShell 5.1 的 stdout/stderr 走系統 ANSI（繁中機器為 cp950），不是 UTF-8。
+# 以 utf-8 解會在腳本輸出含中文時丟 UnicodeDecodeError，讓整批 launcher 測試假性失敗
+# （2026-07-27 實測：11 個 launcher 測試皆因此而非因邏輯錯誤而紅）。
+PS_OUTPUT_ENCODING = "mbcs" if os.name == "nt" else "utf-8"
+
 
 # ── PowerShell dry-run 輔助 ────────────────────────────────────
 
@@ -84,7 +89,7 @@ def run_launcher(state_dir: Path, **kwargs: str) -> dict:
     for name in ("PATENT_FRONTEND_URL", "AI_BRIDGE_STATE_DIR", "PATENT_START_BACKEND"):
         env.pop(name, None)
     proc = subprocess.run(
-        args, capture_output=True, text=True, encoding="utf-8", env=env, timeout=120
+        args, capture_output=True, text=True, encoding=PS_OUTPUT_ENCODING, env=env, timeout=120
     )
     assert proc.returncode == 0, f"launcher 失敗：\n{proc.stdout}\n{proc.stderr}"
     lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("LAUNCH_PLAN ")]
@@ -165,7 +170,7 @@ def test_frontend_url_from_environment(tmp_path: Path):
     env = dict(os.environ)
     env["PATENT_FRONTEND_URL"] = "https://patent.up.railway.app"
     proc = subprocess.run(
-        args, capture_output=True, text=True, encoding="utf-8", env=env, timeout=120
+        args, capture_output=True, text=True, encoding=PS_OUTPUT_ENCODING, env=env, timeout=120
     )
     assert proc.returncode == 0, proc.stderr
     line = [ln for ln in proc.stdout.splitlines() if ln.startswith("LAUNCH_PLAN ")][-1]
@@ -225,7 +230,7 @@ def test_shortcut_create_and_remove_in_temp_dir(tmp_path: Path):
                 "-ShortcutName", name,
                 *extra,
             ],
-            capture_output=True, text=True, encoding="utf-8", timeout=120,
+            capture_output=True, text=True, encoding=PS_OUTPUT_ENCODING, timeout=120,
         )
 
     created = run("-FrontendUrl", "https://patent.example.com")
@@ -243,7 +248,7 @@ def test_shortcut_create_and_remove_in_temp_dir(tmp_path: Path):
             f"$l=$s.CreateShortcut('{lnk}');"
             "Write-Output $l.WindowStyle; Write-Output $l.Arguments",
         ],
-        capture_output=True, text=True, encoding="utf-8", timeout=120,
+        capture_output=True, text=True, encoding=PS_OUTPUT_ENCODING, timeout=120,
     )
     assert probe.returncode == 0, probe.stderr
     lines = [ln.strip() for ln in probe.stdout.splitlines() if ln.strip()]
@@ -273,16 +278,32 @@ def test_companion_startup_wrapper_uses_cmd_and_bootstrap_log(tmp_path: Path):
         ],
         capture_output=True,
         text=True,
-        encoding="utf-8",
+        encoding=PS_OUTPUT_ENCODING,
         timeout=120,
     )
 
     assert proc.returncode == 0, proc.stderr
     cmd = (tmp_path / "companion_serve.cmd").read_text(encoding="mbcs")
-    vbs = (tmp_path / "companion_serve_hidden.vbs").read_text(encoding="utf-8-sig")
     assert "companion_bootstrap.log" in cmd
+
+    # ⚠ .vbs 必須以系統 ANSI(mbcs/cp950) 存檔，不得帶 UTF-8 BOM。
+    # 實測 2026-07-27：wscript.exe 讀 .vbs 一律用系統 ANSI，不認 UTF-8 BOM。
+    # 存成 UTF-8 with BOM 時，cp950 解讀會把 BOM 變成「嚜?」並吃掉該行換行，
+    # 使下一行的 `Dim sh` 被併進註解（變數未宣告），中文專案路徑也整段變亂碼
+    # （D:\力山\... → D:\?控\...）→ wscript 靜默失敗、Companion 完全不啟動。
+    vbs_bytes = (tmp_path / "companion_serve_hidden.vbs").read_bytes()
+    assert not vbs_bytes.startswith(b"\xef\xbb\xbf"), (
+        ".vbs 不得含 UTF-8 BOM——wscript 以 ANSI 讀取，BOM 會讓首行解析失敗"
+    )
+    vbs = vbs_bytes.decode("mbcs")  # 用 wscript 的實際讀法解碼
     assert "cmd.exe /c" in vbs
     assert "companion_serve.cmd" in vbs
+    # 中文專案路徑經 ANSI 往返後必須仍然存在（BOM/UTF-8 存檔會在此變亂碼）
+    assert str(PROJECT_ROOT) in vbs, "VBS 內的專案路徑在 ANSI 解碼後毀損"
+    # 每行獨立：Dim 宣告不得被前一行註解吃掉
+    assert any(line.strip() == "Dim sh" for line in vbs.splitlines()), (
+        "Dim sh 應自成一行；被併入註解代表換行在編碼轉換中遺失"
+    )
 
 
 # ── C. Companion 狀態端點 ─────────────────────────────────────
