@@ -149,7 +149,7 @@ button { font-family: inherit; }
    做法：table-wrap 同時可橫捲＋直捲，並把最大高度限成可視區高度——如此水平捲軸
    永遠出現在可視區底部，垂直捲到哪都能就近左右捲，不必拉到表尾。頂部不另加捲軸。 */
 .table-wrap { max-width: 100%; border: 1px solid var(--border); border-radius: 0.5rem;
-  overflow: auto; max-height: calc(100vh - 15rem); }
+  overflow-x: auto; overflow-y: auto; max-height: calc(100vh - 15rem); }
 table.data { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
 /* 所有欄位預設可換行、不截斷（2026-07-26 使用者定案：一行放不完就換行，任何欄都不被切）。
    word-break/overflow-wrap 讓長英文串也能斷行；限最大寬避免單欄過寬撐爆表格。

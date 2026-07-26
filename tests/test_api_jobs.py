@@ -176,6 +176,31 @@ class ReadyAndJobTests(unittest.TestCase):
         self.assertEqual(body["error_message"], "boom: something broke")
         self.assertEqual(body["current_stage"], "failed")
 
+    def test_get_job_reads_result_from_workflow_outputs(self):
+        """GET /jobs/{id} 要把 workflow_outputs 最新結果併回 result。
+
+        0021 後 queue row 本身不存 result_json；前端匯入完成卡片讀 /jobs/{id}.result，
+        因此 API 必須在單筆查詢時補讀 job_result:{run_type}。
+        """
+        job = jr.create_job("patent_import", {VERIFY_KEY: True})
+        worker = jr.WorkerQueueClient()
+        claimed = worker.claim_next_job(worker_id="verify-worker")
+        self.assertIsNotNone(claimed)
+        result = {
+            "inserted": 2,
+            "matched_existing": 3,
+            "updated": 1,
+            "patent_ids": [101, 102, 103, 104, 105],
+        }
+        worker.complete_job(job_id=claimed.job_id, worker_id="verify-worker", result_json=result)
+
+        resp = client.get(f"{PREFIX}/jobs/{claimed.job_id}")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["status"], "succeeded")
+        self.assertEqual(body["result"], result)
+
     def test_get_job_not_found(self):
         resp = client.get(f"{PREFIX}/jobs/999999999")
         self.assertEqual(resp.status_code, 404)
