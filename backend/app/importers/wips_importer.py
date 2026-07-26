@@ -393,25 +393,54 @@ def extract_embedded_images(path: Path, sheet_name: str) -> dict[int, tuple[byte
 
 
 def load_delimited_rows(path: Path, source_name: str) -> tuple[list[str], str, list[dict[str, Any]], list[str]]:
-    text = read_text_with_fallback(path)
-    sample = text[:8192]
+    """讀 csv/txt 逐列串流解析（2026-07-26 修 bug1/bug2）。
+
+    bug1（引號內換行）：舊版 `csv.reader(text.splitlines(), ...)` 先 splitlines 會吃掉
+    引號內儲存格的換行、破壞列結構。改用 csv.reader 直接吃**檔案物件**（newline="" 為
+    官方要求，讓 csv 模組自己正確處理引號內換行）；順帶解掉整檔全載（逐列串流）。
+    bug2（Sniffer 只看前 8KB）：擴大取樣（前 64KB 且多列），sniff 失敗/低信心時
+    退到副檔名預設（.txt→tab、.csv→逗號）。
+    """
+    encoding = _detect_text_encoding(path)
+    # 先讀較大樣本判分隔符（bug2：8KB→64KB，前段無代表性時較不易猜錯）。
+    with open(path, "r", encoding=encoding, newline="") as f:
+        sample = f.read(65536)
     try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
+        dialect: Any = csv.Sniffer().sniff(sample, delimiters=",\t;|")
     except csv.Error:
         dialect = csv.excel_tab if path.suffix.lower() == ".txt" else csv.excel
-    reader = csv.reader(text.splitlines(), dialect)
-    try:
-        headers = [str(value).strip() if value is not None else "" for value in next(reader)]
-    except StopIteration:
-        return [source_name], source_name, [], []
 
+    # bug1：csv.reader 吃檔案物件（不 splitlines），引號內換行由 csv 模組原生正確處理。
     records = []
-    for row_number, row in enumerate(reader, start=2):
-        raw = row_to_record(headers, row)
-        if record_has_value(raw):
-            raw["_row_number"] = row_number
-            records.append(raw)
+    headers: list[str] = []
+    with open(path, "r", encoding=encoding, newline="") as f:
+        reader = csv.reader(f, dialect)
+        try:
+            headers = [str(value).strip() if value is not None else "" for value in next(reader)]
+        except StopIteration:
+            return [source_name], source_name, [], []
+        for row_number, row in enumerate(reader, start=2):
+            raw = row_to_record(headers, row)
+            if record_has_value(raw):
+                raw["_row_number"] = row_number
+                records.append(raw)
     return [source_name], source_name, records, headers
+
+
+def _detect_text_encoding(path: Path) -> str:
+    """偵測可用編碼（沿 read_text_with_fallback 的順序），供串流開檔用。
+
+    讀前 64KB 逐一試解碼，回第一個成功的編碼；全失敗回 utf-8（開檔時以 errors 容錯）。
+    這樣改串流讀檔時不犧牲既有的多編碼容錯。
+    """
+    head = path.read_bytes()[:65536]
+    for encoding in ("utf-8-sig", "utf-16", "big5", "cp950", "gb18030"):
+        try:
+            head.decode(encoding)
+            return encoding
+        except UnicodeError:
+            continue
+    return "utf-8"
 
 
 def read_text_with_fallback(path: Path) -> str:
