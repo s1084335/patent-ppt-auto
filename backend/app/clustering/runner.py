@@ -956,10 +956,16 @@ def _persist_final_topics(
     ]
     with psycopg.connect(**get_connection_kwargs()) as conn:
         with conn.cursor() as cur:
+            # model_artifact_hash／artifact_version 必須落 state 頂層：incremental 端
+            # 經 _latest_completed_run 攤平後直接取這兩個頂層鍵（並以 artifact_version
+            # 排序取最新 run），只寫進 metrics 會讓後續增量分群 KeyError。
             _merge_topic_state(
                 cur, run_id,
                 {"candidates": updated_candidates, "status": "completed",
-                 "topic_count": len(topic_ids), "error_message": None},
+                 "topic_count": len(topic_ids), "error_message": None,
+                 "model_artifact_hash": model_hash,
+                 "artifact_version": int(
+                     dict(scope.get("topic_state_json") or {}).get("artifact_version") or 1)},
             )
             _set_workflow_status(cur, run_id, "succeeded")
     return len(topic_ids), len(assignment_rows)

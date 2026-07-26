@@ -50,6 +50,17 @@ class CalibrateRequest(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=200)
 
 
+class AutoClusteringRequest(BaseModel):
+    """單一「分類」入口的請求；source_field 選填。
+
+    不帶 source_field＝一鍵雙通道：技術與功效各建一個分群 job（使用者按一次即可，
+    不必切分頁按兩次）。帶 source_field 則只跑該通道，保留單通道用法。
+    """
+
+    source_field: str | None = None
+    idempotency_key: str | None = Field(default=None, max_length=200)
+
+
 class IncrementalRequest(BaseModel):
     """建立增量分群工作。"""
 
@@ -120,46 +131,65 @@ def create_incremental(workspace_id: int, request: IncrementalRequest) -> dict[s
 
 
 @router.post("/workspaces/{workspace_id}/clustering/auto")
-def create_auto_clustering(workspace_id: int, request: CalibrateRequest) -> dict[str, Any]:
+def create_auto_clustering(workspace_id: int, request: AutoClusteringRequest) -> dict[str, Any]:
     """單一「分類」入口：使用者按一個鈕，後端自動 embeddings→分群，並判斷首次 vs 增量。
 
-    行為（2026-07-26 定案：分群全手動）：
+    行為（2026-07-26 定案：分群全手動；2026-07-27 補一鍵雙通道）：
     - 先 enqueue embeddings（全手動後，匯入不再自動算向量；分群前置一起在此補，只算缺的）。
-    - 再 enqueue 分群：無既有分群（TopicStateNotFoundError）→ clustering_calibrate（首次）；
+      兩通道共用這一個 job，不重複入列。
+    - 再 enqueue 分群：不帶 source_field → 技術＋功效兩通道各一個 job；帶則只跑該通道。
+      每個通道**各自**判斷：無既有分群（TopicStateNotFoundError）→ clustering_calibrate（首次）；
       已有 → clustering_incremental（增量，只處理新專利、不重跑，沿既有 online artifact）。
     embeddings 的 run_id 較小，worker FIFO（ORDER BY run_id）保證先跑完才輪到分群，
     不需另造 job 相依（沿匯入後自動觸發原本的順序保證，單 worker 前提）。
     """
-    _validate_source_field(request.source_field)
     from backend.app.clustering.sources import source_fields
+
+    if request.source_field is None:
+        targets = list(source_fields())
+    else:
+        _validate_source_field(request.source_field)
+        targets = [request.source_field]
 
     # embeddings 先入列（分群前置）：兩通道同批、只算缺的，故一個 job 即可。
     embeddings_job = job_repository.create_job(
         "embeddings", {"source_fields": list(source_fields())}
     )
-    try:
-        get_latest_topic_state(workspace_id, request.source_field)
-        job_type = "clustering_incremental"
-    except TopicStateNotFoundError:
-        job_type = "clustering_calibrate"
-    cluster_result = _create_clustering_job(
-        job_type,
-        {"workspace_id": workspace_id, "source_field": request.source_field},
-        workspace_id=workspace_id,
-        idempotency_key=request.idempotency_key,
-    )
-    cluster_result["embeddings_job_id"] = embeddings_job.job_id
-    return cluster_result
+    jobs: list[dict[str, Any]] = []
+    for source_field in targets:
+        try:
+            get_latest_topic_state(workspace_id, source_field)
+            job_type = "clustering_incremental"
+        except TopicStateNotFoundError:
+            job_type = "clustering_calibrate"
+        # 多通道時 idempotency_key 需分通道，否則第二個通道會被視為重複而拿到同一個 job
+        key = request.idempotency_key
+        if key and len(targets) > 1:
+            key = f"{key}:{source_field}"
+        job = _create_clustering_job(
+            job_type,
+            {"workspace_id": workspace_id, "source_field": source_field},
+            workspace_id=workspace_id,
+            idempotency_key=key,
+        )
+        job.setdefault("source_field", source_field)
+        jobs.append(job)
+
+    # 回應同時保留單通道舊欄位（第一個 job 攤平）與新的 jobs 陣列，前端兩種寫法都能讀。
+    result: dict[str, Any] = {**jobs[0], "jobs": jobs}
+    result["embeddings_job_id"] = embeddings_job.job_id
+    return result
 
 
 @router.post("/clustering/runs/{run_id}/finalize")
 def create_finalize(run_id: int, request: FinalizeRequest) -> dict[str, Any]:
     """依選定 candidate 建立定案工作；run 不存在回 404。"""
     with psycopg.connect(**get_connection_kwargs()) as conn:
-        # 一次取 run 與其候選（候選在 topic_state_json），不分兩趟查詢
+        # 一次取 run 狀態與其候選（都在 topic_state_json），不分兩趟查詢
         exists = conn.execute(
             "SELECT jsonb_path_exists(topic_state_json, "
-            "  '$.candidates[*] ? (@.candidate_id == $cid)', jsonb_build_object('cid', %s::int)) "
+            "  '$.candidates[*] ? (@.candidate_id == $cid)', jsonb_build_object('cid', %s::int)), "
+            "       topic_state_json->>'status' "
             "FROM derived_layer.topic_runs WHERE run_id = %s",
             (request.candidate_id, run_id),
         ).fetchone()
@@ -170,6 +200,14 @@ def create_finalize(run_id: int, request: FinalizeRequest) -> dict[str, Any]:
         raise HTTPException(
             status_code=422,
             detail=f"candidate {request.candidate_id} does not belong to run {run_id}",
+        )
+    # 定案只允許 needs_review／failed（見 runner._load_run_and_candidate 的同一組守門）。
+    # 這裡先擋，避免重複按「採用」建出必然失敗的 job，讓使用者只看到 job failed 而不知原因。
+    clustering_status = exists[1]
+    if clustering_status not in {"needs_review", "failed"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"run {run_id} cannot be finalized from status={clustering_status}",
         )
     return _create_clustering_job(
         "clustering_finalize",
