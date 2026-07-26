@@ -121,6 +121,18 @@ class ImportAutoClusteringTests(unittest.TestCase):
         note = [c for c in recorder.calls if c["job_type"] == "ai:patent_note"]
         self.assertEqual(len(note), 1, "匯入應自動 enqueue 一個文獻備註 job")
 
+    def test_import_enqueues_refresh_derived(self):
+        """匯入完成自動 enqueue refresh_derived（2026-07-26）：刷新 report_patent_base，
+        公司名收斂（代碼→confirmed 對照名／重複歸一／中文名）才會反映到顯示欄。
+
+        斷點修復：refresh 原本只有 MCP 手動觸發，匯入流程沒接，導致公司名欄全空。
+        """
+        _, recorder = self._run_import(
+            {"new_workspace_name": "ws", "purpose": "general"},
+            workspace_result={"workspace_id": 63})
+        refresh = [c for c in recorder.calls if c["job_type"] == "refresh_derived"]
+        self.assertEqual(len(refresh), 1, "匯入應自動 enqueue 一個 refresh_derived job")
+
     def test_no_patent_ids_skips_everything(self):
         """重複檔／無新專利（patent_ids 空）→ 不同步全庫、不 enqueue 任何後續 job。"""
         _, recorder = self._run_import(

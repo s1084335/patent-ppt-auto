@@ -504,8 +504,31 @@ def _enqueue_post_import_jobs(payload: dict[str, Any], summary: dict[str, Any]) 
         # 不 raise：匯入已成功，全庫同步失敗可由下次匯入補上。
         LOGGER.exception("global workspace sync failed after import: workspace_id=%s", workspace_id)
         summary["auto_jobs_error"] = f"{type(exc).__name__}: {exc}"
+    # 刷新公司名收斂顯示（report_patent_base）：獨立 try/except，與分群無關但屬顯示必要一步。
+    # 不 refresh 則申請人／專利權人／受讓人欄全空、以申請人過濾的搜尋也搜不到（2026-07-26 修斷點）。
+    _enqueue_refresh_derived(summary)
     # 文獻備註 AI 任務獨立 try/except：與分群互不牽連，任一失敗不影響其餘。
     _enqueue_patent_note(summary)
+
+
+def _enqueue_refresh_derived(summary: dict[str, Any]) -> None:
+    """匯入成功後自動 enqueue 一筆 refresh_derived（刷新 report_patent_base 公司名收斂顯示）。
+
+    ⚠ 失敗隔離（沿 _enqueue_patent_note 範本）：匯入本體已成功落庫，refresh 只是後續便利；
+    任何例外只記 log 並回填 summary.refresh_derived_error，不 raise——不把已成功匯入標 failed。
+    沒有新專利就不 enqueue（refresh 是全量重建，無新資料時由既有資料自然涵蓋，不必每次跑）。
+    scope 'aliases'＝只刷 report_patent_base（公司名收斂那張表），成本最小。
+    """
+    from backend.app.db import job_repository as jr
+
+    try:
+        if not (summary.get("patent_ids") or []):
+            return
+        job = jr.create_job("refresh_derived", {"scope": "aliases"})
+        summary["refresh_derived_job_id"] = job.job_id
+    except Exception as exc:  # noqa: BLE001 - refresh 是輔助，缺了照樣完成匯入
+        LOGGER.exception("refresh_derived enqueue failed after import")
+        summary["refresh_derived_error"] = f"{type(exc).__name__}: {exc}"
 
 
 def _enqueue_patent_note(summary: dict[str, Any]) -> None:
@@ -654,6 +677,31 @@ def _resolve_active_topic_ids(
                 f"topic code {code!r} has no topic_id in topic run {topic_run_id}")
         resolved.append(int(entry["topic_id"]))
     return resolved
+
+
+def handle_refresh_derived(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """刷新 derived 層（report_patent_base）：公司名收斂顯示的必要一步。
+
+    背景（2026-07-26 修斷點）：report_patent_base 由 refresh_report_patent_base() 全量重建，
+    第一收斂順位＝「代碼→confirmed 對照名」（即使用者的代碼機制），其後是別稱／代碼統計名／
+    標準化名。此表原本只有 MCP 手動觸發，匯入流程沒接，導致匯入後公司名（申請人／專利權人／
+    受讓人）顯示欄全空、以申請人過濾的搜尋也搜不到。故匯入完成自動 enqueue 此 job 補上。
+
+    payload.scope（缺省 'aliases'＝只刷 report_patent_base；'all' 另刷 family_country）。
+    複用既有 refresh 函式，不重寫收斂邏輯。refresh 是全量重建，成本隨全庫筆數成長。
+    """
+    from backend.app.derived.refresh_report_patent_base import refresh_report_patent_base
+
+    context.heartbeat("刷新公司名收斂顯示", 20)
+    scope = str(payload.get("scope") or "aliases")
+    result = refresh_report_patent_base()
+    if scope == "all":
+        context.heartbeat("刷新家族國別報表視圖", 60)
+        from backend.app.derived.refresh_report_family_country import refresh_report_family_country
+        family = refresh_report_family_country()
+        result = {"report_patent_base": result, "report_family_country": family}
+    context.heartbeat("完成", 100)
+    return _json_safe({"scope": scope, "result": result})
 
 
 def handle_embeddings(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
@@ -829,6 +877,7 @@ HANDLERS: dict[str, Handler] = {
     "report_generate": handle_report_generate,
     "patent_import": handle_patent_import,
     "embeddings": handle_embeddings,
+    "refresh_derived": handle_refresh_derived,
     "topic_merge": handle_topic_merge,
     "topic_unmerge": handle_topic_unmerge,
     "ai:narrative": handle_ai_narrative,

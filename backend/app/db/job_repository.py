@@ -86,6 +86,9 @@ JOB_TYPES: frozenset[str] = frozenset(
         "case_comparison",
         # 匯入後補算 embeddings（technical/effect）；複用既有 write_patent_embeddings，只算缺的。
         "embeddings",
+        # 匯入後刷新 derived 層（report_patent_base）：公司名收斂（代碼→confirmed 對照名／
+        # 重複歸一／中文名）靠此表，不 refresh 則顯示欄全空。複用既有 refresh 函式。
+        "refresh_derived",
     }
 ) | AI_JOB_TYPES
 
