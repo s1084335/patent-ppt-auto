@@ -1,4 +1,10 @@
 # Optional GPU deployment overlay. Base Compose remains usable on CPU-only servers.
 services:
   worker:
-    gpus: ${WORKER_GPUS:-all}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${WORKER_GPU_COUNT:-all}
+              capabilities: [gpu]
