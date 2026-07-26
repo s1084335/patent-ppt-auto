@@ -112,7 +112,7 @@ def get_job(job_id: int) -> dict[str, Any]:
     if job is None:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found")
     body = job_to_dict(job)
-    # 0021 後 job 結果不存 workflow_runs row，而是版本化寫入 workflow_outputs。
-    # 前端單筆輪詢 /jobs/{id} 需要拿到最新結果，才看得到匯入統計與後續 AI 產出。
-    body["result"] = job_repository.fetch_job_result(job.job_id, job.job_type)
+    # 0021 後 job 結果主要存 workflow_outputs；遷移或舊任務沒有 output 時保留 row result。
+    output_result = job_repository.fetch_job_result(job.job_id, job.job_type)
+    body["result"] = output_result if output_result is not None else job.result_json
     return body

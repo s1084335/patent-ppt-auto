@@ -3474,6 +3474,12 @@ async function pollImportJob(jobId, fileLabel) {
 // 並提供「前往該 workspace 專利總覽」快捷（切 workspace + 導覽到 patents）。
 function importResultHtml(j) {
   const r = j.result || {};
+  if (!j.result || Object.keys(r).length === 0) {
+    return '<div class="card import-result">'
+      + '<div style="font-weight:600;color:var(--warn)">匯入完成，但後端尚未回傳結果</div>'
+      + '<div style="margin-top:0.5rem;color:var(--text-muted)">job #' + escHtml(j.job_id || '') + ' 已成功，請檢查 workflow_outputs 或重新整理。</div>'
+      + '</div>';
+  }
   const patentCount = Array.isArray(r.patent_ids) ? r.patent_ids.length : (r.patent_ids ?? 0);
   const ws = r.workspace || {};
   const wsId = r.workspace_id ?? ws.workspace_id ?? null;
