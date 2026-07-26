@@ -115,6 +115,25 @@ class ReportArtifactStoreTests(unittest.TestCase):
         sql = cur.execute.call_args.args[0]
         self.assertNotIn("content", sql.lower().replace("content_", ""))
 
+    def test_list_ppt_files_returns_pptx_of_version_without_content(self):
+        """列某報表版本下的 .pptx 清單（#10 R10-1）：只回 metadata（filename／byte_size），
+        不撈 content；只取 .pptx（同版本可有多個 _rN 序號檔）；限定該 version。"""
+        pool, cur = _mock_pool(fetchall_returns=[[
+            ("patent_report.pptx", 1024),
+            ("patent_report_r2.pptx", 2048),
+        ]])
+        with mock.patch.object(report_artifact_store, "get_pool", return_value=pool):
+            ppts = report_artifact_store.list_ppt_files("report_trial_20260723_120000")
+        self.assertEqual([p["filename"] for p in ppts],
+                         ["patent_report.pptx", "patent_report_r2.pptx"])
+        self.assertEqual(ppts[0]["byte_size"], 1024)
+        sql, params = cur.execute.call_args.args
+        # 限定該 version
+        self.assertEqual(params, ("report_trial_20260723_120000",))
+        # 只取 .pptx（SQL 需帶 pptx 過濾）、不撈 content
+        self.assertIn(".pptx", sql)
+        self.assertNotIn("content", sql.lower().replace("content_", ""))
+
 
 class ReportGenerateHandlerTests(unittest.TestCase):
     """handle_report_generate 真的出圖：呼叫 run_chart_trial、上傳產物、階段收 100。"""
@@ -357,6 +376,29 @@ class CrossContainerReadTests(unittest.TestCase):
         with p1, p2:
             resp = client.get("/api/v1/reports/versions/report_trial_不存在/content")
         self.assertEqual(resp.status_code, 404)
+
+    def test_ppt_files_endpoint_lists_pptx_with_download_url(self):
+        """#10 R10-1：GET /reports/versions/{v}/ppt-files 回該版本 .pptx 清單，
+        每筆帶 filename／byte_size／download_url（指向既有 /report-latest/ppt 下載端點）。"""
+        def _list_ppt_files(version):
+            if version != self._VERSION:
+                return []
+            return [
+                {"filename": "patent_report.pptx", "byte_size": 1024},
+                {"filename": "patent_report_r2.pptx", "byte_size": 2048},
+            ]
+        with mock.patch.object(main_module.report_artifact_store,
+                               "list_ppt_files", _list_ppt_files):
+            resp = client.get(f"/api/v1/reports/versions/{self._VERSION}/ppt-files")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        files = body["ppt_files"]
+        self.assertEqual([f["filename"] for f in files],
+                         ["patent_report.pptx", "patent_report_r2.pptx"])
+        self.assertEqual(files[0]["byte_size"], 1024)
+        # download_url 指向既有 PPT 下載端點，前端可直接用
+        self.assertIn(f"/report-latest/ppt/{self._VERSION}/patent_report.pptx",
+                      files[0]["download_url"])
 
 
 if __name__ == "__main__":

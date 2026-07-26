@@ -194,6 +194,20 @@ class ListWorkspacesTests(unittest.TestCase):
         # 0021 已無 created_at 欄，投影不得再帶。
         self.assertNotIn("created_at", items[WS_A])
 
+    def test_items_include_is_global_flag(self):
+        """每筆須帶 is_global（前端靠此濾掉全庫、避免下拉出現兩個全庫）。
+
+        Red 根因：_WORKSPACE_FIELDS 投影原本漏 w.is_global，前端 filter(!is_global)
+        永遠濾不掉全庫 workspace → 下拉同時出現「全庫（所有專利）」與「專利總覽（全庫）」。
+        WS_A／WS_B 皆非全庫，is_global 應為 False（且欄位必須存在，不得為缺鍵）。
+        """
+        items = {it["workspace_id"]: it for it in
+                 workspace_queries.list_workspaces(limit=200)["items"]}
+        self.assertIn("is_global", items[WS_A])
+        self.assertFalse(items[WS_A]["is_global"])
+        self.assertIn("is_global", items[WS_B])
+        self.assertFalse(items[WS_B]["is_global"])
+
     def test_order_by_workspace_id_desc(self):
         """穩定排序改 workspace_id DESC：WS_B（較晚建、id 較大）排在 WS_A 之前。"""
         ids = [it["workspace_id"] for it in workspace_queries.list_workspaces(limit=200)["items"]]

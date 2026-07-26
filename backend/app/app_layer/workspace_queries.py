@@ -46,7 +46,8 @@ _WORKSPACE_FIELDS = """
         SELECT 1
         FROM legacy_0021.workspace_compose_sources cs
         WHERE cs.workspace_id = w.workspace_id
-    ) AS is_composed
+    ) AS is_composed,
+    w.is_global
 """
 
 
