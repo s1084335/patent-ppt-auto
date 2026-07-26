@@ -263,6 +263,9 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .task-detail { margin-top: 0.45rem; padding-top: 0.45rem; border-top: 1px dashed var(--border); font-size: 0.78rem; color: var(--text-muted); }
 .task-detail-title { font-weight: 600; color: var(--text); margin-bottom: 0.25rem; }
 .task-detail-error { color: var(--warn); white-space: pre-wrap; word-break: break-word; }
+/* 一鍵雙通道分類：右欄同時顯示技術／功效兩張進度卡，各自標明通道 */
+.classify-channel { margin-bottom: .5rem; }
+.classify-channel-name { font-size: .78rem; color: var(--muted); margin-bottom: .15rem; }
 
 /* ── 右欄 AI 助手 ── */
 .ai-header { flex: 0 0 auto; padding: 0.75rem 0.9rem; border-bottom: 1px solid var(--border); font-weight: 600; color: var(--accent); }
@@ -1113,10 +1116,14 @@ function topicLoadErrorHtml(e) {
   }
   return '<div class="card">主題載入失敗（' + escHtml((e && e.message) || '未知錯誤') + '）。</div>';
 }
+// 指定通道的中文名稱（技術／功效）；未知或缺值時原樣回傳。
+function sourceFieldLabel(sourceField) {
+  const hit = SOURCE_FIELDS.find(([v]) => v === sourceField);
+  return hit ? hit[1] : (sourceField || '分類');
+}
 // 目前分頁的中文名稱（技術／功效），供提示文案使用。
 function currentSourceLabel() {
-  const hit = SOURCE_FIELDS.find(([v]) => v === state.topicSourceField);
-  return hit ? hit[1] : state.topicSourceField;
+  return sourceFieldLabel(state.topicSourceField);
 }
 async function renderTopics() {
   const m = el('main-panel');
@@ -1126,9 +1133,10 @@ async function renderTopics() {
     + '（目前分頁：' + escHtml(currentSourceLabel()) + '）。</p>'
     // 分類手動觸發（2026-07-26）：分群不再匯入後自動跑，改按此鈕。後端 clustering/auto
     // 自動判斷首次（calibrate）或增量（incremental），並先補 embeddings；進度在右欄。
+    // 2026-07-27：一鍵雙通道——按一次技術與功效同時跑，不必切分頁各按一次。
     + '<div class="toolbar" style="margin:0 0 0.8rem">'
     + '<button class="btn btn-primary" id="btn-run-classify" onclick="runClassify()">分類</button>'
-    + '<span class="hint" style="padding:0 0 0 0.6rem">首次分群或有新專利時按此；程式自動判斷首次／增量，不重跑既有主題。</span>'
+    + '<span class="hint" style="padding:0 0 0 0.6rem">按一次技術與功效同時分群；程式自動判斷首次／增量，不重跑既有主題。</span>'
     + '</div>'
     // 分群候選挑選區：尚未採用分類時在最前面顯示候選卡；已採用時只留重新挑選入口。
     + '<div id="topic-candidates"></div>'
@@ -1338,7 +1346,8 @@ async function runClassify() {
     const resp = await fetch(API + '/workspaces/' + encodeURIComponent(state.workspaceId)
       + '/clustering/auto', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source_field: state.topicSourceField }),
+      // 一鍵雙通道（2026-07-27）：不帶 source_field，後端技術＋功效各建一個分群 job
+      body: JSON.stringify({}),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
@@ -1347,39 +1356,63 @@ async function runClassify() {
       if (btn) { btn.disabled = false; btn.textContent = '分類'; }
       return;
     }
-    const job = await resp.json();
+    const result = await resp.json();
     // 分群 job 進度輪詢到右欄面板；embeddings 會先跑（FIFO），分群 job 顯示於此。
-    pollClassifyJob(job.job_id, btn);
+    // 雙通道時 result.jobs 有兩個 job，兩個都要追到底才恢復按鈕。
+    const jobs = (result.jobs && result.jobs.length) ? result.jobs : [result];
+    pollClassifyJobs(jobs, btn);
   } catch (e) {
     if (panel) panel.innerHTML = '<div class="task-detail-error">連線錯誤：' + escHtml(e.message) + '</div>';
     if (btn) { btn.disabled = false; btn.textContent = '分類'; }
   }
 }
 
-// 輪詢分類 job（GET /jobs/{id}）：進度顯示右欄，完成後重畫分類區（看新主題/候選）。
+// 輪詢分類 job（GET /jobs/{id}）：進度顯示右欄，全部結束才重畫分類區（看新主題/候選）。
+// 一鍵雙通道（2026-07-27）：技術與功效各一個 job，兩個都要追；任一失敗只標該通道，
+// 不中止另一通道的輪詢，按鈕等兩邊都落地才恢復。
 let classifyTimerId = null;
-async function pollClassifyJob(jobId, btn) {
+async function pollClassifyJobs(jobs, btn) {
   const panel = el('import-progress-panel');
   const started = Date.now();
+  const tracked = jobs.map(j => ({
+    jobId: j.job_id,
+    label: sourceFieldLabel(j.source_field),
+    done: false,
+    html: '',
+  }));
+
+  function render() {
+    if (panel) panel.innerHTML = tracked.map(t =>
+      '<div class="classify-channel"><div class="classify-channel-name">'
+      + escHtml(t.label) + '</div>' + t.html + '</div>').join('');
+  }
+
   async function tick() {
     if (!panel) return;
-    try {
-      const j = await getJson(API + '/jobs/' + jobId);
-      panel.innerHTML = jobProgressCardHtml(j, started);
-      if (j.status === 'succeeded') {
-        if (btn) { btn.disabled = false; btn.textContent = '分類'; }
-        if (state.nav === 'topics') renderTopics();  // 重畫分類區看新結果
-        return;
+    for (const t of tracked) {
+      if (t.done) continue;
+      try {
+        const j = await getJson(API + '/jobs/' + t.jobId);
+        if (j.status === 'succeeded') {
+          t.done = true;
+          t.html = jobProgressCardHtml(j, started);
+        } else if (['failed', 'cancelled'].includes(j.status)) {
+          t.done = true;
+          t.html = '<div class="task-detail-error">分類失敗：'
+            + escHtml(j.error_message || '（無錯誤訊息）') + '</div>';
+        } else {
+          t.html = jobProgressCardHtml(j, started);
+        }
+      } catch (e) {
+        t.done = true;
+        t.html = '<div class="task-detail-error">查詢分類狀態失敗：'
+          + escHtml(e.message) + '</div>';
       }
-      if (['failed', 'cancelled'].includes(j.status)) {
-        panel.innerHTML = '<div class="task-detail-error">分類失敗：'
-          + escHtml(j.error_message || '（無錯誤訊息）') + '</div>';
-        if (btn) { btn.disabled = false; btn.textContent = '分類'; }
-        return;
-      }
-    } catch (e) {
-      panel.innerHTML = '<div class="task-detail-error">查詢分類狀態失敗：' + escHtml(e.message) + '</div>';
+    }
+    render();
+    if (tracked.every(t => t.done)) {
       if (btn) { btn.disabled = false; btn.textContent = '分類'; }
+      if (state.nav === 'topics') renderTopics();  // 重畫分類區看新結果
       return;
     }
     classifyTimerId = registerTimer(tick, 2000);
@@ -3099,7 +3132,11 @@ function setHealth(id, text, ok) {
 // 顯示邏輯（decisions.md「長時任務前端進度顯示」）：succeeded 不顯示（完成即從列表過濾），
 // queued/running/failed/cancelled 保留；running/queued 點卡看「在做哪裡」（current_stage＋進度），
 // failed 點卡看錯誤原因（job.error_message）。詳情用狀態欄位判斷，不寫死特定 job_id。
-const HIDDEN_TASK_STATUSES = new Set(['succeeded']);  // succeeded 過濾掉，其餘保留
+// 已完成任務保留顯示的筆數（2026-07-27 使用者定案：切頁後仍看得到剛跑完的 job）。
+// 原本 succeeded 一律過濾，導致切換頁面重抓後「剛完成的任務」整個消失、看不到結果。
+// 改為：進行中／失敗全留，succeeded 保留最近 RECENT_DONE_KEEP 筆（依 job_id 新→舊）。
+const RECENT_DONE_KEEP = 5;
+const HIDDEN_TASK_STATUSES = new Set(['succeeded']);  // 仍用於 SSE 即時事件的降級判斷
 let taskById = {};  // job_id -> 任務物件，供點擊展開詳情查閱 error_message／stage
 function isHiddenTask(t) { return HIDDEN_TASK_STATUSES.has(t.status); }
 function taskCardHtml(t) {
@@ -3140,10 +3177,16 @@ function toggleTaskDetail(runId) {
 function renderTaskList(tasks) {
   const c = el('task-container');
   if (!c) return;
-  // 先過濾 succeeded，再建 id 索引供詳情查閱。
-  const visible = (tasks || []).filter(t => !isHiddenTask(t));
+  // 進行中／失敗全留；succeeded 只留最近 RECENT_DONE_KEEP 筆（依 job_id 新→舊），
+  // 讓使用者切頁回來仍看得到剛跑完的任務結果，而非整批消失（2026-07-27）。
+  const all = tasks || [];
+  const active = all.filter(t => !isHiddenTask(t));
+  const done = all.filter(isHiddenTask)
+    .sort((a, b) => (b.job_id || 0) - (a.job_id || 0))
+    .slice(0, RECENT_DONE_KEEP);
+  const visible = active.concat(done);
   taskById = {};
-  (tasks || []).forEach(t => { taskById[t.job_id] = t; });
+  all.forEach(t => { taskById[t.job_id] = t; });
   if (visible.length === 0) { c.innerHTML = '<div class="task-empty">尚無進行中或待處理任務</div>'; return; }
   c.innerHTML = visible.map(taskCardHtml).join('');
 }
@@ -3158,8 +3201,9 @@ function updateTaskFromEvent(ev) {
     if (ev.error_message !== undefined) cached.error_message = ev.error_message;
   }
   const card = document.querySelector('.task-card[data-run-id="' + ev.run_id + '"]');
-  // succeeded 不顯示：已完成即從列表移除該卡（無卡時忽略）。
-  if (ev.status && HIDDEN_TASK_STATUSES.has(ev.status)) { if (card) card.remove(); return; }
+  // succeeded 不再立刻移除卡片（2026-07-27）：改重抓清單，由 renderTaskList 依
+  // 「最近完成保留 N 筆」規則決定去留，使用者才看得到剛跑完的結果。
+  if (ev.status && HIDDEN_TASK_STATUSES.has(ev.status)) { fetchTasks(); return; }
   if (!card) { fetchTasks(); return; }
   const pct = ev.progress ?? ev.progress_percent ?? 0;
   const fill = card.querySelector('.progress-bar-fill');

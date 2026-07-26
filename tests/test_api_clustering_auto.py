@@ -40,13 +40,18 @@ class ClusteringAutoRouteTests(unittest.TestCase):
     """auto 端點依「有無既有分群」自動分流 calibrate / incremental。"""
 
     def _patch_job(self):
-        """替身 _create_clustering_job 與 embeddings 的 create_job：不碰 DB，記錄 job_type。"""
-        captured = {}
+        """替身 _create_clustering_job 與 embeddings 的 create_job：不碰 DB，記錄 job_type。
+
+        雙通道時會被呼叫多次，故同時累積 calls 供一鍵雙通道測試檢查。
+        """
+        captured: dict = {"calls": []}
 
         def fake(job_type, payload, *, workspace_id, idempotency_key=None):
             captured["job_type"] = job_type
             captured["payload"] = payload
-            return {"job_id": 1, "job_type": job_type, "status": "queued"}
+            captured["calls"].append((job_type, payload.get("source_field")))
+            return {"job_id": 1, "job_type": job_type, "status": "queued",
+                    "source_field": payload.get("source_field")}
 
         # embeddings 先入列會呼叫 job_repository.create_job；替身回一個帶 job_id 的物件。
         fake_embed = mock.MagicMock(return_value=mock.MagicMock(job_id=99))
@@ -86,6 +91,46 @@ class ClusteringAutoRouteTests(unittest.TestCase):
         self.assertEqual(captured["job_type"], "clustering_incremental")
         # embeddings 先入列（分群前置），回應帶其 job_id
         self.assertEqual(resp.json().get("embeddings_job_id"), 99)
+
+    def test_auto_without_source_field_runs_both_channels(self):
+        """一鍵雙通道（2026-07-27）：不帶 source_field → 技術＋功效兩通道各建一個分群 job。
+
+        使用者要求「按一次分類，技術與功效同時跑」，不必切分頁按兩次。
+        embeddings 仍只入列一次（同批只算缺的，兩通道共用）。
+        """
+        captured, patches = self._patch_job()
+
+        def raise_not_found(workspace_id, source_field):
+            raise TopicStateNotFoundError("no state")
+
+        with patches[0], patches[1], mock.patch.object(
+            clustering_api, "get_latest_topic_state", raise_not_found
+        ):
+            resp = client.post(f"/api/v1/workspaces/{WS}/clustering/auto", json={})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        fields = sorted(sf for _jt, sf in captured["calls"])
+        self.assertEqual(fields, ["effect_summary", "wips_independent_claims"])
+        body = resp.json()
+        self.assertEqual(len(body["jobs"]), 2)
+        self.assertEqual(body.get("embeddings_job_id"), 99)
+
+    def test_auto_per_channel_status_is_independent(self):
+        """雙通道各自判斷首次／增量：技術已有分群→incremental，功效無→calibrate。"""
+        captured, patches = self._patch_job()
+
+        def mixed(workspace_id, source_field):
+            if source_field == WIPS:
+                return {"workspace_id": workspace_id, "run_id": 1, "topics": []}
+            raise TopicStateNotFoundError("no state")
+
+        with patches[0], patches[1], mock.patch.object(
+            clustering_api, "get_latest_topic_state", mixed
+        ):
+            resp = client.post(f"/api/v1/workspaces/{WS}/clustering/auto", json={})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        by_field = {sf: jt for jt, sf in captured["calls"]}
+        self.assertEqual(by_field[WIPS], "clustering_incremental")
+        self.assertEqual(by_field["effect_summary"], "clustering_calibrate")
 
     def test_auto_unknown_source_field_422(self):
         """非法 source_field → 422（沿既有 _validate_source_field）。"""
