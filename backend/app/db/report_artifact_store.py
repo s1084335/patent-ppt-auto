@@ -93,3 +93,25 @@ def list_versions() -> list[dict]:
             )
             rows = cur.fetchall()
     return [{"version": row[0], "has_narratives": bool(row[1])} for row in rows]
+
+
+def list_ppt_files(version: str) -> list[dict]:
+    """列某報表版本下的所有 .pptx 檔清單（#10：PPT 版本掛在報表版本下，_rN 序號不覆蓋）。
+
+    只回顯示用 metadata（filename／byte_size），**不選 content**——列清單不把 .pptx 內容
+    撈回。沿 app_layer.report_artifacts 查，不新表；限定該 version，只取副檔名為 .pptx 者，
+    依 filename 排序（同版本重跑的 _rN 序號自然遞增排列）。
+    """
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT filename, byte_size
+                FROM app_layer.report_artifacts
+                WHERE version = %s AND filename LIKE '%%.pptx'
+                ORDER BY filename
+                """,
+                (version,),
+            )
+            rows = cur.fetchall()
+    return [{"filename": row[0], "byte_size": row[1]} for row in rows]

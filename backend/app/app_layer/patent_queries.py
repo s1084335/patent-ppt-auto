@@ -59,10 +59,28 @@ _PATENT_FIELDS: dict[str, str] = {
 }
 
 # patent_people：patent_id 為 PK（一對一），LEFT JOIN 即可，不會放大列數。
+# ⚠ 公司名欄（申請人／專利權人）**原始字面**改投影成 *_original，供詳情層對照；
+# 列表顯示的收斂名走 _REPORT_BASE_FIELDS（2026-07-26 定案，見下）。
+# 發明人是自然人、不走公司名收斂管線，維持原欄名不動。
 _PEOPLE_FIELDS: dict[str, str] = {
-    "applicant": 'NULLIF(BTRIM({pp}."申請人"), \'\')',
+    "applicant_original": 'NULLIF(BTRIM({pp}."申請人"), \'\')',
     "inventor": 'NULLIF(BTRIM({pp}."發明人"), \'\')',
-    "current_owner": 'NULLIF(BTRIM({pp}."最近專利權人[US,JP,KR,CN,CA,AU]"), \'\')',
+    "current_owner_original": 'NULLIF(BTRIM({pp}."最近專利權人[US,JP,KR,CN,CA,AU]"), \'\')',
+    "recent_assignee_original": 'NULLIF(BTRIM({pp}."最近受讓人[US,KR,CN]"), \'\')',
+}
+
+# derived_layer.report_patent_base：公司名的**正規化（收斂）顯示名**，與報表同一口徑。
+# 2026-07-26 使用者定案：表格顯示正規化值，原始字面留在詳情層（*_original）。
+# 動因：先前表格顯示原始字面、報表顯示收斂名，同一件專利兩處兩個名字；且搜尋走
+# applicant_display_name，使用者照表格字面搜尋會搜不到。
+# 收斂規則（代碼→confirmed 對照名→別稱→庫內統計名→標準化名→原值）集中在
+# refresh_report_patent_base 的 COALESCE，此處只取結果，**不在這裡再算一套**。
+# 呼叫端須自行 LEFT JOIN derived_layer.report_patent_base（別名 report_base_alias）；
+# 未涵蓋的專利回 NULL，沿「欄位一律呈現、無值空白」通則。
+_REPORT_BASE_FIELDS: dict[str, str] = {
+    "applicant": "{rpb}.applicant_display_name",
+    "current_owner": "{rpb}.current_assignee_display_name",
+    "recent_assignee": "{rpb}.recent_assignee_display_name",
 }
 
 # patent_attributes：PK 為 (patent_id, raw_record_id)，同一專利可有多列（多次匯入）。
@@ -114,21 +132,31 @@ def display_field_keys() -> tuple[str, ...]:
     專利總覽與分類區共用同一組欄位（使用者定案「不做兩套」），兩邊都由此推導，
     不各自維護一份欄名清單，也不寫死欄位數。
     """
-    return (*_PATENT_FIELDS, *_PEOPLE_FIELDS, *_ATTRIBUTE_FIELDS)
+    return (*_PATENT_FIELDS, *_PEOPLE_FIELDS, *_REPORT_BASE_FIELDS, *_ATTRIBUTE_FIELDS)
 
 
-def display_projection(*, patents_alias: str = "p", people_alias: str = "pp") -> str:
-    """把三張表的顯示欄位定義攤成 SQL 投影片段（欄位清單的唯一 SQL 來源）。
+def display_projection(
+    *,
+    patents_alias: str = "p",
+    people_alias: str = "pp",
+    report_base_alias: str = "rpb",
+) -> str:
+    """把四張表的顯示欄位定義攤成 SQL 投影片段（欄位清單的唯一 SQL 來源）。
 
     alias 可覆寫，讓 workspace 專利清單（workspace_queries）用相同投影而不必改自己的
     表別名——兩區的欄位定義因此只有這一份。呼叫端須自行 LEFT JOIN patent_people
-    （別名為 people_alias），patent_attributes 由本函式產生的純量子查詢自行處理。
+    （別名 people_alias）與 derived_layer.report_patent_base（別名 report_base_alias）；
+    patent_attributes 由本函式產生的純量子查詢自行處理。
     """
     parts = [
         f"{expr.format(p=patents_alias)} AS {key}" for key, expr in _PATENT_FIELDS.items()
     ]
     parts += [
         f"{expr.format(pp=people_alias)} AS {key}" for key, expr in _PEOPLE_FIELDS.items()
+    ]
+    parts += [
+        f"{expr.format(rpb=report_base_alias)} AS {key}"
+        for key, expr in _REPORT_BASE_FIELDS.items()
     ]
     parts += [
         _attribute_pick(key, column, patents_alias=patents_alias)

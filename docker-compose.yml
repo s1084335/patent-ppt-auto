@@ -1,17 +1,19 @@
-# Patent tool — backend / worker / PostgreSQL integration stage.
-# Host tools use localhost:5433; containers use postgres:5432.
+# Patent tool backend / worker / PostgreSQL integration stage.
+# Local DB mode: containers use postgres:5432, host tools use localhost:5433.
+# External DB mode: add docker-compose.supabase.yml and set DATABASE_URL.
 #
 # Usage:
-#   copy .env.example to .env and set POSTGRES_PASSWORD
+#   copy .env.example to .env and set DATABASE_URL or POSTGRES_PASSWORD
 #   docker compose up -d --build postgres backend worker
 # Migration remains an explicit one-shot command and never runs at service startup.
 
 x-app-environment: &app-environment
+  DATABASE_URL: ${DATABASE_URL:-}
   PGHOST: postgres
   PGPORT: "5432"
   PGDATABASE: ${POSTGRES_DB:-patent_ppt}
   PGUSER: ${POSTGRES_USER:-postgres}
-  PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+  PGPASSWORD: ${POSTGRES_PASSWORD:-change_me}
   PGOPTIONS: -c search_path=core_layer,raw_layer,public
   WORKER_HEARTBEAT_TIMEOUT_SECONDS: ${WORKER_HEARTBEAT_TIMEOUT_SECONDS:-120}
   MODEL_ARTIFACT_ROOT: ${CONTAINER_MODEL_ARTIFACT_ROOT:-/app/data/model_artifacts}
@@ -30,7 +32,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-patent_ppt}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
     ports:
       - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
@@ -53,14 +55,17 @@ services:
         APP_UID: ${APP_UID:-10001}
         APP_GID: ${APP_GID:-10001}
     image: ${APP_IMAGE:-patent-backend-worker:local}
-    environment: *app-environment
-    command: ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *app-environment
+      APP_ROLE: backend
+      PORT: ${BACKEND_CONTAINER_PORT:-8000}
+    command: ["python", "-m", "backend.app.deploy"]
     ports:
       - "${BACKEND_BIND_ADDRESS:-127.0.0.1}:${BACKEND_HOST_PORT:-8000}:8000"
     volumes:
       - ${DATA_HOST_PATH:-./data}:/app/data
       - ${OUTPUT_HOST_PATH:-./output}:/app/output
-      # 前端靜態頁掛 host 目錄：改 index.html 後容器 F5 立即生效，無需 rebuild。
+      # Mount static assets in development so UI edits can refresh without rebuild.
       - ./backend/app/static:/app/backend/app/static
     depends_on:
       postgres:
@@ -90,18 +95,12 @@ services:
     image: ${APP_IMAGE:-patent-backend-worker:local}
     environment:
       <<: *app-environment
+      APP_ROLE: worker
       WORKER_ID: ${WORKER_ID:-patent-worker-1}
-    command:
-      - python
-      - -m
-      - backend.app.worker.runner
-      - serve
-      - --poll-seconds
-      - ${WORKER_POLL_SECONDS:-3}
-      - --stale-after-seconds
-      - ${WORKER_STALE_AFTER_SECONDS:-1800}
-      - --log-level
-      - ${WORKER_LOG_LEVEL:-INFO}
+      WORKER_POLL_SECONDS: ${WORKER_POLL_SECONDS:-3}
+      WORKER_STALE_AFTER_SECONDS: ${WORKER_STALE_AFTER_SECONDS:-1800}
+      WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-INFO}
+    command: ["python", "-m", "backend.app.deploy"]
     volumes:
       - ${DATA_HOST_PATH:-./data}:/app/data
       - ${OUTPUT_HOST_PATH:-./output}:/app/output

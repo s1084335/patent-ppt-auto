@@ -140,28 +140,59 @@ def test_correct_token_allows_get_task(token_set, monkeypatch):
     assert resp.status_code == 200
 
 
-# ══════════ 未設 token 的策略：fail closed ══════════
+# ══════════ 未設 token 的策略：opt-in（2026-07-26 使用者定案，推翻原 fail closed） ══════════
+#
+# 原策略為 fail closed（未設 token → 503），理由是「Railway 公網可達，漏設等於裸奔」。
+# 現改為 opt-in：**未設 token 即不驗證**，設了才驗。
+#
+# 變更理由（使用者決定）：前端 AI 助手不再要求使用者手填金鑰，但送出功能與
+# ai:narrative 任務要保留。使用者明示接受「端點不設保護」。
+# ⚠ 已告知風險：拿到服務網址的人都能建 AI 任務、消耗 Companion 端的 Claude 額度。
+#
+# token 機制本身保留：設了 PATENT_API_TOKEN 就仍然強制驗證（下方 token_set 系列測試），
+# 未來搬內網或要重新開啟保護時補一行環境變數即可，不需改回程式碼。
 
 
 @pytest.mark.parametrize("method,url,body", PROTECTED_CALLS)
-def test_unset_token_rejects_all_requests(token_unset, method, url, body):
-    """未設 PATENT_API_TOKEN → 503 拒絕，且訊息說明要設哪個環境變數。"""
+def test_unset_token_allows_all_requests(token_unset, monkeypatch, method, url, body):
+    """未設 PATENT_API_TOKEN 時只驗證 auth 放行，不讓測試連到真 DB。"""
+    from backend.app.api import ai_tasks
+
+    if method == "post":
+        _patch_create_job(monkeypatch, {})
+    elif url.endswith("/123"):
+        job = _FakeJob(
+            job_id=123,
+            job_type="ai:narrative",
+            status="succeeded",
+            workspace_id=7,
+            payload_json={},
+        )
+        monkeypatch.setattr(ai_tasks.jr, "get_job", lambda run_id: job)
+        monkeypatch.setattr(ai_tasks.jr, "fetch_job_result", lambda run_id, run_type: None)
+
     resp = client.request(method.upper(), url, json=body)
-    assert resp.status_code == 503
-    assert "PATENT_API_TOKEN" in resp.text
+    assert resp.status_code != 503
+    assert resp.status_code != 401
 
 
-def test_unset_token_rejects_even_with_bearer_header(token_unset):
-    """未設 token 時，就算自己帶 Bearer 也不能通過（不可被猜中而放行）。"""
+def test_unset_token_ignores_bearer_header(token_unset):
+    """未設 token 時帶不帶 Bearer 都放行，不因帶了錯 token 而被擋。"""
     resp = client.get(f"{PREFIX}/ai-tasks/status", headers=AUTH)
-    assert resp.status_code == 503
+    assert resp.status_code == 200
 
 
 def test_blank_token_treated_as_unset(monkeypatch):
-    """空字串／空白 token 視同未設定，避免部署誤填空值就變裸奔。"""
+    """空字串／空白 token 視同未設定 → 放行（與未設一致，不產生第三種行為）。"""
     monkeypatch.setenv("PATENT_API_TOKEN", "   ")
-    resp = client.get(f"{PREFIX}/ai-tasks/status", headers=AUTH)
-    assert resp.status_code == 503
+    resp = client.get(f"{PREFIX}/ai-tasks/status")
+    assert resp.status_code == 200
+
+
+def test_set_token_still_enforced(token_set):
+    """⚠ 回歸保護：設了 token 就必須驗證，不得因本次改動而全面裸奔。"""
+    assert client.get(f"{PREFIX}/ai-tasks/status").status_code == 401
+    assert client.get(f"{PREFIX}/ai-tasks/status", headers=AUTH).status_code == 200
 
 
 # ══════════ 改名後的路由與既有契約 ══════════

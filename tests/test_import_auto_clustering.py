@@ -86,96 +86,82 @@ class ImportAutoClusteringTests(unittest.TestCase):
                 if c["job_type"] == "clustering_calibrate"
                 and c["workspace_id"] != self.GLOBAL_WS_ID]
 
-    def test_enqueues_both_channels_after_import_with_workspace(self):
-        """匯入成功且有 workspace → 技術與功效各 enqueue 一個 clustering_calibrate。"""
-        result, recorder = self._run_import(
-            {"new_workspace_name": "自動分群批", "purpose": "general"},
-            workspace_result={"workspace_id": 55})
-        calls = self._clustering_calls(recorder)
-        self.assertEqual(len(calls), 2, "技術／功效兩通道各要一個分群 job")
-        fields = {c["payload"]["source_field"] for c in calls}
-        self.assertEqual(fields, {SOURCE_FIELD_TECHNICAL, SOURCE_FIELD_EFFECT})
-        for call in calls:
-            self.assertEqual(call["payload"]["workspace_id"], 55)
-            self.assertEqual(call["workspace_id"], 55)
-        # summary 要回報自動分群的 job ids，供前端／log 追蹤。
-        # 2026-07-23 起含全庫 workspace 的兩個通道，故總數為 4（批次 2 ＋ 全庫 2）。
-        self.assertEqual(len(result.get("clustering_job_ids") or []), 4)
+    def test_import_does_not_auto_enqueue_clustering(self):
+        """分群全手動（2026-07-26，推翻 07-23）：匯入完成不再自動 enqueue 分群。
 
-    def test_embeddings_enqueued_before_clustering(self):
-        """一般匯入也要補 embeddings，且 embeddings job 必須排在分群之前（單 worker FIFO）。"""
+        批次與全庫 workspace 都不自動分群；使用者改按「分類」鈕（clustering/auto 端點）觸發。
+        """
+        _, recorder = self._run_import(
+            {"new_workspace_name": "手動分群批", "purpose": "general"},
+            workspace_result={"workspace_id": 55})
+        clustering = [c for c in recorder.calls
+                      if c["job_type"] in ("clustering_calibrate", "clustering_incremental")]
+        self.assertEqual(clustering, [], "匯入不應自動 enqueue 任何分群 job")
+
+    def test_import_does_not_auto_enqueue_embeddings(self):
+        """embeddings 也移到分類鈕：匯入完成不再自動 enqueue embeddings。"""
         _, recorder = self._run_import(
             {"new_workspace_name": "ws", "purpose": "general"},
             workspace_result={"workspace_id": 56})
-        types = [c["job_type"] for c in recorder.calls]
-        self.assertIn("embeddings", types)
-        self.assertLess(types.index("embeddings"), types.index("clustering_calibrate"),
-                        "embeddings 必須先入列，否則分群會讀到尚未算好的向量")
+        embeddings = [c for c in recorder.calls if c["job_type"] == "embeddings"]
+        self.assertEqual(embeddings, [], "匯入不應自動 enqueue embeddings（改由分類鈕觸發）")
 
-    def test_global_workspace_also_gets_clustering(self):
-        """批次 workspace 之外，全庫 workspace 也要各排一份分群（共 4 個 job）。"""
-        _, recorder = self._run_import(
+    def test_import_still_syncs_global_workspace(self):
+        """全庫成員同步保留：每批匯入的專利仍 union 進全庫（專利總覽的依據，非分群）。"""
+        result, _ = self._run_import(
             {"new_workspace_name": "ws", "purpose": "general"},
             workspace_result={"workspace_id": 61})
-        clustering = [c for c in recorder.calls if c["job_type"] == "clustering_calibrate"]
-        self.assertEqual(len(clustering), 4)
-        self.assertEqual({c["workspace_id"] for c in clustering}, {61, self.GLOBAL_WS_ID})
+        self.assertEqual(result.get("global_workspace_id"), self.GLOBAL_WS_ID)
 
-    def test_no_workspace_skips_batch_clustering(self):
-        """未圈批次 workspace → 沒有批次分群；全庫仍要分群（全庫涵蓋所有匯入專利）。
+    def test_import_still_enqueues_patent_note(self):
+        """文獻備註 AI 保留自動：匯入完成仍 enqueue ai:patent_note（獨立於分群）。"""
+        _, recorder = self._run_import(
+            {"new_workspace_name": "ws", "purpose": "general"},
+            workspace_result={"workspace_id": 62})
+        note = [c for c in recorder.calls if c["job_type"] == "ai:patent_note"]
+        self.assertEqual(len(note), 1, "匯入應自動 enqueue 一個文獻備註 job")
 
-        原斷言為「完全不 enqueue 分群」，2026-07-23 起全庫 workspace 一律同步並分群，
-        故改為只斷言「沒有批次 workspace 的分群」。
+    def test_import_enqueues_refresh_derived(self):
+        """匯入完成自動 enqueue refresh_derived（2026-07-26）：刷新 report_patent_base，
+        公司名收斂（代碼→confirmed 對照名／重複歸一／中文名）才會反映到顯示欄。
+
+        斷點修復：refresh 原本只有 MCP 手動觸發，匯入流程沒接，導致公司名欄全空。
         """
-        _, recorder = self._run_import({}, workspace_result=None)
-        self.assertEqual(self._clustering_calls(recorder), [])
-        clustering = [c for c in recorder.calls if c["job_type"] == "clustering_calibrate"]
-        self.assertEqual({c["workspace_id"] for c in clustering}, {self.GLOBAL_WS_ID})
+        _, recorder = self._run_import(
+            {"new_workspace_name": "ws", "purpose": "general"},
+            workspace_result={"workspace_id": 63})
+        refresh = [c for c in recorder.calls if c["job_type"] == "refresh_derived"]
+        self.assertEqual(len(refresh), 1, "匯入應自動 enqueue 一個 refresh_derived job")
 
-    def test_no_patent_ids_skips_clustering(self):
-        """重複檔／無新專利（patent_ids 空）→ 不 enqueue 分群。"""
+    def test_no_patent_ids_skips_everything(self):
+        """重複檔／無新專利（patent_ids 空）→ 不同步全庫、不 enqueue 任何後續 job。"""
         _, recorder = self._run_import(
             {"new_workspace_name": "ws"}, patent_ids=(),
             workspace_result={"workspace_id": 57})
-        self.assertEqual(self._clustering_calls(recorder), [])
+        self.assertEqual(recorder.calls, [])
 
-    def test_does_not_stack_when_clustering_already_active(self):
-        """同 workspace 已有 queued/running 的分群 job → 不重複堆疊。"""
-        active = [mock.MagicMock(job_type="clustering_calibrate", status="queued",
-                                 payload_json={"source_field": SOURCE_FIELD_TECHNICAL})]
-        _, recorder = self._run_import(
-            {"workspace_id": 58}, workspace_result={"workspace_id": 58},
-            active_jobs=active)
-        calls = self._clustering_calls(recorder)
-        fields = {c["payload"]["source_field"] for c in calls}
-        self.assertNotIn(SOURCE_FIELD_TECHNICAL, fields,
-                         "技術通道已有在跑的分群 job，不應再建一個")
-        self.assertIn(SOURCE_FIELD_EFFECT, fields, "功效通道未在跑，仍應 enqueue")
-
-    def test_enqueue_failure_does_not_fail_import(self):
-        """分群 enqueue 失敗只記錄不 raise：匯入本身已成功，job 不該變 failed。"""
-        recorder = _JobRecorder()
-
-        def _boom(job_type, payload=None, **kw):
-            if job_type == "clustering_calibrate":
-                raise RuntimeError("queue down")
-            return recorder.create_job(job_type, payload, **kw)
-
+    def test_global_sync_failure_does_not_fail_import(self):
+        """全庫同步失敗只記錄不 raise：匯入本身已成功，不該變 failed。"""
         failing = _JobRecorder()
-        failing.create_job = _boom  # type: ignore[method-assign]
-        result, _ = self._run_import(
-            {"new_workspace_name": "ws"}, workspace_result={"workspace_id": 59},
-            recorder=failing)
-        # 沒有 raise，且匯入 summary 正常回傳。
-        self.assertEqual(result["status"], "imported")
 
-    def test_case_comparison_import_still_enqueues_embeddings_once(self):
-        """案件比對匯入不因新接線而重複 enqueue embeddings。"""
-        _, recorder = self._run_import(
-            {"new_workspace_name": "cc", "purpose": "case_comparison"},
-            workspace_result={"workspace_id": 60})
-        embeddings_calls = [c for c in recorder.calls if c["job_type"] == "embeddings"]
-        self.assertEqual(len(embeddings_calls), 1, "embeddings 只需一個 job（雙通道同批算）")
+        def _run_with_sync_boom():
+            from backend.app.db import job_repository as jr
+            summary = {"status": "imported", "patent_ids": [9001]}
+            payload = {"blob_id": 1, "original_filename": "f.xlsx", "file_hash": "h",
+                       "new_workspace_name": "ws"}
+            with mock.patch.object(handlers.import_blob_store, "write_blob_to_path"), \
+                 mock.patch.object(handlers.import_blob_store, "delete_blob"), \
+                 mock.patch.object(handlers, "import_wips_file", return_value=summary), \
+                 mock.patch.object(handlers, "_attach_import_workspace",
+                                   return_value={"workspace_id": 59}), \
+                 mock.patch.object(handlers, "_sync_global_workspace",
+                                   side_effect=RuntimeError("sync down")), \
+                 mock.patch.object(jr, "create_job", side_effect=failing.create_job), \
+                 mock.patch.object(jr, "list_jobs", return_value=[]):
+                return handlers.handle_patent_import(payload, _fake_context())
+
+        result = _run_with_sync_boom()
+        self.assertEqual(result["status"], "imported")
 
 
 class _HeartbeatStore:
@@ -365,29 +351,19 @@ class GlobalWorkspaceImportWiringTests(unittest.TestCase):
         return [c for c in recorder.calls
                 if c["job_type"] in {"clustering_calibrate", "clustering_incremental"}]
 
-    def test_import_enqueues_four_clustering_jobs(self):
-        """一次匯入最多 4 個分群 job：該 workspace 技術／功效 ＋ 全庫技術／功效。"""
-        _, recorder = self._run_import(workspace_result={"workspace_id": 55}, global_id=91)
-        calls = self._clustering(recorder)
-        self.assertEqual(len(calls), 4)
-        self.assertEqual({c["payload"]["workspace_id"] for c in calls}, {55, 91})
+    def test_import_does_not_enqueue_any_clustering(self):
+        """分群全手動（2026-07-26）：匯入不自動 enqueue 分群（批次與全庫皆然）。
 
-    def test_global_and_workspace_decide_independently(self):
-        """全庫已有 artifact、一般 workspace 沒有 → 全庫走 incremental、workspace 走 calibrate。"""
-        _, recorder = self._run_import(
-            workspace_result={"workspace_id": 56}, global_id=92,
-            existing_runs=[(92, SOURCE_FIELD_TECHNICAL), (92, SOURCE_FIELD_EFFECT)])
-        by_ws: dict[int, set[str]] = {}
-        for call in self._clustering(recorder):
-            by_ws.setdefault(call["payload"]["workspace_id"], set()).add(call["job_type"])
-        self.assertEqual(by_ws[92], {"clustering_incremental"}, "全庫已有 artifact 應走 incremental")
-        self.assertEqual(by_ws[56], {"clustering_calibrate"}, "新 workspace 首次仍需 calibrate")
+        首次/增量的決策已移到 clustering/auto 端點（見 test_api_clustering_auto），
+        不再由匯入 handler 決定，故此處只斷言「一個分群 job 都沒建」。
+        """
+        _, recorder = self._run_import(workspace_result={"workspace_id": 55}, global_id=91)
+        self.assertEqual(self._clustering(recorder), [])
 
     def test_global_sync_runs_even_without_batch_workspace(self):
-        """未圈一般 workspace 也要同步全庫，並為全庫排分群（全庫涵蓋所有專利）。"""
-        _, recorder = self._run_import(workspace_result=None, global_id=93)
-        calls = self._clustering(recorder)
-        self.assertEqual({c["payload"]["workspace_id"] for c in calls}, {93})
+        """未圈一般 workspace 也要同步全庫（全庫涵蓋所有匯入專利；此為成員同步，非分群）。"""
+        result, _ = self._run_import(workspace_result=None, global_id=93)
+        self.assertEqual(result.get("global_workspace_id"), 93)
 
     def test_global_sync_failure_does_not_fail_import(self):
         """全庫同步失敗只記錄不 raise：匯入已成功落庫，不該把 job 標 failed。"""
@@ -409,36 +385,6 @@ class GlobalWorkspaceImportWiringTests(unittest.TestCase):
              mock.patch.object(jr, "list_jobs", return_value=[]):
             result = handlers.handle_patent_import(payload, _fake_context())
         self.assertEqual(result["status"], "imported")
-
-
-class ClusteringJobWorkspaceLinkTests(unittest.TestCase):
-    """自動 enqueue 的 job 必須帶 workspace_id 欄位，前端才查得到「這個 workspace 在做什麼」。"""
-
-    def test_auto_jobs_carry_workspace_id_column(self):
-        """分群 job 的 create_job 帶 workspace_id（workflow_runs.workspace_id 可被 list_jobs 過濾）。"""
-        from backend.app.db import job_repository as jr
-
-        recorder = _JobRecorder()
-        summary = {"status": "imported", "patent_ids": [1, 2]}
-        payload = {"blob_id": 1, "original_filename": "f.xlsx", "file_hash": "h",
-                   "new_workspace_name": "w"}
-        # 全庫同步與 artifact 判斷都會連 DB，本測只驗 workspace_id 欄有沒有帶上，故 mock 掉。
-        with mock.patch.object(handlers.import_blob_store, "write_blob_to_path"), \
-             mock.patch.object(handlers.import_blob_store, "delete_blob"), \
-             mock.patch.object(handlers, "import_wips_file", return_value=summary), \
-             mock.patch.object(handlers, "_attach_import_workspace",
-                               return_value={"workspace_id": 91}), \
-             mock.patch.object(handlers, "_sync_global_workspace", return_value=999), \
-             mock.patch.object(handlers, "_has_completed_clustering_run", return_value=False), \
-             mock.patch.object(jr, "create_job", side_effect=recorder.create_job), \
-             mock.patch.object(jr, "list_jobs", return_value=[]):
-            handlers.handle_patent_import(payload, _fake_context())
-        clustering = [c for c in recorder.calls if c["job_type"] == "clustering_calibrate"]
-        self.assertTrue(clustering)
-        # 每個分群 job 的 workspace_id 欄都要等於其 payload 的 workspace（批次 91／全庫 999）。
-        for call in clustering:
-            self.assertEqual(call["workspace_id"], call["payload"]["workspace_id"])
-            self.assertIn(call["workspace_id"], {91, 999})
 
 
 if __name__ == "__main__":

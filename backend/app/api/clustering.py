@@ -25,6 +25,19 @@ from backend.app.api.jobs import job_to_dict
 from backend.app.clustering.sources import get_source_spec
 from backend.app.db import job_repository
 from backend.app.db.connection import get_connection_kwargs
+from backend.app.repositories.topic_state_repository import (
+    PostgresTopicStateRepository,
+    TopicStateNotFoundError,
+)
+
+
+def get_latest_topic_state(workspace_id: int, source_field: str):
+    """薄封裝：查 workspace 最新正式主題狀態；供 auto 端點判斷首次 vs 增量。
+
+    模組層函式（非直接呼叫 repository），讓 auto 端點的分流邏輯可被單元測試 mock。
+    無既有分群時 repository 抛 TopicStateNotFoundError，由呼叫端據此走 calibrate。
+    """
+    return PostgresTopicStateRepository().get_latest_topic_state(workspace_id, source_field)
 
 
 router = APIRouter(tags=["clustering"])
@@ -104,6 +117,39 @@ def create_incremental(workspace_id: int, request: IncrementalRequest) -> dict[s
         workspace_id=workspace_id,
         idempotency_key=request.idempotency_key,
     )
+
+
+@router.post("/workspaces/{workspace_id}/clustering/auto")
+def create_auto_clustering(workspace_id: int, request: CalibrateRequest) -> dict[str, Any]:
+    """單一「分類」入口：使用者按一個鈕，後端自動 embeddings→分群，並判斷首次 vs 增量。
+
+    行為（2026-07-26 定案：分群全手動）：
+    - 先 enqueue embeddings（全手動後，匯入不再自動算向量；分群前置一起在此補，只算缺的）。
+    - 再 enqueue 分群：無既有分群（TopicStateNotFoundError）→ clustering_calibrate（首次）；
+      已有 → clustering_incremental（增量，只處理新專利、不重跑，沿既有 online artifact）。
+    embeddings 的 run_id 較小，worker FIFO（ORDER BY run_id）保證先跑完才輪到分群，
+    不需另造 job 相依（沿匯入後自動觸發原本的順序保證，單 worker 前提）。
+    """
+    _validate_source_field(request.source_field)
+    from backend.app.clustering.sources import source_fields
+
+    # embeddings 先入列（分群前置）：兩通道同批、只算缺的，故一個 job 即可。
+    embeddings_job = job_repository.create_job(
+        "embeddings", {"source_fields": list(source_fields())}
+    )
+    try:
+        get_latest_topic_state(workspace_id, request.source_field)
+        job_type = "clustering_incremental"
+    except TopicStateNotFoundError:
+        job_type = "clustering_calibrate"
+    cluster_result = _create_clustering_job(
+        job_type,
+        {"workspace_id": workspace_id, "source_field": request.source_field},
+        workspace_id=workspace_id,
+        idempotency_key=request.idempotency_key,
+    )
+    cluster_result["embeddings_job_id"] = embeddings_job.job_id
+    return cluster_result
 
 
 @router.post("/clustering/runs/{run_id}/finalize")

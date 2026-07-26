@@ -42,3 +42,7 @@ docs/reference/報告範例/
 data/patent_assets/
 # Companion 常駐執行期狀態與輪替日誌（heartbeat、ai_bridge.log）
 var/
+
+# pytest 暫存與非程式碼文件（2026-07-26）
+.tmp/
+報告流程測試/

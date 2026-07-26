@@ -111,4 +111,8 @@ def get_job(job_id: int) -> dict[str, Any]:
     job = job_repository.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found")
-    return job_to_dict(job)
+    body = job_to_dict(job)
+    # 0021 後 job 結果主要存 workflow_outputs；遷移或舊任務沒有 output 時保留 row result。
+    output_result = job_repository.fetch_job_result(job.job_id, job.job_type)
+    body["result"] = output_result if output_result is not None else job.result_json
+    return body

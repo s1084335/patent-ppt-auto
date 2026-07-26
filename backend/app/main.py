@@ -383,6 +383,27 @@ def serve_report_version_content(version: str):
     return _report_content_payload(run_dir)
 
 
+@report_versions_router.get("/reports/versions/{version}/ppt-files")
+def list_report_version_ppt_files(version: str):
+    """列某報表版本下已產的 .pptx 清單（#10：PPT 版本掛在報表版本下，_rN 不覆蓋）。
+
+    沿 report_artifact_store.list_ppt_files（DB 來源，只回 metadata 不撈 content）；
+    每筆補 download_url 指向既有 /report-latest/ppt/{version}/{filename} 下載端點，
+    前端可直接用。版本無 PPT 時回空清單（非 404，讓前端顯示「尚無 PPT」）。
+    """
+    files = report_artifact_store.list_ppt_files(version)
+    base = f"{settings.API_V1_PREFIX}/report-latest/ppt/{version}/"
+    ppt_files = [
+        {
+            "filename": f["filename"],
+            "byte_size": f["byte_size"],
+            "download_url": base + f["filename"],
+        }
+        for f in files
+    ]
+    return {"version": version, "ppt_files": ppt_files}
+
+
 # 副檔名 → Content-Type：DB 來源沒有檔案路徑可讓 FileResponse 推斷，需明確給。
 _REPORT_ASSET_MEDIA_TYPES = {
     ".svg": "image/svg+xml",

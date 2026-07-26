@@ -25,7 +25,9 @@ from pydantic import BaseModel, Field
 
 from backend.app import settings
 from backend.app.app_layer import workspace_compose, workspace_create, workspace_queries
+from backend.app.clustering.exclusions import exclude_patents
 from backend.app.db import workspace_document_store
+from backend.app.db.connection import get_connection_kwargs
 from backend.app.importers.import_paths import DOCUMENT_SUFFIXES, validate_web_filename
 
 
@@ -114,6 +116,32 @@ def create_workspace(request: CreateWorkspaceRequest) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except workspace_create.WorkspaceValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class ExcludePatentsRequest(BaseModel):
+    """使用者標「不相干」剔除單/多筆專利（#E 2026-07-26）：不重跑分群。"""
+
+    patent_ids: list[int] = Field(min_length=1)
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+@router.post("/workspaces/{workspace_id}/exclude-patents")
+def exclude_workspace_patents(
+    workspace_id: int, request: ExcludePatentsRequest
+) -> dict[str, Any]:
+    """使用者剔除（標不相干）該 workspace 的專利：呼叫既有 exclude_patents 引擎。
+
+    引擎語意（不重跑分群）：回寫排除表（可追溯、可反悔）＋移除該筆 topic_assignments，
+    **不動 model artifact、不重算距離**（見 clustering.exclusions.exclude_patents）。
+    同一 reason 套用於這批全部 patent_ids（前端一次針對一組理由剔除）。回實際剔除筆數。
+    """
+    import psycopg
+
+    entries = [(pid, request.reason) for pid in request.patent_ids]
+    with psycopg.connect(**get_connection_kwargs()) as conn:
+        count = exclude_patents(workspace_id, entries, conn=conn)
+        conn.commit()
+    return {"workspace_id": workspace_id, "excluded_count": count}
 
 
 class ComposeRequest(BaseModel):

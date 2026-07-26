@@ -1,0 +1,16 @@
+# External PostgreSQL / Supabase overlay.
+# Use this when backend and worker should connect through DATABASE_URL and
+# should not start or wait for the local postgres service.
+services:
+  backend:
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+      APP_ROLE: backend
+      PORT: ${BACKEND_CONTAINER_PORT:-8000}
+    depends_on: !reset []
+
+  worker:
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+      APP_ROLE: worker
+    depends_on: !reset []
