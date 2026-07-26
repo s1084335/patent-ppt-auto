@@ -146,19 +146,29 @@ button { font-family: inherit; }
 .table-wrap { max-width: 100%; border: 1px solid var(--border); border-radius: 0.5rem;
   overflow: auto; max-height: calc(100vh - 15rem); }
 table.data { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
-/* 短欄預設不換行（國別／類型／年份等），避免被切碎；長文字欄另以 .cell-wrap 覆寫可換行。
-   加直向框線（border-right）讓每欄邊界清楚，值不會視覺上混到隔壁欄（2026-07-26）。 */
+/* 所有欄位預設可換行、不截斷（2026-07-26 使用者定案：一行放不完就換行，任何欄都不被切）。
+   word-break/overflow-wrap 讓長英文串也能斷行；限最大寬避免單欄過寬撐爆表格。
+   極短欄（國別／年份／日期）另以 .cell-nowrap 維持不換行（本來就短，不需換行）。
+   加直向框線（border-right）讓每欄邊界清楚，值不混到隔壁欄。 */
 table.data th, table.data td { padding: 0.5rem 0.7rem; text-align: left;
   border-bottom: 1px solid var(--border); border-right: 1px solid var(--border);
-  white-space: nowrap; vertical-align: top; }
+  white-space: normal; word-break: break-word; overflow-wrap: anywhere;
+  vertical-align: top; min-width: 6rem; max-width: 20rem; }
 table.data th:last-child, table.data td:last-child { border-right: none; }
+table.data th.cell-nowrap, table.data td.cell-nowrap {
+  white-space: nowrap; min-width: 0; max-width: none; }
 table.data th { background: var(--panel-2); position: sticky; top: 0; font-weight: 600; }
 table.data tr:hover td { background: var(--panel-2); }
-/* 長文字欄（標題／專利狀態／文獻備註／摘要等）：換行＋限寬，內容不撐爆表格、不溢到隔壁欄。
-   min-width 保底可讀、max-width 封頂避免單欄過寬；word-break 讓長英文串也能斷。 */
+/* 欄寬分兩級（2026-07-26 修：依內容長度分配寬度，不再一視同仁）：
+   .cell-long＝真正的長文（標題／摘要／文獻備註／專利狀態長句）→ 較寬，容納多字換行。
+   .cell-wrap＝一般會換行但內容通常較短的欄（原文欄／公司名等）→ 較窄，不浪費版面。
+   兩者都 white-space:normal 換行、限寬不溢到隔壁欄；差別只在寬度級距。 */
+table.data td.cell-long, table.data th.cell-long {
+  white-space: normal; word-break: break-word; overflow-wrap: anywhere;
+  min-width: 16rem; max-width: 26rem; }
 table.data td.cell-wrap, table.data th.cell-wrap {
   white-space: normal; word-break: break-word; overflow-wrap: anywhere;
-  min-width: 12rem; max-width: 22rem; }
+  min-width: 8rem; max-width: 14rem; }
 .flag-yes { color: var(--ok); } .flag-no { color: var(--text-muted); }
 .pager { display: flex; align-items: center; gap: 0.7rem; margin-top: 0.8rem; font-size: 0.88rem; color: var(--text-muted); }
 
@@ -789,24 +799,24 @@ async function loadAllPatents() {
 // 排序＝使用者指定順序，勿自行重排。
 function topicLabelKey(sourceField) { return 'topic_label_' + sourceField; }
 const PATENT_COLUMNS = [
-  { label: '主附圖', key: 'has_figure', listOnly: true, render: patentFigureCell },
-  { label: '申請國家', key: 'country_code', listOnly: true },
-  { label: '專利類型', key: 'patent_type' },
+  { label: '主附圖', key: 'has_figure', listOnly: true, render: patentFigureCell, nowrap: true },
+  { label: '申請國家', key: 'country_code', listOnly: true, nowrap: true },
+  { label: '專利類型', key: 'patent_type', nowrap: true },
   // 來源實測 0% 有值，欄位仍一律呈現（重匯有值即自動顯示，不需改前端）。
   { label: '專利狀態', key: 'legal_status', wrap: true },
   // 分類標籤拆技術／功效兩欄（2026-07-24 定案）：欄名由 SOURCE_FIELDS 推導，不寫死兩個 key。
   { label: '技術分類', key: topicLabelKey(SOURCE_FIELDS[0][0]), listOnly: true },
   { label: '功效分類', key: topicLabelKey(SOURCE_FIELDS[1][0]), listOnly: true },
-  { label: '文獻備註', key: 'patent_note', wrap: true },
+  { label: '文獻備註', key: 'patent_note', long: true },
   // 公司名欄（申請人／專利權人／受讓人）顯示**正規化收斂名**（與報表同一口徑，
   // 來自 report_patent_base 的 COALESCE）；原始 WIPS 字面另立 *(原文) 欄留在詳情層，
   // 沿「標題／標題(原文)」模式（2026-07-26 定案）。搜尋亦走正規化名，兩者一致。
-  { label: '申請人', key: 'applicant', listOnly: true, wide: true },
-  { label: '申請人(原文)', key: 'applicant_original' },
-  { label: '標題', key: 'title', listOnly: true, wide: true },
-  { label: '標題(原文)', key: 'title_original' },
-  { label: '摘要', key: 'abstract', truncate: 80, wrap: true },
-  { label: '摘要(原文)', key: 'abstract_original', truncate: 80, wrap: true },
+  { label: '申請人', key: 'applicant', listOnly: true, wrap: true },
+  { label: '申請人(原文)', key: 'applicant_original', wrap: true },
+  { label: '標題', key: 'title', listOnly: true, long: true },
+  { label: '標題(原文)', key: 'title_original', wrap: true },
+  { label: '摘要', key: 'abstract', long: true, fulltext: true },
+  { label: '摘要(原文)', key: 'abstract_original', long: true, fulltext: true },
   { label: '申請號', key: 'application_number' },
   { label: '申請日', key: 'application_date' },
   { label: '申請年', key: 'application_year' },
@@ -856,17 +866,22 @@ function linkCell(url, text) {
   if (!href) return '';
   return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener">' + escHtml(text) + '</a>';
 }
+// 欄位寬度 class（2026-07-26 使用者定案：所有欄一行放不完都換行、不截斷）：
+//   long＝真長文（標題/摘要/文獻備註）較寬；wrap/wide＝一般換行欄較窄；
+//   nowrap＝極短欄（國別/年份/日期）不換行；未標＝預設可換行、中等寬。
+function cellClassAttr(col) {
+  if (col.long) return ' class="cell-long"';
+  if (col.wrap || col.wide) return ' class="cell-wrap"';
+  if (col.nowrap) return ' class="cell-nowrap"';
+  return '';
+}
 // 依欄位定義取一格內容。空值一律回空字串（欄位仍在，只是沒值）。
-// mode='list' 時套用 truncate（長文字欄不撐爆列高）；mode='detail' 一律全文。
+// 一律全文顯示、不截斷（列表與詳情皆然）——由 CSS 換行處理長文，不砍字加…。
 function patentCell(p, col, mode) {
   if (col.render) return col.render(p);
   const v = p[col.key];
   if (v === null || v === undefined || v === '') return '';
-  const s = String(v);
-  if (mode === 'list' && col.truncate && s.length > col.truncate) {
-    return escHtml(s.slice(0, col.truncate)) + '…';
-  }
-  return escHtml(s);
+  return escHtml(String(v));
 }
 // 專利表（專利總覽與分類區**共用同一份實作**，只差 scope 決定的欄位集合）：
 // **全欄位攤在列表**，橫向捲動檢視（2026-07-26 使用者定案，推翻原精簡列表設計）。
@@ -885,9 +900,9 @@ function patentTableHtml(data, scope) {
   const rows = items.map((p, i) =>
     '<tr class="patent-row-clickable" onclick="togglePatentDetail(\'' + scope + '\',' + i + ')">'
     + listCols.map(c =>
-      // wide／wrap 的長文字欄套 cell-wrap（換行＋限寬＋斷長字），值不撐爆、不溢到隔壁欄。
-      '<td' + ((c.wide || c.wrap) ? ' class="cell-wrap"' : '') + '>'
-      + patentCell(p, c, 'list') + '</td>'
+      // 欄寬三態：long＝真長文（標題/摘要/備註，寬）；wrap/wide＝一般換行（原文/公司名，窄）；
+      // nowrap＝極短欄（國別/年份/日期，不換行）。未標者走預設（可換行、中等寬）。
+      '<td' + cellClassAttr(c) + '>' + patentCell(p, c, 'list') + '</td>'
     ).join('')
     + '</tr>'
     + '<tr class="patent-detail-row" id="patent-detail-' + scope + '-' + i + '" hidden>'
@@ -895,7 +910,7 @@ function patentTableHtml(data, scope) {
   ).join('');
   return '<div class="table-wrap"><table class="data">'
     + '<thead><tr>'
-    + listCols.map(c => '<th>' + escHtml(c.label) + '</th>').join('')
+    + listCols.map(c => '<th' + cellClassAttr(c) + '>' + escHtml(c.label) + '</th>').join('')
     + '</tr></thead>'
     + '<tbody>' + rows + '</tbody></table></div>';
 }
