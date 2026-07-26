@@ -488,28 +488,23 @@ def _enqueue_post_import_jobs(payload: dict[str, Any], summary: dict[str, Any]) 
     """
     patent_ids = summary.get("patent_ids") or []
     if not patent_ids:
-        # 重複檔／dry-run 沒有新專利，不必補算也不必分群。
+        # 重複檔／dry-run 沒有新專利，不必補算也不必同步。
         return
     workspace_id = summary.get("workspace_id")
+    # 分群全手動（2026-07-26 定案，推翻 07-23「匯入後自動分群」）：匯入完成不再自動
+    # enqueue embeddings 與分群，改由使用者按「分類」鈕觸發（走 clustering/auto 端點，
+    # 內部 embeddings→分群、判斷首次/增量）。此處只保留兩件與分群無關的必要接線：
+    #   1. 全庫 workspace 成員同步：每批匯入的專利仍要 union 進全庫（專利總覽跨庫顯示的依據），
+    #      這是資料歸屬、非分群，不隨「分群改手動」而停。
+    #   2. 文獻備註 AI：獨立於分群，維持自動（只補無備註的新專利，見 ai_patent_note_runner）。
     try:
-        # embeddings 先入列：兩通道同一批算，只算缺的，故只需一個 job。
-        summary["embeddings_job_id"] = _enqueue_case_comparison_embeddings().job_id
-        # 全庫 workspace（專利總覽）：每批匯入的專利都自動 union 進去，並獨立跑自己的分群。
-        # 它與批次 workspace 是兩份互不影響的 artifact，故各自判斷首次／後續。
         global_workspace_id = _sync_global_workspace([int(pid) for pid in patent_ids])
         summary["global_workspace_id"] = global_workspace_id
-        job_ids: list[int] = []
-        if workspace_id is not None:
-            # 沒圈 workspace 時只有全庫要分群（分群一律以 workspace 為單位）。
-            job_ids += _enqueue_workspace_clustering(int(workspace_id), summary)
-        job_ids += _enqueue_workspace_clustering(int(global_workspace_id), summary)
-        if job_ids:
-            summary["clustering_job_ids"] = job_ids
     except Exception as exc:  # noqa: BLE001
-        # 不 raise：匯入已成功，後續 job 可由使用者或下次匯入重新觸發。
-        LOGGER.exception("post-import job enqueue failed: workspace_id=%s", workspace_id)
+        # 不 raise：匯入已成功，全庫同步失敗可由下次匯入補上。
+        LOGGER.exception("global workspace sync failed after import: workspace_id=%s", workspace_id)
         summary["auto_jobs_error"] = f"{type(exc).__name__}: {exc}"
-    # 文獻備註 AI 任務獨立 try/except：與 embeddings／分群互不牽連，任一失敗不影響其餘。
+    # 文獻備註 AI 任務獨立 try/except：與分群互不牽連，任一失敗不影響其餘。
     _enqueue_patent_note(summary)
 
 

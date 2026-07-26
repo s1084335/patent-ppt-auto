@@ -134,9 +134,19 @@ button { font-family: inherit; }
    page body 不橫向捲動（2026-07-24 定案：專利顯示加捲軸）。縱向依內容，不強制。 */
 .table-wrap { overflow-x: auto; max-width: 100%; border: 1px solid var(--border); border-radius: 0.5rem; }
 table.data { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
-table.data th, table.data td { padding: 0.5rem 0.7rem; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+/* 短欄預設不換行（國別／類型／年份等），避免被切碎；長文字欄另以 .cell-wrap 覆寫可換行。
+   加直向框線（border-right）讓每欄邊界清楚，值不會視覺上混到隔壁欄（2026-07-26）。 */
+table.data th, table.data td { padding: 0.5rem 0.7rem; text-align: left;
+  border-bottom: 1px solid var(--border); border-right: 1px solid var(--border);
+  white-space: nowrap; vertical-align: top; }
+table.data th:last-child, table.data td:last-child { border-right: none; }
 table.data th { background: var(--panel-2); position: sticky; top: 0; font-weight: 600; }
 table.data tr:hover td { background: var(--panel-2); }
+/* 長文字欄（標題／專利狀態／文獻備註／摘要等）：換行＋限寬，內容不撐爆表格、不溢到隔壁欄。
+   min-width 保底可讀、max-width 封頂避免單欄過寬；word-break 讓長英文串也能斷。 */
+table.data td.cell-wrap, table.data th.cell-wrap {
+  white-space: normal; word-break: break-word; overflow-wrap: anywhere;
+  min-width: 12rem; max-width: 22rem; }
 .flag-yes { color: var(--ok); } .flag-no { color: var(--text-muted); }
 .pager { display: flex; align-items: center; gap: 0.7rem; margin-top: 0.8rem; font-size: 0.88rem; color: var(--text-muted); }
 
@@ -358,6 +368,7 @@ table.data tr:hover td { background: var(--panel-2); }
   <!-- 左導覽只留「workspace 內」功能；跨 workspace 的專利總覽在頂列（2026-07-24 定案）。 -->
   <nav id="nav-panel">
     <div class="nav-section-label">分析</div>
+    <button class="nav-item" data-nav="browse" onclick="navTo('browse')">瀏覽專利</button>
     <button class="nav-item" data-nav="topics" onclick="navTo('topics')">分類區</button>
     <div class="nav-section-label">報告</div>
     <button class="nav-item" data-nav="reports" onclick="navTo('reports')">報表種類</button>
@@ -472,6 +483,7 @@ const state = {
   marketWorkspaceId: null,   // 市場上傳／產摘要目標 ws（新建時為新 ws id）
   nav: 'patents',
   patentsOffset: 0,
+  browseOffset: 0,        // 瀏覽專利（跟隨選定 workspace）的分頁 offset
   topicFilterKey: null,   // 分類區選定的 topic_key（前端篩選用）
   // 分類區目前分頁的通道（技術／功效）；由 tab 切換，所有 topic 相關呼叫共用同一值。
   topicSourceField: DEFAULT_TOPIC_SOURCE_FIELD,
@@ -638,6 +650,7 @@ function renderMain() {
   }
   switch (state.nav) {
     case 'patents': return renderPatents();
+    case 'browse': return renderBrowse();
     case 'topics': return renderTopics();
     case 'reports': return renderReports();
     case 'export': return renderExport();
@@ -666,6 +679,72 @@ async function renderPatents() {
   await loadAllPatents();
 }
 function onPatentSearch() { state.patentsOffset = 0; loadAllPatents(); }
+
+// ══════════ 瀏覽專利（跟隨頂列選定的 workspace；#C 2026-07-26） ══════════
+// 純看專利表格：選全庫→全庫專利（跨 workspace，帶所屬 Workspace 欄）；選一般 ws→該 ws 專利。
+// 與分類區（標籤分組）分離：這裡不顯示標籤/分組，只列專利本身。
+async function renderBrowse() {
+  const m = el('main-panel');
+  const scopeLabel = isGlobalSelected() ? '全庫（所有專利）' : '目前 workspace';
+  m.innerHTML = '<h2 class="panel-title">瀏覽專利</h2>'
+    + '<p class="hint" style="padding:0 0 0.6rem">顯示 ' + escHtml(scopeLabel) + ' 的專利。'
+    + '<strong>點任一列可展開該件的完整欄位</strong>。</p>'
+    + '<div class="toolbar">'
+    + '<input class="text-input" id="browse-kw" placeholder="搜尋 專利號／名稱／申請人" style="min-width:260px">'
+    + '<button class="btn btn-outline" onclick="onBrowseSearch()">搜尋</button>'
+    + '</div>'
+    + '<div id="browse-body"><div class="hint">載入中…</div></div>';
+  const kwInput = el('browse-kw');
+  if (kwInput) kwInput.addEventListener('keydown', e => { if (e.key === 'Enter') onBrowseSearch(); });
+  state.browseOffset = 0;
+  await loadBrowsePatents();
+}
+function onBrowseSearch() { state.browseOffset = 0; loadBrowsePatents(); }
+function pageBrowse(dir) {
+  const next = (state.browseOffset || 0) + dir * PATENTS_PAGE_SIZE;
+  if (next < 0) return;
+  state.browseOffset = next;
+  loadBrowsePatents();
+}
+// 載當前 workspace 的專利：全庫走 /patents（跨庫、帶所屬 workspace 欄）；一般 ws 走 /workspaces/{id}/patents。
+async function loadBrowsePatents() {
+  const body = el('browse-body');
+  if (!body) return;
+  const kw = (el('browse-kw') && el('browse-kw').value.trim()) || '';
+  const off = state.browseOffset || 0;
+  try {
+    let data;
+    if (isGlobalSelected()) {
+      const qs = 'limit=' + PATENTS_PAGE_SIZE + '&offset=' + off
+        + (kw ? '&keyword=' + encodeURIComponent(kw) : '');
+      data = await getJson(API + '/patents?' + qs);
+      body.innerHTML = browsePatentsTableHtml(data, 'overview');
+    } else {
+      const qs = 'limit=' + PATENTS_PAGE_SIZE + '&offset=' + off
+        + (kw ? '&keyword=' + encodeURIComponent(kw) : '');
+      data = await getJson(API + '/workspaces/' + encodeURIComponent(state.workspaceId)
+        + '/patents?' + qs);
+      body.innerHTML = browsePatentsTableHtml(data, 'topics');
+    }
+  } catch (e) {
+    body.innerHTML = '<div class="card">載入專利失敗（' + escHtml(e.message) + '）。</div>';
+  }
+}
+// 瀏覽專利表＋分頁（沿用 patentTableHtml；scope 決定欄位集合）。
+function browsePatentsTableHtml(data, scope) {
+  const items = data.items || [];
+  if (items.length === 0) return '<div class="hint">查無符合的專利。</div>';
+  const total = data.total ?? items.length;
+  const off = data.offset ?? 0;
+  const from = off + 1;
+  const to = off + items.length;
+  return patentTableHtml(data, scope)
+    + '<div class="pager">'
+    + '<button class="btn btn-outline" ' + (off > 0 ? '' : 'disabled') + ' onclick="pageBrowse(-1)">上一頁</button>'
+    + '<span>' + from + '–' + to + ' / 共 ' + total + ' 件</span>'
+    + '<button class="btn btn-outline" ' + (to < total ? '' : 'disabled') + ' onclick="pageBrowse(1)">下一頁</button>'
+    + '</div>';
+}
 // 全庫專利：走 GET /patents（跨 workspace），一律分頁（PATENTS_PAGE_SIZE），不一次撈全部。
 async function loadAllPatents() {
   const body = el('patents-body');
@@ -702,11 +781,11 @@ const PATENT_COLUMNS = [
   { label: '申請國家', key: 'country_code', listOnly: true },
   { label: '專利類型', key: 'patent_type' },
   // 來源實測 0% 有值，欄位仍一律呈現（重匯有值即自動顯示，不需改前端）。
-  { label: '專利狀態', key: 'legal_status' },
+  { label: '專利狀態', key: 'legal_status', wrap: true },
   // 分類標籤拆技術／功效兩欄（2026-07-24 定案）：欄名由 SOURCE_FIELDS 推導，不寫死兩個 key。
   { label: '技術分類', key: topicLabelKey(SOURCE_FIELDS[0][0]), listOnly: true },
   { label: '功效分類', key: topicLabelKey(SOURCE_FIELDS[1][0]), listOnly: true },
-  { label: '文獻備註', key: 'patent_note', truncate: 60 },
+  { label: '文獻備註', key: 'patent_note', truncate: 60, wrap: true },
   // 公司名欄（申請人／專利權人／受讓人）顯示**正規化收斂名**（與報表同一口徑，
   // 來自 report_patent_base 的 COALESCE）；原始 WIPS 字面另立 *(原文) 欄留在詳情層，
   // 沿「標題／標題(原文)」模式（2026-07-26 定案）。搜尋亦走正規化名，兩者一致。
@@ -714,8 +793,8 @@ const PATENT_COLUMNS = [
   { label: '申請人(原文)', key: 'applicant_original' },
   { label: '標題', key: 'title', listOnly: true, wide: true },
   { label: '標題(原文)', key: 'title_original' },
-  { label: '摘要', key: 'abstract', truncate: 80 },
-  { label: '摘要(原文)', key: 'abstract_original', truncate: 80 },
+  { label: '摘要', key: 'abstract', truncate: 80, wrap: true },
+  { label: '摘要(原文)', key: 'abstract_original', truncate: 80, wrap: true },
   { label: '申請號', key: 'application_number' },
   { label: '申請日', key: 'application_date' },
   { label: '申請年', key: 'application_year' },
@@ -749,6 +828,10 @@ const PATENT_COLUMNS = [
     render: p => flag(p.has_technical_text) },
   { label: '功效描述', key: 'has_effect_text', scope: ['topics', 'topic'], listOnly: true,
     render: p => flag(p.has_effect_text) },
+  // 標不相干（剔除）操作：只在分類區出現（剔除是 workspace 級、移該筆 assignment，不重跑分群）。
+  // 按鈕自帶 stopPropagation，避免觸發列展開。
+  { label: '操作', key: '__exclude__', scope: ['topics', 'topic'], listOnly: true,
+    render: p => excludeCell(p) },
 ];
 // 取某區塊要顯示的欄位：未標 scope 的欄位所有區塊共用；標了就只在列出的區塊出現。
 // 這是專利總覽與分類區之間**唯一**的欄位差異來源——用資料驅動，不拆成多份表格實作。
@@ -790,7 +873,8 @@ function patentTableHtml(data, scope) {
   const rows = items.map((p, i) =>
     '<tr class="patent-row-clickable" onclick="togglePatentDetail(\'' + scope + '\',' + i + ')">'
     + listCols.map(c =>
-      '<td' + (c.wide ? ' style="white-space:normal;min-width:220px"' : '') + '>'
+      // wide／wrap 的長文字欄套 cell-wrap（換行＋限寬＋斷長字），值不撐爆、不溢到隔壁欄。
+      '<td' + ((c.wide || c.wrap) ? ' class="cell-wrap"' : '') + '>'
       + patentCell(p, c, 'list') + '</td>'
     ).join('')
     + '</tr>'
@@ -890,6 +974,41 @@ function topicCell(label) {
   return escHtml(label);
 }
 function flag(v) { return v ? '<span class="flag-yes">✓</span>' : '<span class="flag-no">—</span>'; }
+// 標不相干（剔除）按鈕：分類區專利列上的操作入口（#E 2026-07-26）。
+// stopPropagation 避免觸發列展開；帶 patent_id 供 markIrrelevant 呼叫剔除端點。
+function excludeCell(p) {
+  const pid = p.patent_id;
+  if (pid === null || pid === undefined) return '';
+  // 全庫不提供剔除：排除是 workspace 級，全庫照收所有專利（沿 exclude_patents 註解）。
+  if (isGlobalSelected()) return '<span class="flag-no">—</span>';
+  return '<button class="btn btn-outline btn-sm" onclick="event.stopPropagation();'
+    + 'markIrrelevant(' + pid + ')">標不相干</button>';
+}
+// 剔除單筆專利（POST /workspaces/{id}/exclude-patents）：確認理由後送出，不重跑分群。
+// 成功後重畫分類區（該筆移出當前主題）。
+async function markIrrelevant(patentId) {
+  if (state.workspaceId === null || state.workspaceId === undefined) {
+    alert('請先選定 workspace。'); return;
+  }
+  const reason = prompt('標記此專利為「不相干」並移出目前分析（不重跑分群）。\n可填理由（可留空）：', '');
+  if (reason === null) return;   // 使用者取消
+  try {
+    const resp = await fetch(API + '/workspaces/' + encodeURIComponent(state.workspaceId)
+      + '/exclude-patents', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patent_ids: [patentId], reason: reason || null }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('剔除失敗：' + (err.detail || ('HTTP ' + resp.status)));
+      return;
+    }
+    // 重畫分類區：被剔除者已移除當前主題 assignment，清單自動更新。
+    if (state.nav === 'topics') renderTopics();
+  } catch (e) {
+    alert('連線錯誤：' + e.message);
+  }
+}
 // 總覽分頁：全庫專利以 PATENTS_PAGE_SIZE 為一頁往前後翻，不一次撈全部。
 function pagePatents(dir) {
   const next = state.patentsOffset + dir * PATENTS_PAGE_SIZE;
@@ -941,6 +1060,12 @@ async function renderTopics() {
     + topicTabsHtml()
     + '<p class="hint" style="padding:0 0 0.6rem">點選主題以列出指派到該主題的專利'
     + '（目前分頁：' + escHtml(currentSourceLabel()) + '）。</p>'
+    // 分類手動觸發（2026-07-26）：分群不再匯入後自動跑，改按此鈕。後端 clustering/auto
+    // 自動判斷首次（calibrate）或增量（incremental），並先補 embeddings；進度在右欄。
+    + '<div class="toolbar" style="margin:0 0 0.8rem">'
+    + '<button class="btn btn-primary" id="btn-run-classify" onclick="runClassify()">分類</button>'
+    + '<span class="hint" style="padding:0 0 0 0.6rem">首次分群或有新專利時按此；程式自動判斷首次／增量，不重跑既有主題。</span>'
+    + '</div>'
     // 分群候選挑選區：尚未採用分類時在最前面顯示候選卡；已採用時只留重新挑選入口。
     + '<div id="topic-candidates"></div>'
     // 版式：標籤 → 概覽 → 專利清單（三者相鄰）
@@ -1133,6 +1258,69 @@ function pickCandidate(candidateId) {
   const list = candidateListCache;
   const wrap = document.querySelector('#topic-candidates .cand-list');
   if (wrap) wrap.innerHTML = list.map(c => candidateCardHtml(c)).join('');
+}
+
+// 「分類」手動觸發（POST /workspaces/{id}/clustering/auto）：後端自動判斷首次/增量，
+// 先補 embeddings 再分群；進度沿用右欄面板顯示，完成後重畫分類區看新結果。
+async function runClassify() {
+  const btn = el('btn-run-classify');
+  const panel = el('import-progress-panel');
+  if (state.workspaceId === null || state.workspaceId === undefined) {
+    if (panel) panel.innerHTML = '<div class="task-detail-error">請先選定 workspace 再分類。</div>';
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.textContent = '分類中…'; }
+  try {
+    const resp = await fetch(API + '/workspaces/' + encodeURIComponent(state.workspaceId)
+      + '/clustering/auto', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_field: state.topicSourceField }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      if (panel) panel.innerHTML = '<div class="task-detail-error">分類啟動失敗：'
+        + escHtml(err.detail || ('HTTP ' + resp.status)) + '</div>';
+      if (btn) { btn.disabled = false; btn.textContent = '分類'; }
+      return;
+    }
+    const job = await resp.json();
+    // 分群 job 進度輪詢到右欄面板；embeddings 會先跑（FIFO），分群 job 顯示於此。
+    pollClassifyJob(job.job_id, btn);
+  } catch (e) {
+    if (panel) panel.innerHTML = '<div class="task-detail-error">連線錯誤：' + escHtml(e.message) + '</div>';
+    if (btn) { btn.disabled = false; btn.textContent = '分類'; }
+  }
+}
+
+// 輪詢分類 job（GET /jobs/{id}）：進度顯示右欄，完成後重畫分類區（看新主題/候選）。
+let classifyTimerId = null;
+async function pollClassifyJob(jobId, btn) {
+  const panel = el('import-progress-panel');
+  const started = Date.now();
+  async function tick() {
+    if (!panel) return;
+    try {
+      const j = await getJson(API + '/jobs/' + jobId);
+      panel.innerHTML = jobProgressCardHtml(j, started);
+      if (j.status === 'succeeded') {
+        if (btn) { btn.disabled = false; btn.textContent = '分類'; }
+        if (state.nav === 'topics') renderTopics();  // 重畫分類區看新結果
+        return;
+      }
+      if (['failed', 'cancelled'].includes(j.status)) {
+        panel.innerHTML = '<div class="task-detail-error">分類失敗：'
+          + escHtml(j.error_message || '（無錯誤訊息）') + '</div>';
+        if (btn) { btn.disabled = false; btn.textContent = '分類'; }
+        return;
+      }
+    } catch (e) {
+      panel.innerHTML = '<div class="task-detail-error">查詢分類狀態失敗：' + escHtml(e.message) + '</div>';
+      if (btn) { btn.disabled = false; btn.textContent = '分類'; }
+      return;
+    }
+    classifyTimerId = registerTimer(tick, 2000);
+  }
+  tick();
 }
 
 // 採用候選（POST /clustering/runs/{run_id}/finalize）：建 clustering_finalize job 後輪詢進度。
