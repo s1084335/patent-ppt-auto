@@ -97,15 +97,20 @@ button { font-family: inherit; }
   border-bottom: 1px dotted var(--border); }
 .patent-detail-item:last-child { border-bottom: none; }
 /* 標籤欄：固定寬、底色、右對齊——與參考公報版面一致，掃描時容易對齊找欄位。 */
-.patent-detail-item dt { flex: 0 0 9.5rem; color: var(--detail-label-fg);
-  background: var(--detail-label-bg); padding: 0.42rem 0.6rem; text-align: right;
+/* 標籤欄再窄（9.5→8rem）；值欄文字置中（2026-07-26 使用者定案）。 */
+.patent-detail-item dt { flex: 0 0 8rem; color: var(--detail-label-fg);
+  background: var(--detail-label-bg); padding: 0.42rem 0.5rem; text-align: right;
   border-right: 1px solid var(--border); }
 .patent-detail-item dd { flex: 1 1 auto; margin: 0; padding: 0.42rem 0.75rem;
-  white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; min-width: 0; }
+  white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; min-width: 0;
+  text-align: center; }
 /* 詳情層固定在可視寬度內（2026-07-26）：詳情 td 在超寬 table 內，若不 sticky+限寬，
    內容會跟著 table 總寬跑到右邊、越過 AI 助手被切掉。sticky left:0 黏在可視區左緣；
    寬度＝視窗寬扣掉左導覽(#nav-panel 200px)＋右 AI 助手(#ai-panel 240px)＋main-panel 左右
    padding(約 2.7rem)，讓詳情剛好落在 AI 助手前面、長文在此範圍內換行到完整顯示，不越界。 */
+/* 詳情層寬度對齊第一層表格可視區（2026-07-26 使用者定案）：sticky left:0 黏在可視左緣，
+   寬度用視窗寬扣掉左導覽(200px)＋右 AI 助手(240px)＋padding，落在申請人(原文)那一帶、
+   不越過 AI 助手；長文在此範圍內換行到完整。 */
 .patent-detail-row > td { background: var(--panel); padding: 0;
   position: sticky; left: 0;
   width: calc(100vw - 200px - 240px - 2.7rem);
