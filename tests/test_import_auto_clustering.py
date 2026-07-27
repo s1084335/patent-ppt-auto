@@ -113,13 +113,20 @@ class ImportAutoClusteringTests(unittest.TestCase):
             workspace_result={"workspace_id": 61})
         self.assertEqual(result.get("global_workspace_id"), self.GLOBAL_WS_ID)
 
-    def test_import_still_enqueues_patent_note(self):
-        """文獻備註 AI 保留自動：匯入完成仍 enqueue ai:patent_note（獨立於分群）。"""
+    def test_import_no_longer_enqueues_patent_note(self):
+        """文獻備註**不再**自動觸發（2026-07-27 使用者定，改手動按鈕）。
+
+        ⚠ 本測試原斷言「匯入應自動 enqueue 一個文獻備註 job」，該行為已撤回。
+        撤回動因（實機）：AI 第一次跑失敗後，**同一檔案再匯入會被去重擋掉**
+        （inserted 0），那批專利再也不會被自動觸發——實測 53 筆永遠缺備註
+        且沒有補救入口。改手動後可隨時重跑補齊（skip_existing=True 只補空值）。
+        觸發入口：POST /workspaces/{id}/patent-notes（瀏覽專利頁的「產文獻備註」鈕）。
+        """
         _, recorder = self._run_import(
             {"new_workspace_name": "ws", "purpose": "general"},
             workspace_result={"workspace_id": 62})
         note = [c for c in recorder.calls if c["job_type"] == "ai:patent_note"]
-        self.assertEqual(len(note), 1, "匯入應自動 enqueue 一個文獻備註 job")
+        self.assertEqual(note, [], "匯入不得再自動觸發文獻備註（已改手動）")
 
     def test_import_enqueues_refresh_derived(self):
         """匯入完成自動 enqueue refresh_derived（2026-07-26）：刷新 report_patent_base，

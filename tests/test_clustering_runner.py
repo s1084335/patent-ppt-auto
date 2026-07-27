@@ -26,9 +26,18 @@ class TopLevelClusteringRunnerTests(unittest.TestCase):
         self.assertEqual(top_level_k_values(600), (10, 15, 20, 25, 30, 35, 40))
 
     def test_top_level_k_range_rejects_too_small_workspace(self) -> None:
-        """少於 50 篇不足以支撐目前主題品質評估，必須先阻擋。"""
+        """少於 30 篇不足以支撐主題品質評估，必須先阻擋。
+
+        ⚠ 門檻 2026-07-27 由 50 降為 30（使用者定）：實機滑雪機 60 筆專利，
+        但各通道**可用文件數**只有 40／49（不是每筆都有獨立項與效果摘要），
+        兩通道都被舊門檻擋下。30–49 這段改掃 k=(3,5,8)，見
+        test_clustering_min_documents.py（k 階梯的唯一來源）。
+        """
         with self.assertRaises(ValueError):
-            top_level_k_values(49)
+            top_level_k_values(29)
+        # 30–49 不再被擋，且改用更小的 k（40 篇分 10 群每群才 4 篇，切太碎）
+        self.assertEqual(top_level_k_values(30), (3, 5, 8))
+        self.assertEqual(top_level_k_values(49), (3, 5, 8))
 
     def test_candidate_profiles_choose_one_from_each_partition(self) -> None:
         """保守、平衡、細分候選必須各自從指定 k 區間選一組。"""

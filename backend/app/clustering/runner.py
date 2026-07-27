@@ -52,7 +52,11 @@ LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SOURCE_FIELD_WIPS_INDEPENDENT_CLAIMS = SOURCE_FIELD_TECHNICAL
 PCA_COMPONENTS = 100
-MIN_CLUSTERING_DOCUMENTS = 50
+# 分群文件數下限（2026-07-27 使用者定：50→30）。
+# 實機動因：滑雪機 60 筆專利，但各通道**可用文件數**不足 50——技術（獨立項）40、
+# 功效（效果摘要）49，兩通道都被舊門檻擋下。可用數＜專利數，因為不是每筆都有該欄位。
+# ⚠ 低於本門檻改由 AI 提主題草稿、使用者定案（罕用備案），不走 BERTopic。
+MIN_CLUSTERING_DOCUMENTS = 30
 CANDIDATE_REFERENCE_PARAMETER_KEY = "_representative_document_references"
 
 # ⚠ 分析用 workspace 取成員的 SQL 收口（單一 %s＝workspace_id）：
@@ -318,10 +322,49 @@ class FinalizationSummary:
         return asdict(self)
 
 
-def top_level_k_values(document_count: int) -> tuple[int, ...]:
-    """依 workspace 可用文件數回傳階梯式 k；小資料不測不合理的大主題數。"""
+def _insufficient_documents_message(document_count: int, source_field: str | None) -> str:
+    """文件數不足時的可讀訊息（2026-07-27 使用者實機看不懂原訊息而改）。
+
+    原訊息只有「clustering requires at least N documents」——使用者無從得知
+    是「專利本來就少」還是「專利夠但該欄位多半是空的」。實機正是後者：
+    60 筆專利，技術通道只有 40 筆有「獨立項」、功效只有 49 筆有「效果摘要」。
+    故訊息要指明：**哪個通道、實際幾筆、缺哪個欄位、怎麼辦**。
+    """
+    if source_field:
+        try:
+            spec = get_source_spec(source_field)
+            return (
+                f"{spec.label_zh}通道可分群文件數不足："
+                f"僅 {document_count} 筆有「{spec.source_column}」內容，"
+                f"未達分群下限 {MIN_CLUSTERING_DOCUMENTS} 筆。"
+                "請補充該欄位有內容的專利，或確認匯入來源是否缺此欄。"
+            )
+        except Exception:  # noqa: BLE001 - 未知通道時退回通用訊息，不讓錯誤訊息自己炸
+            pass
+    return (
+        f"可分群文件數不足：僅 {document_count} 筆，"
+        f"未達分群下限 {MIN_CLUSTERING_DOCUMENTS} 筆。"
+    )
+
+
+def top_level_k_values(
+    document_count: int, *, source_field: str | None = None
+) -> tuple[int, ...]:
+    """依 workspace 可用文件數回傳階梯式 k；小資料不測不合理的大主題數。
+
+    source_field 只用於文件數不足時的錯誤訊息（指明哪個通道、缺哪個欄位），
+    不影響 k 的計算——k 只看數量。
+
+    2026-07-27 使用者定案：門檻 50→30，並為 30–49 這段另給更小的 k。
+    ⚠ 單純降門檻不夠——30–49 若沿用「<100 → k=(5,10)」，40 篇分 10 群每群才 4 篇，
+    主題零碎到沒有分析價值，那正是原本設 50 門檻要避免的情況。
+    故 30–49 掃 k=(3,5,8)：3 群約 10–16 篇、5 群約 6–10 篇、8 群約 4–6 篇，
+    讓使用者在粗／中／細之間依實際內容挑。
+    """
     if document_count < MIN_CLUSTERING_DOCUMENTS:
-        raise ValueError(f"clustering requires at least {MIN_CLUSTERING_DOCUMENTS} documents")
+        raise ValueError(_insufficient_documents_message(document_count, source_field))
+    if document_count < 50:
+        return (3, 5, 8)
     if document_count < 100:
         return (5, 10)
     maximum_k = min(40, 15 + 5 * ((document_count - 100) // 100))
@@ -444,7 +487,8 @@ def scan_top_level_k(
     k_values: tuple[int, ...] | None = None,
 ) -> list[KScanResult]:
     """依資料量逐一執行候選 k，計算 coherence、diversity、balance 與 score。"""
-    k_values = k_values or top_level_k_values(len(corpus.documents))
+    k_values = k_values or top_level_k_values(
+        len(corpus.documents), source_field=source_field)
     if len(corpus.documents) <= max(k_values):
         raise ValueError("document count must be greater than the maximum candidate k")
 
@@ -627,7 +671,8 @@ def calibrate_top_level(
     scope = "workspace" if workspace_id is not None else "global"
     with psycopg.connect(**get_connection_kwargs()) as conn:
         corpus = load_clustering_corpus(conn, workspace_id=workspace_id, source_field=source_field)
-        k_values = top_level_k_values(len(corpus.documents))
+        k_values = top_level_k_values(
+            len(corpus.documents), source_field=source_field)
         parameters = {
             "stage": "top_level_calibration",
             "scope": scope,
