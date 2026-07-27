@@ -1199,10 +1199,14 @@ async function renderTopics() {
     + '<span id="topic-reselect"></span>'
     // AI 篩不相干：手動觸發（2026-07-27 定案，原 finalize 後自動排程已撤回）。
     // 判讀結果落待複核清單，由使用者逐筆「保留／確定」，AI 不直接改正式資料。
-    + (filterRunning
-        ? '<button class="btn" id="btn-irrelevant-filter" disabled>AI 篩選中…</button>'
-        : '<button class="btn" id="btn-irrelevant-filter" onclick="runIrrelevantFilter()">'
-          + 'AI 篩不相干</button>')
+    // ⚠ 全庫不提供（沿既有剔除鈕的護欄）：排除是 workspace 級，全庫是總覽本就該全收——
+    //   對 A 不相干的專利對全庫可能相干（irrelevant-patent-filter-spec 第 62-64 行）。
+    + (isGlobalSelected()
+        ? ''
+        : filterRunning
+          ? '<button class="btn" id="btn-irrelevant-filter" disabled>AI 篩選中…</button>'
+          : '<button class="btn" id="btn-irrelevant-filter" onclick="runIrrelevantFilter()">'
+            + 'AI 篩不相干</button>')
     + '<span style="flex:1"></span>'
     + '<span class="hint topics-header-hint">'
     + (classifyRunning
@@ -1718,7 +1722,8 @@ async function runIrrelevantFilter() {
 async function renderExclusionReviews() {
   const wrap = el('exclusion-reviews');
   if (!wrap) return;
-  if (state.workspaceId === null || state.workspaceId === undefined) {
+  // 全庫不做不相干篩選（排除是 workspace 級），不顯示待複核區也不打 API。
+  if (state.workspaceId === null || state.workspaceId === undefined || isGlobalSelected()) {
     wrap.innerHTML = '';
     return;
   }
@@ -2023,7 +2028,9 @@ function renderTopicTags(topics) {
   // 「不相干」桶（2026-07-27 定案）：人工剔除與 AI 判讀確定者都在此呈現。
   // ⚠ 這不是模型主題，是排除清單的檢視入口——原「未分類」「其他」兩個空系統桶已移除。
   // 件數為 0 時仍顯示，讓使用者知道有這個桶、剔除後看得到東西進去。
-  const irrelevantTag = '<span class="tag'
+  // ⚠ 全庫不顯示此桶：排除是 workspace 級，全庫不扣除任何專利
+  //   （analysis_member_patent_ids 對全庫直接回全部成員），列了也永遠是空的且語意錯誤。
+  const irrelevantTag = isGlobalSelected() ? '' : '<span class="tag'
     + (state.topicFilterKey === IRRELEVANT_KEY ? ' active' : '')
     + '" onclick="onTopicTag(\'' + IRRELEVANT_KEY + '\')">不相干'
     + '<span class="count">' + (excludedCountCache ?? 0) + '</span></span>';
@@ -2118,7 +2125,8 @@ async function loadTopicAssignedPatents(topicKey) {
 // 補「不相干」標籤上的件數：非同步查，回來只改那顆標籤的 count。
 // ⚠ 不重畫整個標籤列——renderTopicTags 會連帶重載專利清單，整區閃爍（2026-07-27 已踩過）。
 async function refreshExcludedCount() {
-  if (state.workspaceId === null || state.workspaceId === undefined) return;
+  // 全庫無「不相干」桶，不查件數（那顆標籤本就不渲染）。
+  if (state.workspaceId === null || state.workspaceId === undefined || isGlobalSelected()) return;
   try {
     const data = await getJson(API + '/workspaces/'
       + encodeURIComponent(state.workspaceId) + '/excluded-patents');

@@ -29,6 +29,7 @@ from backend.app.clustering.exclusions import (
     confirm_exclusions,
     exclude_patents,
     excluded_patent_rows,
+    is_global_workspace,
     keep_patents,
     pending_reviews,
 )
@@ -158,7 +159,17 @@ def trigger_irrelevant_filter(workspace_id: int) -> dict[str, Any]:
     建一筆 ai:irrelevant_filter job 交由 Companion 領走；runner 取每主題 c-TF-IDF 最低
     N 筆逐筆判讀，結果落 status='pending' 待使用者以「保留／確定」裁決
     （見 clustering.exclusions.store_ai_verdicts）。回 job_id 供前端追蹤進度。
+
+    ⚠ 全庫擋下（400）：排除是 workspace 級，全庫是總覽本就該全收——對 A 不相干的專利
+    對全庫可能屬另一技術領域、是相干的（irrelevant-patent-filter-spec 第 62-64 行）。
+    全庫的分析成員本就不扣除，對它跑篩選只會白燒 CLI 額度、堆無用的待複核項。
+    前端已隱藏入口，這裡是擋直接打 API 的後端護欄。
     """
+    if is_global_workspace(workspace_id):
+        raise HTTPException(
+            status_code=400,
+            detail="全庫 workspace 不做不相干篩選：排除是 workspace 級，全庫照收所有專利",
+        )
     job_id = create_job(
         "ai:irrelevant_filter",
         {"workspace_id": workspace_id},

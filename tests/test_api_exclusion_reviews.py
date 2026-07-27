@@ -42,7 +42,8 @@ class IrrelevantFilterTriggerTests(unittest.TestCase):
     def test_trigger_creates_job(self):
         """建立 ai:irrelevant_filter job，payload 帶 workspace_id，回 job_id。"""
         fake = mock.MagicMock(return_value=4242)
-        with mock.patch.object(workspaces_api, "create_job", fake):
+        with mock.patch.object(workspaces_api, "is_global_workspace", return_value=False), \
+                mock.patch.object(workspaces_api, "create_job", fake):
             resp = client.post(f"/api/v1/workspaces/{WS}/irrelevant-filter")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"workspace_id": WS, "job_id": 4242})
@@ -50,6 +51,36 @@ class IrrelevantFilterTriggerTests(unittest.TestCase):
         self.assertEqual(args[0], "ai:irrelevant_filter")
         self.assertEqual(args[1]["workspace_id"], WS)
         self.assertEqual(kwargs["workspace_id"], WS)
+
+
+class GlobalWorkspaceGuardTests(unittest.TestCase):
+    """全庫不做不相干篩選（2026-07-27 使用者重申；沿 spec 第 62-64 行既有定案）。
+
+    排除是 **workspace 級**：對 A 不相干的專利，對全庫可能屬於另一技術領域、是相干的。
+    全庫的 analysis_member_patent_ids 本就不扣除任何專利，對它跑篩選毫無意義——
+    判讀結果只會堆在待複核清單佔位、白燒 CLI 額度。
+
+    前端已隱藏入口（isGlobalSelected 護欄），後端仍須擋——前端擋不住直接打 API。
+    """
+
+    def test_trigger_rejects_global_workspace(self):
+        """對全庫觸發篩選 → 400，且不得建 job（不白燒 CLI 額度）。"""
+        fake_create = mock.MagicMock()
+        with mock.patch.object(workspaces_api, "is_global_workspace", return_value=True), \
+                mock.patch.object(workspaces_api, "create_job", fake_create):
+            resp = client.post(f"/api/v1/workspaces/{WS}/irrelevant-filter")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("全庫", resp.json()["detail"])
+        fake_create.assert_not_called()
+
+    def test_trigger_allows_normal_workspace(self):
+        """一般 workspace 照常放行。"""
+        fake_create = mock.MagicMock(return_value=99)
+        with mock.patch.object(workspaces_api, "is_global_workspace", return_value=False), \
+                mock.patch.object(workspaces_api, "create_job", fake_create):
+            resp = client.post(f"/api/v1/workspaces/{WS}/irrelevant-filter")
+        self.assertEqual(resp.status_code, 200)
+        fake_create.assert_called_once()
 
 
 class ExclusionReviewListTests(unittest.TestCase):

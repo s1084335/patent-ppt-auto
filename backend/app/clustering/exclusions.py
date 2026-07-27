@@ -72,6 +72,19 @@ def _workspace_row(cur: Any, workspace_id: int) -> tuple[list[int], bool]:
     return member_ids, bool(is_global)
 
 
+def is_global_workspace(workspace_id: int, *, conn: Any | None = None) -> bool:
+    """該 workspace 是否為全庫。
+
+    供呼叫端擋掉「對全庫做 workspace 級操作」——排除是 workspace 級，全庫是總覽本就
+    該全收（規格第 62-64 行：對 A 不相干的專利，對全庫可能屬另一技術領域、是相干的）。
+    全庫的 analysis_member_patent_ids 本就不扣除，對它跑篩選只會白燒 CLI 額度。
+    """
+    with _conn_ctx(conn) as active:
+        with active.cursor() as cur:
+            _member_ids, is_global = _workspace_row(cur, workspace_id)
+    return is_global
+
+
 def excluded_patent_ids(workspace_id: int, *, conn: Any | None = None) -> set[int]:
     """讀某 workspace 的**已確定**排除 patent_id 集合（供扣除；順序無關故回 set）。
 
