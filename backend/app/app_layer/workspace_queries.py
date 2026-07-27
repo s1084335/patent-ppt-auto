@@ -204,19 +204,44 @@ WHERE patent_id = ANY(%(pids)s)
 """
 
 
-def assigned_patent_ids(*, run_id: int, topic_key: str) -> list[int]:
-    """取某 run 內指派到指定 topic 的專利 ID（唯一來源＝derived_layer.topic_assignments）。
+def assigned_patent_ids(*, workspace_id: int, source_field: str, topic_key: str) -> list[int]:
+    """取指派到指定 topic 的專利 ID（唯一來源＝derived_layer.topic_assignments）。
 
     分群寫入端把指派關係寫進 topic_assignments 表（run_id, patent_id, topic_key），
     topic JSON 內**沒有** patent_ids 鍵——讀取端一律走本函式，不要自行從 JSON 找。
+
+    ⚠ **必須跨 run 取**（2026-07-27 實機修）：incremental run **只寫新增專利的
+    assignment**，舊專利的留在先前的 full/merge run。原本傳單一 run_id 只查那個 run，
+    增量分群後「主題標籤顯示 26 筆、點進去卻是空的」——有些主題有、有些沒有，
+    取決於它的專利多數落在哪個 run。
+
+    做法：該 workspace/通道**全部 run** 中，每個 patent_id 取 run_id 最大的那筆
+    （DISTINCT ON），再篩出屬於本 topic 者。專利在新 run 被改派到別的主題時，
+    以最新 run 為準、不會兩邊都算。此規則與 topic_state_repository 的 assignments
+    取法一致（該處 docstring 早已寫明），本函式原本沒跟上。
     """
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT patent_id FROM derived_layer.topic_assignments "
-                "WHERE run_id = %(run_id)s AND topic_key = %(topic_key)s "
-                "ORDER BY patent_id",
-                {"run_id": run_id, "topic_key": topic_key},
+                """
+                SELECT patent_id FROM (
+                    SELECT DISTINCT ON (ta.patent_id)
+                           ta.patent_id, ta.topic_key
+                    FROM derived_layer.topic_assignments ta
+                    JOIN derived_layer.topic_runs tr ON tr.run_id = ta.run_id
+                    JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id
+                    WHERE wr.workspace_id = %(workspace_id)s
+                      AND tr.source_field = %(source_field)s
+                    ORDER BY ta.patent_id, ta.run_id DESC
+                ) latest
+                WHERE latest.topic_key = %(topic_key)s
+                ORDER BY patent_id
+                """,
+                {
+                    "workspace_id": workspace_id,
+                    "source_field": source_field,
+                    "topic_key": topic_key,
+                },
             )
             return [int(row[0]) for row in cur.fetchall()]
 

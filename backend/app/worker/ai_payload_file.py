@@ -208,3 +208,58 @@ def build_cli_command_with_payload(
         "--output-format", "json",
         "--allowedTools", READ_ONLY_TOOLS,
     ]
+
+
+def extract_json_payload(text: str) -> Any:
+    """從 CLI 回覆中取出 JSON 物件，容忍前後贅字（2026-07-27 實機 9g）。
+
+    prompt 已明令「只輸出 JSON、不要多餘說明」，但 LLM 偶爾仍會加開場白：
+    - 實機 job 102：`依契約輸出：\n\n```json\n{...}\n``` `
+    - 實機 job 122：`以下為契約指定的 JSON 物件：\n\n```json\n{...}\n``` `
+
+    原本七支 runner 各自寫 `if text.startswith("```")` 剝圍欄——**前面多一句話就整段
+    原樣丟 json.loads**，`JSONDecodeError: Expecting value: line 1 column 1`。
+    job 102 跑了 183 秒、第一批已落庫，卻因第二批多一句開場白整趟報 failed。
+
+    解析策略（由嚴到寬，取第一個成功者）：
+    1. 整段直接 parse（最理想：CLI 真的只回 JSON）
+    2. 取第一個 ``` 圍欄內的內容（含 ```json 語言標記；**不要求圍欄在開頭**）
+    3. 取第一個 `{` 到最後一個 `}`（沒有圍欄但夾在文字中）
+
+    ⚠ 取「最後一個 `}`」而非第一個，才不會把巢狀物件截斷。
+    ⚠ 完全取不到或內容非法時 **raise ValueError**，不回 None——靜默回空會讓呼叫端
+    誤判成「AI 判定沒有結果」，比直接失敗更難查（本專案反覆踩過的靜默失敗）。
+
+    共用函式而非各支自寫：修一次七支全部受益；逐支修＝下次又只修到其中幾支。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        raise ValueError("CLI 回覆為空，取不到 JSON")
+
+    candidates: list[str] = [raw]
+
+    # 圍欄：找第一個 ``` 之後到下一個 ``` 之間（首行若是語言標記則去掉）
+    fence_start = raw.find("```")
+    if fence_start != -1:
+        after = raw[fence_start + 3:]
+        fence_end = after.find("```")
+        inner = after[:fence_end] if fence_end != -1 else after
+        # ```json / ```JSON 等語言標記在第一行，去掉該行
+        first_line, _, rest = inner.partition("\n")
+        candidates.append(rest if first_line.strip().lower() in ("json", "") else inner)
+
+    # 裸 JSON：第一個 { 到最後一個 }
+    brace_start, brace_end = raw.find("{"), raw.rfind("}")
+    if brace_start != -1 and brace_end > brace_start:
+        candidates.append(raw[brace_start:brace_end + 1])
+
+    for candidate in candidates:
+        stripped = candidate.strip()
+        if not stripped:
+            continue
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+
+    raise ValueError(f"CLI 回覆取不到合法 JSON；原始輸出前 500 字：{raw[:500]}")

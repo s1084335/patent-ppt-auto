@@ -45,6 +45,7 @@ from .ai_narrative_runner import (
     _CLI_SPECS,
     _subprocess_cli_runner,
 )
+from .ai_payload_file import extract_json_payload
 
 
 # 篩選流程版本；隨 prompt 契約升版而變，寫進結果供追溯。
@@ -144,14 +145,14 @@ def _extract_results(parsed: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(candidate, dict) and "results" not in candidate \
             and isinstance(candidate.get("result"), str):
         text = candidate["result"].strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
+        # 取 JSON 收口在 ai_payload_file.extract_json_payload（2026-07-27 實機 9g）：
+        # 原本只認「開頭就是 ```」，CLI 多一句開場白（「依契約輸出：」「以下為契約
+        # 指定的 JSON 物件：」）就整段丟 json.loads 而炸——job 102 跑了 183 秒、
+        # 第一批已落庫，仍因此整趟報 failed。共用函式容忍前後贅字，七支 runner 同一份。
         try:
-            candidate = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise IrrelevantFilterRunnerError(
-                f"CLI 回覆非合法 JSON：{exc}；原始輸出：{text[:500]}"
-            ) from exc
+            candidate = extract_json_payload(text)
+        except ValueError as exc:
+            raise IrrelevantFilterRunnerError(str(exc)) from exc
     results = candidate.get("results") if isinstance(candidate, dict) else candidate
     if not isinstance(results, list):
         raise IrrelevantFilterRunnerError(

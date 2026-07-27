@@ -382,10 +382,13 @@ def list_topic_patents(
     # ⚠ 指派關係取自 derived_layer.topic_assignments，**不是** topic JSON。
     # 2026-07-27 前這裡讀 topic.get("patent_ids")，但寫入端從未產生該鍵，
     # 於是永遠傳空清單、回空 items——分類區點主題後整張表沒有資料。
+    # ⚠ 傳 workspace_id + source_field（不是 state["run_id"]）：incremental run 只寫
+    # 新增專利的 assignment，只查最新 run 會漏掉留在舊 run 的專利——實機出現
+    # 「標籤顯示 26 筆、點進去卻是空的」。取全部 run 每個專利的最新一筆，見該函式。
     result = workspace_queries.list_topic_patents(
         workspace_id=workspace_id,
         patent_ids=workspace_queries.assigned_patent_ids(
-            run_id=int(state["run_id"]), topic_key=topic_key
+            workspace_id=workspace_id, source_field=source_field, topic_key=topic_key
         ),
         limit=limit,
         offset=offset,
