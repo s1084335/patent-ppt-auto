@@ -96,31 +96,63 @@ class CliResult:
 CliRunner = Callable[[Sequence[str], float], CliResult]
 
 
+def materialize_report_version(version: str) -> Path:
+    """把 DB 內的報表版本落地到本機暫存目錄，回傳該目錄（跨容器讀那一段）。
+
+    延遲 import：worker 匯入本模組時不必拉進 DB 層；且測試可直接 patch 本函式。
+    落點放 var/report_cache，與 ai_payloads 同層（皆為本機暫存，不進版控）。
+    """
+    from backend.app.db.report_artifact_store import materialize_version
+
+    return materialize_version(version, PROJECT_ROOT / "var" / "report_cache")
+
+
 def resolve_run_dir(based_on_version: str | None, *, root: Path | None = None) -> Path:
-    """解析要解讀的報表版本目錄。
+    """解析要解讀的報表版本目錄；本機沒有時從 DB 落地（2026-07-27 待辦 9d）。
 
     based_on_version 給定時＝full_report_latest 下該版本子目錄（目錄名即版本，對齊 PS1
     Split-Path -Leaf 規則）；未給時取 full_report_latest 下最新的 report_trial_ 目錄。
-    目錄須含 report_data.json 才算有效，否則 raise（不猜路徑）。
+
+    ⚠ **本機優先、DB 補位**：報表由容器內 worker 產出、只存在 report_artifacts 表，
+    而本函式在使用者本機 Companion 執行——只找本機必然落空（實機 job 95 即此，
+    解讀從來沒成功過）。故本機目錄不存在時改從 DB 落地整包再讀。
+    本機開發（backend 與報表同一台）時目錄真的存在，走原路徑、不繞 DB。
     """
     base = root if root is not None else FULL_REPORT_LATEST
     if based_on_version:
         run_dir = base / based_on_version
-    else:
-        candidates = sorted(
-            (p for p in base.glob("report_trial_*") if (p / "report_data.json").exists()),
-            key=lambda p: p.name,
-        )
-        if not candidates:
-            raise NarrativeRunnerError(
-                f"找不到可解讀的報表版本：{base} 下無含 report_data.json 的 report_trial_ 目錄"
-            )
-        run_dir = candidates[-1]
-    if not (run_dir / "report_data.json").exists():
+        if not (run_dir / "report_data.json").exists():
+            # 本機沒有＝報表在容器裡產的，改從 report_artifacts 落地。
+            try:
+                return materialize_report_version(based_on_version)
+            except Exception as exc:  # noqa: BLE001 - 兩邊都沒有才是真的找不到
+                raise NarrativeRunnerError(
+                    f"找不到報表版本 {based_on_version}：本機 {run_dir} 無 report_data.json，"
+                    f"DB report_artifacts 也取不到（{type(exc).__name__}: {exc}）"
+                ) from exc
+        return run_dir
+    # 未指定版本：本機取最新；本機一份都沒有時（容器產的報表）改問 DB 要最新版本。
+    candidates = sorted(
+        (p for p in base.glob("report_trial_*") if (p / "report_data.json").exists()),
+        key=lambda p: p.name,
+    )
+    if candidates:
+        return candidates[-1]
+    try:
+        from backend.app.db.report_artifact_store import list_versions
+
+        versions = list_versions()   # 已依 version DESC 排序，且只含有 report_data.json 者
+        if versions:
+            return materialize_report_version(versions[0]["version"])
+    except Exception as exc:  # noqa: BLE001 - DB 取不到就落到下面的統一錯誤
         raise NarrativeRunnerError(
-            f"報表版本目錄無效：{run_dir} 缺 report_data.json，不是有效的報表輸出目錄"
-        )
-    return run_dir
+            f"找不到可解讀的報表版本：本機 {base} 無 report_trial_ 目錄，"
+            f"DB report_artifacts 也取不到（{type(exc).__name__}: {exc}）"
+        ) from exc
+    raise NarrativeRunnerError(
+        f"找不到可解讀的報表版本：本機 {base} 與 DB report_artifacts 都沒有已產製的報表。"
+        "請先在「報表種類」頁按「產製選定報表」。"
+    )
 
 
 def build_prompt(
@@ -242,6 +274,8 @@ def run_narrative(
     root: Path | None = None,
     skill_path: Path | None = None,
     instruction: str | None = None,
+    resolve_run_dir: Callable[..., Path] | None = None,
+    upload_run_dir: Callable[[Path], int] | None = None,
 ) -> dict[str, Any]:
     """把報表解讀整條系統化：組提示 → 呼叫 headless CLI → 驗收產物 → refresh-index。
 
@@ -256,7 +290,9 @@ def run_narrative(
         from backend.app.reports.chart_runner import refresh_index as _refresh
         refresh_index = _refresh
 
-    run_dir = resolve_run_dir(based_on_version, root=root)
+    # 參數同名遮蔽了模組層函式，故用 globals() 取預設實作（測試可注入 fake）。
+    resolver = resolve_run_dir or globals()["resolve_run_dir"]
+    run_dir = resolver(based_on_version, root=root)
     version = run_dir.name
     if progress is not None:
         progress("cli_running", 30)
@@ -280,7 +316,28 @@ def run_narrative(
 
     # 確定性程式重渲染 index（嵌入解讀）；CLI 不碰 index.html。
     refresh = refresh_index(run_dir)
+
+    # ⚠ 把 narratives.json 上傳回 report_artifacts（2026-07-27 待辦 9d 的「寫」那一段）。
+    # CLI 寫的是**本機檔案系統**，但 backend 從 DB 讀（report_artifact_store.read_file）——
+    # 不傳回去就永遠讀不到，解讀區維持空白。upload_run_dir 會整包 upsert（同版本同名
+    # 檔覆蓋），故也順帶把 refresh_index 重渲染的 index.html 一起更新。
+    # 失敗隔離：解讀已產出、token 已花，上傳失敗只記 log 不 raise——結果仍回得去，
+    # 使用者可重跑上傳，不必重跑整趟 AI。
+    uploader = upload_run_dir
+    if uploader is None:
+        from backend.app.db.report_artifact_store import upload_run_dir as _upload
+        uploader = _upload
+    uploaded = 0
+    try:
+        uploaded = uploader(run_dir)
+    except Exception:  # noqa: BLE001 - 上傳失敗不得吃掉已完成的解讀
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "narratives upload failed (version=%s)", version)
+
     return {
+        "artifacts_uploaded": uploaded,
         "based_on_version": version,
         "run_dir": str(run_dir),
         "narratives_path": str(narratives_path),

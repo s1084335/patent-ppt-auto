@@ -115,3 +115,46 @@ def list_ppt_files(version: str) -> list[dict]:
             )
             rows = cur.fetchall()
     return [{"filename": row[0], "byte_size": row[1]} for row in rows]
+
+
+def list_files(version: str) -> list[dict]:
+    """取某報表版本的**全部檔案（含 content）**，供跨容器落地成本機目錄。
+
+    ⚠ 與 list_versions／list_ppt_files 的「不選 content」契約刻意不同：那兩支是列清單，
+    本支的用途就是把整包搬到本機檔案系統（materialize_version），非拿內容不可。
+    呼叫端只有 materialize_version 一處，不當一般查詢用——避免有人拿它去做列表而把
+    整包產物拉回。
+    """
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT filename, content FROM app_layer.report_artifacts "
+                "WHERE version = %s ORDER BY filename",
+                (version,),
+            )
+            rows = cur.fetchall()
+    return [{"filename": row[0], "content": bytes(row[1])} for row in rows]
+
+
+def materialize_version(version: str, cache_root: Path | str) -> Path:
+    """把 DB 內某報表版本落地成 `<cache_root>/<version>/` 目錄，回傳該目錄路徑。
+
+    用途（2026-07-27 待辦 9d）：`ai:narrative` 在**使用者本機 Companion** 執行，
+    但報表由**容器內 worker** 產出、只存在 report_artifacts 表——runner 找本機
+    output/full_report_latest/ 必然落空（實機 job 95 即此）。本函式把該版本整包搬到
+    本機暫存目錄，CLI 就能照原本的方式讀 report_data.json 與圖檔。
+
+    ⚠ 目錄名必須等於 version：下游 `resolve_run_dir` 以 `run_dir.name` 當版本號，
+    寫進 narratives.json 的 based_on_version，名字不對整份解讀會被判過期。
+
+    版本不存在（一個檔案都沒有）時 raise FileNotFoundError，不回空目錄——
+    回空目錄會讓下游誤判成「報表沒內容」而產出空解讀，比直接失敗更難查。
+    """
+    files = list_files(version)
+    if not files:
+        raise FileNotFoundError(f"report_artifacts 內查無此版本的檔案：{version}")
+    run_dir = Path(cache_root) / version
+    run_dir.mkdir(parents=True, exist_ok=True)
+    for item in files:
+        (run_dir / item["filename"]).write_bytes(item["content"])
+    return run_dir
