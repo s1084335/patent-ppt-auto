@@ -804,10 +804,15 @@ async function renderBrowse() {
           + '產文獻備註</button>')
     + '<span class="hint" style="padding:0;font-size:.8rem">只補空白的備註，不覆蓋既有</span>'
     + '</div>'
+    // 公司中文名確認：放這頁而非左導覽獨立項（2026-07-27 使用者定案）——低頻維護作業
+    // 不佔常駐導覽位置，且**下方表格就顯示著申請人欄**，確認前後的變化直接對照得到。
+    // 與「產文獻備註」同頁同理：兩者都是手動觸發、影響此頁欄位的 AI 補值作業。
+    + '<div id="zh-name-drafts"></div>'
     + '<div id="browse-body"><div class="hint">載入中…</div></div>';
   const kwInput = el('browse-kw');
   if (kwInput) kwInput.addEventListener('keydown', e => { if (e.key === 'Enter') onBrowseSearch(); });
   state.browseOffset = 0;
+  renderZhNameDrafts();          // 非阻塞：草稿區自己載，不擋專利表
   await loadBrowsePatents();
 }
 function onBrowseSearch() { state.browseOffset = 0; loadBrowsePatents(); }
@@ -3776,6 +3781,131 @@ function setHealth(id, text, ok) {
   if (!node) return;
   node.textContent = text;
   node.className = 'value ' + (ok ? 'health-ok' : 'health-warn');
+}
+
+// ══════════ 公司中文名草稿確認 ══════════
+// 三態流程的「確認」環節（2026-07-27 補）：AI 產草稿（ai_suggested）→ 這裡逐筆裁決
+// → confirmed 才進正式顯示名 → 報表／專利表的公司名收斂第 1 順位命中，中文名才顯示得出來。
+// 原本這一環完全沒有介面：草稿寫進 DB 後看不到也確認不了，收斂實際只做到「庫內統計名」。
+//
+// 三態（對齊後端 action）：
+//   確認    ＝以草稿名確認（草稿名由後端自查，前端不回傳）
+//   改後確認 ＝以輸入框當下的值確認
+//   略過    ＝⚠ **草稿保留**，下次仍列在此清單（使用者明示：未裁決的草稿不能消失）
+let zhDrafts = [];   // 目前顯示的草稿（index → {code, draft_name, ...}），供裁決取值
+async function renderZhNameDrafts() {
+  const wrap = el('zh-name-drafts');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="hint">載入公司中文名草稿…</div>';
+  let total = 0;
+  try {
+    const data = await getJson(API + '/company-zh-drafts?limit=100&offset=0');
+    zhDrafts = data.items || [];
+    total = data.total ?? zhDrafts.length;
+  } catch (e) {
+    wrap.innerHTML = '<div class="ai-section-label" style="margin-top:1rem">公司中文名</div>'
+      + '<div class="task-detail-error">草稿載入失敗：' + escHtml(e.message) + '</div>';
+    return;
+  }
+  // 無草稿時整區收起（只留一行觸發入口），不佔版面——沿「待複核區有 pending 才出現」慣例。
+  if (zhDrafts.length === 0) {
+    wrap.innerHTML = '<div class="toolbar" style="margin-top:0.6rem">'
+      + '<button class="btn btn-outline" onclick="triggerZhNameDrafts()">產生公司中文名草稿</button>'
+      + '<span class="hint" style="padding:0;font-size:.8rem">'
+      + '目前沒有待確認的中文名草稿。</span>'
+      + '</div>';
+    return;
+  }
+  const head = '<div class="ai-section-label" style="margin-top:1rem">公司中文名待確認（'
+    + zhDrafts.length + (total > zhDrafts.length ? ' / 共 ' + total : '') + ' 筆）</div>'
+    + '<p class="hint" style="padding:0 0 0.5rem">AI 產的中文名草稿；'
+    + '<strong>確認後才會</strong>成為下方表格與報表顯示的公司名（申請人／專利權人／受讓人三欄同步生效）。'
+    + '可就地改寫再確認；<strong>略過</strong>則草稿保留，下次還看得到。</p>'
+    + '<div class="toolbar">'
+    + '<button class="btn btn-outline" onclick="triggerZhNameDrafts()">產生中文名草稿</button>'
+    + '<button class="btn btn-outline" onclick="renderZhNameDrafts()">重新整理</button>'
+    + '<button class="btn btn-outline" onclick="confirmAllZhNames()">全部確認</button>'
+    + '</div>';
+  const rows = zhDrafts.map((it, i) =>
+    '<tr>'
+    + '<td>' + escHtml(it.code) + '</td>'
+    + '<td>' + escHtml(it.original_name || '') + '</td>'
+    // keep_original＝AI 查無市場慣用中文名、保留原文；標示出來讓使用者知道這不是翻譯結果。
+    + '<td>' + (it.verdict === 'keep_original'
+        ? '<span class="flag-no">保留原文</span>' : '<span class="flag-yes">中文名</span>') + '</td>'
+    + '<td><input type="text" class="text-input" style="width:100%"'
+    + ' id="zh-draft-' + i + '" value="' + escHtml(it.draft_name || '') + '"></td>'
+    + '<td style="white-space:nowrap">'
+    + '<button class="btn btn-primary btn-sm" onclick="decideZhName(' + i + ',\'confirm\')">確認</button> '
+    + '<button class="btn btn-outline btn-sm" onclick="decideZhName(' + i + ',\'reject\')">略過</button>'
+    + '</td>'
+    + '</tr>'
+  ).join('');
+  wrap.innerHTML = head
+    + '<div class="table-wrap"><table class="data">'
+    + '<thead><tr><th>代碼</th><th>原文名</th><th>AI 判定</th><th>中文名（可改）</th><th>裁決</th></tr></thead>'
+    + '<tbody>' + rows + '</tbody></table></div>';
+}
+// 單筆裁決。confirm 時比對輸入框：使用者改過就送 edit（帶新名），沒改就送 confirm
+// （草稿名由後端自查，不必也不該由前端回傳）。
+async function decideZhName(index, action) {
+  const draft = zhDrafts[index];
+  if (!draft) return;
+  const item = { code: draft.code, action: action };
+  if (action === 'confirm') {
+    const input = el('zh-draft-' + index);
+    const typed = (input && input.value.trim()) || '';
+    if (!typed) { alert('中文名不可為空'); return; }
+    if (typed !== (draft.draft_name || '')) { item.action = 'edit'; item.name = typed; }
+  }
+  await postZhDecisions([item]);
+}
+// 全部確認：一次 POST 整批（規格：批次確認不逐筆連發）。改過的以 edit 送。
+async function confirmAllZhNames() {
+  if (!zhDrafts.length) return;
+  if (!confirm('確定要確認全部 ' + zhDrafts.length + ' 筆中文名嗎？')) return;
+  const items = zhDrafts.map((d, i) => {
+    const input = el('zh-draft-' + i);
+    const typed = (input && input.value.trim()) || '';
+    return (typed && typed !== (d.draft_name || ''))
+      ? { code: d.code, action: 'edit', name: typed }
+      : { code: d.code, action: 'confirm' };
+  });
+  await postZhDecisions(items);
+}
+async function postZhDecisions(items) {
+  try {
+    const resp = await fetch(API + '/company-zh-drafts/confirm', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: items }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('裁決失敗：' + (err.detail || resp.status));
+      return;
+    }
+    const body = await resp.json();
+    // 確認後端點會自動 enqueue refresh_derived——收斂名存 report_patent_base，
+    // 不重跑 refresh 的話表格看起來會「沒變」。拉任務清單讓使用者看得到刷新進度。
+    await renderZhNameDrafts();   // 已確認者從清單消失；略過者仍在
+    if (body.refreshed_job_id) await fetchTasks();
+  } catch (e) {
+    alert('裁決失敗：' + e.message);
+  }
+}
+// 手動觸發 AI 產草稿（2026-07-27 定案：不做匯入後自動觸發——自動失敗就沒有補救入口）。
+// runner 只挑「無中文名、無裁決、無既有草稿」的代碼，重複按不重複燒 token。
+async function triggerZhNameDrafts() {
+  try {
+    const resp = await fetch(API + '/company-zh-drafts/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    if (!resp.ok) { alert('觸發失敗：' + resp.status); return; }
+    alert('已排入 AI 產草稿任務；完成後按「重新整理」查看。');
+    await fetchTasks();
+  } catch (e) {
+    alert('觸發失敗：' + e.message);
+  }
 }
 
 // ══════════ 右欄 AI 助手：任務列表 + SSE + enqueue ══════════

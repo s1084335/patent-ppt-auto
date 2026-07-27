@@ -353,6 +353,89 @@ def apply_confirmed_display_names(
     return {"inserted": inserted, "updated": updated, "dedup_dropped": dedup_dropped}
 
 
+# AI 中文名草稿清單（三態的「草稿待確認」）：只列 ai_suggested 列。
+# 一併帶出：
+#   - draft_name＝AI 產的中文名草稿（keep_original 裁決時此值＝英文原文）
+#   - verdict＝translated／keep_original，供前端區分「有中文名」與「查無保留原文」
+#   - original_name＝收斂前的原始字面（該代碼的別稱），確認中文名時的對照依據
+# ⚠ 不帶「該代碼現行顯示名」：它與專利表「申請人」欄同源（皆走 code_alias_names →
+# COALESCE 第一順位），而確認介面就掛在瀏覽專利頁、表格本身即顯示該欄，重複無益。
+# 以代碼為單位，一代碼至多一草稿列（write_drafts 先刪後插保證）。
+_LIST_DRAFTS_SQL = """
+    SELECT d."申請人代碼" AS code,
+           d."公司名稱" AS draft_name,
+           d.wips_metadata_json->>'zh_name_verdict' AS verdict,
+           d.created_at,
+           (
+               SELECT mode() WITHIN GROUP (ORDER BY c."別稱")
+               FROM derived_layer.company_aliases c
+               WHERE c."申請人代碼" = d."申請人代碼"
+                 AND c.review_status = 'confirmed'
+                 AND NULLIF(BTRIM(c."別稱"), '') IS NOT NULL
+           ) AS original_name
+    FROM derived_layer.company_aliases d
+    WHERE d.review_status = 'ai_suggested'
+      AND NULLIF(BTRIM(d."申請人代碼"), '') IS NOT NULL
+    ORDER BY d."申請人代碼"
+    LIMIT %(limit)s OFFSET %(offset)s
+"""
+
+# 總筆數：分頁時前端要知道還有多少沒看（與清單同一 WHERE，不另立條件）。
+_COUNT_DRAFTS_SQL = """
+    SELECT count(*) AS total
+    FROM derived_layer.company_aliases d
+    WHERE d.review_status = 'ai_suggested'
+      AND NULLIF(BTRIM(d."申請人代碼"), '') IS NOT NULL
+"""
+
+
+def list_zh_name_drafts(
+    *,
+    limit: int = 100,
+    offset: int = 0,
+    connect_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """列出待確認的 AI 中文名草稿（三態的「草稿待確認」）。
+
+    回 {"items": [{code, draft_name, verdict, created_at, original_name}, ...], "total": N}。
+    verdict＝translated（AI 找到市場慣用中文名）／keep_original（查無，保留英文原文）。
+    original_name＝該代碼收斂前的原始字面，供使用者判斷這個中文名對不對。
+
+    分頁（規格 B）：代碼數量可觀時不一次全吐；total 走 count(*) 而非 len(items)，
+    否則第二頁之後前端算不出還剩幾筆。清單與計數同一 WHERE 條件，不會對不上。
+    """
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from backend.app.db.connection import get_connection_kwargs
+
+    with psycopg.connect(**(connect_kwargs or get_connection_kwargs())) as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(_LIST_DRAFTS_SQL, {"limit": limit, "offset": offset})
+            items = cur.fetchall()
+            cur.execute(_COUNT_DRAFTS_SQL)
+            total = int(cur.fetchone()["total"])
+    return {"items": items, "total": total}
+
+
+def get_draft_name(code: str, connect_kwargs: dict[str, Any] | None = None) -> str | None:
+    """取某代碼的草稿名（action='confirm' 時用草稿名確認，不必前端回傳）。
+
+    前端只送 code＋action，草稿名由後端自己查——避免前端竄改或送到過期的草稿名。
+    """
+    import psycopg
+
+    from backend.app.db.connection import get_connection_kwargs
+
+    with psycopg.connect(**(connect_kwargs or get_connection_kwargs())) as conn:
+        row = conn.execute(
+            'SELECT "公司名稱" FROM derived_layer.company_aliases '
+            "WHERE \"申請人代碼\" = %s AND review_status = 'ai_suggested' LIMIT 1",
+            (code,),
+        ).fetchone()
+    return str(row[0]) if row and row[0] else None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Import company alias table into derived_layer.company_aliases.")
     parser.add_argument("path", type=Path, help="Path to company alias CSV/XLSX.")
