@@ -238,8 +238,15 @@ class ClusteringFinalizeEnqueueTests(unittest.TestCase):
         )
         return JobContext(job=job, worker_id="worker-finalize", store=store)
 
-    def test_finalize_enqueues_irrelevant_filter(self):
-        """finalize 完成後對該 workspace enqueue 一筆 ai:irrelevant_filter。"""
+    def test_finalize_does_not_enqueue_irrelevant_filter(self):
+        """finalize **不再**自動 enqueue ai:irrelevant_filter（2026-07-27 改手動觸發）。
+
+        ⚠ 本測試原斷言「finalize 必須 enqueue 一筆」（2026-07-24 自動接續定案），
+        該定案於 2026-07-27 撤回：判讀結果需人工逐筆裁決（保留／確定），自動排程會在
+        每次 finalize 後無條件耗用 CLI 額度，沒人看時排了也沒用。
+        觸發入口改為 POST /workspaces/{id}/irrelevant-filter（見 api/workspaces.py）。
+        主題命名（ai:topic_label）不受影響，仍自動接續。
+        """
         from unittest import mock
         from backend.app.db import job_repository as jr
 
@@ -254,11 +261,11 @@ class ClusteringFinalizeEnqueueTests(unittest.TestCase):
             handlers.handle_clustering_finalize(
                 {"run_id": 5, "candidate_id": 3}, ctx)
 
-        # 至少有一筆 create_job 是 ai:irrelevant_filter（且帶 workspace_id）
-        irr_calls = [c for c in create_job.call_args_list
-                     if c.args and c.args[0] == "ai:irrelevant_filter"]
-        self.assertEqual(len(irr_calls), 1, "finalize 未 enqueue ai:irrelevant_filter")
-        self.assertEqual(irr_calls[0].kwargs.get("workspace_id"), 930077)
+        enqueued = [c.args[0] for c in create_job.call_args_list if c.args]
+        self.assertNotIn("ai:irrelevant_filter", enqueued,
+                         "finalize 不得自動觸發不相干篩選（已改手動）")
+        self.assertIn("ai:topic_label", enqueued,
+                      "主題命名仍應自動接續")
 
     def test_finalize_survives_enqueue_failure(self):
         """enqueue 失敗（AI 輔助）不得讓 finalize 本體失敗——只記 log，仍回 summary。"""

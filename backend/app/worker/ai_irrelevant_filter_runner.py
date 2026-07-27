@@ -31,6 +31,13 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Sequence
 
+import psycopg
+
+# 排除表寫入收口在 clustering.exclusions（本 runner 不自己寫 SQL）。
+# 模組層 import 而非函式內 import：讓 _persist_verdicts 的落庫行為可被測試替換。
+from backend.app.clustering.exclusions import store_ai_verdicts
+from backend.app.db.connection import get_connection_kwargs
+
 from .ai_narrative_runner import (
     DEFAULT_CLI_TIMEOUT_SECONDS,
     CliRunner,
@@ -195,6 +202,29 @@ def fetch_notes(patent_ids: Sequence[int], *, conn: Any | None = None) -> dict[i
     return result
 
 
+def _persist_verdicts(workspace_id: int, results: Sequence[dict[str, Any]]) -> int:
+    """把逐筆判讀落為待複核草稿（status='pending'），回實際寫入筆數。
+
+    寫入收口在 clustering.exclusions.store_ai_verdicts（本 runner 不自己寫 SQL）；
+    只有「不相干」「可疑」會落庫，「相干」與「無法判斷」不進待複核清單。
+
+    ⚠ 失敗隔離（沿 handlers 的 enqueue 失敗隔離模式）：落庫失敗只記 log 不 raise——
+    AI 判讀已經跑完（token 已花），不能讓寫庫問題把整趟結果吃掉；results 仍回得去，
+    job 結果看得到判讀內容，使用者可重跑落庫。
+    """
+    import logging
+
+    try:
+        with psycopg.connect(**get_connection_kwargs()) as conn:
+            stored = store_ai_verdicts(workspace_id, results, conn=conn)
+            conn.commit()
+        return stored
+    except Exception:  # noqa: BLE001 - 落庫失敗不得吃掉已完成的 AI 判讀結果
+        logging.getLogger(__name__).exception(
+            "irrelevant filter verdicts persist failed (workspace_id=%s)", workspace_id)
+        return 0
+
+
 def run_irrelevant_filter(
     *,
     workspace_id: int,
@@ -253,11 +283,14 @@ def run_irrelevant_filter(
         # 全部空備註：不呼 CLI（不空燒 token），全標無法判斷。
         if progress is not None:
             progress("無可判讀的文獻備註", 100)
+        # 全為「無法判斷」，store_ai_verdicts 不收此值（無判讀依據不進待複核清單），
+        # 故 stored 恆為 0；仍回該欄位保持結果形狀一致。
         return {
             "workspace_id": workspace_id,
             "candidates": len(cand_list),
             "judged": 0,
             "undecidable": len(undecidable),
+            "stored": 0,
             "results": undecidable,
             "prompt_version": PROMPT_VERSION,
             "cli_kind": cli_kind,
@@ -317,6 +350,10 @@ def run_irrelevant_filter(
     # 空備註的無法判斷結果併回總結果。
     results.extend(undecidable)
 
+    # 落庫為待複核草稿（2026-07-27）：判讀結果原本只回傳、不寫 DB，前端無從逐筆裁決，
+    # AI 跑完等於白跑。此處落 status='pending'，等使用者按「保留／確定」。
+    stored = _persist_verdicts(workspace_id, results)
+
     if progress is not None:
         progress("篩選判讀完成", 100)
     return {
@@ -324,6 +361,7 @@ def run_irrelevant_filter(
         "candidates": len(cand_list),
         "judged": len(to_judge),
         "undecidable": len(undecidable),
+        "stored": stored,
         "results": results,
         "prompt_version": PROMPT_VERSION,
         "cli_kind": cli_kind,

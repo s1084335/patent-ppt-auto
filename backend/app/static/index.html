@@ -1121,6 +1121,13 @@ function pagePatents(dir) {
 // 主題人工操作／合併建議／合併歷史一律排在專利清單「之後」，不擋在標籤與專利之間。
 // 主題清單快取（供概覽顯示 label/件數）；點主題 chip 走 /topics/{key}/patents 指派端點。
 let topicListCache = [];
+// 「不相干」桶的 topicFilterKey 哨符（2026-07-27）。
+// ⚠ 刻意用 '__IRRELEVANT__' 而非某個 topic_code：它不是模型主題，是排除清單的檢視入口
+//   （原「未分類」「其他」兩個空系統桶已移除）。後端 topic_code 為 T001 形式，不會撞。
+const IRRELEVANT_KEY = '__IRRELEVANT__';
+// 「不相干」桶件數快取：由 loadExcludedPatents／renderTopicTags 前置查詢填入，
+// 供標籤上的 count 顯示；未查過時為 null（顯示 0）。
+let excludedCountCache = null;
 // 技術／功效分頁：選項由 SOURCE_FIELDS 白名單常數產生，不逐個寫死。
 function topicTabsHtml() {
   return '<div class="tab-bar" id="topic-tabs">'
@@ -1163,6 +1170,7 @@ async function renderTopics() {
   // 沒先取就會把「分群進行中」畫成可按的「分類」。
   await fetchTasks();
   const classifyRunning = hasRunningClustering(state.workspaceId);
+  const filterRunning = hasRunningIrrelevantFilter(state.workspaceId);
   // 標題列一列橫排（2026-07-27 使用者定）：分類區｜技術／功效｜分類｜重新挑選分類。
   // 原本五個元素各佔一行（標題、tabs、提示、分類鈕、重新挑選鈕），垂直吃掉太多高度，
   // 主題標籤與專利清單被推到很下面；併成一列後下方內容整體上移。
@@ -1180,6 +1188,12 @@ async function renderTopics() {
     // 重新挑選分類：只有已採用分類、且尚未點開挑選介面時才出現（狀態由 loadTopicCandidates
     // 判定，這裡先留位；實際的顯示／隱藏由該函式改寫 #topic-reselect 決定）。
     + '<span id="topic-reselect"></span>'
+    // AI 篩不相干：手動觸發（2026-07-27 定案，原 finalize 後自動排程已撤回）。
+    // 判讀結果落待複核清單，由使用者逐筆「保留／確定」，AI 不直接改正式資料。
+    + (filterRunning
+        ? '<button class="btn" id="btn-irrelevant-filter" disabled>AI 篩選中…</button>'
+        : '<button class="btn" id="btn-irrelevant-filter" onclick="runIrrelevantFilter()">'
+          + 'AI 篩不相干</button>')
     + '<span style="flex:1"></span>'
     + '<span class="hint topics-header-hint">'
     + (classifyRunning
@@ -1191,6 +1205,8 @@ async function renderTopics() {
     + '<div id="topic-candidates"></div>'
     // 版式：標籤 → 概覽 → 進階操作（收合）→ 專利清單
     + '<div id="topic-tags"><div class="hint">載入主題中…</div></div>'
+    // AI 待複核區：有 pending 判讀時才出現（無則整區不佔版面）。
+    + '<div id="exclusion-reviews"></div>'
     + '<div id="topic-overview"></div>'
     // 進階操作移到專利清單**之上**（2026-07-27 使用者定），維持 <details> 收合，
     // 使用者要用才點開；放清單上方免得每次都要捲過 100 列才找得到。
@@ -1658,6 +1674,127 @@ async function requestTopicLabel() {
   }
 }
 
+// AI 篩不相干：手動觸發（2026-07-27 定案，原 finalize 後自動排程已撤回）。
+// 判讀結果落待複核清單（status='pending'，不影響分析），由使用者逐筆「保留／確定」。
+async function runIrrelevantFilter() {
+  if (state.workspaceId === null || state.workspaceId === undefined) {
+    alert('請先選定 workspace。');
+    return;
+  }
+  const btn = el('btn-irrelevant-filter');
+  if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
+  try {
+    const resp = await fetch(API + '/workspaces/' + encodeURIComponent(state.workspaceId)
+      + '/irrelevant-filter', {
+      method: 'POST', headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('AI 篩選啟動失敗：' + (err.detail || ('HTTP ' + resp.status)));
+      return;
+    }
+    // 立刻拉一次任務清單，讓自動刷新機制接手盯到完成（完成後待複核清單自動出現）。
+    await fetchTasks();
+    scheduleTopicsAutoRefresh();
+    await renderTopics();
+  } catch (e) {
+    alert('連線錯誤：' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'AI 篩不相干'; }
+  }
+}
+
+// 待複核清單：AI 判為不相干／可疑者，逐筆「保留（留原主題）／確定（歸到不相干）」。
+// ⚠ 這些專利此刻仍參與分析——只有按「確定」後才真的被扣除。
+async function renderExclusionReviews() {
+  const wrap = el('exclusion-reviews');
+  if (!wrap) return;
+  if (state.workspaceId === null || state.workspaceId === undefined) {
+    wrap.innerHTML = '';
+    return;
+  }
+  let items = [];
+  try {
+    const data = await getJson(API + '/workspaces/'
+      + encodeURIComponent(state.workspaceId) + '/exclusion-reviews');
+    items = data.items || [];
+  } catch (e) {
+    wrap.innerHTML = '<div class="task-detail-error">待複核清單載入失敗：'
+      + escHtml(e.message) + '</div>';
+    return;
+  }
+  if (items.length === 0) { wrap.innerHTML = ''; return; }
+  const rows = items.map(it =>
+    '<tr>'
+    + '<td>' + escHtml(String(it.patent_id)) + '</td>'
+    + '<td>' + escHtml(it.ai_verdict || '') + '</td>'
+    + '<td class="cell-long">' + escHtml(it.reason || '') + '</td>'
+    + '<td class="nowrap">'
+    + '<button class="btn btn-sm" onclick="decideExclusionReview('
+    + it.patent_id + ", 'keep')\">保留</button> "
+    + '<button class="btn btn-sm btn-danger" onclick="decideExclusionReview('
+    + it.patent_id + ", 'confirm')\">確定</button>"
+    + '</td></tr>'
+  ).join('');
+  wrap.innerHTML = '<div class="card">'
+    + '<div style="font-weight:600;margin-bottom:0.5rem">'
+    + 'AI 待複核（' + items.length + ' 筆）</div>'
+    + '<div class="hint" style="margin-bottom:0.6rem">'
+    + 'AI 判定可能不相干，這些專利<strong>目前仍計入分析</strong>。'
+    + '「保留」＝留在原主題；「確定」＝歸到「不相干」並移出分析（不重跑分群）。</div>'
+    + '<div class="toolbar" style="margin-bottom:0.6rem">'
+    + '<button class="btn btn-sm" onclick="decideAllExclusionReviews(\'keep\')">全部保留</button>'
+    + '<button class="btn btn-sm btn-danger" '
+    + 'onclick="decideAllExclusionReviews(\'confirm\')">全部確定</button>'
+    + '</div>'
+    + '<table class="table"><thead><tr>'
+    + '<th>專利 ID</th><th>AI 判定</th><th>理由</th><th>裁決</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table>'
+    + '</div>';
+}
+
+// 單筆裁決：keep＝保留（刪待複核列）／confirm＝確定（→ excluded、移除指派）。
+async function decideExclusionReview(patentId, decision) {
+  await postExclusionDecision([patentId], decision);
+}
+
+// 批次裁決：把目前待複核清單全部套用同一決定。
+async function decideAllExclusionReviews(decision) {
+  const label = decision === 'keep' ? '保留' : '確定歸到不相干';
+  if (!confirm('確定要把全部待複核專利都「' + label + '」嗎？')) return;
+  let items = [];
+  try {
+    const data = await getJson(API + '/workspaces/'
+      + encodeURIComponent(state.workspaceId) + '/exclusion-reviews');
+    items = data.items || [];
+  } catch (e) {
+    alert('讀取待複核清單失敗：' + e.message);
+    return;
+  }
+  if (items.length === 0) return;
+  await postExclusionDecision(items.map(it => it.patent_id), decision);
+}
+
+// 送出裁決並重畫分類區（確定會改變成員，主題件數與清單都要更新）。
+async function postExclusionDecision(patentIds, decision) {
+  try {
+    const resp = await fetch(API + '/workspaces/' + encodeURIComponent(state.workspaceId)
+      + '/exclusion-reviews/' + decision, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patent_ids: patentIds }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('裁決失敗：' + (err.detail || ('HTTP ' + resp.status)));
+      return;
+    }
+  } catch (e) {
+    alert('連線錯誤：' + e.message);
+    return;
+  }
+  await renderTopics();
+}
+
 function renderTopicOps() {
   const wrap = el('topic-ops');
   if (!wrap) return;
@@ -1874,12 +2011,23 @@ function renderTopicTags(topics) {
     + escHtml(t.label || t.topic_key)
     + '<span class="count">' + (t.doc_count ?? 0) + '</span></span>'
   ).join('');
+  // 「不相干」桶（2026-07-27 定案）：人工剔除與 AI 判讀確定者都在此呈現。
+  // ⚠ 這不是模型主題，是排除清單的檢視入口——原「未分類」「其他」兩個空系統桶已移除。
+  // 件數為 0 時仍顯示，讓使用者知道有這個桶、剔除後看得到東西進去。
+  const irrelevantTag = '<span class="tag'
+    + (state.topicFilterKey === IRRELEVANT_KEY ? ' active' : '')
+    + '" onclick="onTopicTag(\'' + IRRELEVANT_KEY + '\')">不相干'
+    + '<span class="count">' + (excludedCountCache ?? 0) + '</span></span>';
   wrap.innerHTML = '<div class="tag-list">'
     + '<span class="tag' + (state.topicFilterKey === null ? ' active' : '') + '" onclick="onTopicTag(null)">全部</span>'
-    + tags + '</div>';
+    + tags + irrelevantTag + '</div>';
   renderTopicOverview();
-  // 「全部」→ workspace 全部專利（沿用總覽查詢）；選定主題→列該主題指派專利。
+  renderExclusionReviews();
+  refreshExcludedCount();
+  // 「全部」→ workspace 全部專利（沿用總覽查詢）；「不相干」→ 列排除清單；
+  // 選定主題→列該主題指派專利。
   if (state.topicFilterKey === null) loadAllWorkspacePatents();
+  else if (state.topicFilterKey === IRRELEVANT_KEY) loadExcludedPatents();
   else loadTopicAssignedPatents(state.topicFilterKey);
 }
 // 主題概覽：顯示選定主題的 label 與件數（doc_count）；「全部」時顯示 workspace 全部件數。
@@ -1888,6 +2036,12 @@ function renderTopicOverview() {
   if (!wrap) return;
   if (state.topicFilterKey === null) {
     wrap.innerHTML = '<div class="card"><strong>全部</strong>：顯示此 workspace 全部專利。</div>';
+    return;
+  }
+  // 「不相干」不是模型主題（是排除清單的檢視入口），沒有 AI 摘要可展開。
+  if (state.topicFilterKey === IRRELEVANT_KEY) {
+    wrap.innerHTML = '<div class="card"><strong>不相干</strong>：'
+      + '已標為不相干的專利，不計入分群與報表統計。</div>';
     return;
   }
   const t = topicListCache.find(x => x.topic_key === state.topicFilterKey);
@@ -1952,6 +2106,61 @@ async function loadTopicAssignedPatents(topicKey) {
 }
 // 主題專利表（/topics/{key}/patents 回應：與總覽相同的顯示欄位）。
 // 共用 patentTableHtml，scope='topic'——已經點進某個主題，不再重覆顯示「所屬主題」欄。
+// 補「不相干」標籤上的件數：非同步查，回來只改那顆標籤的 count。
+// ⚠ 不重畫整個標籤列——renderTopicTags 會連帶重載專利清單，整區閃爍（2026-07-27 已踩過）。
+async function refreshExcludedCount() {
+  if (state.workspaceId === null || state.workspaceId === undefined) return;
+  try {
+    const data = await getJson(API + '/workspaces/'
+      + encodeURIComponent(state.workspaceId) + '/excluded-patents');
+    excludedCountCache = (data.items || []).length;
+  } catch (e) {
+    return;  // 件數查不到不影響主流程，標籤維持前次值
+  }
+  const wrap = el('topic-tags');
+  if (!wrap) return;
+  const tag = wrap.querySelector('.tag[onclick*="' + IRRELEVANT_KEY + '"] .count');
+  if (tag) tag.textContent = String(excludedCountCache);
+}
+
+// 「不相干」桶：列已確定排除的專利（人工剔除 ＋ AI 判讀經使用者確定，同一個桶）。
+// 這些專利已不參與分群與統計；此處是它們唯一的檢視入口——剔除後不再無聲消失。
+async function loadExcludedPatents() {
+  const wrap = el('topic-patents');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="hint">載入中…</div>';
+  try {
+    const data = await getJson(API + '/workspaces/'
+      + encodeURIComponent(state.workspaceId) + '/excluded-patents');
+    const items = data.items || [];
+    excludedCountCache = items.length;
+    if (items.length === 0) {
+      wrap.innerHTML = '<div class="card">目前沒有標為不相干的專利。'
+        + '可在各主題的專利列上按「標不相干」剔除，或按上方「AI 篩不相干」讓 AI 建議。</div>';
+      return;
+    }
+    const rows = items.map(it =>
+      '<tr>'
+      + '<td>' + escHtml(String(it.patent_id)) + '</td>'
+      + '<td>' + (it.source === 'ai' ? 'AI 判定（已確認）' : '人工剔除') + '</td>'
+      + '<td class="cell-long">' + escHtml(it.reason || '') + '</td>'
+      + '</tr>'
+    ).join('');
+    wrap.innerHTML = '<div class="card">'
+      + '<div class="hint" style="margin-bottom:0.6rem">'
+      + '這些專利已標為不相干，<strong>不計入分群與報表統計</strong>；'
+      + '原始專利資料仍保留在資料庫中。</div>'
+      + '<table class="table"><thead><tr>'
+      + '<th>專利 ID</th><th>來源</th><th>理由</th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>'
+      + '<div class="pager"><span>共 ' + items.length + ' 件</span></div>'
+      + '</div>';
+  } catch (e) {
+    wrap.innerHTML = '<div class="card">載入不相干清單失敗（'
+      + escHtml((e && e.message) || '未知錯誤') + '）。</div>';
+  }
+}
+
 function topicPatentsTableHtml(data) {
   const items = data.items || [];
   if (items.length === 0) return '<div class="hint">此主題尚無指派的專利。</div>';
@@ -3376,6 +3585,17 @@ function hasRunningTopicLabel(workspaceId, sourceField) {
     && ['queued', 'running'].includes(t.status)
     && t.workspace_id === workspaceId
     && (!sourceField || !t.payload || t.payload.source_field === sourceField));
+}
+
+// 該 workspace 是否有進行中的 AI 不相干篩選 job。
+// 2026-07-27 起改手動觸發（POST /workspaces/{id}/irrelevant-filter），
+// 按鈕狀態同樣以後端 job 推導，切頁／F5 後仍正確顯示「AI 篩選中…」。
+function hasRunningIrrelevantFilter(workspaceId) {
+  if (workspaceId === null || workspaceId === undefined) return false;
+  return taskListCache.some(t =>
+    t.job_type === 'ai:irrelevant_filter'
+    && ['queued', 'running'].includes(t.status)
+    && t.workspace_id === workspaceId);
 }
 
 function renderTaskList(tasks) {

@@ -89,14 +89,19 @@ class WorkspaceExcludedPatentsMigrationTests(unittest.TestCase):
         ).fetchone()[0]
 
     def test_columns(self):
-        """欄位定版為最小口徑；excluded_at 為 timestamptz。"""
+        """0035 最小口徑四欄仍在；excluded_at 為 timestamptz。
+
+        ⚠ 這裡驗子集不驗相等：0036 另加 status/source/ai_verdict 三欄（複核狀態），
+        全表欄位定版由 test_exclusion_review_status_migration.py 負責。本測試只確保
+        0035 的最小口徑不被後續 migration 移除或改型。
+        """
         with psycopg.connect(**_kw(TEST_DB)) as c:
             rows = c.execute(
                 "SELECT column_name, data_type FROM information_schema.columns "
                 "WHERE table_schema='derived_layer' AND table_name='workspace_excluded_patents'"
             ).fetchall()
         cols = {r[0]: r[1] for r in rows}
-        self.assertEqual(set(cols), EXPECTED_COLUMNS)
+        self.assertTrue(EXPECTED_COLUMNS.issubset(set(cols)))
         self.assertEqual(cols["excluded_at"], "timestamp with time zone")
 
     def test_composite_pk_dedupes(self):

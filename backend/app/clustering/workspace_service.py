@@ -1176,6 +1176,25 @@ def _create_incremental_run(*, latest: dict[str, Any], new_document_count: int) 
     )
 
 
+def _nearest_active_topic_code(
+    vector: Any,
+    active_centers: dict[str, Any],
+) -> str | None:
+    """回傳 centroid 距離 vector 最近的 active 主題 topic_code；無 active 主題時回 None。
+
+    用於增量指派的 fallback：模型吐出的 model topic ID 已不在 active 清單時
+    （使用者合併或停用該主題後），依向量距離改派到最接近的現存主題。
+    回 None 時由呼叫端決定如何處理，不在此塞假 topic_key。
+    """
+    if not active_centers:
+        return None
+    point = np.asarray(vector, dtype=float)
+    return min(
+        active_centers,
+        key=lambda code: float(np.linalg.norm(point - np.asarray(active_centers[code], dtype=float))),
+    )
+
+
 def _persist_incremental_assignments(
     *,
     run_id: int,
@@ -1185,7 +1204,7 @@ def _persist_incremental_assignments(
     reduced: ReducedEmbeddingMatrix,
     predicted_topics: list[int],
 ) -> int:
-    """把本批模型 topic 映射到永久 topic；未知 ID 進未分類系統桶。
+    """把本批模型 topic 映射到永久 topic；未知 ID 改派 centroid 最近的 active 主題。
 
     0021：指派落 derived_layer.topic_assignments，topic_key＝topic_code；
     模型 ID 與 topic_code 的對應來自最新 state 的 topics.model_topic_ids。
@@ -1198,29 +1217,34 @@ def _persist_incremental_assignments(
     }
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
         with conn.cursor() as cur:
-            run = _require_latest_state_run(
+            _require_latest_state_run(
                 cur, workspace_id=workspace_id, source_field=source_field)
-            # 未知模型 ID 一律進未分類桶；沒有未分類主題時直接 raise，不塞假 topic_key
-            fallback_code = next(
-                (
-                    str(topic["topic_code"])
-                    for topic in _state_topics(run)
-                    if topic.get("topic_kind") in {"unclassified", "other"}
-                    and topic.get("status", "active") == "active"
-                ),
-                None,
-            )
-            if fallback_code is None:
-                raise ValueError(
-                    "workspace source has no active unclassified topic for new documents")
             vectors = np.asarray(reduced.vectors, dtype=float)
             centers = {
                 topic_id: vectors[[i for i, value in enumerate(predicted_topics) if value == topic_id]].mean(axis=0)
                 for topic_id in set(predicted_topics)
             }
+            # 2026-07-27：移除未分類桶後，未知 model topic ID 改以 centroid 最近的 active
+            # 主題承接。MiniBatchKMeans 不產生 outlier，未知 ID 只在使用者合併／停用主題後
+            # 出現（模型仍吐舊 ID，但該 ID 已不在 active 清單）——這些專利本就該歸到合併後
+            # 的主題，塞「未分類」反而失真。
+            # active 主題的 centroid 以本批同 code 的成員均值代表；本批沒有該 code 的成員時
+            # 該主題不參與比較（無從得知其位置），屬正常情形。
+            active_centers: dict[str, Any] = {}
+            for model_topic_id, center in centers.items():
+                code = model_to_code.get(model_topic_id)
+                if code is not None:
+                    active_centers[code] = center
             rows = []
             for index, model_topic_id in enumerate(predicted_topics):
-                topic_key = model_to_code.get(model_topic_id, fallback_code)
+                topic_key = model_to_code.get(model_topic_id)
+                if topic_key is None:
+                    topic_key = _nearest_active_topic_code(vectors[index], active_centers)
+                if topic_key is None:
+                    # 全批都對不到 active 主題（例：主題全被停用）。不塞假 topic_key，
+                    # 直接 raise 讓呼叫端顯示錯誤，語意與原「找不到未分類桶」一致。
+                    raise ValueError(
+                        "workspace source has no active topic to receive new documents")
                 distance = float(np.linalg.norm(vectors[index] - centers[model_topic_id]))
                 rows.append((run_id, corpus.patent_ids[index], topic_key, distance))
             cur.executemany(

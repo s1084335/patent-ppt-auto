@@ -76,6 +76,7 @@ ANALYSIS_MEMBER_SUBQUERY = """
               SELECT 1 FROM derived_layer.workspace_excluded_patents ex
               WHERE ex.workspace_id = w.workspace_id
                 AND ex.patent_id = member.patent_id
+                AND ex.status = 'excluded'
           )
       )
 """
@@ -924,24 +925,10 @@ def _persist_final_topics(
             "display_order": position,
             "status": "active",
         })
-    # 系統桶是正式 UI 選項，但不占模型 topic_count，也沒有 model topic ID。
-    for offset, (topic_code, topic_kind, label) in enumerate(
-        (("UNCLASSIFIED", "unclassified", "未分類"), ("OTHER", "other", "其他")),
-        start=len(topic_ids) + 1,
-    ):
-        topic_dicts.append({
-            "topic_id": offset,
-            "topic_code": topic_code,
-            "source_field": source_field,
-            "created_run_id": run_id,
-            "model_topic_ids": [],
-            "topic_kind": topic_kind,
-            "doc_count": 0,
-            "label": label,
-            "label_source": "fallback",
-            "display_order": offset,
-            "status": "active",
-        })
+    # 2026-07-27：移除「未分類」「其他」兩個系統桶（使用者定案）。
+    # 初始與增量都用 MiniBatchKMeans（model.py 的 hdbscan_model 參數實際塞 KMeans），
+    # 每個點必被指派到最近中心，不存在 HDBSCAN 的 -1 outlier——兩桶 doc_count 恆為 0，
+    # 對使用者是純雜訊。剔除語意改由 workspace_excluded_patents 的「不相干」桶承接（0036）。
 
     assignment_rows = [
         (corpus.patent_ids[index], code_by_model_id[topic_id], distances[index])

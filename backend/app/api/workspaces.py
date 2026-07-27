@@ -25,8 +25,15 @@ from pydantic import BaseModel, Field
 
 from backend.app import settings
 from backend.app.app_layer import workspace_compose, workspace_create, workspace_queries
-from backend.app.clustering.exclusions import exclude_patents
+from backend.app.clustering.exclusions import (
+    confirm_exclusions,
+    exclude_patents,
+    excluded_patent_rows,
+    keep_patents,
+    pending_reviews,
+)
 from backend.app.db import workspace_document_store
+from backend.app.db.job_repository import create_job
 from backend.app.db.connection import get_connection_kwargs
 from backend.app.importers.import_paths import DOCUMENT_SUFFIXES, validate_web_filename
 
@@ -142,6 +149,83 @@ def exclude_workspace_patents(
         count = exclude_patents(workspace_id, entries, conn=conn)
         conn.commit()
     return {"workspace_id": workspace_id, "excluded_count": count}
+
+
+@router.post("/workspaces/{workspace_id}/irrelevant-filter")
+def trigger_irrelevant_filter(workspace_id: int) -> dict[str, Any]:
+    """手動觸發 AI 不相干篩選（2026-07-27 定案：改手動，原自動接續已撤回）。
+
+    建一筆 ai:irrelevant_filter job 交由 Companion 領走；runner 取每主題 c-TF-IDF 最低
+    N 筆逐筆判讀，結果落 status='pending' 待使用者以「保留／確定」裁決
+    （見 clustering.exclusions.store_ai_verdicts）。回 job_id 供前端追蹤進度。
+    """
+    job_id = create_job(
+        "ai:irrelevant_filter",
+        {"workspace_id": workspace_id},
+        workspace_id=workspace_id,
+    )
+    return {"workspace_id": workspace_id, "job_id": job_id}
+
+
+@router.get("/workspaces/{workspace_id}/exclusion-reviews")
+def list_exclusion_reviews(workspace_id: int) -> dict[str, Any]:
+    """列出待複核清單（AI 判讀為不相干、尚未裁決者）。
+
+    ⚠ 只回 status='pending'：這些專利仍留在原主題、仍參與分析，等使用者裁決。
+    已確定排除者不在此清單（它們已在「不相干」桶）。
+    """
+    items = pending_reviews(workspace_id)
+    return {"workspace_id": workspace_id, "items": items}
+
+
+@router.get("/workspaces/{workspace_id}/excluded-patents")
+def list_excluded_patents(workspace_id: int) -> dict[str, Any]:
+    """列出「不相干」桶內容（已確定排除者）。
+
+    人工剔除與 AI 判讀經使用者確定者都在此（2026-07-27 定案：兩種來源同一個桶）。
+    帶 source 供前端區分來源。待複核（pending）不在此清單，走 exclusion-reviews。
+    """
+    items = excluded_patent_rows(workspace_id)
+    return {"workspace_id": workspace_id, "items": items}
+
+
+class ExclusionReviewDecisionRequest(BaseModel):
+    """複核裁決請求：一次可裁決多筆（前端支援批次勾選）。"""
+
+    patent_ids: list[int] = Field(min_length=1)
+
+
+@router.post("/workspaces/{workspace_id}/exclusion-reviews/keep")
+def keep_exclusion_reviews(
+    workspace_id: int, request: ExclusionReviewDecisionRequest
+) -> dict[str, Any]:
+    """使用者按「保留」：該筆留在原主題，從待複核清單移除（刪列）。
+
+    topic_assignments 不動——pending 階段從未移除指派，保留即維持現狀。
+    """
+    import psycopg
+
+    with psycopg.connect(**get_connection_kwargs()) as conn:
+        count = keep_patents(workspace_id, request.patent_ids, conn=conn)
+        conn.commit()
+    return {"workspace_id": workspace_id, "kept_count": count}
+
+
+@router.post("/workspaces/{workspace_id}/exclusion-reviews/confirm")
+def confirm_exclusion_reviews(
+    workspace_id: int, request: ExclusionReviewDecisionRequest
+) -> dict[str, Any]:
+    """使用者按「確定」：歸類到「不相干」（pending → excluded）並移除 topic_assignments。
+
+    確定後該筆不再參與分群與統計（analysis_member_patent_ids 扣除），
+    與人工剔除（exclude-patents）同在「不相干」桶呈現。不重跑分群。
+    """
+    import psycopg
+
+    with psycopg.connect(**get_connection_kwargs()) as conn:
+        count = confirm_exclusions(workspace_id, request.patent_ids, conn=conn)
+        conn.commit()
+    return {"workspace_id": workspace_id, "confirmed_count": count}
 
 
 class ComposeRequest(BaseModel):

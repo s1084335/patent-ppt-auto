@@ -32,6 +32,15 @@ from typing import Any, Iterable, Sequence
 from backend.app.db.connection import get_pool
 
 
+# 需要使用者裁決的 AI 判讀值（繁體中文，對齊
+# worker.ai_irrelevant_filter_runner.VALID_VERDICTS）。
+# 「相干」不寫入（本就留在原主題）、「無法判斷」不寫入（備註為空、無判讀依據），
+# 兩者寫進待複核清單只會製造無意義的待辦。
+# ⚠ 這裡刻意不 import runner 常數：clustering 層不依賴 worker 層（避免反向相依），
+#   改動時兩邊須同步——由 test_irrelevant_filter_persists_pending 的契約測試把關。
+REVIEWABLE_VERDICTS = frozenset({"不相干", "可疑"})
+
+
 @contextmanager
 def _conn_ctx(conn: Any | None):
     """統一連線來源：注入的 conn 直接用（不代管交易）；未注入時借連線池。"""
@@ -64,12 +73,16 @@ def _workspace_row(cur: Any, workspace_id: int) -> tuple[list[int], bool]:
 
 
 def excluded_patent_ids(workspace_id: int, *, conn: Any | None = None) -> set[int]:
-    """讀某 workspace 的排除 patent_id 集合（供扣除；順序無關故回 set）。"""
+    """讀某 workspace 的**已確定**排除 patent_id 集合（供扣除；順序無關故回 set）。
+
+    ⚠ 只回 status='excluded'。AI 判讀落 status='pending'（草稿、待人工裁決），
+    不在此回傳、不影響任何分析——這是「AI 不決定正式資料」的護欄（0036）。
+    """
     with _conn_ctx(conn) as active:
         with active.cursor() as cur:
             cur.execute(
                 "SELECT patent_id FROM derived_layer.workspace_excluded_patents "
-                "WHERE workspace_id = %s",
+                "WHERE workspace_id = %s AND status = 'excluded'",
                 (workspace_id,),
             )
             rows = cur.fetchall()
@@ -89,9 +102,10 @@ def analysis_member_patent_ids(workspace_id: int, *, conn: Any | None = None) ->
             if is_global:
                 # 全庫不扣除——同一 patent_id 在特定 ws 被排除、在全庫仍照常參與。
                 return member_ids
+            # 只扣 status='excluded'；pending（AI 判讀草稿）照常參與分析。
             cur.execute(
                 "SELECT patent_id FROM derived_layer.workspace_excluded_patents "
-                "WHERE workspace_id = %s",
+                "WHERE workspace_id = %s AND status = 'excluded'",
                 (workspace_id,),
             )
             excluded = {
@@ -111,6 +125,218 @@ def display_member_patent_ids(workspace_id: int, *, conn: Any | None = None) -> 
         with active.cursor() as cur:
             member_ids, _is_global = _workspace_row(cur, workspace_id)
     return member_ids
+
+
+def _delete_assignments(cur: Any, workspace_id: int, patent_ids: list[int]) -> None:
+    """移除指定專利在本 workspace 各通道的 topic_assignments。
+
+    ⚠ 只刪 assignment，不動 model artifact、不重算 distance_to_centroid——「不重跑分群」
+    的關鍵。assignments 經 topic_runs → workflow_runs 歸屬到 workspace，故以子查詢定位。
+    人工剔除與 AI 判讀確定排除共用此函式（兩條路徑的「歸到不相干」語意相同）。
+    """
+    if not patent_ids:
+        return
+    cur.execute(
+        """
+        DELETE FROM derived_layer.topic_assignments ta
+        USING derived_layer.topic_runs tr,
+              app_layer.workflow_runs wr
+        WHERE ta.run_id = tr.run_id
+          AND tr.workflow_run_id = wr.run_id
+          AND wr.workspace_id = %s
+          AND ta.patent_id = ANY(%s)
+        """,
+        (workspace_id, patent_ids),
+    )
+
+
+def store_ai_verdicts(
+    workspace_id: int,
+    results: Iterable[dict[str, Any]],
+    *,
+    conn: Any | None = None,
+) -> int:
+    """把 ai:irrelevant_filter 的逐筆判讀落為**待複核草稿**（status='pending'）。
+
+    results＝runner 回傳的 results 序列，每筆需含 patent_id，可含 verdict／reason。
+
+    ⚠ verdict 為**繁體中文三分**（ai_irrelevant_filter_runner.VALID_VERDICTS：
+    「相干」「可疑」「不相干」），另有程式判定的「無法判斷」（備註為空）。
+    只寫入需要使用者裁決者——「不相干」與「可疑」；「相干」本就該留在原主題、
+    「無法判斷」沒有判讀依據，兩者寫進來只會製造無意義的待辦。
+
+    ⚠ 一律寫 status='pending'、source='ai'：AI 寫得進 pending，寫不進 excluded。
+    正式排除必須經使用者按「確定」（confirm_exclusions）——這是 workflows.md
+    「AI 只輔助、不決定正式資料」在本流程的落實。
+
+    ⚠ 不覆蓋已裁決者：ON CONFLICT 只在既有列仍為 'pending' 時更新（WHERE 子句），
+    已 excluded 的列保持原狀——重跑判讀不得把使用者的決定打回草稿。
+    「保留」的專利不在表中（keep_patents 直接刪列），會被重新判讀一次；這是可接受的，
+    因為重跑通常伴隨重新分群，前次保留的判斷未必仍適用。
+
+    不自行 commit：交易邊界交由呼叫端（與 exclude_patents 一致）。回傳實際寫入筆數。
+    """
+    rows = []
+    for item in results:
+        pid = item.get("patent_id")
+        if pid is None:
+            continue
+        verdict = str(item.get("verdict") or "").strip()
+        if verdict not in REVIEWABLE_VERDICTS:
+            continue
+        rows.append((int(pid), verdict, str(item.get("reason") or "").strip() or None))
+    if not rows:
+        return 0
+    # 一次 executemany 批次寫入，不逐筆往返——AI 判讀動輒數十上百筆。
+    with _conn_ctx(conn) as active:
+        with active.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO derived_layer.workspace_excluded_patents "
+                "(workspace_id, patent_id, reason, status, source, ai_verdict) "
+                "VALUES (%s, %s, %s, 'pending', 'ai', %s) "
+                "ON CONFLICT (workspace_id, patent_id) DO UPDATE SET "
+                "    reason = EXCLUDED.reason, "
+                "    ai_verdict = EXCLUDED.ai_verdict, "
+                "    excluded_at = now() "
+                "WHERE derived_layer.workspace_excluded_patents.status = 'pending'",
+                [(workspace_id, pid, reason, verdict) for pid, verdict, reason in rows],
+            )
+    return len(rows)
+
+
+def pending_reviews(workspace_id: int, *, conn: Any | None = None) -> list[dict[str, Any]]:
+    """列出待複核清單（status='pending'），供前端逐筆呈現「保留／確定」。
+
+    回傳依 patent_id 排序的 dict 序列，含 patent_id／ai_verdict／reason／excluded_at
+    （excluded_at 在 pending 階段代表判讀時間）。走 0036 的部分索引，不全表掃。
+    """
+    with _conn_ctx(conn) as active:
+        with active.cursor() as cur:
+            cur.execute(
+                "SELECT patent_id, ai_verdict, reason, excluded_at "
+                "FROM derived_layer.workspace_excluded_patents "
+                "WHERE workspace_id = %s AND status = 'pending' "
+                "ORDER BY patent_id",
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+    result = []
+    for row in rows:
+        if isinstance(row, dict):
+            result.append({
+                "patent_id": int(row["patent_id"]),
+                "ai_verdict": row["ai_verdict"],
+                "reason": row["reason"],
+                "reviewed_at": row["excluded_at"],
+            })
+        else:
+            result.append({
+                "patent_id": int(row[0]),
+                "ai_verdict": row[1],
+                "reason": row[2],
+                "reviewed_at": row[3],
+            })
+    return result
+
+
+def excluded_patent_rows(workspace_id: int, *, conn: Any | None = None) -> list[dict[str, Any]]:
+    """列出「不相干」桶的內容（status='excluded'），供前端檢視。
+
+    人工剔除（source='manual'）與 AI 判讀經使用者確定（source='ai'）者都在此——
+    2026-07-27 使用者定案：兩種來源最終都要出現在「不相干」標籤。
+    帶 source 供前端區分來源、ai_verdict 供追溯 AI 原始判定。
+    與 excluded_patent_ids 分開：那條回 set 供扣除運算，這條回完整列供顯示。
+    """
+    with _conn_ctx(conn) as active:
+        with active.cursor() as cur:
+            cur.execute(
+                "SELECT patent_id, source, reason, ai_verdict, excluded_at "
+                "FROM derived_layer.workspace_excluded_patents "
+                "WHERE workspace_id = %s AND status = 'excluded' "
+                "ORDER BY patent_id",
+                (workspace_id,),
+            )
+            rows = cur.fetchall()
+    result = []
+    for row in rows:
+        if isinstance(row, dict):
+            result.append({
+                "patent_id": int(row["patent_id"]),
+                "source": row["source"],
+                "reason": row["reason"],
+                "ai_verdict": row["ai_verdict"],
+                "excluded_at": row["excluded_at"],
+            })
+        else:
+            result.append({
+                "patent_id": int(row[0]),
+                "source": row[1],
+                "reason": row[2],
+                "ai_verdict": row[3],
+                "excluded_at": row[4],
+            })
+    return result
+
+
+def confirm_exclusions(
+    workspace_id: int,
+    patent_ids: Iterable[int],
+    *,
+    conn: Any | None = None,
+) -> int:
+    """使用者按「確定」：pending → excluded，並移除 topic_assignments（歸到「不相干」）。
+
+    ⚠ source 保持原值（不改寫成 'manual'）：供追溯這筆是 AI 建議後經人工確認，
+    還是人工自行發起——AI 原始輸出與人工覆核結果分欄存放。
+    只影響 status='pending' 的列；已 excluded 者為 no-op（重複按不重複扣）。
+
+    不自行 commit：交易邊界交由呼叫端。回傳實際確定的筆數。
+    """
+    ids = [int(pid) for pid in patent_ids]
+    if not ids:
+        return 0
+    with _conn_ctx(conn) as active:
+        with active.cursor() as cur:
+            cur.execute(
+                "UPDATE derived_layer.workspace_excluded_patents "
+                "SET status = 'excluded', excluded_at = now() "
+                "WHERE workspace_id = %s AND patent_id = ANY(%s) AND status = 'pending'",
+                (workspace_id, ids),
+            )
+            confirmed = cur.rowcount
+            # 確定排除＝移出本 workspace 分析，與人工剔除同樣移除指派（不重跑分群）。
+            _delete_assignments(cur, workspace_id, ids)
+    return confirmed
+
+
+def keep_patents(
+    workspace_id: int,
+    patent_ids: Iterable[int],
+    *,
+    conn: Any | None = None,
+) -> int:
+    """使用者按「保留」：直接刪列——保留＝不在排除清單上，留在原主題。
+
+    ⚠ 不留第三種 status='kept'：保留的語意就是「不在排除清單內」，另立狀態會讓每個
+    查排除清單的地方都要多一個過濾條件，且與複合 PK「一列＝一個排除決定」的語意衝突。
+    topic_assignments 不動——該專利本就還在原主題（pending 階段從未移除指派）。
+
+    只刪 status='pending' 的列：已確定排除者要放回需走復原流程（另案），
+    避免「保留」誤按把已確定的排除決定悄悄撤銷。
+
+    不自行 commit：交易邊界交由呼叫端。回傳實際保留（刪列）的筆數。
+    """
+    ids = [int(pid) for pid in patent_ids]
+    if not ids:
+        return 0
+    with _conn_ctx(conn) as active:
+        with active.cursor() as cur:
+            cur.execute(
+                "DELETE FROM derived_layer.workspace_excluded_patents "
+                "WHERE workspace_id = %s AND patent_id = ANY(%s) AND status = 'pending'",
+                (workspace_id, ids),
+            )
+            return cur.rowcount
 
 
 def exclude_patents(
@@ -149,31 +375,23 @@ def exclude_patents(
     with _conn_ctx(conn) as active:
         with active.cursor() as cur:
             # 1. 回寫排除表（可追溯、可反悔）；ON CONFLICT 更新理由與時間。
+            #    明確寫 status='excluded'、source='manual'：人工剔除即為確定排除，
+            #    若該筆原為 AI 判讀的 pending，這裡直接升級為已確定（人工裁決優先）。
             for pid, reason in rows:
                 cur.execute(
                     "INSERT INTO derived_layer.workspace_excluded_patents "
-                    "(workspace_id, patent_id, reason) VALUES (%s, %s, %s) "
+                    "(workspace_id, patent_id, reason, status, source) "
+                    "VALUES (%s, %s, %s, 'excluded', 'manual') "
                     "ON CONFLICT (workspace_id, patent_id) "
-                    "DO UPDATE SET reason = EXCLUDED.reason, excluded_at = now()",
+                    "DO UPDATE SET reason = EXCLUDED.reason, excluded_at = now(), "
+                    "              status = 'excluded', source = 'manual'",
                     (workspace_id, pid, reason),
                 )
                 written += 1
 
             # 2. 移除該筆在本 workspace 的 topic_assignments（⚠ 不碰 artifact／不重算距離）。
-            #    assignments 經 topic_runs → workflow_runs 歸屬到 workspace，故以子查詢定位。
             if remove_assignments:
-                cur.execute(
-                    """
-                    DELETE FROM derived_layer.topic_assignments ta
-                    USING derived_layer.topic_runs tr,
-                          app_layer.workflow_runs wr
-                    WHERE ta.run_id = tr.run_id
-                      AND tr.workflow_run_id = wr.run_id
-                      AND wr.workspace_id = %s
-                      AND ta.patent_id = ANY(%s)
-                    """,
-                    (workspace_id, patent_ids),
-                )
+                _delete_assignments(cur, workspace_id, patent_ids)
 
             # 3. 從 workspaces.patent_ids_json 移出被剔除的 id（保留其餘順序）。
             if remove_from_member_ids:
