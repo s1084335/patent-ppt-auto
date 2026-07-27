@@ -75,12 +75,19 @@ AI_JOB_TYPES: frozenset[str] = frozenset(
 )
 
 # 合法工作類型（DB 不設 run_type check；backend 建立時由此白名單驗證）。
-# 佇列亦承載 topic_merge/topic_unmerge（由 PostgresTopicRepository 直接寫入，不經 create_job）。
 JOB_TYPES: frozenset[str] = frozenset(
     {
         "clustering_calibrate",
         "clustering_finalize",
         "clustering_incremental",
+        # 主題人工合併／解除合併：由 PostgresTopicRepository 直接寫佇列（不經 create_job），
+        # 但仍**必須列在此**——worker 的 DEFAULT_WORKER_JOB_TYPES 由本常數推導，
+        # 漏列就沒有任何 worker 會領，job 永遠卡 queued。
+        # ⚠ 2026-07-27 實機踩到：使用者按「合併兩主題」→ job 97 建起來卻從沒被領走，
+        #   兩個主題原封不動，但「合併歷史」照樣列出並提供「解除合併」鈕，看似成功。
+        #   原註解只說「佇列亦承載」卻沒把它們放進白名單——說明與實作不一致。
+        "topic_merge",
+        "topic_unmerge",
         "report_generate",
         "patent_import",
         "case_comparison",

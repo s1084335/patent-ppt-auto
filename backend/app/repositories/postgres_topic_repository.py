@@ -217,12 +217,23 @@ class PostgresTopicRepository:
     def list_merge_history(
         self, workspace_id: int, source_field: str
     ) -> list[MergeHistoryItem]:
-        """由 topic_merge/unmerge run 組裝合併歷史；被對應 topic_unmerge 引用者 can_unmerge=False。"""
+        """由 topic_merge/unmerge run 組裝合併歷史，並反映 job 真實狀態。
+
+        can_unmerge=False 的兩種情形：
+        1. 已被對應的 topic_unmerge 引用（already_unmerged）。
+        2. **該 merge job 尚未成功**（2026-07-27 修）——queued／running 表示還沒合併、
+           failed 表示合併沒發生，都不該提供「解除合併」。
+
+        ⚠ 原實作撈所有 topic_merge run、**完全不看 status**，實機踩到：job 97 永遠
+        queued（當時沒 worker 領），兩個主題原封不動，畫面卻顯示合併完成＋可解除。
+        「歷史」的語意是已經發生的事；未完成者仍列出（使用者按了要有回饋），
+        但明確標示狀態、不給解除鈕。
+        """
         try:
             with self._connect() as conn:
                 self._assert_workspace_exists(conn, workspace_id)
                 merges = conn.execute(
-                    "SELECT run_id, request_json FROM app_layer.workflow_runs "
+                    "SELECT run_id, request_json, status FROM app_layer.workflow_runs "
                     "WHERE workspace_id = %s AND run_type = 'topic_merge' "
                     "AND request_json->>'source_field' = %s ORDER BY run_id",
                     (workspace_id, source_field),
@@ -237,18 +248,29 @@ class PostgresTopicRepository:
                     ).fetchall()
                 }
             items: list[MergeHistoryItem] = []
-            for run_id, req in merges:
+            for run_id, req, status in merges:
                 req = req or {}
                 source_topics = list(req.get("topic_keys") or [])
-                # 合併採「併入第一個 key」慣例；worker 尚未執行，以來源首鍵為結果主題顯示
+                # 合併採「併入第一個 key」慣例，結果主題即來源首鍵。
                 result_topic = source_topics[0] if source_topics else ""
-                can_unmerge = run_id not in unmerged
+                # 只有真正跑完的合併才可解除；未完成者列出但不給解除鈕（見 docstring）。
+                if status != "succeeded":
+                    can_unmerge = False
+                    blocked_reason = (
+                        "merge_failed" if status == "failed" else "merge_in_progress")
+                elif run_id in unmerged:
+                    can_unmerge = False
+                    blocked_reason = "already_unmerged"
+                else:
+                    can_unmerge = True
+                    blocked_reason = None
                 items.append(MergeHistoryItem(
                     merge_run_id=run_id,
                     source_topics=source_topics,
                     result_topic=result_topic,
+                    status=status,
                     can_unmerge=can_unmerge,
-                    blocked_reason=None if can_unmerge else "already_unmerged",
+                    blocked_reason=blocked_reason,
                 ))
             return items
         except psycopg.Error as exc:

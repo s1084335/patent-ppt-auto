@@ -96,12 +96,15 @@ class FakeMergeHistoryItem:
     result_topic: str
     can_unmerge: bool
     blocked_reason: str | None
+    # 2026-07-27：合併歷史帶 job 真實狀態，未完成者不得顯示為已完成。
+    status: str = "succeeded"
 
     def to_dict(self) -> MergeHistoryItem:
         return MergeHistoryItem(
             merge_run_id=self.merge_run_id,
             source_topics=self.source_topics,
             result_topic=self.result_topic,
+            status=self.status,
             can_unmerge=self.can_unmerge,
             blocked_reason=self.blocked_reason,
         )

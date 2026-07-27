@@ -30,6 +30,7 @@ from typing import Any
 from dotenv import load_dotenv
 from psycopg import OperationalError
 
+from backend.app.clustering.workspace_service import select_irrelevant_candidates
 from backend.app.db import job_repository
 
 from .job_context import JobCancelledError, JobContext
@@ -461,6 +462,21 @@ def _run_ai_report_ppt_job(payload: dict[str, Any], context: JobContext) -> dict
 
 # job_type → 執行函式。值存「函式名」而非函式物件，讓 execute_ai_job 在呼叫當下才解析到
 # 模組屬性——測試以 mock.patch.object 換掉 _run_ai_* 時才會生效（存物件會綁死原函式）。
+def _source_field_for_filter(payload: dict[str, Any]) -> str:
+    """決定不相干篩選要用哪個通道的主題來挑候選。
+
+    payload 明給就用；未給時預設技術通道——候選是「離主題中心最遠」的專利，
+    技術通道的主題結構直接反映技術領域，最適合判斷「這件是不是另一個產品類別」。
+    不對兩通道各跑一次：同一批專利會被判讀兩次、token 加倍，而判準（是否同一產品類別）
+    本來就與通道無關。使用者若要改用功效通道，前端可帶 source_field。
+    """
+    from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL, get_source_spec
+
+    source_field = str(payload.get("source_field") or SOURCE_FIELD_TECHNICAL)
+    get_source_spec(source_field)  # 非法值直接 raise，不默默 fallback
+    return source_field
+
+
 def _run_ai_irrelevant_filter_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
     """執行不相干篩選：逐筆判讀主題內低相似度專利的文獻備註。
 
@@ -480,19 +496,72 @@ def _run_ai_irrelevant_filter_job(payload: dict[str, Any], context: JobContext) 
     if workspace_id is None:
         raise ValueError("ai:irrelevant_filter payload requires workspace_id")
 
-    def _progress(stage: str, percent: int) -> None:
-        context.heartbeat("CLI 相干性判讀中", percent)
+    # 候選挑選（2026-07-27 補斷鏈）：原本這裡沒傳 candidates，runner 也不會自己挑，
+    # 導致 cand_list 恆空 → 走「無可判讀」early return → 回報 succeeded 但什麼都沒做
+    # （實機 job 96 只跑 4.6 秒、candidates:0）。
+    # 依主題分組，因為 prompt 要帶 topic_label 當「這件屬不屬於這個主題」的對照
+    # （2026-07-24 第 1 題定案），不同主題不能混批。
+    source_field = _source_field_for_filter(payload)
+    groups = select_irrelevant_candidates(
+        workspace_id=int(workspace_id), source_field=source_field)
+    if not groups:
+        # 尚未分群或各主題都小到取不出候選：不呼叫 CLI（不空燒 token）。
+        context.heartbeat("無可判讀的候選", 100)
+        return {
+            "workspace_id": int(workspace_id),
+            "source_field": source_field,
+            "candidates": 0,
+            "judged": 0,
+            "undecidable": 0,
+            "stored": 0,
+            "results": [],
+            "prompt_version": ai_irrelevant_filter_runner.PROMPT_VERSION,
+            "cli_kind": str(payload.get("cli_kind") or "claude"),
+        }
 
-    return ai_irrelevant_filter_runner.run_irrelevant_filter(
-        workspace_id=int(workspace_id),
-        cli_kind=str(payload.get("cli_kind") or "claude"),
-        model=payload.get("model") or None,
-        timeout_seconds=float(
-            payload.get("cli_timeout_seconds")
-            or ai_irrelevant_filter_runner.DEFAULT_CLI_TIMEOUT_SECONDS
-        ),
-        progress=_progress,
+    cli_kind = str(payload.get("cli_kind") or "claude")
+    timeout_seconds = float(
+        payload.get("cli_timeout_seconds")
+        or ai_irrelevant_filter_runner.DEFAULT_CLI_TIMEOUT_SECONDS
     )
+    total_groups = len(groups)
+    merged: dict[str, Any] = {
+        "workspace_id": int(workspace_id),
+        "source_field": source_field,
+        "candidates": 0,
+        "judged": 0,
+        "undecidable": 0,
+        "stored": 0,
+        "results": [],
+        "prompt_version": ai_irrelevant_filter_runner.PROMPT_VERSION,
+        "cli_kind": cli_kind,
+    }
+    for index, group in enumerate(groups):
+        base = 15 + int(80 * (index / total_groups))
+
+        def _progress(stage: str, percent: int, _base: int = base) -> None:
+            # 各主題內部 0→100 壓縮進本主題分到的進度區段，總進度單調不倒退。
+            context.heartbeat(
+                f"CLI 相干性判讀中（{_base}%）", min(95, _base + percent // total_groups))
+
+        # note 一律傳 None，由 runner 的 fetch_notes 補讀文獻備註
+        # （備註為空者 runner 自行標「無法判斷」、不進 prompt）。
+        summary = ai_irrelevant_filter_runner.run_irrelevant_filter(
+            workspace_id=int(workspace_id),
+            candidates=[(pid, None) for pid in group["patent_ids"]],
+            topic_label=group.get("topic_label"),
+            cli_kind=cli_kind,
+            model=payload.get("model") or None,
+            fetch_notes=ai_irrelevant_filter_runner.fetch_notes,
+            timeout_seconds=timeout_seconds,
+            progress=_progress,
+        )
+        for key in ("candidates", "judged", "undecidable", "stored"):
+            merged[key] += int(summary.get(key) or 0)
+        merged["results"].extend(summary.get("results") or [])
+
+    context.heartbeat("不相干篩選完成", 100)
+    return merged
 
 
 _AI_JOB_RUNNERS: dict[str, str] = {

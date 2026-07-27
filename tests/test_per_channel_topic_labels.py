@@ -66,5 +66,44 @@ class PerChannelTopicLabelTests(unittest.TestCase):
         self.assertIn("topic_label", item)
 
 
+class TopicColumnsSingleSourceTests(unittest.TestCase):
+    """所有列出專利的查詢函式都必須補主題欄，且共用同一份實作。
+
+    ⚠ 2026-07-27 第二次踩到：分通道欄位當初只加在 `list_workspace_patents`，
+    `list_topic_patents` 沒加——「全部」有值、點進單一主題後技術／功效兩欄全空。
+    同一份資料兩個查詢函式只改一個，是本專案反覆出現的斷鏈型態。
+
+    本測試不連 DB，以 AST 驗證每個列表函式都呼叫共用的 `_attach_topic_columns`，
+    不容許任何一個自己實作（自己實作＝下次又只改一邊）。
+    """
+
+    LIST_FUNCTIONS = ("list_workspace_patents", "list_topic_patents")
+
+    def test_all_list_functions_attach_topic_columns(self):
+        import ast
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "backend" / "app" / "app_layer" / "workspace_queries.py"
+        ).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for name in self.LIST_FUNCTIONS:
+            with self.subTest(function=name):
+                node = next(
+                    (n for n in ast.walk(tree)
+                     if isinstance(n, ast.FunctionDef) and n.name == name),
+                    None,
+                )
+                self.assertIsNotNone(node, f"找不到 {name}")
+                called = {
+                    c.func.id for c in ast.walk(node)
+                    if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                }
+                self.assertIn(
+                    "_attach_topic_columns", called,
+                    f"{name} 未呼叫 _attach_topic_columns → 該清單的技術／功效分類欄會全空")
+
+
 if __name__ == "__main__":
     unittest.main()

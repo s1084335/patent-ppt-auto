@@ -565,6 +565,9 @@ const state = {
   marketWorkspaceId: null,   // 市場上傳／產摘要目標 ws（新建時為新 ws id）
   nav: 'patents',
   patentsOffset: 0,
+  // 分類區專利清單的分頁位移（2026-07-27 使用者定：與總覽一致都要分頁）。
+  // 切換主題／通道／workspace 時歸零，否則會停在上一個主題的頁碼而顯示空白。
+  topicPatentsOffset: 0,
   browseOffset: 0,        // 瀏覽專利（跟隨選定 workspace）的分頁 offset
   topicFilterKey: null,   // 分類區選定的 topic_key（前端篩選用）
   // 分類區目前分頁的通道（技術／功效）；由 tab 切換，所有 topic 相關呼叫共用同一值。
@@ -701,6 +704,7 @@ function onWorkspaceChange() {
     state.workspaceId = v ? parseInt(v, 10) : null;
   }
   state.patentsOffset = 0;
+  state.topicPatentsOffset = 0;   // 換 workspace 兩份清單的頁碼都歸零
   state.topicFilterKey = null;
   renderMain();
 }
@@ -1157,6 +1161,7 @@ function switchTopicSource(sourceField) {
   if (state.topicSourceField === sourceField) return;
   state.topicSourceField = sourceField;
   state.topicFilterKey = null;
+  state.topicPatentsOffset = 0;   // 換通道＝換一組主題，頁碼必須歸零
   state.candidatePickId = null;
   state.candidatePickerOpen = false;
   renderTopics();
@@ -1772,6 +1777,28 @@ async function renderExclusionReviews() {
     + '</div>';
 }
 
+// 放回原主題（2026-07-27 使用者要求：預防後悔）：依排除當下存下的主題快照還原
+// 各通道 assignment（含原距離、不重跑分群），並移出排除清單、重新計入分析。
+async function restoreExcluded(patentId) {
+  if (!confirm('把這筆專利放回原主題？放回後會重新計入分群與報表統計。')) return;
+  try {
+    const resp = await fetch(API + '/workspaces/' + encodeURIComponent(state.workspaceId)
+      + '/excluded-patents/restore', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patent_ids: [patentId] }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('放回失敗：' + (err.detail || ('HTTP ' + resp.status)));
+      return;
+    }
+  } catch (e) {
+    alert('連線錯誤：' + e.message);
+    return;
+  }
+  await renderTopics();   // 主題件數與不相干桶都會變，整區重畫
+}
+
 // 單筆裁決：keep＝保留（刪待複核列）／confirm＝確定（→ excluded、移除指派）。
 async function decideExclusionReview(patentId, decision) {
   await postExclusionDecision([patentId], decision);
@@ -1983,6 +2010,24 @@ function mergeFromSuggestion(keyA, keyB) {
   queueTopicMerge([keyA, keyB], null, null);
 }
 // 合併歷史（GET /topics/merge-history）：can_unmerge 為真才可還原，否則顯示 blocked_reason。
+// 合併狀態的可讀文字。後端 2026-07-27 起帶 status；舊資料無此欄時視為已完成
+// （相容既有紀錄，不讓歷史整片變「未知」）。
+function mergeStatusText(h) {
+  const map = {
+    succeeded: '已完成', queued: '排隊中', running: '處理中',
+    failed: '失敗', cancelled: '已取消',
+  };
+  return map[h.status] || (h.status ? h.status : '已完成');
+}
+// 不可解除合併的原因文字：區分「還沒合併」與「已經解除過」，兩者意義完全不同。
+function mergeBlockedText(h) {
+  const map = {
+    merge_in_progress: '合併尚未完成',
+    merge_failed: '合併失敗，未生效',
+    already_unmerged: '已解除過',
+  };
+  return map[h.blocked_reason] || h.blocked_reason || '不可還原';
+}
 async function loadMergeHistory() {
   const wrap = el('topic-merge-history');
   if (!wrap) return;
@@ -1996,15 +2041,19 @@ async function loadMergeHistory() {
       + '<td>' + escHtml(h.merge_run_id) + '</td>'
       + '<td style="white-space:normal">' + escHtml((h.source_topics || []).join(' , ')) + '</td>'
       + '<td>' + escHtml(h.result_topic) + '</td>'
+      + '<td>' + escHtml(mergeStatusText(h)) + '</td>'
       + '<td>' + (h.can_unmerge
         ? '<button class="btn btn-outline" onclick="submitTopicUnmerge(' + escHtml(h.merge_run_id) + ')">解除合併</button>'
-        : '<span class="flag-no">' + escHtml(h.blocked_reason || '不可還原') + '</span>')
+        : '<span class="flag-no">' + escHtml(mergeBlockedText(h)) + '</span>')
       + '</td>'
       + '</tr>'
     ).join('');
+    // 狀態文字：未完成的合併不能看起來像已完成（2026-07-27 實機踩到 job 97 永遠
+    // queued，畫面卻顯示合併好了還能解除）。
     wrap.innerHTML = '<div class="card"><div style="font-weight:600;margin-bottom:0.6rem">合併歷史</div>'
       + '<div class="table-wrap"><table class="data">'
-      + '<thead><tr><th>merge_run_id</th><th>來源主題</th><th>合併後主題</th><th></th></tr></thead>'
+      + '<thead><tr><th>merge_run_id</th><th>來源主題</th><th>合併後主題</th>'
+      + '<th>狀態</th><th></th></tr></thead>'
       + '<tbody>' + rows + '</tbody></table></div></div>';
   } catch (e) {
     wrap.innerHTML = '<div class="card">合併歷史載入失敗（' + escHtml(e.message) + '）。</div>';
@@ -2088,7 +2137,18 @@ function renderTopicOverview() {
 // renderTopics() 會 await fetchTasks() 並重抓主題，點一次標籤就多打兩支 API 且整區閃爍。
 function onTopicTag(key) {
   state.topicFilterKey = key;
+  state.topicPatentsOffset = 0;      // 換主題一律回第一頁，不沿用上一個主題的頁碼
   renderTopicTags(topicListCache);   // 只更新標籤選取態；其內會續接概覽與清單
+}
+// 分類區專利清單翻頁（與總覽 pagePatents 同模式）。
+function pageTopicPatents(dir) {
+  // 「不相干」桶一次全列（自成表格、量小），沒有翻頁鈕也不該被翻頁影響。
+  if (state.topicFilterKey === IRRELEVANT_KEY) return;
+  const next = (state.topicPatentsOffset || 0) + dir * PATENTS_PAGE_SIZE;
+  if (next < 0) return;
+  state.topicPatentsOffset = next;
+  if (state.topicFilterKey === null) loadAllWorkspacePatents();
+  else loadTopicAssignedPatents(state.topicFilterKey);
 }
 // 「全部」：沿用總覽查詢列出 workspace 全部專利（含所屬主題欄）。
 async function loadAllWorkspacePatents() {
@@ -2097,8 +2157,12 @@ async function loadAllWorkspacePatents() {
   wrap.innerHTML = '<div class="hint">載入中…</div>';
   try {
     const data = await getJson(API + '/workspaces/' + state.workspaceId
-      + '/patents?limit=' + PATENTS_PAGE_SIZE + '&offset=0');
-    wrap.innerHTML = patentsTableHtml(data);
+      + '/patents?limit=' + PATENTS_PAGE_SIZE
+      + '&offset=' + (state.topicPatentsOffset || 0));
+    // 用 topicPatentsTableHtml 而非 patentsTableHtml：分類區的「全部」也要翻頁鈕，
+    // 且要與主題清單共用同一組 pageTopicPatents（原本這裡固定 offset=0、無翻頁）。
+    // scope='topics'：這裡是「全部」，仍要顯示「所屬主題」欄。
+    wrap.innerHTML = topicPatentsTableHtml(data, 'topics');
   } catch (e) {
     wrap.innerHTML = '<div class="hint">載入失敗（' + escHtml(e.message) + '）。</div>';
   }
@@ -2109,7 +2173,7 @@ async function loadTopicAssignedPatents(topicKey) {
   if (!wrap) return;
   wrap.innerHTML = '<div class="hint">載入中…</div>';
   const qs = 'source_field=' + encodeURIComponent(state.topicSourceField)
-    + '&limit=' + PATENTS_PAGE_SIZE + '&offset=0';
+    + '&limit=' + PATENTS_PAGE_SIZE + '&offset=' + (state.topicPatentsOffset || 0);
   try {
     const data = await getJson(API + '/workspaces/' + state.workspaceId
       + '/topics/' + encodeURIComponent(topicKey) + '/patents?' + qs);
@@ -2163,6 +2227,10 @@ async function loadExcludedPatents() {
     }
     const rows = items.map(it =>
       '<tr>'
+      + '<td class="nowrap">'
+      // 放回原主題（2026-07-27）：依排除當下的主題快照還原，含原距離、不重跑分群。
+      + '<button class="btn btn-outline btn-sm" onclick="restoreExcluded('
+      + it.patent_id + ')">放回原主題</button></td>'
       + '<td>' + escHtml(String(it.patent_id)) + '</td>'
       + '<td>' + (it.source === 'ai' ? 'AI 判定（已確認）' : '人工剔除') + '</td>'
       + '<td class="cell-long">' + escHtml(it.reason || '') + '</td>'
@@ -2173,7 +2241,7 @@ async function loadExcludedPatents() {
       + '這些專利已標為不相干，<strong>不計入分群與報表統計</strong>；'
       + '原始專利資料仍保留在資料庫中。</div>'
       + '<table class="table"><thead><tr>'
-      + '<th>專利 ID</th><th>來源</th><th>理由</th>'
+      + '<th>操作</th><th>專利 ID</th><th>來源</th><th>理由</th>'
       + '</tr></thead><tbody>' + rows + '</tbody></table>'
       + '<div class="pager"><span>共 ' + items.length + ' 件</span></div>'
       + '</div>';
@@ -2183,12 +2251,24 @@ async function loadExcludedPatents() {
   }
 }
 
-function topicPatentsTableHtml(data) {
+// scope：'topic'＝點進單一主題（不再顯示「所屬主題」欄）；'topics'＝分類區的「全部」。
+function topicPatentsTableHtml(data, scope) {
   const items = data.items || [];
   if (items.length === 0) return '<div class="hint">此主題尚無指派的專利。</div>';
   const total = data.total ?? items.length;
-  return patentTableHtml(data, 'topic')
-    + '<div class="pager"><span>共 ' + total + ' 件</span></div>';
+  // 分類區也要分頁（2026-07-27 使用者定：兩邊一致）。原本固定 offset=0、
+  // 只顯示「共 N 件」，主題超過 100 筆時後面的專利完全看不到、也沒有任何提示。
+  const off = data.offset ?? 0;
+  const from = total === 0 ? 0 : off + 1;
+  const to = off + items.length;
+  return patentTableHtml(data, scope || 'topic')
+    + '<div class="pager">'
+    + '<button class="btn btn-outline" ' + (off > 0 ? '' : 'disabled')
+    + ' onclick="pageTopicPatents(-1)">上一頁</button>'
+    + '<span>' + from + '–' + to + ' / 共 ' + total + ' 件</span>'
+    + '<button class="btn btn-outline" ' + (to < total ? '' : 'disabled')
+    + ' onclick="pageTopicPatents(1)">下一頁</button>'
+    + '</div>';
 }
 
 // ══════════ 報表種類勾選（POST /reports → GET /reports/{job_id} 輪詢） ══════════

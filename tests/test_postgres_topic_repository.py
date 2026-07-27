@@ -223,21 +223,41 @@ class UnmergeAndHistoryTests(unittest.TestCase):
     """queue_unmerge + list_merge_history：以自建 merge run 過濾，避免測試間汙染。"""
 
     def test_unmerge_happy_and_history_can_unmerge_flips(self):
+        """合併完成後才可解除；解除排程後 can_unmerge 轉 False。
+
+        ⚠ 2026-07-27 修正：本測試原本 queue_merge（狀態 queued）後就直接斷言
+        can_unmerge=True——那正是實機踩到的假訊號（job 97 永遠 queued，兩主題原封不動，
+        畫面卻顯示合併完成＋可解除）。合併尚未成功時不得提供解除，故先把 run 標成
+        succeeded 再驗；並補驗 queued 階段確實不可解除。
+        """
         repo = _repo()
         merged = repo.queue_merge(920003, WIPS, ["M01", "M02"], "合併後主題", "web-user",
                                   "history-flow-001")
         run_id = merged["run_id"]
-        # 尚未 unmerge：歷史顯示 can_unmerge=True
+
+        # 剛排程（queued）：合併還沒發生，不得提供解除合併。
+        hist0 = {h["merge_run_id"]: h for h in repo.list_merge_history(920003, WIPS)}
+        self.assertIn(run_id, hist0)
+        self.assertEqual(hist0[run_id]["source_topics"], ["M01", "M02"])
+        self.assertEqual(hist0[run_id]["status"], "queued")
+        self.assertFalse(hist0[run_id]["can_unmerge"], "尚未合併就給解除鈕是假訊號")
+        self.assertEqual(hist0[run_id]["blocked_reason"], "merge_in_progress")
+
+        # worker 跑完（succeeded）：這時才是真的合併了，可解除。
+        with psycopg.connect(**_kw(TEST_DB), autocommit=True) as conn:
+            conn.execute(
+                "UPDATE app_layer.workflow_runs SET status='succeeded' WHERE run_id=%s",
+                (run_id,))
         hist = {h["merge_run_id"]: h for h in repo.list_merge_history(920003, WIPS)}
-        self.assertIn(run_id, hist)
-        self.assertEqual(hist[run_id]["source_topics"], ["M01", "M02"])
         self.assertTrue(hist[run_id]["can_unmerge"])
+
         # unmerge 後：queued topic_unmerge run，且歷史 can_unmerge 轉 False
         u = repo.queue_unmerge(920003, WIPS, run_id, "web-user", "unmerge-flow-001")
         self.assertEqual(u["operation"], "topic_unmerge")
         self.assertEqual(u["status"], "queued")
         hist2 = {h["merge_run_id"]: h for h in repo.list_merge_history(920003, WIPS)}
         self.assertFalse(hist2[run_id]["can_unmerge"])
+        self.assertEqual(hist2[run_id]["blocked_reason"], "already_unmerged")
 
     def test_unmerge_unknown_merge_run_invalid(self):
         from backend.app.repositories.topic_repository import InvalidTopicOperationError

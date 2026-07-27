@@ -29,6 +29,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Iterable, Sequence
 
+from psycopg.types.json import Jsonb
+
 from backend.app.db.connection import get_pool
 
 
@@ -138,6 +140,107 @@ def display_member_patent_ids(workspace_id: int, *, conn: Any | None = None) -> 
         with active.cursor() as cur:
             member_ids, _is_global = _workspace_row(cur, workspace_id)
     return member_ids
+
+
+def _snapshot_assignments(
+    cur: Any, workspace_id: int, patent_ids: list[int]
+) -> dict[int, list[dict[str, Any]]]:
+    """在刪除前快照各專利的主題指派，供之後「放回原主題」還原（0037）。
+
+    回 {patent_id: [{run_id, topic_key, distance}, ...]}——一筆專利在技術／功效
+    各通道各有一筆，故為陣列。含 distance_to_centroid：放回時原樣還原、不重算
+    （沿「剔除不重跑分群」的精神，放回同樣不重跑）。
+    """
+    if not patent_ids:
+        return {}
+    cur.execute(
+        """
+        SELECT ta.patent_id, ta.run_id, ta.topic_key, ta.distance_to_centroid
+        FROM derived_layer.topic_assignments ta
+        JOIN derived_layer.topic_runs tr ON tr.run_id = ta.run_id
+        JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id
+        WHERE wr.workspace_id = %s AND ta.patent_id = ANY(%s)
+        """,
+        (workspace_id, patent_ids),
+    )
+    snapshot: dict[int, list[dict[str, Any]]] = {}
+    for row in cur.fetchall():
+        if isinstance(row, dict):
+            pid, run_id, topic_key, distance = (
+                row["patent_id"], row["run_id"], row["topic_key"], row["distance_to_centroid"])
+        else:
+            pid, run_id, topic_key, distance = row[0], row[1], row[2], row[3]
+        snapshot.setdefault(int(pid), []).append({
+            "run_id": int(run_id),
+            "topic_key": str(topic_key),
+            "distance": float(distance) if distance is not None else None,
+        })
+    return snapshot
+
+
+def restore_patents(
+    workspace_id: int,
+    patent_ids: Iterable[int],
+    *,
+    conn: Any | None = None,
+) -> int:
+    """把已排除的專利放回原主題（2026-07-27 使用者要求：預防後悔）。
+
+    步驟：讀 restored_topic_key 快照 → 還原各通道 assignment（含原 distance）
+    → 刪除排除列。放回後該筆重新計入分析成員。
+
+    ⚠ 只處理 status='excluded'；pending 不是排除（從未移除 assignment），
+    要撤銷待複核項請用 keep_patents。
+    ⚠ 原主題已不存在（run 被刪、topic 已停用）時該筆 assignment 還原失敗，
+    但仍會移出排除清單——使用者要它回來，不能因為還原不了就繼續關著；
+    該筆會變成無主題，可由下次分群重新指派。ON CONFLICT DO NOTHING 讓
+    重複放回不炸。
+
+    不自行 commit：交易邊界交由呼叫端。回傳實際放回的筆數。
+    """
+    ids = [int(pid) for pid in patent_ids]
+    if not ids:
+        return 0
+    with _conn_ctx(conn) as active:
+        with active.cursor() as cur:
+            cur.execute(
+                "SELECT patent_id, restored_topic_key "
+                "FROM derived_layer.workspace_excluded_patents "
+                "WHERE workspace_id = %s AND patent_id = ANY(%s) AND status = 'excluded'",
+                (workspace_id, ids),
+            )
+            rows = cur.fetchall()
+            if not rows:
+                return 0
+            restore_ids = []
+            for row in rows:
+                if isinstance(row, dict):
+                    pid, snapshot = row["patent_id"], row["restored_topic_key"]
+                else:
+                    pid, snapshot = row[0], row[1]
+                restore_ids.append(int(pid))
+                for item in (snapshot or []):
+                    # 原 run 若已不存在，FK 會擋下——用子查詢確認存在才插，
+                    # 不讓單一還原失敗炸掉整批放回。
+                    cur.execute(
+                        """
+                        INSERT INTO derived_layer.topic_assignments
+                            (run_id, patent_id, topic_key, distance_to_centroid)
+                        SELECT %s, %s, %s, %s
+                        WHERE EXISTS (
+                            SELECT 1 FROM derived_layer.topic_runs WHERE run_id = %s
+                        )
+                        ON CONFLICT DO NOTHING
+                        """,
+                        (item.get("run_id"), int(pid), item.get("topic_key"),
+                         item.get("distance"), item.get("run_id")),
+                    )
+            cur.execute(
+                "DELETE FROM derived_layer.workspace_excluded_patents "
+                "WHERE workspace_id = %s AND patent_id = ANY(%s) AND status = 'excluded'",
+                (workspace_id, restore_ids),
+            )
+            return len(restore_ids)
 
 
 def _delete_assignments(cur: Any, workspace_id: int, patent_ids: list[int]) -> None:
@@ -310,11 +413,15 @@ def confirm_exclusions(
         return 0
     with _conn_ctx(conn) as active:
         with active.cursor() as cur:
+            # 先快照主題指派（0037），下面會刪掉——不先存就無法「放回原主題」。
+            snapshot = _snapshot_assignments(cur, workspace_id, ids)
             cur.execute(
-                "UPDATE derived_layer.workspace_excluded_patents "
-                "SET status = 'excluded', excluded_at = now() "
-                "WHERE workspace_id = %s AND patent_id = ANY(%s) AND status = 'pending'",
-                (workspace_id, ids),
+                "UPDATE derived_layer.workspace_excluded_patents AS ex "
+                "SET status = 'excluded', excluded_at = now(), "
+                "    restored_topic_key = %s::jsonb -> ex.patent_id::text "
+                "WHERE ex.workspace_id = %s AND ex.patent_id = ANY(%s) "
+                "  AND ex.status = 'pending'",
+                (Jsonb({str(k): v for k, v in snapshot.items()}), workspace_id, ids),
             )
             confirmed = cur.rowcount
             # 確定排除＝移出本 workspace 分析，與人工剔除同樣移除指派（不重跑分群）。
@@ -387,18 +494,23 @@ def exclude_patents(
     written = 0
     with _conn_ctx(conn) as active:
         with active.cursor() as cur:
+            # 0. 先快照主題指派（0037）：下面第 2 步會刪掉 assignment，不先存就再也
+            #    回不到原主題——「可反悔」不能只做到「知道曾被排除」。
+            snapshot = _snapshot_assignments(cur, workspace_id, patent_ids)
+
             # 1. 回寫排除表（可追溯、可反悔）；ON CONFLICT 更新理由與時間。
             #    明確寫 status='excluded'、source='manual'：人工剔除即為確定排除，
             #    若該筆原為 AI 判讀的 pending，這裡直接升級為已確定（人工裁決優先）。
             for pid, reason in rows:
                 cur.execute(
                     "INSERT INTO derived_layer.workspace_excluded_patents "
-                    "(workspace_id, patent_id, reason, status, source) "
-                    "VALUES (%s, %s, %s, 'excluded', 'manual') "
+                    "(workspace_id, patent_id, reason, status, source, restored_topic_key) "
+                    "VALUES (%s, %s, %s, 'excluded', 'manual', %s) "
                     "ON CONFLICT (workspace_id, patent_id) "
                     "DO UPDATE SET reason = EXCLUDED.reason, excluded_at = now(), "
-                    "              status = 'excluded', source = 'manual'",
-                    (workspace_id, pid, reason),
+                    "              status = 'excluded', source = 'manual', "
+                    "              restored_topic_key = EXCLUDED.restored_topic_key",
+                    (workspace_id, pid, reason, Jsonb(snapshot.get(pid, []))),
                 )
                 written += 1
 

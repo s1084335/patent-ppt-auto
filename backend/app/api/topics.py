@@ -184,6 +184,8 @@ class MergeHistoryItem(BaseModel):
     merge_run_id: int
     source_topics: list[str]
     result_topic: str
+    # job 真實狀態：前端據此顯示「處理中／失敗」，不把未完成的合併當成已完成。
+    status: str
     can_unmerge: bool
     blocked_reason: str | None
 
@@ -495,6 +497,7 @@ def list_merge_history(
             merge_run_id=item["merge_run_id"],
             source_topics=item["source_topics"],
             result_topic=item["result_topic"],
+            status=item["status"],
             can_unmerge=item["can_unmerge"],
             blocked_reason=item["blocked_reason"],
         )

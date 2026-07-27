@@ -99,6 +99,9 @@ class MergeHistoryItem(TypedDict):
     merge_run_id: int
     source_topics: list[str]
     result_topic: str
+    # job 真實狀態（queued／running／succeeded／failed）：前端據此顯示「處理中／失敗」，
+    # 不把未完成的合併當成已完成（2026-07-27 實機踩到 job 97 永遠 queued 卻顯示可解除）。
+    status: str
     can_unmerge: bool
     blocked_reason: str | None
 

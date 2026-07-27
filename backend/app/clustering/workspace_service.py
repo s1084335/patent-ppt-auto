@@ -6,7 +6,7 @@ import ast
 from dataclasses import asdict, dataclass
 import json
 import math
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import psycopg
@@ -654,6 +654,89 @@ def backfill_representative_patents(
             if updated_count:
                 _merge_topic_state(cur, int(run["run_id"]), {"topics": topics})
     return {"topic_count": topic_count, "updated_count": updated_count}
+
+
+def _rank_farthest_by_topic(
+    assignment_rows: Sequence[tuple[int, str, Any]],
+    topics: Sequence[dict[str, Any]],
+) -> dict[str, list[int]]:
+    """每個 active model 主題取 distance_to_centroid **最大**的 N 筆 patent_id。
+
+    距離大＝離主題中心遠＝最不像該主題，正是不相干篩選要的候選。
+    與 backfill_representative_patents 用同一份距離、同一份 assignment，只是排序方向
+    相反（那邊取最近的當代表、這邊取最遠的當可疑候選）。
+
+    取樣數走 model.irrelevant_sample_size（依主題大小調整，含「永不取整題」的小主題安全閥）。
+    停用主題與非 model 主題（系統桶已於 2026-07-27 移除，此判斷仍留作防呆）不取候選。
+
+    🔴 只回 patent_id，**不回距離分數**——分數只在此函式內用於排序，不外流
+    （沿 rank_ctfidf_least_representative_documents 的紅線：避免與 keywords 一同誤傳 CLI）。
+    """
+    from .model import irrelevant_sample_size
+
+    active_codes = {
+        str(topic["topic_code"])
+        for topic in topics
+        if topic.get("status", "active") == "active"
+        and topic.get("topic_kind", "model") == "model"
+    }
+    # 依 topic_code 聚集 (distance, patent_id)；距離缺值視為 0（最像），不會被選為候選。
+    grouped: dict[str, list[tuple[float, int]]] = {}
+    for patent_id, topic_key, distance_value in assignment_rows:
+        code = str(topic_key)
+        if code not in active_codes:
+            continue
+        distance = float(distance_value) if distance_value is not None else 0.0
+        grouped.setdefault(code, []).append((distance, int(patent_id)))
+
+    picked: dict[str, list[int]] = {}
+    for code, rows in grouped.items():
+        take = irrelevant_sample_size(len(rows))
+        if take <= 0:
+            continue
+        # 距離大→小；同距離時以 patent_id 排序，確保結果穩定可重現。
+        ranked = sorted(rows, key=lambda item: (-item[0], item[1]))
+        picked[code] = [patent_id for _distance, patent_id in ranked[:take]]
+    return picked
+
+
+def select_irrelevant_candidates(
+    *,
+    workspace_id: int,
+    source_field: str,
+) -> list[dict[str, Any]]:
+    """取該 workspace 各主題的不相干候選，依主題分組回傳。
+
+    回傳 [{topic_code, topic_label, patent_ids}]——依主題分組是因為 prompt 要帶
+    topic_label 當「這件屬不屬於這個主題」的對照（2026-07-24 第 1 題定案），
+    不同主題不能混在同一批送 CLI。
+
+    尚未分群（無 state run）時回空清單，不 raise——呼叫端據此跳過 CLI、不空燒 token。
+    """
+    get_source_spec(source_field)
+    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            run = _latest_state_run(
+                cur, workspace_id=workspace_id, source_field=source_field)
+            if run is None:
+                return []
+            topics = [dict(topic) for topic in _state_topics(run)]
+            assignment_rows = _latest_assignments(
+                cur, workspace_id=workspace_id, source_field=source_field)
+    picked = _rank_farthest_by_topic(assignment_rows, topics)
+    label_by_code = {
+        str(topic["topic_code"]): str(topic.get("label") or topic["topic_code"])
+        for topic in topics
+    }
+    return [
+        {
+            "topic_code": code,
+            "topic_label": label_by_code.get(code, code),
+            "patent_ids": patent_ids,
+        }
+        for code, patent_ids in sorted(picked.items())
+        if patent_ids
+    ]
 
 
 def incremental_workspace(

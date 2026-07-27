@@ -128,6 +128,32 @@ class ExcludedPatentListTests(unittest.TestCase):
         self.assertEqual(body["items"][1]["source"], "ai")
 
 
+class RestoreExcludedTests(unittest.TestCase):
+    """POST /workspaces/{id}/excluded-patents/restore：放回原主題（預防後悔）。"""
+
+    def test_restore_calls_engine(self):
+        """放回 → restore_patents(workspace_id, patent_ids)，回實際筆數。"""
+        fake = mock.MagicMock(return_value=1)
+        with mock.patch.object(workspaces_api, "restore_patents", fake):
+            resp = client.post(
+                f"/api/v1/workspaces/{WS}/excluded-patents/restore",
+                json={"patent_ids": [61]},
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"workspace_id": WS, "restored_count": 1})
+        args, _ = fake.call_args
+        self.assertEqual(args[0], WS)
+        self.assertEqual(list(args[1]), [61])
+
+    def test_restore_rejects_empty(self):
+        """空清單被 pydantic 擋下，不打到引擎。"""
+        resp = client.post(
+            f"/api/v1/workspaces/{WS}/excluded-patents/restore",
+            json={"patent_ids": []},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+
 class ExclusionReviewDecisionTests(unittest.TestCase):
     """POST keep／confirm：使用者逐筆裁決。"""
 

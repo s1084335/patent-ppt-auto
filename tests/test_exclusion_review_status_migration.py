@@ -104,14 +104,19 @@ class ExclusionReviewStatusMigrationTests(unittest.TestCase):
         ).fetchone()[0]
 
     def test_columns(self):
-        """欄位定版：0035 四欄 + status / source / ai_verdict。"""
+        """0036 三欄（status／source／ai_verdict）與 0035 四欄都在。
+
+        ⚠ 驗子集不驗相等：0037 另加 restored_topic_key（排除復原用的主題快照），
+        全表欄位定版由 test_exclusion_restore.py 一併涵蓋。本測試只確保 0036 加的
+        三欄不被後續 migration 移除。
+        """
         with psycopg.connect(**_kw(TEST_DB)) as c:
             rows = c.execute(
                 "SELECT column_name, data_type FROM information_schema.columns "
                 "WHERE table_schema='derived_layer' AND table_name='workspace_excluded_patents'"
             ).fetchall()
         cols = {r[0]: r[1] for r in rows}
-        self.assertEqual(set(cols), EXPECTED_COLUMNS)
+        self.assertTrue(EXPECTED_COLUMNS.issubset(set(cols)))
 
     def test_status_defaults_to_excluded(self):
         """不帶 status 寫入時預設 'excluded'：人工剔除語意與 0035 完全一致。"""

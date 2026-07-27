@@ -336,27 +336,44 @@ def list_workspace_patents(
             total = int(cur.fetchone()["total"])
             cur.execute(_WS_PATENTS_ITEMS_SQL, params)
             items = cur.fetchall()
-    # 所屬主題：在 Python 層以指派 dict 合併，未指派者回 None（不改成員查詢 SQL）。
-    topic_map = _topic_assignment_map(workspace_id, source_field)
-    for it in items:
-        code, label = topic_map.get(it["patent_id"], (None, None))
-        it["topic_key"] = code
-        it["topic_label"] = label
-    # 分通道欄位（2026-07-27）：前端「技術分類／功效分類」是兩個獨立欄，key 由
-    # topicLabelKey(source_field) 推導成 topic_label_<source_field>。上面的單一
-    # topic_label 只反映查詢參數指定的那一個通道，兩欄因此一直是空的。
-    # 這裡對每個通道各取一次指派；單一欄位保留，避免打壞其他呼叫端。
+    _attach_topic_columns(items, workspace_id=workspace_id, source_field=source_field)
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+def _attach_topic_columns(
+    items: list[dict[str, Any]],
+    *,
+    workspace_id: int,
+    source_field: str | None = None,
+) -> None:
+    """就地補上主題欄位：單一 topic_key/topic_label ＋ 各通道的 topic_*_<source_field>。
+
+    ⚠ **列表類查詢一律走這裡**，不要各自實作——2026-07-27 踩到：分通道欄位只加在
+    list_workspace_patents，list_topic_patents 沒加，導致「全部」有值、點進單一主題
+    後技術分類／功效分類兩欄全空。同一份資料兩個查詢函式只改一個，是本專案反覆出現
+    的斷鏈型態。
+
+    前端「技術分類／功效分類」是兩個獨立欄，key 由 topicLabelKey(source_field)
+    推導成 topic_label_<source_field>；單一 topic_label 只反映查詢參數的那一個通道，
+    保留是為了不打壞其他呼叫端。source_field 為 None 時不設單一欄位（呼叫端沒有
+    「當前通道」概念，例如主題專利清單本身已鎖定在某主題）。
+    """
     from backend.app.clustering.sources import source_fields
 
+    maps: dict[str, dict[int, tuple[str | None, str | None]]] = {}
     for field in source_fields():
-        # 與查詢參數同通道者直接重用，不重複查一次
-        field_map = topic_map if field == source_field else _topic_assignment_map(
-            workspace_id, field)
+        maps[field] = _topic_assignment_map(workspace_id, field)
+    if source_field is not None:
+        current = maps.get(source_field) or _topic_assignment_map(workspace_id, source_field)
+        for it in items:
+            code, label = current.get(it["patent_id"], (None, None))
+            it["topic_key"] = code
+            it["topic_label"] = label
+    for field, field_map in maps.items():
         for it in items:
             code, label = field_map.get(it["patent_id"], (None, None))
             it[f"topic_key_{field}"] = code
             it[f"topic_label_{field}"] = label
-    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 def list_topic_patents(
@@ -387,4 +404,8 @@ def list_topic_patents(
             total = int(cur.fetchone()["total"])
             cur.execute(_TOPIC_PATENTS_ITEMS_SQL, params)
             items = cur.fetchall()
+    # 補分通道主題欄（2026-07-27）：原本這裡完全沒有主題欄位，點進單一主題後
+    # 技術分類／功效分類兩欄全空——分通道欄當初只加在 list_workspace_patents。
+    # source_field=None：此清單已鎖定在某主題，沒有「當前通道」的單一欄語意。
+    _attach_topic_columns(items, workspace_id=workspace_id)
     return {"items": items, "total": total, "limit": limit, "offset": offset}

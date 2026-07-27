@@ -32,6 +32,7 @@ from backend.app.clustering.exclusions import (
     is_global_workspace,
     keep_patents,
     pending_reviews,
+    restore_patents,
 )
 from backend.app.db import workspace_document_store
 from backend.app.db.job_repository import create_job
@@ -237,6 +238,27 @@ def confirm_exclusion_reviews(
         count = confirm_exclusions(workspace_id, request.patent_ids, conn=conn)
         conn.commit()
     return {"workspace_id": workspace_id, "confirmed_count": count}
+
+
+@router.post("/workspaces/{workspace_id}/excluded-patents/restore")
+def restore_excluded_patents(
+    workspace_id: int, request: ExclusionReviewDecisionRequest
+) -> dict[str, Any]:
+    """把已排除的專利放回原主題（2026-07-27 使用者要求：預防後悔）。
+
+    依排除當下存下的主題快照（0037 `restored_topic_key`）還原各通道的 assignment，
+    含原 distance_to_centroid（不重算、不重跑分群），並移出排除清單。
+    放回後該筆重新計入分群與報表統計。
+
+    原 run 已被刪除（例如事後重跑分群）時該通道還原不了，但仍會移出排除清單——
+    使用者要它回來，不能因為還原不了就繼續關著；該筆可由下次分群重新指派。
+    """
+    import psycopg
+
+    with psycopg.connect(**get_connection_kwargs()) as conn:
+        count = restore_patents(workspace_id, request.patent_ids, conn=conn)
+        conn.commit()
+    return {"workspace_id": workspace_id, "restored_count": count}
 
 
 class ComposeRequest(BaseModel):
