@@ -42,7 +42,10 @@ from .ai_narrative_runner import (
 
 
 # 候選說明流程版本；隨 prompt 契約升版而變，寫進結果供追溯。
-PROMPT_VERSION = "candidate_explanation_v1"
+# v2（2026-07-27）：instruction 口徑改為對齊 decisions.md 2026-07-17——
+# 禁止把小數分數當主內容、要求翻成語意原因、明說切分程度/穩定性/風險三面向，
+# 並移除寫死的「三組候選」（組數依資料量而定）。
+PROMPT_VERSION = "candidate_explanation_v2"
 
 # ⚠ MCP 預留的兩個抽換點（讀法一核心）。
 # 現在：直接指向既有 domain 函式（與現役三支 AI job 一致，能立刻運作）。

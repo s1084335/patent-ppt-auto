@@ -47,6 +47,26 @@ LABEL_MAX_CHARS = 16
 SUMMARY_MAX_CHARS = 80
 EXPLANATION_MAX_CHARS = 80
 
+# 候選說明的口徑，對齊 decisions.md「2026-07-17 分群主題數候選說明原則」：
+# 分數只作排序輔助，不得當說服依據；要讓使用者理解各方案的「意義」
+# （切分程度、穩定性、風險），提到分數低時一律翻成語意原因。
+# ⚠ 不寫死候選組數——組數由 top_level_k_values() 依資料量決定
+#   （100–199 筆只掃 k=(10,15)＝兩組），寫死「三組」會誤導 LLM。
+CANDIDATE_EXPLANATION_INSTRUCTION = (
+    "請依各組候選的 coherence、diversity、balance、score、k 與資料量，"
+    "用一般使用者看得懂的方式說明各候選主題數的取捨。"
+    "重點放在每組代表的意義：主題切分的粗細程度、結果的穩定性，"
+    "以及選它可能有的風險。"
+    "注意：不要把小數分數當主內容、不要用分數高低當說服依據；"
+    "需要提到分數差異時，一律翻成語意原因，"
+    "例如主題一致性下降、小主題比例偏高、切分過細、各群較籠統混雜。"
+    f"每組 explanation 建議 {EXPLANATION_SUGGESTED_RANGE} 字，"
+    f"不得超過 {EXPLANATION_MAX_CHARS} 字。"
+    "不要要求或引用代表文檔，回傳 explanations 陣列，"
+    "每筆包含 candidate_id 與 explanation，"
+    "供系統寫回 topic_state_json->'candidates' 的 llm_explanation。"
+)
+
 
 # 本路徑只允許 AI 產出（llm）與程式後備（fallback）；manual 僅能由
 # 前端 rename endpoint 寫入，避免 AI 通道把標籤自我升級成人工定案。
@@ -381,15 +401,7 @@ def candidate_review_payload(run_id: int) -> dict[str, Any]:
         "source_label": spec.label_zh,
         # 0021：input_doc_count 併入 topic_state_json，不再是 topic_runs 欄位
         "document_count": int(state.get("input_doc_count") or 0),
-        "instruction": (
-            "請只根據三組候選的 coherence、diversity、balance、score、k 與資料量，"
-            "用一般使用者看得懂的方式說明各候選主題數的取捨。"
-            f"每組 explanation 建議 {EXPLANATION_SUGGESTED_RANGE} 字，"
-            f"不得超過 {EXPLANATION_MAX_CHARS} 字。"
-            "不要要求或引用代表文檔，回傳 explanations 陣列，"
-            "每筆包含 candidate_id 與 explanation，"
-            "供系統寫回 topic_state_json->'candidates' 的 llm_explanation。"
-        ),
+        "instruction": CANDIDATE_EXPLANATION_INSTRUCTION,
         "candidates": candidate_payloads,
     }
 
