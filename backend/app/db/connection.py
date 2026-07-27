@@ -34,13 +34,23 @@ def get_database_url() -> str:
     return f"postgresql://{user}@{host}:{port}/{dbname}"
 
 
+# 預設 search_path（2026-07-27 實機修）。
+# ⚠ **必須含 extensions**：pgvector 在 Supabase 裝在 extensions schema，
+#   少了它 `vector` 型別就找不到 → embeddings 寫入炸 UndefinedObject
+#   → 分群回報「no patents with reusable embeddings」（錯誤訊息指向下游，很難聯想）。
+# ⚠ 這裡是**預設值**，不是 fallback：psycopg 的 options 會**覆蓋** DB 端的
+#   search_path。Supabase 本身的預設（"$user", public, extensions）是對的，
+#   反而是我們這行把 extensions 拿掉——「忘了設 PGOPTIONS」因此等於壞掉。
+_DEFAULT_PG_OPTIONS = "-c search_path=core_layer,raw_layer,public,extensions"
+
+
 def get_connection_kwargs() -> dict[str, str | int]:
     """回傳 psycopg.connect 參數；本機預設走 localhost:5433。"""
     database_url = os.getenv("DATABASE_URL")
     if database_url:
         return {
             "conninfo": database_url,
-            "options": os.getenv("PGOPTIONS", "-c search_path=core_layer,raw_layer,public"),
+            "options": os.getenv("PGOPTIONS", _DEFAULT_PG_OPTIONS),
         }
 
     kwargs: dict[str, str | int] = {
@@ -48,7 +58,7 @@ def get_connection_kwargs() -> dict[str, str | int]:
         "port": _get_pgport(),
         "dbname": os.getenv("PGDATABASE", "patent_ppt"),
         "user": os.getenv("PGUSER", "postgres"),
-        "options": os.getenv("PGOPTIONS", "-c search_path=core_layer,raw_layer,public"),
+        "options": os.getenv("PGOPTIONS", _DEFAULT_PG_OPTIONS),
     }
     password = os.getenv("PGPASSWORD")
     if password:
