@@ -125,8 +125,12 @@ button { font-family: inherit; }
    設 0 才會真正收縮並讓長文換行（而不是把整層推寬出現橫向捲軸）。 */
 .patent-detail-split { display: flex; gap: 0.9rem; align-items: flex-start;
   flex-wrap: wrap; padding: 0.7rem 0.9rem; box-sizing: border-box; max-width: 100%; }
-.patent-detail-main { flex: 1 1 58%; min-width: 0; }
-.patent-detail-figure { flex: 0 1 34%; min-width: 12rem; text-align: center;
+/* 兩欄相加必須是 100%（扣掉 gap）——2026-07-27 使用者：「圖的右邊邊界對齊文獻備註
+   右邊邊界」。原本 58%+34%=92%，右側空 8% 讓圖看起來偏左、右邊界對不齊表格。
+   改用 flex-basis: 0 ＋ grow 比例（3:2），由 flex 自行分配扣掉 gap 後的全寬，
+   不必手算百分比；min-width:0 仍是防溢出的關鍵。 */
+.patent-detail-main { flex: 3 1 0; min-width: 0; }
+.patent-detail-figure { flex: 2 1 0; min-width: 12rem; text-align: center;
   padding: 0.6rem; border: 1px solid var(--border); border-radius: 0.4rem;
   background: var(--panel-2);
   display: flex; align-items: flex-start; justify-content: center;
@@ -982,19 +986,23 @@ function patentCell(p, col, mode) {
   if (v === null || v === undefined || v === '') return '';
   return escHtml(String(v));
 }
+// 第一層列表的最後一欄（2026-07-27 使用者定：「第一層修成只顯示到文獻備註」）。
+// 沿革：原設計只顯示 listOnly 的 9 欄 → 2026-07-26 改為全 27 欄攤開橫向捲 →
+// 實測要捲很久才看得到重點，故改為**切到文獻備註為止**（前 8 欄左右）。
+// 其餘欄位不是拿掉，是收進點列展開的詳情層——完整欄位仍看得到。
+const LIST_LAST_COLUMN_KEY = 'patent_note';
+
 // 專利表（專利總覽與分類區**共用同一份實作**，只差 scope 決定的欄位集合）：
-// **全欄位攤在列表**，橫向捲動檢視（2026-07-26 使用者定案，推翻原精簡列表設計）。
-// 原設計只讓標 listOnly 的 9 欄上列表、其餘 18 欄必須點開第二層才看得到；
-// 實際使用時「要看某欄還得先點開每一列」比橫向捲動更難用，故改為全欄呈現。
-// 橫向捲動由 .table-wrap 的 overflow-x: auto 提供（既有樣式，不需另加）。
-// listOnly 旗標保留但不再用於過濾——它仍標示「掃描時的辨識鍵」語意，
-// 供 wide 寬欄設定與未來若要做欄位顯示切換時沿用。
-// 點列展開的詳情層保留：列表受 truncate 截斷的長文欄（摘要／文獻備註）在詳情看全文。
+// 第一層只到「文獻備註」，其餘欄位在詳情層。橫向捲動仍由 .table-wrap 的
+// overflow-x: auto 提供（欄寬設定不變）。
+// 點列展開的詳情層：列表受 truncate 截斷的長文欄（摘要／文獻備註）在詳情看全文。
 function patentTableHtml(data, scope) {
   const items = data.items || [];
   if (items.length === 0) return '<div class="hint">查無符合的專利。</div>';
   const cols = patentColumns(scope);
-  const listCols = cols;
+  // 切到 LIST_LAST_COLUMN_KEY 為止；找不到該欄時退回全欄（不讓表格整個空掉）。
+  const lastIdx = cols.findIndex(c => c.key === LIST_LAST_COLUMN_KEY);
+  const listCols = lastIdx >= 0 ? cols.slice(0, lastIdx + 1) : cols;
   // 詳情列的 colspan＝列表欄數（由欄位定義推導，不寫死數字）。
   const rows = items.map((p, i) =>
     '<tr class="patent-row-clickable" onclick="togglePatentDetail(\'' + scope + '\',' + i + ')">'
