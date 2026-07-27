@@ -890,6 +890,9 @@ def handle_ai_narrative(payload: dict[str, Any], context: JobContext) -> dict[st
         cli_runner=payload.get("_cli_runner"),
         timeout_seconds=timeout_seconds,
         progress=_progress,
+        # 使用者在右欄輸入框打的修改需求；2026-07-27 前 payload 有存但一路沒傳到
+        # runner，打了完全沒作用（待辦 C-7b bug ②）。
+        instruction=payload.get("instruction"),
     )
     context.heartbeat("解讀已回存", 90)
     result = {

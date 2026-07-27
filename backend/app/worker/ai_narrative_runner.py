@@ -50,7 +50,8 @@ def _resolve_skill_path() -> Path:
 
 SKILL_PATH = _resolve_skill_path()
 # 解讀規格版本；隨 report-narrative-flow.md 模板升版而變。
-PROMPT_VERSION = "report_narrative_v2"
+# v3（2026-07-27）：prompt 納入使用者 instruction（原本 payload 有存但零消費）。
+PROMPT_VERSION = "report_narrative_v3"
 # 預設 headless CLI 逾時（秒）；解讀多卡多變體可能久，給足時間但避免無限卡住。
 DEFAULT_CLI_TIMEOUT_SECONDS = 1800.0
 
@@ -122,10 +123,31 @@ def resolve_run_dir(based_on_version: str | None, *, root: Path | None = None) -
     return run_dir
 
 
-def build_prompt(run_dir: Path, version: str, *, skill_path: Path | None = None) -> str:
-    """組 headless 解讀任務提示：只指示 CLI 讀 skill 全文並遵守，不複製規格內文。"""
+def build_prompt(
+    run_dir: Path,
+    version: str,
+    *,
+    skill_path: Path | None = None,
+    instruction: str | None = None,
+) -> str:
+    """組 headless 解讀任務提示：只指示 CLI 讀 skill 全文並遵守，不複製規格內文。
+
+    instruction＝使用者在右欄「對目前頁面提出修改需求」打的字（可為空）。
+    2026-07-27 前 payload 有存但這裡零消費，使用者打了完全沒作用——
+    比失敗更誤導（看似成功卻沒照要求做），故納入 prompt。
+    附加需求**不得凌駕輸出契約**：仍只寫 narratives.json、維持 v2 兩層結構。
+    """
     skill = skill_path if skill_path is not None else SKILL_PATH
     narratives_path = run_dir / "narratives.json"
+    extra = ""
+    if instruction and instruction.strip():
+        extra = (
+            "\n\n6. 使用者額外需求（在遵守上述契約的前提下盡量滿足）：\n"
+            f"   「{instruction.strip()}」\n"
+            "   注意：此需求**不得**牴觸或覆蓋第 4、5 點的輸出契約：仍只寫 narratives.json\n"
+            "   這一個檔案、維持 v2 兩層結構、不得改動其他檔案。若需求與契約衝突，\n"
+            "   以契約為準，並在對應解讀文字中說明無法滿足的部分。"
+        )
     return (
         "任務：產製專利報表解讀 narratives.json（系統派工、非互動、一次性，v2）。\n\n"
         f"1. 先完整閱讀 {skill} 全文，逐字遵守其中的解讀 Prompt 模板 v2、各報表解讀重點、\n"
@@ -139,6 +161,7 @@ def build_prompt(run_dir: Path, version: str, *, skill_path: Path | None = None)
         "   report_key→variants→variant_key→{text,ai_model,prompt_version,generated_at} 兩層結構。\n"
         "5. 只准寫 narratives.json 這一個檔案；不得改動目錄內其他檔案、不得執行 shell 指令；\n"
         "   寫完即結束，不輸出多餘說明。"
+        + extra
     )
 
 
@@ -218,6 +241,7 @@ def run_narrative(
     progress: Callable[[str, int], None] | None = None,
     root: Path | None = None,
     skill_path: Path | None = None,
+    instruction: str | None = None,
 ) -> dict[str, Any]:
     """把報表解讀整條系統化：組提示 → 呼叫 headless CLI → 驗收產物 → refresh-index。
 
@@ -237,7 +261,7 @@ def run_narrative(
     if progress is not None:
         progress("cli_running", 30)
 
-    prompt = build_prompt(run_dir, version, skill_path=skill_path)
+    prompt = build_prompt(run_dir, version, skill_path=skill_path, instruction=instruction)
     argv = build_cli_command(cli_kind, prompt, model=model)
     cli_result = runner(argv, timeout_seconds)
     parse_cli_result(cli_result)  # 退出碼／JSON 檢查；不硬用其內容，narratives.json 才是產物

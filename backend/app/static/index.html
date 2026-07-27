@@ -3408,7 +3408,10 @@ async function sendAiRequest() {
   try {
     const payload = { workspace_id: state.workspaceId, cli_kind: 'claude' };
     if (text) payload.instruction = text;
-    if (state.nav) payload.based_on_version = state.nav;
+    // ⚠ 不要送 based_on_version：state.nav 是頁籤名（'patents'／'topics'…），
+    // 不是報表版本號。2026-07-27 前誤送 state.nav，runner 的 resolve_run_dir 會去找
+    // full_report_latest/<頁籤名>/report_data.json，必然不存在 → ai:narrative 一律
+    // failed（DB 曾累積 30 筆）。不帶此欄位時 runner 本就會自動取最新報表版本。
     const resp = await fetch(API + '/ai-tasks', {
       method: 'POST', headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
