@@ -1363,8 +1363,12 @@ def _build_trend_section(ctx: ChartContext) -> None:
     trend_title = f'{application["label_zh"]}與{publication["label_zh"]}'
     render_line_chart(ctx.run_dir / "annual_trend.svg", trend_title, application["rows"], publication["rows"])
     ctx.chart_rows["annual_trend"] = application["rows"]
+    # report_key 顯式宣告：SVG 檔名（annual_trend）與報表鍵（application_trend）不同名，
+    # 不宣告就會退回檔名 fallback 查找而落空，數據表顯示「無資料」。
+    # 雙 key 卡的數據表以申請趨勢為主序列（公告趨勢在同圖以第二條線呈現）。
     ctx.sections.append({
         "title": trend_title,
+        "report_key": "application_trend",
         "variants": [{"label": "Trend", "file": "annual_trend.svg", "variant_key": "default"}],
     })
 
@@ -1379,8 +1383,10 @@ def _build_country_map_section(ctx: ChartContext) -> None:
         "country_code",
     )
     ctx.chart_rows["jurisdiction_distribution"] = report["rows"]
+    # 檔名 jurisdiction_distribution ≠ 報表鍵 country_distribution，須顯式宣告查找鍵。
     ctx.sections.append({
         "title": report["label_zh"],
+        "report_key": "country_distribution",
         "variants": [{"label": "Bar", "file": "jurisdiction_distribution.svg", "variant_key": "default"}],
         "note": "專利受理局分布以 country_code group by，與全庫或 workspace patent_ids 快照共用同一報表定義。",
     })
@@ -1415,8 +1421,11 @@ def _build_family_layout_section(ctx: ChartContext) -> None:
         "country_code",
     )
     ctx.chart_rows["family_country_distribution"] = family_report["rows"]
+    # 檔名 family_country_distribution ≠ 報表鍵 family_country_layout，須顯式宣告查找鍵。
+    # 數據表取家族×國家佈局（本卡主體）；家族品質明細另以 links 的 JSON 提供。
     ctx.sections.append({
         "title": family_report["label_zh"],
+        "report_key": "family_country_layout",
         "variants": [{"label": "Bar", "file": "family_country_distribution.svg", "variant_key": "default"}],
         "links": [{"label": "家族品質明細 JSON", "file": "family_quality.json"}],
         "note": " ".join(family_notes),
@@ -1577,8 +1586,10 @@ def _build_applicant_country_section(ctx: ChartContext) -> None:
         "完整數據見 report_data.json；追蹤特定公司時用 filters 圈定申請人清單。"
     )
     ctx.chart_rows["applicant_country_matrix"] = report["rows"]
+    # 檔名 applicant_country_matrix ≠ 報表鍵 applicant_country_distribution，須顯式宣告查找鍵。
     ctx.sections.append({
         "title": report["label_zh"],
+        "report_key": "applicant_country_distribution",
         "variants": [{"label": "Matrix", "file": "applicant_country_matrix.svg", "variant_key": "default"}],
         "note": note,
     })

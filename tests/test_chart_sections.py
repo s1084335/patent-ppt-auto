@@ -1047,5 +1047,112 @@ class ClassificationSourceColumnTests(unittest.TestCase):
         return DisplaySpecTests._fake_ctx(tmp, reports, ipc_levels=(4, 5))
 
 
+class SectionReportKeyTests(unittest.TestCase):
+    """數據卡查找鍵 regression（2026-07-27）：index 卡片的「數據表為空」。
+
+    症狀：年趨勢／受理局分布／國家佈局／公司×國家四張卡圖表有、數據表卻是
+    「無資料」，但 report_data.json 內對應報表明明有 rows（實測 analysis_1
+    輸出：application_trend 33 列、country_distribution 6 列、
+    family_country_layout 2 列、applicant_country_distribution 12 列）。
+
+    根因：section 沒宣告 report_key 時，_section_report_name 退回「第一個
+    variant 檔名去副檔名」當查找鍵。這四張卡的 SVG 檔名（annual_trend、
+    jurisdiction_distribution、family_country_distribution、
+    applicant_country_matrix）與報表鍵（application_trend、
+    country_distribution、family_country_layout、
+    applicant_country_distribution）不同名，查找必然落空。
+
+    修法：section 一律顯式帶 report_key，不靠檔名與報表鍵恰好同名。本測試
+    同時釘住「每個 section 的查找鍵都必須在 report_data.json 取得到 rows」，
+    避免日後改檔名又悄悄退化。
+    """
+
+    # 四張卡各給一列夠用的假資料；欄位形狀依報表定義的 columns。
+    _ROWS = {
+        "application_trend": [{"application_year": 2020, "patent_count": 5}],
+        "publication_trend": [{"publication_year": 2021, "patent_count": 3}],
+        "country_distribution": [{"country_code": "TW", "patent_count": 7}],
+        "family_country_layout": [{"country_code": "US", "patent_count": 2}],
+        "family_quality_detail": [{
+            "family_id": "F1", "is_surrogate_family": False, "member_rows": 2,
+            "expected_counts_raw": "", "family_incomplete": False,
+            "unknown_status_count": 0, "pending_status_count": 0,
+            "ep_in_transition_count": 0, "ep_missing_epc_count": 0,
+            "non_country_row_count": 0,
+        }],
+        "applicant_country_distribution": [
+            {"applicant_display_name": "REXON", "country_code": "TW", "patent_count": 4}
+        ],
+    }
+
+    def _stub_run_report(self, name, filters=None, limit=None, patent_ids=None):
+        return fake_report(name, self._ROWS.get(name, []))
+
+    def _render(self, report_names):
+        """跑一次出圖並回傳 (report_data dict, index.html 文字)。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(chart_runner, "run_report", self._stub_run_report):
+                result = chart_runner.run_chart_trial(
+                    output_dir=Path(tmp), report_names=report_names
+                )
+            run_dir = Path(result["output_dir"])
+            rd = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
+            index_html = (run_dir / "index.html").read_text(encoding="utf-8")
+        return rd, index_html
+
+    def test_four_cards_declare_matching_report_key(self):
+        """四張卡的 report_key 必須是報表引擎的鍵，不得退回檔名 fallback。"""
+        expected = {
+            "專利申請趨勢與專利公告趨勢": "application_trend",
+            "專利受理局分布": "country_distribution",
+            "國家佈局（現有保護）": "family_country_layout",
+            "公司×國家交叉表": "applicant_country_distribution",
+        }
+        rd, _ = self._render(list(self._ROWS))
+        by_title = {s["title"]: s for s in rd["sections"]}
+        for title, report_key in expected.items():
+            self.assertIn(title, by_title, f"缺少卡片 {title}")
+            self.assertEqual(
+                by_title[title].get("report_key"), report_key,
+                f"卡片「{title}」應顯式宣告 report_key={report_key}，"
+                f"實得 {by_title[title].get('report_key')!r}（未宣告＝退回檔名 fallback）",
+            )
+
+    def test_every_section_lookup_key_resolves_to_rows(self):
+        """通則：每個 section 的查找鍵都要能在 report_data.json 取到 rows。
+
+        這是「數據表為空」的直接契約——查找鍵落空就等於卡片顯示無資料。
+        """
+        rd, _ = self._render(list(self._ROWS))
+        available = (
+            set(rd.get("reports", {}))
+            | set(rd.get("family_reports", {}))
+            | set(rd.get("chart_rows", {}))
+        )
+        for section in rd["sections"]:
+            key = chart_runner._section_report_name(section)
+            self.assertIn(
+                key, available,
+                f"卡片「{section['title']}」查找鍵 {key!r} 在 report_data.json 找不到，"
+                f"數據表會顯示無資料；可用鍵={sorted(available)}",
+            )
+
+    def test_four_cards_render_non_empty_data_table(self):
+        """端到端：四張卡在 index.html 的數據區不得是「無資料」。"""
+        _, index_html = self._render(list(self._ROWS))
+        blocks = re.findall(r'<section class="report-section">.*?</section>', index_html, re.S)
+        by_title = {}
+        for block in blocks:
+            title = re.search(r"<h2>(.*?)</h2>", block).group(1)
+            by_title[title] = block
+        for title in ("專利申請趨勢與專利公告趨勢", "專利受理局分布",
+                      "國家佈局（現有保護）", "公司×國家交叉表"):
+            self.assertIn(title, by_title, f"缺少卡片 {title}")
+            self.assertNotIn(
+                "data-empty", by_title[title],
+                f"卡片「{title}」數據表為空（顯示無資料），但該報表有 rows",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
