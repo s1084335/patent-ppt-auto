@@ -1165,6 +1165,36 @@ def _fetch_source_excerpts(cur: Any, source_column: str, patent_ids: list[int]) 
     ]
 
 
+def _carry_artifact_from(cur: Any, *, previous_run_id: int, run_id: int) -> None:
+    """把上游 run 的 artifact 資訊（key ＋ hash）整組帶到新 run。
+
+    merge／unmerge 是**純結構操作、不重訓模型**，仍沿用上游那顆 .pkl，
+    所以要沿用 `artifact_key` 讓 `_latest_completed_run` 能把新 run 視為最新完成版
+    （否則會退回合併前的 run）。
+
+    ⚠ **key 與 hash 必須一起搬**（2026-07-27 實機 9k）：原本只搬 key、沒搬
+    `model_artifact_hash`，導致 merge run 通過 `_latest_completed_run` 的
+    `artifact_key IS NOT NULL` 守門被選為最新 run，接著 incremental 讀 hash 時
+    `KeyError: 'model_artifact_hash'`——**合併／拆分過的 workspace 永遠無法增量分群**。
+
+    載入 artifact 時要用 hash 驗完整性（`load_artifact(..., expected_hash=...)`），
+    少一半就等於這條路走不通。merge 與 unmerge 收口在此，不各自實作。
+    """
+    cur.execute(
+        """
+        UPDATE derived_layer.topic_runs AS tr SET
+            artifact_key = src.artifact_key,
+            topic_state_json = tr.topic_state_json
+                || jsonb_build_object(
+                    'model_artifact_hash',
+                    src.topic_state_json -> 'model_artifact_hash')
+        FROM derived_layer.topic_runs AS src
+        WHERE src.run_id = %s AND tr.run_id = %s
+        """,
+        (previous_run_id, run_id),
+    )
+
+
 def _latest_completed_run(*, workspace_id: int, source_field: str) -> dict[str, Any]:
     """取得具有效 artifact 的最新完成 run。
 
@@ -1183,6 +1213,11 @@ def _latest_completed_run(*, workspace_id: int, source_field: str) -> dict[str, 
               AND tr.source_field = %s
               AND tr.topic_state_json->>'status' = 'completed'
               AND tr.artifact_key IS NOT NULL
+              -- ⚠ hash 也要有（2026-07-27 實機 9k）：載入 artifact 需 expected_hash 驗完整性，
+              -- 只有 key 沒有 hash 的 run 選中了也用不了，下游直接 KeyError。
+              -- 這是防禦層——即使日後又出現「只搬 key」的寫入路徑，也會自動跳過該 run、
+              -- 退回上一個完整的 run，而不是炸在讀取端。
+              AND tr.topic_state_json->>'model_artifact_hash' IS NOT NULL
             ORDER BY (tr.topic_state_json->>'artifact_version')::int DESC NULLS LAST,
                      tr.run_id DESC
             LIMIT 1
@@ -1532,16 +1567,9 @@ def _persist_topic_merge(
                     "artifact_version": artifact_version,
                 },
             )
-            # 純結構合併不動模型，沿用前一版 artifact_key，讓 _latest_completed_run
-            # 能把本次 merge run 視為最新完成版（否則會退回合併前的 run）
-            cur.execute(
-                """
-                UPDATE derived_layer.topic_runs SET artifact_key = (
-                    SELECT artifact_key FROM derived_layer.topic_runs WHERE run_id = %s
-                ) WHERE run_id = %s
-                """,
-                (previous_run_id, run_id),
-            )
+            # 純結構合併不動模型，沿用前一版的 artifact（key ＋ hash 一組）。
+            # 只搬 key 會讓後續 incremental 讀 hash 時 KeyError——見 _carry_artifact_from。
+            _carry_artifact_from(cur, previous_run_id=previous_run_id, run_id=run_id)
 
             # 指派：把前一版最新指派整份帶到新 run，來源主題的專利改指向目標主題
             assignments = _latest_assignments(
@@ -1710,15 +1738,8 @@ def _persist_unmerge(
                     "artifact_version": artifact_version,
                 },
             )
-            # 純結構還原不動模型，沿用前一版 artifact_key（同 _persist_topic_merge）
-            cur.execute(
-                """
-                UPDATE derived_layer.topic_runs SET artifact_key = (
-                    SELECT artifact_key FROM derived_layer.topic_runs WHERE run_id = %s
-                ) WHERE run_id = %s
-                """,
-                (previous_run_id, run_id),
-            )
+            # 純結構還原不動模型，沿用前一版的 artifact（key ＋ hash 一組，同 merge）
+            _carry_artifact_from(cur, previous_run_id=previous_run_id, run_id=run_id)
 
             # 指派：把合併結果的專利依原始指派還原回各來源主題
             assignments = _latest_assignments(
