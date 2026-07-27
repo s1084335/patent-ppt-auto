@@ -283,6 +283,9 @@ def run_patent_note(
     limit: int | None = None,
     timeout_seconds: float = DEFAULT_CLI_TIMEOUT_SECONDS,
     progress: Callable[[str, int], None] | None = None,
+    patents: Any = None,
+    apply_notes: Any = None,
+    payload_root: Any = None,
 ) -> dict[str, Any]:
     """整條文獻備註流程：讀候選 → 按字數分批 → 逐批呼 CLI → 批次寫回。
 
@@ -290,12 +293,17 @@ def run_patent_note(
     每批完成即回報進度（0→100 線性推進，帶「第 n/N 批」階段文字），不留無限 spinner。
     回傳：候選數、實際寫入數、批次數與 cli_kind／prompt_version 供追溯。
     """
+    from . import ai_payload_file as pf
+
     runner = cli_runner if cli_runner is not None else _subprocess_cli_runner
-    note_store = store if store is not None else PatentNoteStore()
+    # patents 直接給定時（測試／呼叫端已備妥資料）不建 store，避免無謂連線。
+    note_store = store if store is not None else (
+        None if patents is not None else PatentNoteStore())
+    pf.cleanup_old_payloads(root=payload_root)
 
     if progress is not None:
         progress("讀取待產生文獻備註的專利", 5)
-    candidates = note_store.fetch(
+    candidates = list(patents) if patents is not None else note_store.fetch(
         workspace_id=workspace_id, skip_existing=skip_existing, limit=limit
     )
     batches = build_batches(candidates, char_budget=char_budget)
@@ -320,8 +328,28 @@ def run_patent_note(
             progress(f"產生文獻備註（第 {index}/{total_batches} 批，{len(batch)} 件）", percent)
 
         known_ids = {pid for pid, _ in batch}
-        prompt = build_prompt(batch)
-        argv = build_cli_command(cli_kind, prompt, model=model)
+        # 資料走檔案不走命令列（2026-07-27）：主權項全文塞 argv 在 Windows
+        # （CreateProcess 上限 32,767）會 WinError 206；本支雖已按 CHAR_BUDGET 分批、
+        # 目前尚未超標，但與 topic_label 同屬「靠剛好塞得下」的脆弱設計，一併收斂。
+        path = pf.write_payload_file(
+            "patent_note",
+            {
+                "instruction": (
+                    f"為每一筆專利的主權項產生繁體中文文獻備註，"
+                    f"目標約 {NOTE_TARGET_CHARS} 字、不得超過 {NOTE_MAX_CHARS} 字。"
+                ),
+                "output_contract": {"notes": [{"patent_id": 0, "note": ""}]},
+                "items": [{"patent_id": pid, "claim": text} for pid, text in batch],
+            },
+            root=payload_root,
+            label=f"batch{index:02d}",
+        )
+        argv = pf.build_cli_command_with_payload(
+            cli_kind,
+            instruction="任務：為專利主權項產生文獻備註（系統派工、非互動、一次性）。",
+            payload_path=path,
+            model=model,
+        )
         parsed = parse_cli_result(runner(argv, timeout_seconds))
 
         pairs: list[tuple[int, str]] = []
@@ -344,7 +372,10 @@ def run_patent_note(
             pairs.append((patent_id, note[:NOTE_MAX_CHARS]))
 
         # 每批一次批次寫入（executemany），不逐筆 UPDATE。
-        written += note_store.write(pairs)
+        if apply_notes is not None:
+            written += int(apply_notes(pairs=pairs).get("updated", 0))
+        else:
+            written += note_store.write(pairs)
 
     if progress is not None:
         progress(f"文獻備註完成（共 {written} 件）", 100)

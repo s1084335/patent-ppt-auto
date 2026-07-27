@@ -17,6 +17,7 @@ CLI 一律用可注入的 fake runner，不真跑二進位、不燒 token。
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import unittest
 from unittest import mock
 
@@ -38,13 +39,16 @@ class RecordingCli:
         self.note_text = note_text
 
     def __call__(self, argv, timeout):
-        """從 prompt 撈出本批的 patent_id 清單，逐一回吐固定備註。"""
+        """從資料檔撈出本批的 patent_id 清單，逐一回吐固定備註。
+
+        2026-07-27 起資料走檔案不走命令列（Windows CreateProcess 32,767 上限），
+        故此處與真實 CLI 一樣「讀 argv 內的檔案路徑」，不再從 prompt 字串解析。
+        """
         argv = list(argv)
         self.calls.append(argv)
-        prompt = argv[2]
         notes = [
             {"patent_id": pid, "note": self.note_text}
-            for pid in _patent_ids_in_prompt(prompt)
+            for pid in _patent_ids_in_payload(argv)
         ]
         return CliResult(
             exit_code=0,
@@ -56,6 +60,22 @@ class RecordingCli:
     def prompts(self) -> list[str]:
         """所有批次的 prompt 字串。"""
         return [argv[2] for argv in self.calls]
+
+
+def _patent_ids_in_payload(argv) -> list[int]:
+    """從 argv 內的資料檔路徑讀回本批 patent_id（模擬 CLI 用 Read 讀檔）。"""
+    import json as _json
+    import re as _re
+    for arg in argv:
+        # 路徑可能含中文或空白，逐行找出「資料檔…：<path>」那一行，不用 \S+ 硬切
+        for line in str(arg).splitlines():
+            if "資料檔" not in line or ".json" not in line:
+                continue
+            candidate = Path(line.split("：", 1)[-1].strip())
+            if candidate.exists():
+                data = _json.loads(candidate.read_text(encoding="utf-8"))
+                return [int(i["patent_id"]) for i in data.get("items", [])]
+    return []
 
 
 def _patent_ids_in_prompt(prompt: str) -> list[int]:

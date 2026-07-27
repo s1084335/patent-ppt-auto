@@ -39,13 +39,14 @@ class RecordingCli:
         """記錄 argv，回吐 {"results":[{patent_id, verdict, reason}, ...]}。"""
         argv = list(argv)
         self.calls.append(argv)
-        prompt = argv[argv.index("-p") + 1]
         if self._verdicts is not None:
             results = self._verdicts
         else:
-            # 從 prompt 掃出所有 patent_id，全部回「相干」（測試預設）。
-            import re
-            pids = [int(m) for m in re.findall(r"patent_id[=：:\s]+(\d+)", prompt)]
+            # 從**資料檔**掃出本批 patent_id，全部回「相干」（測試預設）。
+            # 2026-07-27 起備註走檔案不走命令列，故與真實 CLI 一樣讀檔。
+            from tests.ai_payload_test_helpers import patent_ids_from_argv
+
+            pids = patent_ids_from_argv(argv)
             results = [{"patent_id": p, "verdict": "相干", "reason": "測試"} for p in pids]
         return CliResult(
             exit_code=0,

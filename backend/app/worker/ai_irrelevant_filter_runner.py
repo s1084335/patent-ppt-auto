@@ -207,6 +207,7 @@ def run_irrelevant_filter(
     batch_size: int = DEFAULT_BATCH_SIZE,
     timeout_seconds: float = DEFAULT_CLI_TIMEOUT_SECONDS,
     progress: Callable[[str, int], None] | None = None,
+    payload_root: Any = None,
 ) -> dict[str, Any]:
     """整條篩選判讀流程：整理候選備註 → 分批內嵌 prompt 呼 CLI → 逐筆解析。
 
@@ -220,7 +221,10 @@ def run_irrelevant_filter(
     cli_runner／fetch_notes 可注入供測試以 fake 取代，不真跑 CLI/DB、不燒 token。
     progress(stage, percent) 供執行期 0→100 緩進。回傳含逐筆 results 與統計。
     """
+    from . import ai_payload_file as pf
+
     runner = cli_runner if cli_runner is not None else _subprocess_cli_runner
+    pf.cleanup_old_payloads(root=payload_root)
 
     if progress is not None:
         progress("整理候選專利文獻備註", 10)
@@ -267,8 +271,30 @@ def run_irrelevant_filter(
             # 55→90 之間按批緩進。
             pct = 55 + int(35 * (batch_index / total_batches))
             progress(f"AI 判讀第 {batch_index + 1}/{total_batches} 批", pct)
-        prompt = build_prompt(batch, topic_label=topic_label)
-        argv = build_cli_command(cli_kind, prompt, model=model)
+        # 資料走檔案不走命令列（2026-07-27）：備註全文塞 argv 在 Windows
+        # （CreateProcess 上限 32,767）有超標風險（50 筆備註實測 6,589，備註變長即漲）。
+        # 與 topic_label／patent_note 收斂到同一套 ai_payload_file，不再各自散落。
+        path = pf.write_payload_file(
+            "irrelevant_filter",
+            {
+                "instruction": (
+                    "逐筆判斷每則文獻備註與主題是否相干，"
+                    f"verdict 僅能為 {list(VALID_VERDICTS)} 之一；"
+                    "每筆獨立判斷，不得與其他筆相對比較。"
+                ),
+                "topic_label": topic_label,
+                "output_contract": {"results": [{"patent_id": 0, "verdict": ""}]},
+                "items": [{"patent_id": pid, "note": note} for pid, note in batch],
+            },
+            root=payload_root,
+            label=f"ws{workspace_id}_b{batch_index + 1:02d}",
+        )
+        argv = pf.build_cli_command_with_payload(
+            cli_kind,
+            instruction="任務：判斷專利與主題是否相干（系統派工、非互動、一次性）。",
+            payload_path=path,
+            model=model,
+        )
         parsed = parse_cli_result(runner(argv, timeout_seconds))
         batch_ids = {pid for pid, _ in batch}
         for item in _extract_results(parsed):

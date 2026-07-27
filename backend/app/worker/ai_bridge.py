@@ -461,6 +461,40 @@ def _run_ai_report_ppt_job(payload: dict[str, Any], context: JobContext) -> dict
 
 # job_type → 執行函式。值存「函式名」而非函式物件，讓 execute_ai_job 在呼叫當下才解析到
 # 模組屬性——測試以 mock.patch.object 換掉 _run_ai_* 時才會生效（存物件會綁死原函式）。
+def _run_ai_irrelevant_filter_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """執行不相干篩選：逐筆判讀主題內低相似度專利的文獻備註。
+
+    2026-07-27 補接：`ai:irrelevant_filter` 一直在 AI_JOB_TYPES 白名單內（Companion 領得走），
+    但 `_AI_JOB_RUNNERS` 從未註冊 → 領到就丟
+    `ValueError: unsupported AI bridge job_type`。之所以拖到今天才暴露，是因為它的
+    上游 `_enqueue_irrelevant_filter` 讀 summary["workspace_id"]，而 FinalizationSummary
+    直到今天才補上該欄位——在此之前這個 job **從未被建立過**（DB 歷來 0 筆）。
+
+    payload：workspace_id（必要）；cli_kind／model／cli_timeout_seconds 沿用慣例。
+    候選由 runner 內部依 c-TF-IDF 最低 N 筆取得，不在此組大 payload。
+    """
+    from . import ai_irrelevant_filter_runner
+
+    context.heartbeat("開始不相干篩選", 15)
+    workspace_id = payload.get("workspace_id")
+    if workspace_id is None:
+        raise ValueError("ai:irrelevant_filter payload requires workspace_id")
+
+    def _progress(stage: str, percent: int) -> None:
+        context.heartbeat("CLI 相干性判讀中", percent)
+
+    return ai_irrelevant_filter_runner.run_irrelevant_filter(
+        workspace_id=int(workspace_id),
+        cli_kind=str(payload.get("cli_kind") or "claude"),
+        model=payload.get("model") or None,
+        timeout_seconds=float(
+            payload.get("cli_timeout_seconds")
+            or ai_irrelevant_filter_runner.DEFAULT_CLI_TIMEOUT_SECONDS
+        ),
+        progress=_progress,
+    )
+
+
 _AI_JOB_RUNNERS: dict[str, str] = {
     "ai:narrative": "_run_ai_narrative_job",
     "ai:topic_label": "_run_ai_topic_label_job",
@@ -469,6 +503,7 @@ _AI_JOB_RUNNERS: dict[str, str] = {
     "ai:company_zh_name": "_run_ai_company_zh_name_job",
     "ai:market_summary": "_run_ai_market_summary_job",
     "ai:report_ppt": "_run_ai_report_ppt_job",
+    "ai:irrelevant_filter": "_run_ai_irrelevant_filter_job",
 }
 
 

@@ -204,6 +204,7 @@ def run_topic_label(
     updated_by: str = "ai-bridge",
     timeout_seconds: float = DEFAULT_CLI_TIMEOUT_SECONDS,
     progress: Callable[[str, int], None] | None = None,
+    payload_root: Any = None,
 ) -> dict[str, Any]:
     """把主題標籤整條系統化：批次取代表文檔 → 組提示 → 呼叫 headless CLI → 驗收 → 回填。
 
@@ -233,27 +234,73 @@ def run_topic_label(
     if progress is not None:
         progress("cli_running", 30)
 
-    prompt = build_prompt(payload)
-    argv = build_cli_command(cli_kind, prompt, model=model)
-    parsed = parse_cli_result(runner(argv, timeout_seconds))
-    if progress is not None:
-        progress("cli_running", 85)
+    # ── 資料檔＋分批（2026-07-27）────────────────────────────────────
+    # 舊版把整段 prompt（含 10 主題×5 篇獨立項全文，實測 128,101 字元）塞進命令列，
+    # 在本機 Companion（Windows，CreateProcess 上限 32,767）必然 WinError 206。
+    # 改為資料落檔、CLI 以 Read 讀取；並依字元預算分批，避免單次超出 AI context。
+    from . import ai_payload_file as pf
+
+    pf.cleanup_old_payloads(root=payload_root)
+    topics = list(payload.get("topics") or [])
+    batches = pf.split_into_batches(topics, max_chars=pf.MAX_PAYLOAD_CHARS)
 
     labels: list[dict[str, Any]] = []
-    for item in _extract_labels(parsed):
-        topic_code = str(item.get("topic_code") or "").strip()
-        if topic_code not in known_codes:
-            # 幻覺 topic_code 直接失敗，不把不存在的主題標籤寫進正式 state。
-            raise TopicLabelRunnerError(
-                f"CLI 產出未知 topic_code：{topic_code!r}（可用：{sorted(known_codes)}）"
+    used_labels: list[str] = []   # 解法 A：把已命名的名稱帶進後續批次，避免撞名
+    for index, batch in enumerate(batches, start=1):
+        batch_payload = {
+            "workspace_id": payload.get("workspace_id"),
+            "source_field": payload.get("source_field"),
+            "run_id": payload.get("run_id"),
+            "instruction": _sanitize_instruction(str(payload.get("instruction", ""))),
+            "guidance": (
+                "逐篇閱讀每個 topic 的代表專利內容後，歸納該主題共同的技術/功效重點再命名；"
+                "不要拼接高頻詞、不要覆述用字。"
+            ),
+            "output_contract": {
+                "topics": [{"topic_code": "原樣取自本檔 topics", "label": "", "summary": ""}]
+            },
+            "topics": batch,
+        }
+        # 分批後 AI 看不到其他批的主題，可能取出重複名稱；把已用過的名字（僅名稱、
+        # 不含文檔，長度極短）帶進後續批次，讓它主動區隔。
+        if used_labels:
+            batch_payload["already_used_labels"] = list(used_labels)
+            batch_payload["avoid_duplicate_hint"] = (
+                "already_used_labels 是先前批次已採用的主題名稱，"
+                "本批命名請避免與之重複或高度相似。"
             )
-        labels.append({
-            "topic_code": topic_code,
-            "label": str(item.get("label") or "").strip(),
-            "summary": str(item.get("summary") or "").strip(),
-            # 🔴 label guard：無論 CLI 自稱什麼，AI 通道一律 llm（草稿），不得自升 manual。
-            "source": AI_LABEL_SOURCE,
-        })
+        path = pf.write_payload_file(
+            "topic_label", batch_payload, root=payload_root,
+            run_id=payload.get("run_id"),
+            label=f"ws{workspace_id}_{source_field}_b{index:02d}",
+        )
+        argv = pf.build_cli_command_with_payload(
+            cli_kind,
+            instruction="任務：為專利主題產生中文標籤與短摘要（系統派工、非互動、一次性）。",
+            payload_path=path,
+            model=model,
+        )
+        parsed = parse_cli_result(runner(argv, timeout_seconds))
+        for item in _extract_labels(parsed):
+            topic_code = str(item.get("topic_code") or "").strip()
+            if topic_code not in known_codes:
+                # 幻覺 topic_code 直接失敗，不把不存在的主題標籤寫進正式 state。
+                raise TopicLabelRunnerError(
+                    f"CLI 產出未知 topic_code：{topic_code!r}（可用：{sorted(known_codes)}）"
+                )
+            label_text = str(item.get("label") or "").strip()
+            labels.append({
+                "topic_code": topic_code,
+                "label": label_text,
+                "summary": str(item.get("summary") or "").strip(),
+                # 🔴 label guard：無論 CLI 自稱什麼，AI 通道一律 llm（草稿），不得自升 manual。
+                "source": AI_LABEL_SOURCE,
+            })
+            if label_text:
+                used_labels.append(label_text)
+
+    if progress is not None:
+        progress("cli_running", 85)
     if not labels:
         raise TopicLabelRunnerError("CLI 正常結束但未產出任何主題標籤")
 

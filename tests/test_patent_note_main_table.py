@@ -149,12 +149,11 @@ class _FakeCli:
     def __call__(self, argv, timeout):
         import json
 
-        prompt = list(argv)[2]
-        ids = [
-            int(line.split(":", 1)[1].strip())
-            for line in prompt.splitlines()
-            if line.startswith("### patent_id:")
-        ]
+        # 2026-07-27 起獨立項走資料檔不走命令列（Windows 32,767 上限），
+        # 故與真實 CLI 一樣讀 argv 內的資料檔，不再解析 prompt 字串。
+        from tests.ai_payload_test_helpers import patent_ids_from_argv
+
+        ids = patent_ids_from_argv(argv)
         notes = [{"patent_id": pid, "note": self.note} for pid in ids]
         return CliResult(
             exit_code=0,
