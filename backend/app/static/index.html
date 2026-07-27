@@ -111,19 +111,26 @@ button { font-family: inherit; }
 /* 詳情層寬度對齊第一層表格可視區（2026-07-26 使用者定案）：sticky left:0 黏在可視左緣，
    寬度用視窗寬扣掉左導覽(200px)＋右 AI 助手(240px)＋padding，落在申請人(原文)那一帶、
    不越過 AI 助手；長文在此範圍內換行到完整。 */
+/* 詳情層寬度（2026-07-27 修）：改用 sticky 黏可視左緣＋容器寬 100%，
+   不再用 100vw 硬扣導覽與 AI 助手的像素寬——那組數字在 AI 助手收合或視窗縮放時
+   就不成立，算出的寬度溢出成橫向捲軸。100% 取自 .table-wrap 的實際可視寬，
+   自動跟著容器走。 */
 .patent-detail-row > td { background: var(--panel); padding: 0;
   position: sticky; left: 0;
-  width: calc(100vw - 200px - 240px - 2.7rem);
-  max-width: calc(100vw - 200px - 240px - 2.7rem); }
+  width: 100%; max-width: 100%; box-sizing: border-box; overflow: hidden; }
 .patent-detail { box-sizing: border-box; max-width: 100%; }
-/* 書目資料左右兩欄（2026-07-27）：左＝文字欄位逐列（佔約 55%）、右半＝主附圖放大。
-   窄畫面（左右擠不下）自動換行堆疊，圖不被壓成細條。 */
-.patent-detail-biblio { display: flex; gap: 0.9rem; align-items: flex-start; flex-wrap: wrap; }
-.patent-detail-biblio > .patent-detail { flex: 1 1 55%; min-width: 18rem; }
-.patent-detail-figure { flex: 1 1 38%; min-width: 14rem; text-align: center;
+/* 詳情層整層左右兩欄（2026-07-27 使用者定）：左＝所有文字節（摘要、書目資料…），
+   右＝主附圖。原本只有書目資料節分兩欄、摘要節滿寬，上下邊界不齊。
+   min-width:0 是關鍵——flex 項目預設 min-width:auto 會被內容撐大而溢出容器，
+   設 0 才會真正收縮並讓長文換行（而不是把整層推寬出現橫向捲軸）。 */
+.patent-detail-split { display: flex; gap: 0.9rem; align-items: flex-start;
+  flex-wrap: wrap; padding: 0.7rem 0.9rem; box-sizing: border-box; max-width: 100%; }
+.patent-detail-main { flex: 1 1 58%; min-width: 0; }
+.patent-detail-figure { flex: 0 1 34%; min-width: 12rem; text-align: center;
   padding: 0.6rem; border: 1px solid var(--border); border-radius: 0.4rem;
-  background: var(--panel-2); align-self: stretch;
-  display: flex; align-items: center; justify-content: center; }
+  background: var(--panel-2);
+  display: flex; align-items: flex-start; justify-content: center;
+  box-sizing: border-box; }
 .patent-detail-figure img { max-width: 100%; max-height: 24rem; height: auto;
   background: #fff; border-radius: 0.3rem; }
 
@@ -987,45 +994,41 @@ const DETAIL_SECTIONS = [
 ];
 // 詳情：該區塊的完整欄位（含列表已顯示者），以標籤／值兩欄逐列呈現，長文字不截斷。
 // 資料在列表回應中已帶回，展開不再打 API（主附圖仍走既有 lazy load 端點）。
+// 詳情層版式（2026-07-27 使用者定）：**整層**左右兩欄——左＝所有文字節
+// （摘要、書目資料…）逐列，右＝主附圖。原本只有書目資料節分兩欄，摘要節仍滿寬，
+// 導致上下兩塊邊界不齊；且圖只在書目資料那一段旁邊，位置飄移。
 function patentDetailHtml(p, scope) {
   const cols = patentColumns(scope);
   const claimed = new Set();
   DETAIL_SECTIONS.forEach(s => (s.keys || []).forEach(k => claimed.add(k)));
-  return DETAIL_SECTIONS.map(section => {
+  const figureHtml = p.has_figure
+    ? '<img loading="lazy" decoding="async" src="' + API + '/patents/'
+      + encodeURIComponent(p.patent_id) + '/figure"'
+      + ' alt="' + escHtml(p.patent_number || '') + ' 主附圖"'
+      + ' onerror="this.outerHTML=\'<span class=&quot;figure-empty&quot;>無圖</span>\'">'
+    : '<span class="figure-empty">無圖</span>';
+  const sectionsHtml = DETAIL_SECTIONS.map(section => {
     const secCols = section.keys
       ? cols.filter(c => section.keys.includes(c.key))
       : cols.filter(c => !claimed.has(c.key));
     if (secCols.length === 0) return '';
     const title = '<div class="patent-detail-section">' + escHtml(section.title) + '</div>';
-    // 書目資料節（keys=null 的 catch-all）採左右兩欄（2026-07-27 使用者定案）：
-    // 左＝文字欄位逐列；右半＝主附圖放大顯示（圖從逐列中抽出，不再擠在一格小圖）。
-    if (section.keys === null) {
-      const textCols = secCols.filter(c => c.key !== 'has_figure');
-      const figureHtml = p.has_figure
-        ? '<img loading="lazy" decoding="async" src="' + API + '/patents/'
-          + encodeURIComponent(p.patent_id) + '/figure"'
-          + ' alt="' + escHtml(p.patent_number || '') + ' 主附圖"'
-          + ' onerror="this.outerHTML=\'<span class=&quot;figure-empty&quot;>無圖</span>\'">'
-        : '<span class="figure-empty">無圖</span>';
-      return title
-        + '<div class="patent-detail-biblio">'
-        + '<dl class="patent-detail">'
-        + textCols.map(c =>
-          '<div class="patent-detail-item"><dt>' + escHtml(c.label) + '</dt>'
-          + '<dd>' + patentCell(p, c, 'detail') + '</dd></div>'
-        ).join('')
-        + '</dl>'
-        + '<div class="patent-detail-figure">' + figureHtml + '</div>'
-        + '</div>';
-    }
+    // has_figure 從逐列中剔除：主附圖改由整層右欄統一顯示，不在文字列裡再放一次。
+    const textCols = secCols.filter(c => c.key !== 'has_figure');
+    if (textCols.length === 0) return '';
     return title
       + '<dl class="patent-detail">'
-      + secCols.map(c =>
+      + textCols.map(c =>
         '<div class="patent-detail-item"><dt>' + escHtml(c.label) + '</dt>'
         + '<dd>' + patentCell(p, c, 'detail') + '</dd></div>'
       ).join('')
       + '</dl>';
   }).join('');
+  // 左欄裝全部文字節、右欄固定放圖——兩者上緣對齊，下方邊界一致。
+  return '<div class="patent-detail-split">'
+    + '<div class="patent-detail-main">' + sectionsHtml + '</div>'
+    + '<div class="patent-detail-figure">' + figureHtml + '</div>'
+    + '</div>';
 }
 // 點列展開／收合詳情列（同一列再點一次收合）。scope 讓兩區的列 id 不相撞。
 function togglePatentDetail(scope, index) {
