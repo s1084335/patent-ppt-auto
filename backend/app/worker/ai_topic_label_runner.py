@@ -42,7 +42,9 @@ from .ai_narrative_runner import (
 
 
 # 標籤流程版本；隨 prompt 契約升版而變，寫進結果供追溯。
-PROMPT_VERSION = "topic_label_v1"
+# v2（2026-07-27）：summary 字數由「20 到 40／上限 80」放寬到「40 到 50／上限 100」；
+# 同版起資料改走檔案（ai_payload_file）而非命令列，並支援分批與批間帶已用名稱。
+PROMPT_VERSION = "topic_label_v2"
 
 # 每個 topic 給 LLM 的代表性專利上限。與 clustering 引擎的 TOPIC_LABELING_DOC_LIMIT 同值；
 # 此處另存一份常數，是為了讓 worker 端不必在匯入期就拉進整個 clustering 相依（延遲載入）。

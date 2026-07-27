@@ -41,10 +41,14 @@ TOPIC_LABELING_DOC_LIMIT = 5
 # LLM 產出的建議字數（寫進 instruction）與 apply 端硬上限（2 倍建議上限）。
 # 超過硬上限視為 LLM 未遵循指示，直接 raise 讓呼叫端重生，不靜默截斷。
 LABEL_SUGGESTED_RANGE = "4 到 8"
-SUMMARY_SUGGESTED_RANGE = "20 到 40"
+# summary 2026-07-27 由「20 到 40／上限 80」放寬到「40 到 50／上限 100」（使用者定）：
+# 實測產出貼著建議上緣（技術平均 40.1 字、功效 36.3 字），40 字講不完主題重點。
+# 硬上限維持「2 倍建議上限」的比例，留足餘裕不致頻繁拒收。
+# 技術與功效共用這組常數（topic_labeling_payload 不分通道），改一處兩邊生效。
+SUMMARY_SUGGESTED_RANGE = "40 到 50"
 EXPLANATION_SUGGESTED_RANGE = "25 到 40"
 LABEL_MAX_CHARS = 16
-SUMMARY_MAX_CHARS = 80
+SUMMARY_MAX_CHARS = 100
 EXPLANATION_MAX_CHARS = 80
 
 # 候選說明的口徑，對齊 decisions.md「2026-07-17 分群主題數候選說明原則」：
