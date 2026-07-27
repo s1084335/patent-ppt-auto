@@ -204,6 +204,17 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 
 /* ── 分類區分頁（技術／功效兩通道） ── */
 .tab-bar { display: flex; gap: 0.3rem; border-bottom: 2px solid var(--border); margin-bottom: 0.9rem; }
+/* 分類區標題列（2026-07-27 使用者定）：分類區｜技術／功效｜分類｜重新挑選分類 同一列橫排。
+   原本五個元素各佔一行，垂直吃掉太多高度、把主題標籤與專利清單推到很下面。
+   flex-wrap 讓窄螢幕自動折行，不擠壓也不溢出。 */
+.topics-header {
+  display: flex; align-items: center; gap: .7rem; flex-wrap: wrap;
+  margin-bottom: .7rem; padding-bottom: .5rem; border-bottom: 1px solid var(--border);
+}
+/* tabs 併進標題列後不需要自己的底線與下方留白（外層已有） */
+.topics-header .tab-bar { border-bottom: none; margin-bottom: 0; }
+.topics-header .topic-tab { padding: 0.35rem 0.85rem; }
+.topics-header-hint { padding: 0; font-size: .82rem; }
 .topic-tab {
   border: none; background: transparent; color: var(--text-muted); cursor: pointer;
   padding: 0.5rem 1.1rem; font-size: 0.95rem; border-bottom: 2px solid transparent;
@@ -1149,26 +1160,31 @@ async function renderTopics() {
   // 沒先取就會把「分群進行中」畫成可按的「分類」。
   await fetchTasks();
   const classifyRunning = hasRunningClustering(state.workspaceId);
-  m.innerHTML = '<h2 class="panel-title">分類區</h2>'
+  // 標題列一列橫排（2026-07-27 使用者定）：分類區｜技術／功效｜分類｜重新挑選分類。
+  // 原本五個元素各佔一行（標題、tabs、提示、分類鈕、重新挑選鈕），垂直吃掉太多高度，
+  // 主題標籤與專利清單被推到很下面；併成一列後下方內容整體上移。
+  //
+  // 分類鈕：手動觸發（2026-07-26 分群不再匯入後自動跑）。後端 clustering/auto 自動判斷
+  // 首次（calibrate）或增量（incremental），並先補 embeddings；一鍵雙通道，按一次技術與
+  // 功效同時跑。按鈕狀態依「後端是否真有進行中的分群 job」推導，不靠點擊記憶——切頁會
+  // clearAllTimers()＋重畫，靠記憶的狀態會遺失，回來後顯示可按的「分類」而重複建 job。
+  m.innerHTML = '<div class="topics-header">'
+    + '<h2 class="panel-title" style="padding:0;margin:0">分類區</h2>'
     + topicTabsHtml()
-    + '<p class="hint" style="padding:0 0 0.6rem">點選主題以列出指派到該主題的專利'
-    + '（目前分頁：' + escHtml(currentSourceLabel()) + '）。</p>'
-    // 分類手動觸發（2026-07-26）：分群不再匯入後自動跑，改按此鈕。後端 clustering/auto
-    // 自動判斷首次（calibrate）或增量（incremental），並先補 embeddings；進度在右欄。
-    // 2026-07-27：一鍵雙通道——按一次技術與功效同時跑，不必切分頁各按一次。
-    // 按鈕狀態依「後端是否真有進行中的分群 job」推導，不靠點擊記憶——
-    // 切頁會 clearAllTimers()＋重畫，靠記憶的狀態會遺失，回來後顯示可按的「分類」，
-    // 使用者再按一次就重複建 job（2026-07-27 使用者回報）。
-    + '<div class="toolbar" style="margin:0 0 0.8rem">'
     + (classifyRunning
         ? '<button class="btn btn-primary" id="btn-run-classify" disabled>分類中…</button>'
-          + '<span class="hint" style="padding:0 0 0 0.6rem">'
-          + '分群進行中（右欄可看進度）；跑完會自動顯示結果，可放心切換頁面。</span>'
-        : '<button class="btn btn-primary" id="btn-run-classify" onclick="runClassify()">分類</button>'
-          + '<span class="hint" style="padding:0 0 0 0.6rem">'
-          + '按一次技術與功效同時分群；程式自動判斷首次／增量，不重跑既有主題。</span>')
+        : '<button class="btn btn-primary" id="btn-run-classify" onclick="runClassify()">分類</button>')
+    // 重新挑選分類：只有已採用分類、且尚未點開挑選介面時才出現（狀態由 loadTopicCandidates
+    // 判定，這裡先留位；實際的顯示／隱藏由該函式改寫 #topic-reselect 決定）。
+    + '<span id="topic-reselect"></span>'
+    + '<span style="flex:1"></span>'
+    + '<span class="hint topics-header-hint">'
+    + (classifyRunning
+        ? '分群進行中（右欄可看進度），可放心切換頁面。'
+        : '點選主題列出該主題專利；按「分類」可技術＋功效同時分群。')
+    + '</span>'
     + '</div>'
-    // 分群候選挑選區：尚未採用分類時在最前面顯示候選卡；已採用時只留重新挑選入口。
+    // 分群候選挑選區：尚未採用分類時顯示候選卡；已採用時由上方的重新挑選鈕進入。
     + '<div id="topic-candidates"></div>'
     // 版式：標籤 → 概覽 → 進階操作（收合）→ 專利清單
     + '<div id="topic-tags"><div class="hint">載入主題中…</div></div>'
@@ -1303,12 +1319,19 @@ async function loadTopicCandidates(opts) {
   const wrap = el('topic-candidates');
   if (!wrap) return;
   const hasTopics = !!(opts && opts.hasTopics);
+  // 標題列的重新挑選鈕每次重畫都先清空，只有下面那個分支會填回去——
+  // 否則點開挑選介面後，上方仍留著一顆已失效的入口鈕。
+  const reselectSlot = el('topic-reselect');
+  if (reselectSlot) reselectSlot.innerHTML = '';
   // 已有正式主題且使用者沒有點開重新挑選：只放入口，不打候選 API（省一次往返）。
   if (hasTopics && !state.candidatePickerOpen) {
-    wrap.innerHTML = '<div class="toolbar" style="margin-bottom:0.8rem">'
-      + '<button class="btn btn-outline" onclick="openCandidatePicker()">重新挑選分類</button>'
-      + '<span class="hint">目前顯示已採用的分類；如需改用其他主題數，可重新挑選候選。</span>'
-      + '</div>';
+    // 已採用分類：入口鈕移到上方標題列（2026-07-27 一列橫排），此處不再另起一行。
+    wrap.innerHTML = '';
+    const slot = el('topic-reselect');
+    if (slot) {
+      slot.innerHTML = '<button class="btn btn-outline" onclick="openCandidatePicker()">'
+        + '重新挑選分類</button>';
+    }
     return;
   }
   wrap.innerHTML = '<div class="hint">載入分群候選中…</div>';
