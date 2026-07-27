@@ -365,7 +365,10 @@ _LIST_DRAFTS_SQL = """
     SELECT d."申請人代碼" AS code,
            d."公司名稱" AS draft_name,
            d.wips_metadata_json->>'zh_name_verdict' AS verdict,
-           d.created_at,
+           -- ⚠ 表沒有 created_at（實機 HTTP 500：UndefinedColumn）。時間欄是
+           -- imported_at（匯入）與 updated_at（更新）；草稿為「一代碼至多一列、
+           -- 重跑 UPDATE 收斂」，故顯示「何時產的」取 updated_at。
+           d.updated_at AS created_at,
            (
                SELECT mode() WITHIN GROUP (ORDER BY c."別稱")
                FROM derived_layer.company_aliases c
