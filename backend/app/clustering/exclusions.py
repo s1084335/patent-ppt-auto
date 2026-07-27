@@ -325,33 +325,68 @@ def pending_reviews(workspace_id: int, *, conn: Any | None = None) -> list[dict[
 
     回傳依 patent_id 排序的 dict 序列，含 patent_id／ai_verdict／reason／excluded_at
     （excluded_at 在 pending 階段代表判讀時間）。走 0036 的部分索引，不全表掃。
+
+    ⚠ 另帶 **topic_label（所屬主題）** 與 **patent_note（文獻備註）**
+    （2026-07-27 使用者要求）：原本只有 patent_id，光看 ID 判斷不了要保留還是確定。
+    - 主題**跨 run 取**（DISTINCT ON 每個 patent 最新一筆）——incremental 只寫新增
+      專利的 assignment，只查最新 run 會讓舊專利的主題顯示空白。
+    - label 由該通道最新「topics 非空」的 run 的 state 解析（incremental run 無 topics）。
+    - 兩者皆可為 None（尚未分群／備註未產生），該筆仍要列出，不得漏掉。
     """
     with _conn_ctx(conn) as active:
         with active.cursor() as cur:
             cur.execute(
-                "SELECT patent_id, ai_verdict, reason, excluded_at "
-                "FROM derived_layer.workspace_excluded_patents "
-                "WHERE workspace_id = %s AND status = 'pending' "
-                "ORDER BY patent_id",
-                (workspace_id,),
+                """
+                WITH latest_assign AS (
+                    SELECT DISTINCT ON (ta.patent_id)
+                           ta.patent_id, ta.topic_key
+                    FROM derived_layer.topic_assignments ta
+                    JOIN derived_layer.topic_runs tr ON tr.run_id = ta.run_id
+                    JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id
+                    WHERE wr.workspace_id = %(workspace_id)s
+                    ORDER BY ta.patent_id, ta.run_id DESC
+                ),
+                topic_labels AS (
+                    SELECT DISTINCT ON (t.value->>'topic_code')
+                           t.value->>'topic_code' AS topic_code,
+                           t.value->>'label'      AS label
+                    FROM derived_layer.topic_runs tr
+                    JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id
+                    CROSS JOIN LATERAL jsonb_array_elements(
+                        COALESCE(tr.topic_state_json->'topics', '[]'::jsonb)) AS t(value)
+                    WHERE wr.workspace_id = %(workspace_id)s
+                    ORDER BY t.value->>'topic_code', tr.run_id DESC
+                )
+                SELECT ex.patent_id, ex.ai_verdict, ex.reason, ex.excluded_at,
+                       tl.label   AS topic_label,
+                       p."文獻備註" AS patent_note
+                FROM derived_layer.workspace_excluded_patents ex
+                LEFT JOIN latest_assign la ON la.patent_id = ex.patent_id
+                LEFT JOIN topic_labels  tl ON tl.topic_code = la.topic_key
+                LEFT JOIN core_layer.patents p ON p.id = ex.patent_id
+                WHERE ex.workspace_id = %(workspace_id)s AND ex.status = 'pending'
+                ORDER BY ex.patent_id
+                """,
+                {"workspace_id": workspace_id},
             )
             rows = cur.fetchall()
     result = []
     for row in rows:
         if isinstance(row, dict):
-            result.append({
-                "patent_id": int(row["patent_id"]),
-                "ai_verdict": row["ai_verdict"],
-                "reason": row["reason"],
-                "reviewed_at": row["excluded_at"],
-            })
+            values = (row["patent_id"], row["ai_verdict"], row["reason"],
+                      row["excluded_at"], row["topic_label"], row["patent_note"])
         else:
-            result.append({
-                "patent_id": int(row[0]),
-                "ai_verdict": row[1],
-                "reason": row[2],
-                "reviewed_at": row[3],
-            })
+            values = (row[0], row[1], row[2], row[3], row[4], row[5])
+        patent_id, verdict, reason, reviewed_at, topic_label, note = values
+        result.append({
+            "patent_id": int(patent_id),
+            "ai_verdict": verdict,
+            "reason": reason,
+            "reviewed_at": reviewed_at,
+            # 供前端逐筆判斷用；尚未分群／備註未產生時為 None，該筆仍列出。
+            "topic_label": topic_label,
+            "patent_note": note,
+        })
     return result
 
 

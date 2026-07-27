@@ -518,8 +518,12 @@ def _enqueue_post_import_jobs(payload: dict[str, Any], summary: dict[str, Any]) 
     # 刷新公司名收斂顯示（report_patent_base）：獨立 try/except，與分群無關但屬顯示必要一步。
     # 不 refresh 則申請人／專利權人／受讓人欄全空、以申請人過濾的搜尋也搜不到（2026-07-26 修斷點）。
     _enqueue_refresh_derived(summary)
-    # 文獻備註 AI 任務獨立 try/except：與分群互不牽連，任一失敗不影響其餘。
-    _enqueue_patent_note(summary)
+    # ⚠ 文獻備註（ai:patent_note）已於 2026-07-27 改為**手動按鈕觸發**，此處不再自動排。
+    # 撤回理由（實機）：AI 第一次跑失敗後（CLI 回覆多一句開場白，見 9g），
+    # **同一檔案再匯入會被去重擋掉**（inserted 0），那批專利再也不會被自動觸發——
+    # 53 筆永遠缺備註且沒有補救入口。改手動後可隨時重跑補齊。
+    # 觸發入口：POST /workspaces/{id}/patent-notes（見 api/workspaces.py）。
+    # runner 的 skip_existing=True 讓重複按只補空值、不覆蓋既有備註。
 
 
 def _enqueue_refresh_derived(summary: dict[str, Any]) -> None:

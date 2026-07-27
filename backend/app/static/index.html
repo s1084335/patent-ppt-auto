@@ -343,6 +343,22 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .export-toolbar { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.9rem; }
 .export-toolbar .switch { display: flex; align-items: center; gap: 0.4rem; font-size: 0.88rem; }
 #export-preview { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.4rem 1.6rem; }
+/* 報表種類頁標題列橫排（2026-07-27 R7／R8）：標題｜檢視選單｜市場 PDF（收合）。
+   原本 15 個勾選框＋固定展開的市場區塊佔滿整頁，看不到報表本身。 */
+.reports-header { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.8rem; }
+.reports-header-label { font-size: 0.86rem; color: var(--text-muted); }
+.reports-header .select { min-width: 14rem; }
+.reports-market-details > summary,
+.report-generate-box > summary { cursor: pointer; font-size: 0.88rem; color: var(--text-muted); }
+.reports-market-details[open] { flex-basis: 100%; }
+.report-generate-box { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.6rem 0.9rem; margin-bottom: 0.9rem; background: var(--panel); }
+/* R1 單份報表版面：左數據、右圖表、下解讀（橫跨整寬）。 */
+.report-single { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
+.report-single-data { flex: 1 1 46%; min-width: 0; }   /* min-width:0 防 flex 溢出 */
+.report-single-chart { flex: 1 1 46%; min-width: 0; }
+.report-single-chart img, .report-single-chart svg { max-width: 100%; height: auto; }
+.report-single-narrative { margin-top: 0.9rem; padding-top: 0.8rem; border-top: 1px solid var(--border); }
+.report-single-narrative .empty { color: var(--text-muted); font-size: 0.86rem; }
 /* 報表種類頁：產製完成後就地顯示完整報表（與匯出工作台共用卡片樣式）。 */
 #report-inline-view:not(:empty) { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.4rem 1.6rem; margin-top: 0.9rem; }
 .report-inline-head { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
@@ -778,6 +794,15 @@ async function renderBrowse() {
     + '<div class="toolbar">'
     + '<input class="text-input" id="browse-kw" placeholder="搜尋 專利號／名稱／申請人" style="min-width:260px">'
     + '<button class="btn btn-outline" onclick="onBrowseSearch()">搜尋</button>'
+    // AI 文獻備註：手動觸發（2026-07-27 定案，原匯入後自動觸發已撤回）。放這裡是因為
+    // 文獻備註是**專利級**資料、在此頁逐列可見，缺哪些一眼看得到。
+    // ⚠ 只補空值不覆蓋（後端 skip_existing=True），可重複按補齊——這是「匯入去重讓
+    //   第一次失敗的批次補不到備註」的唯一出口。
+    + (hasRunningJob('ai:patent_note', state.workspaceId)
+        ? '<button class="btn" id="btn-patent-note" disabled>產備註中…</button>'
+        : '<button class="btn" id="btn-patent-note" onclick="runPatentNotes()">'
+          + '產文獻備註</button>')
+    + '<span class="hint" style="padding:0;font-size:.8rem">只補空白的備註，不覆蓋既有</span>'
     + '</div>'
     + '<div id="browse-body"><div class="hint">載入中…</div></div>';
   const kwInput = el('browse-kw');
@@ -1727,6 +1752,36 @@ async function runIrrelevantFilter() {
   }
 }
 
+// AI 文獻備註：手動觸發（2026-07-27 定案，原匯入後自動觸發已撤回）。
+// ⚠ 只補空值、不覆蓋既有備註（後端 skip_existing=True），故可重複按補齊——
+// 這是「匯入去重讓第一次失敗的批次補不到備註」的唯一出口。
+async function runPatentNotes() {
+  if (state.workspaceId === null || state.workspaceId === undefined) {
+    alert('請先選定 workspace。');
+    return;
+  }
+  const btn = el('btn-patent-note');
+  if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
+  try {
+    const resp = await fetch(API + '/workspaces/' + encodeURIComponent(state.workspaceId)
+      + '/patent-notes', {
+      method: 'POST', headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('產文獻備註啟動失敗：' + (err.detail || ('HTTP ' + resp.status)));
+      return;
+    }
+    await fetchTasks();   // 立刻拉任務清單，右欄看得到進度、鈕轉為「產備註中…」
+    // 停在目前頁重畫即可：備註寫回後 F5 或再按搜尋就看得到新內容。
+    if (state.nav === 'browse') await loadBrowsePatents();
+  } catch (e) {
+    alert('連線錯誤：' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '產文獻備註'; }
+  }
+}
+
 // 待複核清單：AI 判為不相干／可疑者，逐筆「保留（留原主題）／確定（歸到不相干）」。
 // ⚠ 這些專利此刻仍參與分析——只有按「確定」後才真的被扣除。
 async function renderExclusionReviews() {
@@ -2313,8 +2368,29 @@ function renderReports() {
     + (state.reportSelection.has(name) ? ' checked' : '')
     + ' onchange="onReportToggle(this)"> ' + escHtml(zh) + '</label>'
   ).join('');
-  m.innerHTML = '<h2 class="panel-title">報表種類</h2>'
-    + '<p class="hint" style="padding:0 0 0.6rem">預設全部勾選，可取消個別項；送出後於下方顯示產製進度。</p>'
+  // 標題列橫排（2026-07-27 使用者定 R7／R8）：報表種類｜檢視選單｜市場 PDF（收合）。
+  // 原本 15 個勾選框佔滿整個上半畫面、市場 PDF 固定展開佔掉下半部，
+  // 一進頁面看不到任何報表內容。改為選單一行、產製清單收進 <details>。
+  m.innerHTML = '<div class="reports-header">'
+    + '<h2 class="panel-title" style="padding:0;margin:0">報表種類</h2>'
+    // R7：檢視哪一份報表——選單列表，一次只顯示一份（見 renderReportViewer）。
+    + '<label class="reports-header-label" for="report-view-select">檢視</label>'
+    + '<select id="report-view-select" class="select" onchange="onReportViewChange()">'
+    + '<option value="">（選擇報表）</option></select>'
+    // R8：市場資料收進可展開區塊，放選單右邊；平時不佔版面。
+    + '<details class="reports-market-details" id="market-details">'
+    + '<summary>市場資料（PDF）</summary>'
+    + '<div id="market-upload"></div>'
+    + '</details>'
+    + '<span style="flex:1"></span>'
+    + '<span class="hint" style="padding:0;font-size:.82rem">'
+    + '選單切換要看的報表；產製清單在下方「產製報表」展開。</span>'
+    + '</div>'
+    // 產製勾選清單也收合：平時不擋住報表內容，要重產才展開。
+    + '<details class="report-generate-box" id="report-generate">'
+    + '<summary>產製報表（勾選要產的種類）</summary>'
+    + '<p class="hint" style="padding:0.4rem 0 0.6rem">預設全部勾選，可取消個別項；'
+    + '送出後於下方顯示產製進度。</p>'
     + '<div class="toolbar">'
     + '<button class="btn btn-outline" id="btn-report-all" onclick="toggleAllReports()">全選／全不選</button>'
     + '</div>'
@@ -2322,9 +2398,8 @@ function renderReports() {
     + '<div class="toolbar">'
     + '<button class="btn btn-primary" id="btn-gen-report" onclick="submitReports()">產製選定報表</button>'
     + '</div>'
+    + '</details>'
     + '<div id="report-job"></div>'
-    // 市場資料上傳／產摘要區（綁 workspace；全庫隱藏）。
-    + '<div id="market-upload"></div>'
     + '<div id="report-version-list"></div>'
     // 報表顯示區：市場側摘要（只讀已確認現行版）與專利側報表卡「同一列」左右並排，
     // 對標範例 PPT 第 9 頁版型（非上下分區）。兩者各查各的、確定性組版，AI 不融合。
@@ -2333,6 +2408,8 @@ function renderReports() {
     + '<div id="report-inline-view"></div>'
     + '</div>';
   // 進頁即載入既有報表版本清單（只讀既有產出，不觸發任何產製）。
+  // 重置檢視快取：換 workspace／重進頁面時，選單要重填成新版本的 sections。
+  reportViewContent = null;
   renderMarketUpload();
   loadMarketSummaryForReport();
   loadReportVersions();
@@ -2721,9 +2798,12 @@ async function loadReportVersionContent(version) {
   try {
     const url = API + '/reports/versions/' + encodeURIComponent(version) + '/content';
     const content = await getJson(url);
-    // 報表內容 + 該版本的 PPT 版本清單（#10 R10-3）：PPT 掛在報表版本下，一版可有多個 _rN。
-    body.innerHTML = renderReportContentHtml(readOnlyReportView(content))
-      + '<div class="report-ppt-list" id="report-ppt-list-' + safe + '"></div>';
+    // R9（2026-07-27）：報表種類頁改「選單選一份、只顯示那一份」。版本區不再把整份
+    // 報告全列出來——那正是使用者說的「不同報表混在一起」。這裡只放 PPT 清單，
+    // 報表本體交給上方選單驅動的 #report-inline-view（見 renderReportViewer）。
+    body.innerHTML = '<div class="report-ppt-list" id="report-ppt-list-' + safe + '"></div>';
+    // 最新版（第一個載入者）的 content 餵給選單；舊版展開時不搶走選單。
+    if (reportViewContent === null) fillReportViewSelect(content);
     reportVersions.loaded[version] = true;
     loadReportVersionPptFiles(version);   // 非阻塞：報表內容先顯示，PPT 清單隨後填
   } catch (e) {
@@ -2943,6 +3023,88 @@ function saveCoverEdit() {
 }
 
 // 卡片三區：數據表 → 圖 → 解讀。欄位與變體全依 API 實際回傳動態產生，不寫死報表清單。
+// ══════════ 報表種類頁：選單切換 ＋ 單份左右下版面（2026-07-27 R1／R7／R9）══════════
+// 目前檢視中的 content（由 loadReportVersions 取最新版後填入）。
+let reportViewContent = null;
+
+// 把選單填上目前版本的所有 section（R7）；預設選第一份。
+function fillReportViewSelect(content) {
+  reportViewContent = content;
+  const sel = el('report-view-select');
+  if (!sel) return;
+  const sections = (content && content.sections) || [];
+  if (!sections.length) {
+    sel.innerHTML = '<option value="">（尚無報表，請先產製）</option>';
+    return;
+  }
+  sel.innerHTML = sections
+    .map((s, i) => '<option value="' + i + '">' + escHtml(s.title || ('報表 ' + (i + 1))) + '</option>')
+    .join('');
+  sel.value = '0';
+  renderReportViewer();
+}
+
+function onReportViewChange() { renderReportViewer(); }
+
+// R9：版本區隨選單變化——一次只顯示選中的那一份，不把整份報告全列出來。
+// R1：單份版面＝左數據、右圖表、下解讀。
+function renderReportViewer() {
+  const wrap = el('report-inline-view');
+  const sel = el('report-view-select');
+  if (!wrap || !sel) return;
+  const sections = (reportViewContent && reportViewContent.sections) || [];
+  const idx = parseInt(sel.value, 10);
+  if (!sections.length || Number.isNaN(idx) || !sections[idx]) {
+    wrap.innerHTML = '';
+    return;
+  }
+  wrap.innerHTML = reportSingleHtml(sections[idx]);
+}
+
+// 單份報表：左數據表、右圖表、下解讀（橫跨整寬）。
+function reportSingleHtml(section) {
+  const rows = section.rows || [];
+  let dataHtml = '<p class="hint" style="padding:0.3rem 0">無資料</p>';
+  if (rows.length) {
+    const columns = Object.keys(rows[0]);
+    const head = columns.map(c => '<th>' + escHtml(c) + '</th>').join('');
+    const body = rows.map(r => '<tr>'
+      + columns.map(c => '<td>' + escHtml(fmtCell(r[c])) + '</td>').join('') + '</tr>').join('');
+    dataHtml = '<table><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>'
+      + (section.row_count > rows.length
+        ? '<p class="hint" style="padding:0.25rem 0">顯示前 ' + rows.length
+          + ' 列｜總列數 ' + section.row_count + '</p>'
+        : '');
+  }
+  const variants = section.variants || [];
+  const chartHtml = variants.length
+    ? variants.map(v => (v.chart_url
+        ? '<figure style="margin:0 0 0.8rem"><img src="' + escHtml(v.chart_url) + '" alt="'
+          + escHtml(section.title) + ' ' + escHtml(v.label || '') + '" loading="lazy">'
+          + (v.label ? '<figcaption class="hint">' + escHtml(v.label) + '</figcaption>' : '')
+          + '</figure>'
+        : '<p class="hint">（' + escHtml(v.label || '此變體') + '無圖檔）</p>')).join('')
+    : '<p class="hint">（無圖表）</p>';
+  // 解讀：AI narratives 目前可能整批不存在（見 todo 9d，narrative runner 讀本機路徑、
+  // 報表在容器裡），故明確給空狀態文案，不留白讓人以為版面壞掉。
+  const texts = variants
+    .map(v => (v.narrative && v.narrative.text) ? v.narrative.text.trim() : '')
+    .filter(Boolean);
+  const narrativeHtml = texts.length
+    ? texts.map(t => '<p>' + escHtml(t) + '</p>').join('')
+    : '<p class="empty">AI 解讀尚未產生。可於右欄「AI 助手」送出解讀需求。</p>';
+  return '<article class="export-card">'
+    + '<h3>' + escHtml(section.title || '') + '</h3>'
+    + '<div class="report-single">'
+    + '<div class="report-single-data">' + dataHtml + '</div>'
+    + '<div class="report-single-chart">' + chartHtml + '</div>'
+    + '</div>'
+    + '<div class="report-single-narrative"><strong>解讀</strong>' + narrativeHtml + '</div>'
+    + (section.note ? '<p class="hint" style="padding:0.5rem 0 0">'
+        + escHtml(section.note) + '</p>' : '')
+    + '</article>';
+}
+
 function exportCardHtml(section, idx, view) {
   view = view || exportPreview;
   const rows = section.rows || [];
@@ -3689,15 +3851,18 @@ function hasRunningTopicLabel(workspaceId, sourceField) {
     && (!sourceField || !t.payload || t.payload.source_field === sourceField));
 }
 
-// 該 workspace 是否有進行中的 AI 不相干篩選 job。
-// 2026-07-27 起改手動觸發（POST /workspaces/{id}/irrelevant-filter），
-// 按鈕狀態同樣以後端 job 推導，切頁／F5 後仍正確顯示「AI 篩選中…」。
-function hasRunningIrrelevantFilter(workspaceId) {
+// 該 workspace 是否有進行中（queued/running）的指定 job。
+// 手動觸發鈕的停用狀態一律以**後端真實 job** 推導，不靠「這次點擊」的記憶——
+// 切頁會 clearAllTimers()＋重畫，靠記憶的狀態一律遺失（2026-07-27 使用者回報）。
+function hasRunningJob(jobType, workspaceId) {
   if (workspaceId === null || workspaceId === undefined) return false;
   return taskListCache.some(t =>
-    t.job_type === 'ai:irrelevant_filter'
+    t.job_type === jobType
     && ['queued', 'running'].includes(t.status)
     && t.workspace_id === workspaceId);
+}
+function hasRunningIrrelevantFilter(workspaceId) {
+  return hasRunningJob('ai:irrelevant_filter', workspaceId);
 }
 
 function renderTaskList(tasks) {

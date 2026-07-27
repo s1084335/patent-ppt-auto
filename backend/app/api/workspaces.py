@@ -179,6 +179,25 @@ def trigger_irrelevant_filter(workspace_id: int) -> dict[str, Any]:
     return {"workspace_id": workspace_id, "job_id": job_id}
 
 
+@router.post("/workspaces/{workspace_id}/patent-notes")
+def trigger_patent_notes(workspace_id: int) -> dict[str, Any]:
+    """手動觸發 AI 文獻備註（2026-07-27 定案：改手動，原匯入後自動觸發已撤回）。
+
+    ⚠ **只補空值、不覆蓋**（`skip_existing=True`）：已有備註的專利會被 runner 的查詢
+    條件排除，第二次按不會重寫——既有備註可能已經人工確認過，AI 不得蓋掉。
+
+    為何需要這個入口（實機）：AI 第一次跑失敗後，**同一檔案再匯入會被去重擋掉**
+    （inserted 0），那批專利再也不會被自動觸發，缺備註的專利沒有任何補救管道。
+    全庫亦可觸發（runner 對 workspace_id 無全庫限制，備註是專利級資料）。
+    """
+    job_id = create_job(
+        "ai:patent_note",
+        {"workspace_id": workspace_id, "skip_existing": True},
+        workspace_id=workspace_id,
+    )
+    return {"workspace_id": workspace_id, "job_id": job_id}
+
+
 @router.get("/workspaces/{workspace_id}/exclusion-reviews")
 def list_exclusion_reviews(workspace_id: int) -> dict[str, Any]:
     """列出待複核清單（AI 判讀為不相干、尚未裁決者）。

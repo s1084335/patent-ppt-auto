@@ -275,3 +275,77 @@ class ExclusionReviewServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PendingReviewsDetailTests(ExclusionReviewServiceTests):
+    """待複核清單要能看懂：加所屬主題與文獻備註（2026-07-27 使用者提出）。
+
+    使用者原話：「複核表那裡，所屬主題和文獻備註至少這兩個要有」——
+    原本只有 patent_id／AI 判定／理由，光看 ID 判斷不了要保留還是確定。
+
+    ⚠ 所屬主題要跨 run 取（incremental 只寫新增專利的 assignment，
+    只查最新 run 會讓舊專利的主題顯示空白）。
+    """
+
+    def test_pending_reviews_include_topic_and_note(self):
+        from backend.app.clustering import exclusions
+
+        with psycopg.connect(**_kw(TEST_DB)) as c:
+            ws = self._workspace(c, "ws-detail", [301, 302])
+            # 專利與文獻備註
+            for pid, note in ((301, "手持電動工具刀片組件"), (302, "健身器材阻力裝置")):
+                c.execute(
+                    'INSERT INTO core_layer.patents (id, "文獻備註") VALUES (%s,%s) '
+                    "ON CONFLICT (id) DO UPDATE SET \"文獻備註\"=EXCLUDED.\"文獻備註\"",
+                    (pid, note))
+            # 指派到主題（含帶 label 的 state）
+            import json as _json
+            wf = c.execute(
+                "INSERT INTO app_layer.workflow_runs (workspace_id, run_type, status) "
+                "VALUES (%s,'clustering_finalize','succeeded') RETURNING run_id",
+                (ws,)).fetchone()[0]
+            c.execute(
+                "INSERT INTO derived_layer.topic_runs (run_id, workflow_run_id, source_field, "
+                "topic_state_json, artifact_key) VALUES (%s,%s,'wips_independent_claims',%s,'k')",
+                (wf, wf, _json.dumps({
+                    "status": "completed", "model_artifact_hash": "h" * 64,
+                    "topics": [{"topic_code": "T007", "label": "刀片組結構",
+                                "status": "active", "topic_kind": "model"}]})))
+            for pid in (301, 302):
+                c.execute(
+                    "INSERT INTO derived_layer.topic_assignments "
+                    "(run_id, patent_id, topic_key, distance_to_centroid) VALUES (%s,%s,'T007',0.5)",
+                    (wf, pid))
+            exclusions.store_ai_verdicts(
+                ws,
+                [{"patent_id": 301, "verdict": "不相干", "reason": "屬其他領域"},
+                 {"patent_id": 302, "verdict": "可疑", "reason": "備註模糊"}],
+                conn=c)
+            c.commit()
+            items = exclusions.pending_reviews(ws, conn=c)
+
+        by_id = {it["patent_id"]: it for it in items}
+        self.assertEqual(len(items), 2)
+        self.assertEqual(
+            by_id[301].get("topic_label"), "刀片組結構",
+            "缺所屬主題——使用者無從判斷這筆屬於哪個主題")
+        self.assertEqual(
+            by_id[301].get("patent_note"), "手持電動工具刀片組件",
+            "缺文獻備註——光看 patent_id 判斷不了保留還是確定")
+        self.assertEqual(by_id[302].get("patent_note"), "健身器材阻力裝置")
+
+    def test_missing_topic_or_note_is_none_not_crash(self):
+        """沒有指派或沒有備註時回 None，不得炸也不得漏掉該筆。"""
+        from backend.app.clustering import exclusions
+
+        with psycopg.connect(**_kw(TEST_DB)) as c:
+            ws = self._workspace(c, "ws-detail-missing", [401])
+            c.execute("INSERT INTO core_layer.patents (id) VALUES (401) "
+                      "ON CONFLICT (id) DO NOTHING")
+            exclusions.store_ai_verdicts(
+                ws, [{"patent_id": 401, "verdict": "不相干", "reason": "x"}], conn=c)
+            c.commit()
+            items = exclusions.pending_reviews(ws, conn=c)
+        self.assertEqual(len(items), 1, "無主題／無備註的專利仍要列出")
+        self.assertIsNone(items[0].get("topic_label"))
+        self.assertIsNone(items[0].get("patent_note"))
