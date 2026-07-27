@@ -52,11 +52,15 @@ class AiNarrativeHandlerTests(unittest.TestCase):
     def _fake_run_narrative(self, captured):
         """回傳一個 fake run_narrative：把呼叫參數記進 captured dict，呼叫 progress 模擬 CLI 緩進。"""
 
-        def _run(based_on_version, *, cli_kind, cli_runner, timeout_seconds, progress, model=None):
+        def _run(based_on_version, *, cli_kind, cli_runner, timeout_seconds, progress,
+                 model=None, instruction=None):
             captured["based_on_version"] = based_on_version
             captured["cli_kind"] = cli_kind
             captured["model"] = model
             captured["timeout_seconds"] = timeout_seconds
+            # 使用者輸入的修改需求必須一路傳到 runner（待辦 C-7b bug ②：
+            # 2026-07-27 前 handler 沒往下傳，打了完全沒作用）。
+            captured["instruction"] = instruction
             # 模擬 runner 內 CLI 執行期間的緩進 heartbeat。
             progress("cli_running", 30)
             progress("cli_running", 85)
@@ -149,6 +153,42 @@ class AiNarrativeHandlerTests(unittest.TestCase):
             ai_narrative_runner.run_narrative = original
 
         self.assertEqual(captured["model"], "claude-opus-4-8")
+
+    def test_handler_forwards_instruction(self):
+        """使用者輸入的修改需求必須轉給 runner（待辦 C-7b bug ②）。
+
+        2026-07-27 前 payload 有存、前端有送，但 handler 沒往下傳、runner 也零消費，
+        使用者在右欄輸入框打的字完全沒作用——看似成功卻沒照要求做，比失敗更誤導。
+        """
+        store = FakeStore()
+        payload = {"instruction": "把趨勢圖改成近十年"}
+        context = _context(store, payload)
+        captured: dict = {}
+
+        original = ai_narrative_runner.run_narrative
+        ai_narrative_runner.run_narrative = self._fake_run_narrative(captured)
+        try:
+            handlers.handle_ai_narrative(payload, context)
+        finally:
+            ai_narrative_runner.run_narrative = original
+
+        self.assertEqual(captured["instruction"], "把趨勢圖改成近十年")
+
+    def test_handler_instruction_absent_is_none(self):
+        """未填修改需求時傳 None，不得傳空字串或漏傳。"""
+        store = FakeStore()
+        payload: dict = {}
+        context = _context(store, payload)
+        captured: dict = {}
+
+        original = ai_narrative_runner.run_narrative
+        ai_narrative_runner.run_narrative = self._fake_run_narrative(captured)
+        try:
+            handlers.handle_ai_narrative(payload, context)
+        finally:
+            ai_narrative_runner.run_narrative = original
+
+        self.assertIsNone(captured["instruction"])
 
 
 class HandlerRegistrationTests(unittest.TestCase):
