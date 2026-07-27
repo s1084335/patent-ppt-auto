@@ -859,6 +859,12 @@ async function loadAllPatents() {
 // 排序＝使用者指定順序，勿自行重排。
 function topicLabelKey(sourceField) { return 'topic_label_' + sourceField; }
 const PATENT_COLUMNS = [
+  // 標不相干（剔除）操作：只在分類區出現（剔除是 workspace 級、移該筆 assignment，不重跑分群）。
+  // 按鈕自帶 stopPropagation，避免觸發列展開。
+  // ⚠ 置於**第一欄**（2026-07-27 使用者定）：原本在最末欄，橫向捲軸要拉到底才看得到，
+  //   每剔除一筆都得先捲一次。放最前面與「主附圖」相鄰，一進畫面就在手邊。
+  { label: '操作', key: '__exclude__', scope: ['topics', 'topic'], listOnly: true,
+    render: p => excludeCell(p), nowrap: true },
   { label: '主附圖', key: 'has_figure', listOnly: true, render: patentFigureCell, nowrap: true },
   { label: '申請國家', key: 'country_code', listOnly: true, nowrap: true },
   { label: '專利類型', key: 'patent_type', nowrap: true },
@@ -910,10 +916,6 @@ const PATENT_COLUMNS = [
     render: p => flag(p.has_technical_text) },
   { label: '功效描述', key: 'has_effect_text', scope: ['topics', 'topic'], listOnly: true,
     render: p => flag(p.has_effect_text) },
-  // 標不相干（剔除）操作：只在分類區出現（剔除是 workspace 級、移該筆 assignment，不重跑分群）。
-  // 按鈕自帶 stopPropagation，避免觸發列展開。
-  { label: '操作', key: '__exclude__', scope: ['topics', 'topic'], listOnly: true,
-    render: p => excludeCell(p) },
 ];
 // 取某區塊要顯示的欄位：未標 scope 的欄位所有區塊共用；標了就只在列出的區塊出現。
 // 這是專利總覽與分類區之間**唯一**的欄位差異來源——用資料驅動，不拆成多份表格實作。
@@ -1022,8 +1024,11 @@ function patentDetailHtml(p, scope) {
       : cols.filter(c => !claimed.has(c.key));
     if (secCols.length === 0) return '';
     const title = '<div class="patent-detail-section">' + escHtml(section.title) + '</div>';
-    // has_figure 從逐列中剔除：主附圖改由整層右欄統一顯示，不在文字列裡再放一次。
-    const textCols = secCols.filter(c => c.key !== 'has_figure');
+    // 逐列剔除兩種非文字欄：
+    // - has_figure：主附圖改由整層右欄統一顯示，不在文字列裡再放一次。
+    // - __exclude__：「操作」是列表上的按鈕欄，不是專利資料；排進詳情層會變成
+    //   書目資料裡多一顆重複的「標不相干」鈕（2026-07-27 移欄到第一欄時發現）。
+    const textCols = secCols.filter(c => c.key !== 'has_figure' && c.key !== '__exclude__');
     if (textCols.length === 0) return '';
     return title
       + '<dl class="patent-detail">'
