@@ -1165,6 +1165,48 @@ def _fetch_source_excerpts(cur: Any, source_column: str, patent_ids: list[int]) 
     ]
 
 
+def _topics_from_run_chain(
+    cur: Any, *, workspace_id: int, source_field: str, run_id: int
+) -> list[dict[str, Any]]:
+    """取該 run 之前**最近一個帶 topics 的 run** 的主題快照。
+
+    ⚠ **不能只讀 previous_run_id 那一筆**（2026-07-27 實機修）：incremental run 的
+    `topic_state_json->topics` 是**空的**（設計如此——topics 掛在 finalize/merge run，
+    incremental 只寫新增專利的 assignment）。實機鏈：
+
+        run 3 (merge)       topics=10
+        run 7 (incremental) topics=0   prev=3
+        run 8 (merge)       prev=7  ← 從 run 7 拿 topics → 空的
+                                    → ValueError: merge target topic not found
+
+    也就是「合併 → 增量 → 再合併」必炸，且該 merge run 的 assignments 為 0，
+    連帶主題欄全空。
+
+    改為沿 run_id 由大到小找第一個 topics 非空者——與 `topic_state_repository`
+    的既定規則同源（該處 docstring 早已寫明「topics 取最新且非空的 run」），
+    merge/unmerge 原本沒跟上。
+    """
+    cur.execute(
+        """
+        SELECT tr.topic_state_json
+        FROM derived_layer.topic_runs tr
+        JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id
+        WHERE wr.workspace_id = %s
+          AND tr.source_field = %s
+          AND tr.run_id < %s
+          AND jsonb_array_length(COALESCE(tr.topic_state_json->'topics', '[]'::jsonb)) > 0
+        ORDER BY tr.run_id DESC
+        LIMIT 1
+        """,
+        (workspace_id, source_field, run_id),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return []
+    state = row["topic_state_json"] if isinstance(row, dict) else row[0]
+    return [dict(topic) for topic in (dict(state or {}).get("topics") or [])]
+
+
 def _carry_artifact_from(cur: Any, *, previous_run_id: int, run_id: int) -> None:
     """把上游 run 的 artifact 資訊（key ＋ hash）整組帶到新 run。
 
@@ -1525,14 +1567,10 @@ def _persist_topic_merge(
 
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT topic_state_json FROM derived_layer.topic_runs WHERE run_id = %s",
-                (previous_run_id,),
-            )
-            previous_topics = [
-                dict(topic)
-                for topic in (dict(cur.fetchone()["topic_state_json"] or {}).get("topics") or [])
-            ]
+            # 沿 run 鏈找最近一個帶 topics 的 run——previous_run 若是 incremental，
+            # 它的 topics 是空的（見 _topics_from_run_chain）。
+            previous_topics = _topics_from_run_chain(
+                cur, workspace_id=workspace_id, source_field=source_field, run_id=run_id)
             target_topic = next(
                 (t for t in previous_topics if str(t.get("topic_code")) == target_code), None)
             if target_topic is None:
@@ -1707,14 +1745,9 @@ def _persist_unmerge(
             if cur.rowcount != 1:
                 raise ValueError("merge run changed concurrently or was already restored")
 
-            cur.execute(
-                "SELECT topic_state_json FROM derived_layer.topic_runs WHERE run_id = %s",
-                (previous_run_id,),
-            )
-            previous_topics = [
-                dict(topic)
-                for topic in (dict(cur.fetchone()["topic_state_json"] or {}).get("topics") or [])
-            ]
+            # 同 merge：previous_run 若是 incremental，其 topics 為空——沿鏈找帶 topics 者。
+            previous_topics = _topics_from_run_chain(
+                cur, workspace_id=workspace_id, source_field=source_field, run_id=run_id)
             restored = set(restored_topic_keys)
             topics: list[dict[str, Any]] = []
             for topic in previous_topics:
