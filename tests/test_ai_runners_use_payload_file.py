@@ -62,12 +62,44 @@ class TopicLabelUsesPayloadFileTests(unittest.TestCase):
             self.assertLess(total, WINDOWS_CMDLINE_LIMIT,
                             f"argv {total:,} 仍超過 Windows 上限")
             self.assertLess(total, 4000, f"argv 應維持短小，實測 {total:,}")
-            # 資料確實落檔；128K 超過 100K 預算故切成多批，主題總數須守恆
+            # 資料確實落檔；128K 在 150K 預算內故維持單批（現行資料量不分批），
+            # 無論批數多少，主題總數都須守恆
             files = sorted((Path(tmp) / "topic_label").glob("*.json"))
-            self.assertGreater(len(files), 1, "128K 應觸發分批")
+            self.assertEqual(len(files), 1, "128K 在 150K 預算內，不應分批")
             total_topics = sum(
                 len(json.loads(f.read_text(encoding="utf-8"))["topics"]) for f in files)
             self.assertEqual(total_topics, 10, "分批不得遺漏主題")
+
+    def test_splits_when_over_budget(self):
+        """超過 150K 預算才分批（例如 5000 筆專利／40 主題約 512KB）。"""
+        from backend.app.worker import ai_topic_label_runner as r
+        from tests.ai_payload_test_helpers import topic_codes_from_argv
+
+        topics = [
+            {"topic_code": f"T{i:03d}",
+             "representative_patents": ["專利獨立項全文 " * 300 for _ in range(5)]}
+            for i in range(40)
+        ]
+
+        def fake_cli(argv, timeout):
+            codes = topic_codes_from_argv(argv)
+            return r.CliResult(exit_code=0, stdout=json.dumps(
+                {"topics": [{"topic_code": c, "label": "測試", "summary": "摘要"}
+                            for c in codes]}), stderr="")
+
+        with TemporaryDirectory() as tmp:
+            r.run_topic_label(
+                workspace_id=1, source_field="wips_independent_claims",
+                cli_runner=fake_cli,
+                payload_builder=lambda **kw: {"topics": topics},
+                apply_labels=lambda **kw: {"updated_count": len(kw["labels"])},
+                payload_root=Path(tmp),
+            )
+            files = sorted((Path(tmp) / "topic_label").glob("*.json"))
+            self.assertGreater(len(files), 1, "超過 150K 應分批")
+            total = sum(len(json.loads(f.read_text(encoding="utf-8"))["topics"])
+                        for f in files)
+            self.assertEqual(total, 40, "分批不得遺漏主題")
 
     def test_cli_gets_read_only_permission(self):
         """權限只放寬到 Read；不得出現 Write／Bash。"""
