@@ -45,6 +45,18 @@ router = APIRouter(tags=["topics"])
 # ── Request / Response Schemas ─────────────────────────────────────
 
 
+class TopicKeywordResponse(BaseModel):
+    """單一 c-TF-IDF 關鍵詞（詞＋權重）。
+
+    落點對齊寫入端 clustering/runner.py `_persist_final_topics`：
+    keywords 存成 [{"term": str, "weight": float}, ...]。
+    weight 供排序／顯示用，不可為了型別簡化而丟棄。
+    """
+
+    term: str
+    weight: float | None = None
+
+
 class TopicResponse(BaseModel):
     """單一主題回應。"""
 
@@ -52,7 +64,10 @@ class TopicResponse(BaseModel):
     label: str
     summary: str
     doc_count: int
-    keywords: list[str]
+    # ⚠ 必須是物件而非 list[str]：寫入端存 {term, weight}，
+    # 早期宣告成 list[str] 時，只要 run 有正式 topics，list_topics 就 500
+    # （2026-07-27 實機故障：ValidationError 10 errors for TopicResponse）。
+    keywords: list[TopicKeywordResponse]
     label_source: str
     display_order: int
     status: str

@@ -224,6 +224,10 @@ def create_finalize(run_id: int, request: FinalizeRequest) -> dict[str, Any]:
 # 候選查詢共用的 SELECT 片段：欄位與 join 兩個端點完全一致，只差 WHERE／ORDER。
 _CANDIDATES_SELECT = (
     "SELECT tr.run_id, wr.workspace_id, tr.source_field, wr.status, "
+    # clustering_status＝分群自身狀態（topic_state_json），與 workflow 的 status 不同。
+    # finalize 守門看的是這一個；前端據此決定「採用這組分類」還能不能按，
+    # 避免對已 completed 的 run 送出必然被 409 擋下的請求。
+    "       tr.topic_state_json->>'status' AS clustering_status, "
     "       COALESCE(tr.topic_state_json->'candidates', '[]'::jsonb) AS candidates "
     "FROM derived_layer.topic_runs tr "
     "JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id "
@@ -292,6 +296,8 @@ def _candidates_response(run: dict[str, Any]) -> dict[str, Any]:
         "workspace_id": int(run["workspace_id"]) if run["workspace_id"] is not None else None,
         "source_field": run["source_field"],
         "status": run["status"],
+        # 分群自身狀態：前端據此判斷是否已定案（completed 時不再顯示可按的採用鈕）
+        "clustering_status": run.get("clustering_status"),
         "candidates": [
             {
                 "candidate_id": int(r["candidate_id"]),

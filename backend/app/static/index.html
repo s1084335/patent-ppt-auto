@@ -1244,7 +1244,8 @@ async function loadTopicCandidates(opts) {
         ? candidatePickerCloseHtml('此 workspace 的' + currentSourceLabel()
           + '通道尚未分群，沒有可挑選的候選。')
         : '<div class="card">此 workspace 的' + escHtml(currentSourceLabel())
-          + '通道尚未分群。匯入後會自動進行分群，完成後候選會出現在這裡。</div>';
+          // 分群自 2026-07-26 起改為手動觸發，匯入不再自動分群；文案同步更正。
+          + '通道尚未分群。請按上方「分類」開始分群，完成後候選會出現在這裡。</div>';
       return;
     }
     // 其他狀況一律是查詢失敗（連線／伺服器錯誤），保留狀態碼並提供重試，
@@ -1289,15 +1290,27 @@ function renderCandidatePicker(data, hasTopics) {
     if (marked) state.candidatePickId = marked.candidate_id;
   }
   const cards = list.map(c => candidateCardHtml(c)).join('');
+  // 分群自身狀態；finalize 只放行 needs_review／failed（見後端同一組守門）。
+  const finalized = data.clustering_status === 'completed';
   wrap.innerHTML = '<div class="card">'
     + '<div style="font-weight:600;margin-bottom:0.3rem">挑選分類方式（'
     + escHtml(currentSourceLabel()) + '通道，run #' + escHtml(data.run_id) + '）</div>'
-    + '<p class="hint" style="padding:0 0 0.2rem">系統已算出下列分類候選，各組主題數與指標不同。'
-    + '選一組後按「採用這組分類」，系統會據此建立正式主題。</p>'
+    + '<p class="hint" style="padding:0 0 0.2rem">'
+    + (finalized
+        ? '此 run 已採用下方標示「（目前採用中）」的分類，正式主題已建立。'
+        : '系統已算出下列分類候選，各組主題數與指標不同。'
+          + '選一組後按「採用這組分類」，系統會據此建立正式主題。')
+    + '</p>'
     + '<div class="cand-list">' + cards + '</div>'
     + '<div class="toolbar">'
-    + '<button class="btn btn-primary" id="btn-finalize-candidate" onclick="submitFinalizeCandidate()">'
-    + '採用這組分類</button>'
+    // 已定案（clustering_status=completed）的 run 不得再送 finalize——後端會回 409。
+    // 顯示可按的鈕只會讓使用者撞錯誤訊息，故改為停用態並說明要重跑分類才能換分法。
+    + (finalized
+        ? '<button class="btn btn-primary" disabled>已採用此分類</button>'
+          + '<span class="hint" style="padding:0 0 0 .6rem">'
+          + '要改用其他分法，請按上方「分類」重跑一次。</span>'
+        : '<button class="btn btn-primary" id="btn-finalize-candidate"'
+          + ' onclick="submitFinalizeCandidate()">採用這組分類</button>')
     + (hasTopics ? '<button class="btn btn-outline" onclick="closeCandidatePicker()">取消</button>' : '')
     + '</div>'
     + '<div id="candidate-finalize-job"></div>'
