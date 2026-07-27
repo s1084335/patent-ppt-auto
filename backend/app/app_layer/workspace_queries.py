@@ -342,6 +342,20 @@ def list_workspace_patents(
         code, label = topic_map.get(it["patent_id"], (None, None))
         it["topic_key"] = code
         it["topic_label"] = label
+    # 分通道欄位（2026-07-27）：前端「技術分類／功效分類」是兩個獨立欄，key 由
+    # topicLabelKey(source_field) 推導成 topic_label_<source_field>。上面的單一
+    # topic_label 只反映查詢參數指定的那一個通道，兩欄因此一直是空的。
+    # 這裡對每個通道各取一次指派；單一欄位保留，避免打壞其他呼叫端。
+    from backend.app.clustering.sources import source_fields
+
+    for field in source_fields():
+        # 與查詢參數同通道者直接重用，不重複查一次
+        field_map = topic_map if field == source_field else _topic_assignment_map(
+            workspace_id, field)
+        for it in items:
+            code, label = field_map.get(it["patent_id"], (None, None))
+            it[f"topic_key_{field}"] = code
+            it[f"topic_label_{field}"] = label
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
