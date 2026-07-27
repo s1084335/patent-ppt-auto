@@ -352,18 +352,25 @@ class FrontendSkeletonTests(unittest.TestCase):
     # ── B3. 分類區版式：標籤在上、專利清單緊接其下 ──
 
     def test_topics_layout_tags_above_patents(self):
-        """分類區版式：主題標籤區在專利清單區之上，中間不夾主題人工操作等區塊。"""
+        """分類區版式：標籤 → 概覽 → 進階操作（收合）→ 專利清單。
+
+        2026-07-27 使用者定案：進階操作改放專利清單**之上**（原本在其下方），
+        免得每次都要捲過整張表才找得到；但維持 <details> 收合，使用者要用才點開，
+        所以不會擋住標籤與專利。
+        """
         tags_at = self.html.index('id="topic-tags"')
         patents_at = self.html.index('id="topic-patents"')
         self.assertLess(tags_at, patents_at, "主題標籤必須在專利清單之上")
-        # 人工操作區不得夾在標籤與專利清單之間（移到專利清單之後）。
-        ops_at = self.html.index('id="topic-ops"')
-        self.assertGreater(ops_at, patents_at, "主題人工操作不得擋在標籤與專利清單之間")
+        adv_at = self.html.index('id="topic-advanced"')
+        self.assertLess(adv_at, patents_at, "進階操作應在專利清單之上（2026-07-27 定案）")
+        # 仍必須是收合的 <details>，不得展開佔版面
+        self.assertIn('<details class="topic-advanced"', self.html)
 
     def test_topics_empty_state_message(self):
         """workspace 無分群結果時顯示明確中文提示（不是空白、不讓使用者點到 404）。"""
         self.assertIn("尚未分群", self.html)
-        self.assertIn("匯入後會自動進行分群", self.html)
+        # 2026-07-26 定案分群改手動觸發，不再「匯入後自動分群」；文案同步更正。
+        self.assertIn("請按上方「分類」開始分群", self.html)
         # 錯誤不吞：載入失敗要顯示可讀訊息（含狀態碼／訊息）。
         self.assertIn("topicLoadErrorHtml", self.html)
 

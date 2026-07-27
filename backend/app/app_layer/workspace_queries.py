@@ -204,6 +204,23 @@ WHERE patent_id = ANY(%(pids)s)
 """
 
 
+def assigned_patent_ids(*, run_id: int, topic_key: str) -> list[int]:
+    """取某 run 內指派到指定 topic 的專利 ID（唯一來源＝derived_layer.topic_assignments）。
+
+    分群寫入端把指派關係寫進 topic_assignments 表（run_id, patent_id, topic_key），
+    topic JSON 內**沒有** patent_ids 鍵——讀取端一律走本函式，不要自行從 JSON 找。
+    """
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT patent_id FROM derived_layer.topic_assignments "
+                "WHERE run_id = %(run_id)s AND topic_key = %(topic_key)s "
+                "ORDER BY patent_id",
+                {"run_id": run_id, "topic_key": topic_key},
+            )
+            return [int(row[0]) for row in cur.fetchall()]
+
+
 def _topic_assignment_map(
     workspace_id: int, source_field: str
 ) -> dict[int, tuple[str, str | None]]:
@@ -218,12 +235,29 @@ def _topic_assignment_map(
     except (TopicStateNotFoundError, ValueError):
         # 無分群 run 或非法通道：全部視為未分類，總覽照常顯示。
         return {}
+    # ⚠ 指派關係的唯一來源是 derived_layer.topic_assignments，**不是** topic JSON。
+    # 2026-07-27 前這裡讀 topic.get("patent_ids")，但寫入端（runner._persist_final_topics）
+    # 從未產生該鍵（只有 representative_patent_ids），於是永遠取到空 dict——
+    # 總覽的「技術分類／功效分類」欄因此一直是空白。
+    label_by_code = {
+        t.get("topic_code"): t.get("label")
+        for t in state.get("topics", [])
+        if t.get("topic_code")
+    }
+    run_id = state.get("run_id")
+    if run_id is None:
+        return {}
+    # 一次取整個 run 的指派（非逐 topic 呼叫 assigned_patent_ids，避免 N+1）
     mapping: dict[int, tuple[str, str | None]] = {}
-    for topic in state.get("topics", []):
-        code = topic.get("topic_code")
-        label = topic.get("label")
-        for pid in topic.get("patent_ids", []):
-            mapping[int(pid)] = (code, label)
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT patent_id, topic_key FROM derived_layer.topic_assignments "
+                "WHERE run_id = %(run_id)s",
+                {"run_id": int(run_id)},
+            )
+            for patent_id, topic_key in cur.fetchall():
+                mapping[int(patent_id)] = (topic_key, label_by_code.get(topic_key))
     return mapping
 
 

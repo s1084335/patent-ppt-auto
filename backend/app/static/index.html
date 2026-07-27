@@ -174,16 +174,31 @@ table.data th.cell-nowrap, table.data td.cell-nowrap {
   white-space: nowrap; min-width: 0; max-width: none; }
 table.data th { background: var(--panel-2); position: sticky; top: 0; font-weight: 600; }
 table.data tr:hover td { background: var(--panel-2); }
-/* 欄寬分兩級（2026-07-26 修：依內容長度分配寬度，不再一視同仁）：
-   .cell-long＝真正的長文（標題／摘要／文獻備註／專利狀態長句）→ 較寬，容納多字換行。
+/* 欄寬分三級（2026-07-27 加 .cell-xlong：摘要類整段文字在 26rem 下會斷成七八行）：
+   .cell-xlong＝整段敘述（摘要／摘要(原文)／文獻備註）→ 最寬，讓一句話不必斷太多行。
+   .cell-long＝一般長文（標題／專利狀態長句）→ 較寬，容納多字換行。
    .cell-wrap＝一般會換行但內容通常較短的欄（原文欄／公司名等）→ 較窄，不浪費版面。
-   兩者都 white-space:normal 換行、限寬不溢到隔壁欄；差別只在寬度級距。 */
+   三者都 white-space:normal 換行、限寬不溢到隔壁欄；差別只在寬度級距。 */
+table.data td.cell-xlong, table.data th.cell-xlong {
+  white-space: normal; word-break: break-word; overflow-wrap: anywhere;
+  min-width: 28rem; max-width: 44rem; }
 table.data td.cell-long, table.data th.cell-long {
   white-space: normal; word-break: break-word; overflow-wrap: anywhere;
   min-width: 16rem; max-width: 26rem; }
 table.data td.cell-wrap, table.data th.cell-wrap {
   white-space: normal; word-break: break-word; overflow-wrap: anywhere;
   min-width: 8rem; max-width: 14rem; }
+/* AI 命名手動觸發區（2026-07-27）：置於進階操作最上方，與其他人工操作分隔。 */
+.topic-ai-label-box { padding: 0 0 .6rem; border-bottom: 1px solid var(--border); margin-bottom: .6rem; }
+.topic-ops-title { font-weight: 600; margin-bottom: .35rem; }
+/* 主題摘要卡（2026-07-27）：平時收合只見標題與件數，點開才顯示 AI 摘要。 */
+.topic-summary-card > summary { cursor: pointer; list-style: none; }
+.topic-summary-card > summary::-webkit-details-marker { display: none; }
+.topic-summary-card > summary::before { content: '▸'; margin-right: .4rem; color: var(--text-muted); }
+.topic-summary-card[open] > summary::before { content: '▾'; }
+.topic-summary-hint { margin-left: .5rem; font-size: .8rem; color: var(--text-muted); }
+.topic-summary-text { margin-top: .5rem; line-height: 1.7; }
+.topic-summary-empty { margin-top: .5rem; color: var(--text-muted); font-size: .88rem; }
 .flag-yes { color: var(--ok); } .flag-no { color: var(--text-muted); }
 .pager { display: flex; align-items: center; gap: 0.7rem; margin-top: 0.8rem; font-size: 0.88rem; color: var(--text-muted); }
 
@@ -825,7 +840,7 @@ const PATENT_COLUMNS = [
   // 分類標籤拆技術／功效兩欄（2026-07-24 定案）：欄名由 SOURCE_FIELDS 推導，不寫死兩個 key。
   { label: '技術分類', key: topicLabelKey(SOURCE_FIELDS[0][0]), listOnly: true },
   { label: '功效分類', key: topicLabelKey(SOURCE_FIELDS[1][0]), listOnly: true },
-  { label: '文獻備註', key: 'patent_note', long: true },
+  { label: '文獻備註', key: 'patent_note', long: true, fulltext: true },
   // 公司名欄（申請人／專利權人／受讓人）顯示**正規化收斂名**（與報表同一口徑，
   // 來自 report_patent_base 的 COALESCE）；原始 WIPS 字面另立 *(原文) 欄留在詳情層，
   // 沿「標題／標題(原文)」模式（2026-07-26 定案）。搜尋亦走正規化名，兩者一致。
@@ -885,9 +900,12 @@ function linkCell(url, text) {
   return '<a href="' + escHtml(href) + '" target="_blank" rel="noopener">' + escHtml(text) + '</a>';
 }
 // 欄位寬度 class（2026-07-26 使用者定案：所有欄一行放不完都換行、不截斷）：
-//   long＝真長文（標題/摘要/文獻備註）較寬；wrap/wide＝一般換行欄較窄；
-//   nowrap＝極短欄（國別/年份/日期）不換行；未標＝預設可換行、中等寬。
+//   fulltext＝整段敘述（摘要/摘要原文/文獻備註）最寬——26rem 下一句話會斷成七八行，
+//     不利閱讀（2026-07-27 使用者回報）；long＝一般長文（標題等）較寬；
+//   wrap/wide＝一般換行欄較窄；nowrap＝極短欄（國別/年份/日期）不換行；
+//   未標＝預設可換行、中等寬。fulltext 優先於 long（兩者常同時標記）。
 function cellClassAttr(col) {
+  if (col.fulltext) return ' class="cell-xlong"';
   if (col.long) return ' class="cell-long"';
   if (col.wrap || col.wide) return ' class="cell-wrap"';
   if (col.nowrap) return ' class="cell-nowrap"';
@@ -1127,6 +1145,10 @@ function currentSourceLabel() {
 }
 async function renderTopics() {
   const m = el('main-panel');
+  // 先更新任務快取再決定按鈕狀態：切頁／F5 進來時 taskListCache 可能是空的或過期，
+  // 沒先取就會把「分群進行中」畫成可按的「分類」。
+  await fetchTasks();
+  const classifyRunning = hasRunningClustering(state.workspaceId);
   m.innerHTML = '<h2 class="panel-title">分類區</h2>'
     + topicTabsHtml()
     + '<p class="hint" style="padding:0 0 0.6rem">點選主題以列出指派到該主題的專利'
@@ -1134,24 +1156,45 @@ async function renderTopics() {
     // 分類手動觸發（2026-07-26）：分群不再匯入後自動跑，改按此鈕。後端 clustering/auto
     // 自動判斷首次（calibrate）或增量（incremental），並先補 embeddings；進度在右欄。
     // 2026-07-27：一鍵雙通道——按一次技術與功效同時跑，不必切分頁各按一次。
+    // 按鈕狀態依「後端是否真有進行中的分群 job」推導，不靠點擊記憶——
+    // 切頁會 clearAllTimers()＋重畫，靠記憶的狀態會遺失，回來後顯示可按的「分類」，
+    // 使用者再按一次就重複建 job（2026-07-27 使用者回報）。
     + '<div class="toolbar" style="margin:0 0 0.8rem">'
-    + '<button class="btn btn-primary" id="btn-run-classify" onclick="runClassify()">分類</button>'
-    + '<span class="hint" style="padding:0 0 0 0.6rem">按一次技術與功效同時分群；程式自動判斷首次／增量，不重跑既有主題。</span>'
+    + (classifyRunning
+        ? '<button class="btn btn-primary" id="btn-run-classify" disabled>分類中…</button>'
+          + '<span class="hint" style="padding:0 0 0 0.6rem">'
+          + '分群進行中（右欄可看進度）；跑完會自動顯示結果，可放心切換頁面。</span>'
+        : '<button class="btn btn-primary" id="btn-run-classify" onclick="runClassify()">分類</button>'
+          + '<span class="hint" style="padding:0 0 0 0.6rem">'
+          + '按一次技術與功效同時分群；程式自動判斷首次／增量，不重跑既有主題。</span>')
     + '</div>'
     // 分群候選挑選區：尚未採用分類時在最前面顯示候選卡；已採用時只留重新挑選入口。
     + '<div id="topic-candidates"></div>'
-    // 版式：標籤 → 概覽 → 專利清單（三者相鄰）
+    // 版式：標籤 → 概覽 → 進階操作（收合）→ 專利清單
     + '<div id="topic-tags"><div class="hint">載入主題中…</div></div>'
     + '<div id="topic-overview"></div>'
-    + '<div id="topic-patents"></div>'
-    // 以下為進階操作，收在專利清單之後的可展開區塊，不擋住標籤與專利
+    // 進階操作移到專利清單**之上**（2026-07-27 使用者定），維持 <details> 收合，
+    // 使用者要用才點開；放清單上方免得每次都要捲過 100 列才找得到。
     + '<details class="topic-advanced" id="topic-advanced">'
-    + '<summary>主題進階操作（重新命名／合併／合併歷史）</summary>'
+    + '<summary>主題進階操作（AI 命名／重新命名／合併／合併歷史）</summary>'
+    // AI 主題命名手動觸發：finalize 後會自動排，此處供失敗或 Companion 沒開時重試。
+    + '<div class="topic-ai-label-box">'
+    + '<div class="topic-ops-title">AI 主題命名</div>'
+    + '<div class="toolbar">'
+    + '<button class="btn btn-outline" id="btn-ai-label" onclick="requestTopicLabel()">'
+    + '重新產生 AI 主題名稱</button>'
+    + '<span class="hint" style="padding:0 0 0 .6rem">'
+    + '把目前的關鍵詞標籤換成中文主題名與摘要；需本機 Companion 在執行。</span>'
+    + '</div>'
+    + '<div id="topic-label-status"></div>'
+    + '</div>'
     + '<div id="topic-ops"></div>'
     + '<div id="topic-op-job"></div>'
     + '<div id="topic-merge-suggestions"></div>'
     + '<div id="topic-merge-history"></div>'
-    + '</details>';
+    + '</details>'
+    // 專利清單放最後：進階操作已在其上方，不必捲過整張表才找得到
+    + '<div id="topic-patents"></div>';
   try {
     const data = await getJson(API + '/workspaces/' + state.workspaceId
       + '/topics?source_field=' + encodeURIComponent(state.topicSourceField));
@@ -1172,6 +1215,49 @@ async function renderTopics() {
     // 主題查詢失敗時仍嘗試列候選：多半是「還沒 finalize」而非真的壞掉，讓使用者能直接採用。
     loadTopicCandidates({ hasTopics: false });
   }
+  // 分群或 AI 命名進行中時持續盯著；結束就重畫，使用者不必手動重整（2026-07-27）。
+  scheduleTopicsAutoRefresh();
+}
+
+// 分類區自動刷新：只要該 workspace 還有進行中的分群或 AI 命名 job 就每 3 秒續盯，
+// 一旦兩者都結束（或本來就沒有）便重畫一次分類區——分群跑完自動出候選、
+// AI 命名跑完自動把 fallback 標籤換成中文名（2026-07-27 定案：先顯示、命名完自動更新）。
+// 以 registerTimer 註冊，切頁時由 clearAllTimers 自動停掉，不會殘留輪詢。
+//
+// 逾時 30 分鐘（2026-07-27 使用者定）：Companion 沒開時 job 會一直卡在 queued，
+// 沒有上限就永遠空轉。逾時後停止輪詢並在標籤區說明，使用者可用手動鈕重試。
+const TOPICS_AUTOREFRESH_TIMEOUT_MS = 30 * 60 * 1000;
+let topicsAutoRefreshStartedAt = null;
+
+function scheduleTopicsAutoRefresh() {
+  const wasBusy = hasRunningClustering(state.workspaceId)
+    || hasRunningTopicLabel(state.workspaceId, state.topicSourceField);
+  if (!wasBusy) { topicsAutoRefreshStartedAt = null; return; }
+  if (topicsAutoRefreshStartedAt === null) topicsAutoRefreshStartedAt = Date.now();
+  if (Date.now() - topicsAutoRefreshStartedAt > TOPICS_AUTOREFRESH_TIMEOUT_MS) {
+    topicsAutoRefreshStartedAt = null;
+    showTopicsAutoRefreshTimeout();
+    return;
+  }
+  registerTimer(async function () {
+    if (state.nav !== 'topics') return;   // 已離開分類區就不再續盯
+    await fetchTasks();
+    const stillBusy = hasRunningClustering(state.workspaceId)
+      || hasRunningTopicLabel(state.workspaceId, state.topicSourceField);
+    if (stillBusy) { scheduleTopicsAutoRefresh(); return; }
+    topicsAutoRefreshStartedAt = null;
+    renderTopics();   // 剛結束：重畫一次，顯示新候選／新主題／AI 中文標籤
+  }, 3000);
+}
+
+// 逾時提示：說明現況與可行動作，不留白讓使用者以為卡死。
+function showTopicsAutoRefreshTimeout() {
+  const box = el('topic-label-status');
+  if (!box) return;
+  box.innerHTML = '<div class="task-detail-error">'
+    + '已等待 30 分鐘仍未完成。常見原因是本機 Patent Companion 沒有啟動'
+    + '（AI 任務由它領取執行）。目前顯示的是系統預設標籤，可啟動 Companion 後按'
+    + '「重新產生 AI 主題名稱」重試。</div>';
 }
 
 // ══════════ 分群候選挑選 → 採用（finalize） ══════════
@@ -1510,6 +1596,42 @@ function topicOptionsHtml() {
     '<option value="' + escHtml(t.topic_key) + '">' + escHtml(t.label || t.topic_key) + '</option>'
   ).join('');
 }
+// AI 主題命名手動觸發（POST /workspaces/{id}/topics/ai-label）。
+// finalize 後後端會自動排一次（handlers._enqueue_topic_label）；此鈕供失敗、
+// Companion 當時沒開、或想重新命名時使用。不帶 topic_keys＝該通道全部 active 主題。
+async function requestTopicLabel() {
+  const btn = el('btn-ai-label');
+  const box = el('topic-label-status');
+  if (state.workspaceId === null || state.workspaceId === undefined) {
+    if (box) box.innerHTML = '<div class="task-detail-error">請先選定 workspace。</div>';
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
+  try {
+    const resp = await fetch(API + '/workspaces/' + encodeURIComponent(state.workspaceId)
+      + '/topics/ai-label', {
+      method: 'POST', headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ source_field: state.topicSourceField, requested_by: 'web-user' }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      if (box) box.innerHTML = '<div class="task-detail-error">AI 命名啟動失敗：'
+        + escHtml(err.detail || ('HTTP ' + resp.status)) + '</div>';
+      return;
+    }
+    if (box) box.innerHTML = '<div class="hint">已排入 AI 命名任務；'
+      + '完成後標籤與摘要會自動更新（右欄可看進度）。</div>';
+    // 立刻拉一次任務清單，讓自動刷新機制接手盯到完成
+    await fetchTasks();
+    scheduleTopicsAutoRefresh();
+  } catch (e) {
+    if (box) box.innerHTML = '<div class="task-detail-error">連線錯誤：'
+      + escHtml(e.message) + '</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '重新產生 AI 主題名稱'; }
+  }
+}
+
 function renderTopicOps() {
   const wrap = el('topic-ops');
   if (!wrap) return;
@@ -1744,12 +1866,28 @@ function renderTopicOverview() {
   }
   const t = topicListCache.find(x => x.topic_key === state.topicFilterKey);
   if (!t) { wrap.innerHTML = ''; return; }
-  wrap.innerHTML = '<div class="card"><strong>' + escHtml(t.label || t.topic_key) + '</strong>'
-    + '　件數：' + (t.doc_count ?? 0) + '</div>';
+  // 主題卡可展開看 AI 摘要（2026-07-27 定案 A 案）：平時收合只顯示標題與件數，
+  // 點開才看摘要；尚未產生時明說「AI 摘要尚未產生」，不留白讓人以為壞掉。
+  const summary = (t.summary || '').trim();
+  const labelling = hasRunningTopicLabel(state.workspaceId, state.topicSourceField);
+  const body = summary
+    ? '<div class="topic-summary-text">' + escHtml(summary) + '</div>'
+    : '<div class="topic-summary-empty">'
+      + (labelling ? 'AI 命名與摘要產生中…完成後會自動更新。'
+                   : 'AI 摘要尚未產生。可於下方「主題進階操作」手動觸發 AI 命名。')
+      + '</div>';
+  wrap.innerHTML = '<details class="card topic-summary-card">'
+    + '<summary><strong>' + escHtml(t.label || t.topic_key) + '</strong>'
+    + '　件數：' + (t.doc_count ?? 0)
+    + '<span class="topic-summary-hint">'
+    + (summary ? '（點開看 AI 摘要）' : '（AI 摘要尚未產生）') + '</span>'
+    + '</summary>' + body + '</details>';
 }
+// 切換標籤只換「概覽＋專利清單」，不重畫整個分類區——
+// renderTopics() 會 await fetchTasks() 並重抓主題，點一次標籤就多打兩支 API 且整區閃爍。
 function onTopicTag(key) {
   state.topicFilterKey = key;
-  renderTopics();
+  renderTopicTags(topicListCache);   // 只更新標籤選取態；其內會續接概覽與清單
 }
 // 「全部」：沿用總覽查詢列出 workspace 全部專利（含所屬主題欄）。
 async function loadAllWorkspacePatents() {
@@ -3187,9 +3325,37 @@ function toggleTaskDetail(runId) {
   box.innerHTML = html;
   box.style.display = 'block';
 }
+// 最近一次 /tasks 的結果快取。分類區據此推導「分類中／命名中」——
+// 按鈕狀態必須以後端真實 job 為準，不能靠「這次點擊」的記憶：
+// 切頁會 clearAllTimers()＋重畫，靠記憶的狀態一律遺失（2026-07-27 使用者回報）。
+let taskListCache = [];
+
+// 該 workspace 是否有進行中的分群 job（queued/running）。
+// 用於：切頁回來、F5 後，按鈕仍正確顯示「分類中…」。
+function hasRunningClustering(workspaceId) {
+  if (workspaceId === null || workspaceId === undefined) return false;
+  return taskListCache.some(t =>
+    (t.job_type === 'clustering_calibrate' || t.job_type === 'clustering_incremental'
+      || t.job_type === 'embeddings')
+    && ['queued', 'running'].includes(t.status)
+    // embeddings 為全域前置（不帶 workspace_id），仍視為分類流程的一部分
+    && (t.job_type === 'embeddings' || t.workspace_id === workspaceId));
+}
+
+// 該 workspace＋通道是否有進行中的 AI 主題命名 job。
+// finalize 後自動排（handlers._enqueue_topic_label），命名完成前顯示 fallback 標籤。
+function hasRunningTopicLabel(workspaceId, sourceField) {
+  return taskListCache.some(t =>
+    t.job_type === 'ai:topic_label'
+    && ['queued', 'running'].includes(t.status)
+    && t.workspace_id === workspaceId
+    && (!sourceField || !t.payload || t.payload.source_field === sourceField));
+}
+
 function renderTaskList(tasks) {
   const c = el('task-container');
   if (!c) return;
+  taskListCache = tasks || [];
   // 進行中／失敗全留；succeeded 只留最近 RECENT_DONE_KEEP 筆（依 job_id 新→舊），
   // 讓使用者切頁回來仍看得到剛跑完的任務結果，而非整批消失（2026-07-27）。
   const all = tasks || [];

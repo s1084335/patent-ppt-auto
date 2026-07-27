@@ -294,7 +294,13 @@ class CalibrationSummary:
 
 @dataclass(frozen=True)
 class FinalizationSummary:
-    """回報使用者選定候選後第一層 topic 與 assignment 筆數。"""
+    """回報使用者選定候選後第一層 topic 與 assignment 筆數。
+
+    ⚠ workspace_id／source_field 是後續自動接續 job 的必要資訊：
+    handlers 的 `_enqueue_irrelevant_filter`／`_enqueue_topic_label` 都從 summary
+    取這兩欄。2026-07-27 前缺 workspace_id，導致 irrelevant_filter 每次靜默 return
+    （DB 歷來 0 筆），2026-07-24 定案的「分群完成自動接續」實際從未運作。
+    """
 
     run_id: int
     candidate_id: int
@@ -303,6 +309,8 @@ class FinalizationSummary:
     topic_count: int
     assignment_count: int
     status: str
+    workspace_id: int | None = None
+    source_field: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """轉成 CLI 可直接輸出的 JSON payload。"""
@@ -773,6 +781,9 @@ def finalize_top_level(
         topic_count=topic_count,
         assignment_count=assignment_count,
         status="completed",
+        # 供 handlers 自動接續 ai:irrelevant_filter／ai:topic_label 使用
+        workspace_id=int(workspace_id),
+        source_field=source_field,
     )
 
 

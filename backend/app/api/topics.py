@@ -12,10 +12,10 @@
 """
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.app.app_layer import workspace_queries
 from backend.app.clustering.sources import get_source_spec
@@ -56,6 +56,18 @@ class TopicKeywordResponse(BaseModel):
     term: str
     weight: float | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_plain_term(cls, value: Any) -> Any:
+        """純字串關鍵詞（無權重）也接受，轉成 {term: ...}。
+
+        寫入端目前一律產 {term, weight}，但舊 run、其他來源或人工修補可能只有詞本身；
+        對「顯示用」欄位而言，寧可寬進也不要讓整個主題列表 500。
+        """
+        if isinstance(value, str):
+            return {"term": value}
+        return value
+
 
 class TopicResponse(BaseModel):
     """單一主題回應。"""
@@ -84,13 +96,23 @@ class TopicsListResponse(BaseModel):
 
 
 class TopicPatentItem(BaseModel):
-    """topic 專利明細單筆（分類區點主題後列出）。"""
+    """topic 專利明細單筆（分類區點主題後列出）。
+
+    ⚠ 欄位必須與總覽 `/workspaces/{id}/patents` 一致：兩者共用同一組 SQL
+    （`_WS_PATENTS_CTE` / `_WS_PATENTS_SELECT_KEYS`，實際撈 36 欄），
+    2026-07-27 前這裡只宣告 5 欄，Pydantic 把其餘 31 欄全濾掉——
+    使用者點主題後看到的表只有「主附圖／申請國家」有值，其餘全空白。
+    改用 extra="allow" 讓查詢撈到什麼就回什麼，不必兩處各維護一份欄位清單
+    （日後 SQL 加欄不會再漏改這裡）。
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     patent_id: int
-    patent_number: str | None
-    title: str | None
-    country_code: str | None
-    applicant_display_name: str | None
+    patent_number: str | None = None
+    title: str | None = None
+    country_code: str | None = None
+    applicant_display_name: str | None = None
 
 
 class TopicPatentsResponse(BaseModel):
@@ -355,9 +377,14 @@ def list_topic_patents(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"topic not found: {topic_key}",
         )
+    # ⚠ 指派關係取自 derived_layer.topic_assignments，**不是** topic JSON。
+    # 2026-07-27 前這裡讀 topic.get("patent_ids")，但寫入端從未產生該鍵，
+    # 於是永遠傳空清單、回空 items——分類區點主題後整張表沒有資料。
     result = workspace_queries.list_topic_patents(
         workspace_id=workspace_id,
-        patent_ids=[int(pid) for pid in topic.get("patent_ids", [])],
+        patent_ids=workspace_queries.assigned_patent_ids(
+            run_id=int(state["run_id"]), topic_key=topic_key
+        ),
         limit=limit,
         offset=offset,
     )

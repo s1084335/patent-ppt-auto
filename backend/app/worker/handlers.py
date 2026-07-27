@@ -143,9 +143,11 @@ def handle_clustering_finalize(payload: dict[str, Any], context: JobContext) -> 
             batch_size=int(payload.get("batch_size") or 8),
             kmeans_batch_size=int(payload.get("kmeans_batch_size") or 128),
         )
-    # finalize 完成後自動接續不相干篩選（2026-07-24 第 2 題定案：分群完成自動觸發）。
-    # 失敗隔離：只記 log、不 raise——篩選是輔助，缺了分群照樣成立。
+    # finalize 完成後自動接續兩件事，皆為輔助、皆失敗隔離（只記 log、不 raise）：
+    # - 不相干篩選（2026-07-24 第 2 題定案）
+    # - AI 主題命名（2026-07-27 定案；分類區先顯示 fallback 標籤，命名完成後自動更新）
     _enqueue_irrelevant_filter(summary)
+    _enqueue_topic_label(summary)
     context.heartbeat("clustering_finalize_completed", 95)
     return _json_safe(summary)
 
@@ -173,6 +175,39 @@ def _enqueue_irrelevant_filter(summary: Any) -> None:
         )
     except Exception:  # noqa: BLE001 - 篩選是輔助，缺了照樣有分群
         LOGGER.exception("irrelevant filter enqueue failed after finalize")
+
+
+def _enqueue_topic_label(summary: Any) -> None:
+    """finalize 完成後 enqueue 一筆 ai:topic_label（走 Companion 產中文主題名）。
+
+    2026-07-27 定案：主題命名自動接續，不需使用者手動點。分類區採
+    「先顯示 fallback 標籤（關鍵詞串接）、AI 命名完成後自動更新」——
+    沿 2026-07-17「確定性結果先顯示、不等 AI、AI 掛掉也看得到」的定案精神，
+    命名只是加值，絕不阻擋主題顯示。
+
+    ⚠ 失敗隔離（沿 _enqueue_irrelevant_filter 模式）：任何例外只記 log、不 raise。
+    ⚠ max_attempts=1：AI CLI 任務不自動重試（重跑要花 LLM 額度），與手動端點同口徑。
+    雙通道各自 finalize，故技術／功效會各排一個命名 job。
+    """
+    from backend.app.db import job_repository as jr
+
+    try:
+        workspace_id = _summary_field(summary, "workspace_id")
+        source_field = _summary_field(summary, "source_field")
+        if workspace_id is None or source_field is None:
+            return
+        jr.create_job(
+            "ai:topic_label",
+            {
+                "workspace_id": int(workspace_id),
+                "source_field": str(source_field),
+                "requested_by": "auto:finalize",
+            },
+            workspace_id=int(workspace_id),
+            max_attempts=1,
+        )
+    except Exception:  # noqa: BLE001 - 命名是加值，缺了仍有 fallback 標籤
+        LOGGER.exception("topic label enqueue failed after finalize")
 
 
 def handle_clustering_incremental(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
