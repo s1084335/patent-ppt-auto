@@ -5,8 +5,11 @@
 
 規格唯一來源：`.agents/context/patent-display-spec.md`「文獻備註（#6）」節。定案重點：
 
-1. **來源＝獨立項**（`core_layer.patents."主權項"`，主權項即第一項獨立項），
-   **不是** `abstract` 摘要欄。
+1. **來源＝獨立項**（`core_layer.patents."獨立項[KR,JP,US,CN,EP,IN]"`），
+   **不是** `abstract` 摘要欄，**也不是「主權項」**。
+   ⚠ 2026-07-27 修正：原本讀「主權項」並註明「主權項即第一項獨立項」——該說法不成立。
+   實測有主權項 49 筆、有獨立項 40 筆，只有主權項者 9 筆，兩欄不是同一份文字。
+   來源欄現由 `clustering.sources` 的技術通道推導，與分群依據永遠一致。
 2. **一律輸出繁體中文**：來源獨立項中英混雜（實測有全英文專利），不論來源語言為何，
    產出一律繁中；技術術語、型號、化學式可保留英文。
 3. **字數兩層線**（2026-07-26 定案）：prompt 給 **70 字目標線**、**100 字死線**，
@@ -46,6 +49,11 @@ from .ai_narrative_runner import (
 )
 from .ai_payload_file import extract_json_payload
 
+from backend.app.clustering.sources import (
+    SOURCE_FIELD_TECHNICAL,
+    get_source_spec,
+)
+
 
 # 備註流程版本；隨 prompt 契約升版而變，寫進結果供追溯。
 PROMPT_VERSION = "patent_note_v1"
@@ -57,7 +65,13 @@ DEFAULT_CHAR_BUDGET = 12_000
 
 # 落點欄與來源欄（字面值集中此處，SQL 由此拼，不散落各處）。
 NOTE_COLUMN = "文獻備註"
-CLAIM_COLUMN = "主權項"
+# ⚠ 來源欄＝**分群技術通道的同一欄**（2026-07-27 使用者指出並定案）。
+# 原本寫死 "主權項"，但分群技術通道讀的是「獨立項」——兩者不是同一份文字
+# （實測：有主權項 49 筆、有獨立項 40 筆，只有主權項者 9 筆）。
+# 後果：備註描述的內容與分群依據不同，看備註判斷主題會失準；且那 9 筆沒有獨立項、
+# 本來就不該進技術分群，卻有備註可用，等於用主權項內容冒充獨立項。
+# 改為由 sources 推導，日後分群換欄時備註自動跟著換，不再兩邊各自寫死而悄悄分岔。
+CLAIM_COLUMN = get_source_spec(SOURCE_FIELD_TECHNICAL).source_column
 
 # 備註字數兩層線（2026-07-26 使用者定案）：
 # - NOTE_TARGET_CHARS：**給模型的目標線**。只寫死線時模型會當成目標寫滿，

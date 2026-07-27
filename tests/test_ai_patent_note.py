@@ -3,7 +3,9 @@
 規格唯一來源：`D:\\力山\\.agents\\context\\patent-display-spec.md`「文獻備註（#6）」節。
 本檔鎖住使用者定案的五條線：
 
-1. **來源＝獨立項**（`core_layer.patents."主權項"`），不是 abstract 摘要欄。
+1. **來源＝獨立項**（`core_layer.patents."獨立項[KR,JP,US,CN,EP,IN]"`），不是 abstract 摘要欄。
+   ⚠ 2026-07-27 修正：原讀「主權項」，與分群技術通道來源不一致（實測兩欄不同：
+   有主權項 49 筆、有獨立項 40 筆）。來源欄現由 clustering.sources 推導。
 2. **落點＝`core_layer.patents."文獻備註"`**（0032 起搬主表；一專利一列，回寫直接 WHERE id）。
 3. **一律輸出繁體中文**：來源獨立項中英混雜（實測有全英文專利），prompt 必須明確要求繁中。
 4. **100 字是上限不是目標**：prompt 不得要求寫滿或設下限（避免 AI 灌水湊字數）。
@@ -91,7 +93,7 @@ class FakeNoteStore:
     """假落點：記錄讀取條件與寫入內容，取代真實 DB。"""
 
     def __init__(self, candidates):
-        """candidates 為 [(patent_id, 主權項文字), ...]。"""
+        """candidates 為 [(patent_id, 獨立項文字), ...]。"""
         self.candidates = list(candidates)
         self.written: list[tuple[int, str]] = []
         self.write_calls = 0
@@ -250,9 +252,13 @@ class WriteBackTests(unittest.TestCase):
         # 回寫可靠性關鍵：不再落 patent_attributes，也不再選 raw_record 列。
         self.assertNotIn("patent_attributes", sql)
         self.assertNotIn("MAX", sql.upper())
-        # 來源必須是主權項（獨立項），不是 abstract；skip_existing 讀主表備註，不 JOIN attributes。
+        # 來源必須與**分群技術通道同一欄**（獨立項），不是 abstract、也不是主權項；
+        # skip_existing 讀主表備註，不 JOIN attributes。
         read_sql = ai_patent_note_runner.PatentNoteStore.READ_SQL
-        self.assertIn('"主權項"', read_sql)
+        from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL, get_source_spec
+        expected_col = get_source_spec(SOURCE_FIELD_TECHNICAL).source_column
+        self.assertIn(f'"{expected_col}"', read_sql)
+        self.assertNotIn('"主權項"', read_sql, '不得再讀主權項——與分群來源不一致')
         self.assertNotIn("abstract", read_sql.lower())
         self.assertNotIn("patent_attributes", read_sql)
 

@@ -59,15 +59,15 @@ def _seed():
     """灌 fixture：兩筆有獨立項、無備註；一筆無獨立項。走主表 core_layer.patents。"""
     with psycopg.connect(**_kw(TEST_DB)) as conn:
         conn.execute(
-            'INSERT INTO core_layer.patents (id, "主權項", country_code) VALUES (%s, %s, %s)',
+            'INSERT INTO core_layer.patents (id, "獨立項[KR,JP,US,CN,EP,IN]", country_code) VALUES (%s, %s, %s)',
             (PID_A, "一種阻力調節機構，包含固定座與磁控阻力盤……", "TW"),
         )
         conn.execute(
-            'INSERT INTO core_layer.patents (id, "主權項", country_code) VALUES (%s, %s, %s)',
+            'INSERT INTO core_layer.patents (id, "獨立項[KR,JP,US,CN,EP,IN]", country_code) VALUES (%s, %s, %s)',
             (PID_B, "A resistance adjusting mechanism comprising a fixed seat ...", "US"),
         )
         conn.execute(
-            'INSERT INTO core_layer.patents (id, "主權項", country_code) VALUES (%s, %s, %s)',
+            'INSERT INTO core_layer.patents (id, "獨立項[KR,JP,US,CN,EP,IN]", country_code) VALUES (%s, %s, %s)',
             (PID_NOCLAIM, "   ", "TW"),
         )
         conn.commit()
