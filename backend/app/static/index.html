@@ -3059,6 +3059,46 @@ function fillReportViewSelect(content) {
 
 function onReportViewChange() { renderReportViewer(); }
 
+// 手動觸發 AI 解讀（2026-07-28）。
+// 為何需要：解讀原本只有「report_generate 完自動 enqueue」一個入口，且該處採失敗隔離
+// 只記 log（handlers._enqueue_report_narrative）。那筆一失敗（實機 run 21 即是），使用者
+// 除了重產整份報表沒有任何重試手段——報表本身好好的卻要整包重跑。
+// 走既有 POST /api/v1/ai-tasks（泛型 task_type），後端零改動、不另造第二條建 job 的路。
+function narrativeJobRunning(version) {
+  // ⚠ 不能套 hasRunningJob()：那支比對 workspace_id，而 narrative 的 job workspace_id 為
+  // null（報表可跨 workspace／全庫），永遠比不中。改以 based_on_version 判重。
+  return taskListCache.some(t =>
+    t.job_type === 'ai:narrative'
+    && ['queued', 'running'].includes(t.status)
+    && t.payload && t.payload.based_on_version === version);
+}
+
+async function runNarrative() {
+  const version = reportViewContent && reportViewContent.version;
+  if (!version) { alert('尚無報表版本，請先產製報表。'); return; }
+  if (narrativeJobRunning(version)) { alert('此版本的解讀正在產生中，請稍候。'); return; }
+  const btn = el('btn-run-narrative');
+  if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
+  try {
+    const resp = await fetch(API + '/ai-tasks', {
+      method: 'POST',
+      headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ task_type: 'ai:narrative', based_on_version: version }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('產生 AI 解讀失敗：' + (err.detail || ('HTTP ' + resp.status)));
+      if (btn) { btn.disabled = false; btn.textContent = '產生 AI 解讀'; }
+      return;
+    }
+    await fetchTasks();   // 右欄立刻看得到這筆任務進度
+    if (btn) btn.textContent = '解讀產生中…';
+  } catch (e) {
+    alert('連線錯誤：' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '產生 AI 解讀'; }
+  }
+}
+
 // R9：版本區隨選單變化——一次只顯示選中的那一份，不把整份報告全列出來。
 // R1：單份版面＝左數據、右圖表、下解讀。
 function renderReportViewer() {
@@ -3103,9 +3143,13 @@ function reportSingleHtml(section) {
   const texts = variants
     .map(v => (v.narrative && v.narrative.text) ? v.narrative.text.trim() : '')
     .filter(Boolean);
+  // 空狀態附觸發鈕（2026-07-28）：舊版只寫「可於右欄 AI 助手送出」，但右欄沒有那條路徑，
+  // 等於解讀失敗後只能重產整份報表。改為就地可送——打既有 /ai-tasks，後端零改動。
   const narrativeHtml = texts.length
     ? texts.map(t => '<p>' + escHtml(t) + '</p>').join('')
-    : '<p class="empty">AI 解讀尚未產生。可於右欄「AI 助手」送出解讀需求。</p>';
+    : '<p class="empty">AI 解讀尚未產生。'
+      + '<button class="btn btn-sm" id="btn-run-narrative" onclick="runNarrative()"'
+      + ' style="margin-left:0.6rem">產生 AI 解讀</button></p>';
   return '<article class="export-card">'
     + '<h3>' + escHtml(section.title || '') + '</h3>'
     + '<div class="report-single">'
