@@ -228,13 +228,19 @@ SELECT
     b."標準化申請人",
     -- 收斂順位：代碼對照表 > 別稱對照表 > 庫內代碼統計名 > 標準化申請人 > 申請人。
     -- 代碼命中即優先，確保同一代碼的所有專利落到同一顯示名（＝代碼是收斂依據）。
-    COALESCE(acan.company_name, applicant_alias.display_name, acn.canonical_name, NULLIF(BTRIM(b."標準化申請人"), ''), NULLIF(BTRIM(b."申請人"), '')) AS applicant_display_name,
+    --
+    -- ⚠ 2026-07-28 使用者定案「顯示只取主申請人」：WIPS 以 ` | ` 分隔多申請人，
+    -- 這裡一律 `split_part(..., '|', 1)` 取第一個（WIPS 慣例第一個是主申請人）。
+    -- **原始欄位（上方 b."申請人" 等）保留完整字面不動**，只有顯示名與比對取主值。
+    -- 不取主值的後果：含 `|` 的 25 筆（實測）拿整串去比對別稱表，永遠對不上任何
+    -- 別稱——那些專利的公司收斂**完全失效**，且不報錯。
+    COALESCE(acan.company_name, applicant_alias.display_name, acn.canonical_name, NULLIF(BTRIM(split_part(COALESCE(b."標準化申請人", ''), '|', 1)), ''), NULLIF(BTRIM(split_part(COALESCE(b."申請人", ''), '|', 1)), '')) AS applicant_display_name,
     b."發明人",
     b."發明人國籍",
     b."最近專利權人[US,JP,KR,CN,CA,AU]",
     b."標準當前專利權人[US,JP,KR,CN,CA,AU]",
     -- 同上，以「標準當前專利權人代碼」為收斂依據。
-    COALESCE(ocan.company_name, owner_alias.display_name, ocn.canonical_name, NULLIF(BTRIM(b."標準當前專利權人[US,JP,KR,CN,CA,AU]"), ''), NULLIF(BTRIM(b."最近專利權人[US,JP,KR,CN,CA,AU]"), '')) AS current_assignee_display_name,
+    COALESCE(ocan.company_name, owner_alias.display_name, ocn.canonical_name, NULLIF(BTRIM(split_part(COALESCE(b."標準當前專利權人[US,JP,KR,CN,CA,AU]", ''), '|', 1)), ''), NULLIF(BTRIM(split_part(COALESCE(b."最近專利權人[US,JP,KR,CN,CA,AU]", ''), '|', 1)), '')) AS current_assignee_display_name,
     b."最近受讓人[US,KR,CN]",
     -- 最近受讓人在 WIPS 匯出無對應代碼欄（mappings/wips.py 僅有申請人代表碼與
     -- 標準當前專利權人代碼兩個代碼欄）。2026-07-28 起改以「別稱字面反查代碼」補上
@@ -242,7 +248,7 @@ SELECT
     -- 來源日後若真的新增受讓人代碼欄，可改為直接 join，語意不變。
     -- 順位與另兩欄一致：代碼對照 > 別稱對照 > 原始字面。代碼是使用者的裁決依據，
     -- 優先級最高（見 assignee_code_names 的說明——受讓人以別稱反查代碼）。
-    COALESCE(acan_assignee.company_name, assignee_alias.display_name, NULLIF(BTRIM(b."最近受讓人[US,KR,CN]"), '')) AS recent_assignee_display_name,
+    COALESCE(acan_assignee.company_name, assignee_alias.display_name, NULLIF(BTRIM(split_part(COALESCE(b."最近受讓人[US,KR,CN]", ''), '|', 1)), '')) AS recent_assignee_display_name,
     b."主權項",
     b."獨立項[KR,JP,US,CN,EP,IN]",
     b."所有權利要求[JP,KR,CN]",
@@ -265,12 +271,12 @@ LEFT JOIN LATERAL (
     -- 會被下面的字面比對命中（2026-07-26 修）。
     WHERE ca.review_status = 'confirmed'
       AND lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) IN (
-        lower(regexp_replace(BTRIM(COALESCE(b."標準化申請人", '')), '\\s+', ' ', 'g')),
-        lower(regexp_replace(BTRIM(COALESCE(b."申請人", '')), '\\s+', ' ', 'g'))
+        lower(regexp_replace(BTRIM(split_part(COALESCE(b."標準化申請人", ''), '|', 1)), '\\s+', ' ', 'g')),
+        lower(regexp_replace(BTRIM(split_part(COALESCE(b."申請人", ''), '|', 1)), '\\s+', ' ', 'g'))
     )
     ORDER BY
         CASE
-            WHEN lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) = lower(regexp_replace(BTRIM(COALESCE(b."標準化申請人", '')), '\\s+', ' ', 'g')) THEN 1
+            WHEN lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) = lower(regexp_replace(BTRIM(split_part(COALESCE(b."標準化申請人", ''), '|', 1)), '\\s+', ' ', 'g')) THEN 1
             ELSE 2
         END,
         ca.id
@@ -283,12 +289,12 @@ LEFT JOIN LATERAL (
     -- 只採 confirmed（同 applicant_alias 理由）。
     WHERE ca.review_status = 'confirmed'
       AND lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) IN (
-        lower(regexp_replace(BTRIM(COALESCE(b."標準當前專利權人[US,JP,KR,CN,CA,AU]", '')), '\\s+', ' ', 'g')),
-        lower(regexp_replace(BTRIM(COALESCE(b."最近專利權人[US,JP,KR,CN,CA,AU]", '')), '\\s+', ' ', 'g'))
+        lower(regexp_replace(BTRIM(split_part(COALESCE(b."標準當前專利權人[US,JP,KR,CN,CA,AU]", ''), '|', 1)), '\\s+', ' ', 'g')),
+        lower(regexp_replace(BTRIM(split_part(COALESCE(b."最近專利權人[US,JP,KR,CN,CA,AU]", ''), '|', 1)), '\\s+', ' ', 'g'))
     )
     ORDER BY
         CASE
-            WHEN lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) = lower(regexp_replace(BTRIM(COALESCE(b."標準當前專利權人[US,JP,KR,CN,CA,AU]", '')), '\\s+', ' ', 'g')) THEN 1
+            WHEN lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) = lower(regexp_replace(BTRIM(split_part(COALESCE(b."標準當前專利權人[US,JP,KR,CN,CA,AU]", ''), '|', 1)), '\\s+', ' ', 'g')) THEN 1
             ELSE 2
         END,
         ca.id
@@ -301,7 +307,7 @@ LEFT JOIN LATERAL (
     -- 只採 confirmed（同 applicant_alias 理由）。受讓人無代碼欄，只有這條別稱路徑，
     -- 缺護欄時草稿是**唯一**能命中的來源，風險比另兩欄更高。
     WHERE ca.review_status = 'confirmed'
-      AND lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) = lower(regexp_replace(BTRIM(COALESCE(b."最近受讓人[US,KR,CN]", '')), '\\s+', ' ', 'g'))
+      AND lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) = lower(regexp_replace(BTRIM(split_part(COALESCE(b."最近受讓人[US,KR,CN]", ''), '|', 1)), '\\s+', ' ', 'g'))
     ORDER BY ca.id
     LIMIT 1
 ) assignee_alias ON true
@@ -318,7 +324,7 @@ LEFT JOIN code_alias_names ocan
 -- 受讓人以「別稱字面 → 代碼 → 公司名」反查（WIPS 無受讓人代碼欄）。
 -- equi-join 走 hash join，別稱集合是小表，不引入 N+1。
 LEFT JOIN assignee_code_names acan_assignee
-    ON acan_assignee.alias_key = lower(regexp_replace(BTRIM(COALESCE(b."最近受讓人[US,KR,CN]", '')), '\\s+', ' ', 'g'));
+    ON acan_assignee.alias_key = lower(regexp_replace(BTRIM(split_part(COALESCE(b."最近受讓人[US,KR,CN]", ''), '|', 1)), '\\s+', ' ', 'g'));
 """
 
 

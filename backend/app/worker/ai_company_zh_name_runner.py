@@ -189,6 +189,22 @@ def _extract_names(parsed: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in names if isinstance(item, dict)]
 
 
+# 「已裁決中文名」的來源標記前綴（2026-07-28 使用者實機發現後分流）。
+#
+# `display_name_curation` 前綴下有兩種來源，語意不同：
+#   - `:zh_name_review` ＝真的裁決過中文名（含 keep_original「查無，保留原文」）
+#   - `:code_registry`  ＝只是在代碼補齊區塊建了組，**中文名還空著**
+#
+# PENDING_SQL 只能排除前者。原本用寬鬆的 `display_name_curation%` 一律排除，
+# 把剛建的組也當成已裁決，使用者按「產生中文名草稿」時 job succeeded 卻
+# 什麼都沒做（只跑 3.4 秒、畫面顯示「目前沒有待確認的中文名草稿」）。
+ZH_REVIEW_SOURCE_PREFIX = "display_name_curation:zh_name_review"
+
+# 代碼補齊建組的來源後綴，供測試判斷用（實際完整字面見
+# `backend/app/api/company_aliases.py` 的 CODE_REGISTRY_SOURCE_LABEL）。
+CODE_REGISTRY_SOURCE_SUFFIX = ":code_registry"
+
+
 class CompanyZhNameStore:
     """中文名草稿的 DB 落點（讀待中文化清單＋草稿收斂寫入）。
 
@@ -226,10 +242,20 @@ class CompanyZhNameStore:
               WHERE z."申請人代碼" = ca."申請人代碼"
                 AND NULLIF(BTRIM(z."公司中文名稱"), '') IS NOT NULL
           )
+          -- 已裁決過中文名者不重複問。
+          -- ⚠ 只認**裁決**來源（`:zh_name_review`），不認代碼補齊建組
+          -- （`:code_registry`）——兩者都掛 display_name_curation 前綴，但後者
+          -- 只是建了組、中文名還空著，正是需要 AI 產草稿的對象。
+          -- 原本用寬鬆的 `LIKE 'display_name_curation%%'` 一律排除，導致使用者
+          -- 建完組按「產生中文名草稿」時 job succeeded 卻只跑 3.4 秒、
+          -- 畫面顯示「沒有待確認的草稿」——看起來成功、實際什麼都沒做。
+          --
+          -- 為何不能改看「中文欄是否為空」就好：keep_original 裁決（查過查無，
+          -- 保留英文原文）後中文欄仍是空的，只有來源標記能區分「查過」與「還沒查」。
           AND NOT EXISTS (
               SELECT 1 FROM derived_layer.company_aliases d
               WHERE d."申請人代碼" = ca."申請人代碼"
-                AND d.source_file LIKE 'display_name_curation%%'
+                AND d.source_file LIKE %(zh_review_prefix)s
           )
           AND NOT EXISTS (
               SELECT 1 FROM derived_layer.company_aliases s
@@ -269,8 +295,11 @@ class CompanyZhNameStore:
 
     def fetch_pending(self, *, limit: int | None = None) -> list[tuple[str, str]]:
         """單次查詢取回待中文化 (company_code, 英文公司名)，非 N+1。"""
-        sql = self.PENDING_SQL + ("\n        LIMIT %s" if limit else "")
-        params = (int(limit),) if limit else ()
+        sql = self.PENDING_SQL + ("\n        LIMIT %(limit)s" if limit else "")
+        # 具名參數：SQL 內已有 %(zh_review_prefix)s，混用位置參數會 TypeError。
+        params: dict[str, Any] = {"zh_review_prefix": f"{ZH_REVIEW_SOURCE_PREFIX}%"}
+        if limit:
+            params["limit"] = int(limit)
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [(str(code), str(name or "")) for code, name in rows]

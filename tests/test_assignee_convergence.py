@@ -62,10 +62,11 @@ class AssigneeUsesSharedAliasTests(unittest.TestCase):
         idx_alias = REFRESH_SQL.find('assignee_alias.display_name')
         self.assertGreater(idx_code, 0)
         self.assertGreater(idx_alias, 0)
-        line_start = REFRESH_SQL.rfind("COALESCE(", 0, REFRESH_SQL.find(
-            "AS recent_assignee_display_name"))
-        line = REFRESH_SQL[line_start:REFRESH_SQL.find(
-            "AS recent_assignee_display_name")]
+        # ⚠ 取**整行**，不用 rfind("COALESCE(") 回推起點——原值段自 2026-07-28
+        # 起是 `split_part(COALESCE(...))`，內層 COALESCE 會讓 rfind 抓到錯的
+        # 起點，切出的片段裡兩個名字都不在，斷言變成 -1 < -1 的假失敗。
+        line = next(l for l in REFRESH_SQL.splitlines()
+                    if "AS recent_assignee_display_name" in l)
         self.assertLess(
             line.find("acan_assignee"), line.find('assignee_alias.display_name'),
             "代碼對照必須排在別稱對照之前——代碼是使用者的裁決依據，優先級最高")

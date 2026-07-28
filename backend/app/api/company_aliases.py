@@ -39,6 +39,22 @@ router = APIRouter(tags=["company-zh-drafts"])
 # 的判斷依據，確認過的代碼因此不會再出現在待中文化清單。
 CONFIRM_SOURCE_LABEL = "display_name_curation:zh_name_review"
 
+# 代碼補齊區塊建組用的來源標記（2026-07-28 使用者實機發現後新增）。
+#
+# ⚠ **必須與 CONFIRM_SOURCE_LABEL 分開**：兩者都掛 `display_name_curation` 前綴，
+# 但語意不同——
+#   - `:zh_name_review`   ＝已裁決中文名（含「查無，保留原文」），不該再問 AI
+#   - `:code_registry`    ＝只是建了組，**中文名還空著**，正等 AI 產草稿
+#
+# 原本兩者共用同一個 label，導致 `ai_company_zh_name_runner.PENDING_SQL` 的
+# `source_file LIKE 'display_name_curation%'` 把剛建的組也當成「已裁決」排除掉：
+# 使用者建完組按「產生公司中文名草稿」，job succeeded 但只跑 3.4 秒、
+# 畫面顯示「目前沒有待確認的中文名草稿」——**看起來成功、實際什麼都沒做**。
+#
+# 為何不乾脆拿掉那條排除：keep_original 裁決後中文欄仍是空的，
+# 只有這個標記能區分「查過查無」與「還沒查」。故改為分辨兩種來源。
+CODE_REGISTRY_SOURCE_LABEL = "display_name_curation:code_registry"
+
 
 class ZhNameDecision(BaseModel):
     """單筆裁決。
@@ -413,11 +429,8 @@ def find_code_conflicts(groups: list[Any], existing: dict[str, str]) -> list[dic
 
 
 _PENDING_CODES_SQL = """
-    WITH names AS (
-        SELECT lower(regexp_replace(BTRIM(x.raw_name), '\\s+', ' ', 'g')) AS lookup_key,
-               x.raw_name,
-               x.source_field,
-               pp.patent_id
+    WITH raw_names AS (
+        SELECT x.raw_name, x.source_field, pp.patent_id
         FROM core_layer.patent_people pp
         CROSS JOIN LATERAL (VALUES
             (NULLIF(BTRIM(pp."申請人"), ''), '申請人'),
@@ -427,6 +440,25 @@ _PENDING_CODES_SQL = """
             (NULLIF(BTRIM(pp."最近受讓人[US,KR,CN]"), ''), '最近受讓人')
         ) AS x(raw_name, source_field)
         WHERE x.raw_name IS NOT NULL
+    ),
+    -- ⚠ 2026-07-28 使用者實機發現：「像這種 | 隔開的要拆成兩筆」。
+    -- WIPS 以 ` | ` 分隔同一欄的多個申請人／專利權人／受讓人。不拆的話整串會被
+    -- 當成一個公司名，實測 60 筆庫內就有 14 筆申請人、10 筆專利權人含此分隔符，
+    -- 造成三個後果：
+    --   ① 待補清單出現「XIAMEN DMASTER ... | Zeng Qing」這種**查不到代碼的假公司**
+    --   ② 兩個自然人（Zinur Akhmetov | Alfiya Sharipova）被當成一家公司
+    --   ③ 同一家公司因共同申請人不同而散成多筆（`... | Zeng Qing` vs
+    --      `... | TSENG, CHING`），**永遠收斂不起來**
+    -- 拆分後每個名稱各自去重、各自查代碼；patent_count 仍以 DISTINCT patent_id
+    -- 計算，故同一筆專利的兩個申請人各得 1 件、不會重複灌數。
+    names AS (
+        SELECT lower(regexp_replace(BTRIM(part), '\\s+', ' ', 'g')) AS lookup_key,
+               BTRIM(part) AS raw_name,
+               r.source_field,
+               r.patent_id
+        FROM raw_names r
+        CROSS JOIN LATERAL regexp_split_to_table(r.raw_name, '\\s*\\|\\s*') AS part
+        WHERE NULLIF(BTRIM(part), '') IS NOT NULL
     )
     SELECT n.lookup_key,
            min(n.raw_name) AS name,
@@ -527,7 +559,9 @@ def confirm_company_codes(body: ConfirmCodesRequest) -> dict[str, Any]:
         )
 
     mapping = groups_to_alias_mapping(body.groups)
-    written = apply_confirmed_display_names(mapping, CONFIRM_SOURCE_LABEL)
+    # 用 code_registry 標記：這裡只是建組，中文名還空著，不得被當成「已裁決」
+    # 而擋掉後續的 AI 中文名草稿（見 CODE_REGISTRY_SOURCE_LABEL 說明）。
+    written = apply_confirmed_display_names(mapping, CODE_REGISTRY_SOURCE_LABEL)
     refresh_job_id = create_job("refresh_derived", {})
     return {"groups": len(mapping), "written": written, "refresh_job_id": refresh_job_id}
 
@@ -627,7 +661,8 @@ def rename_company_group(code: str, body: RenameGroupRequest) -> dict[str, Any]:
     written = apply_confirmed_display_names(
         {code: {"zh_name": zh or None, "normalized_name": en or None,
                 "aliases": [a for a in aliases if a]}},
-        CONFIRM_SOURCE_LABEL,
+        # 同 confirm_company_codes：編輯組內容不等於裁決中文名。
+        CODE_REGISTRY_SOURCE_LABEL,
     )
     return {"code": code, "written": written,
             "refresh_job_id": create_job("refresh_derived", {})}
