@@ -114,6 +114,12 @@ class FamilyCountryRow:
     country_code: str
     direct_patent_count: int = 0
     via_ep_count: int = 0
+    # 2026-07-28 使用者定案「有同族 ID 的都要能納入分析」：狀態未知／審查中不再整筆丟棄，
+    # 但**與 direct 分開計數**——direct 的語意是「確定還有保護」，把狀態不明併進去等於捏造。
+    # 呈現層可顯示「CN 25 家族（另 2 家族狀態未知）」這種誠實資訊。
+    # 典型來源：WIPS 狀態欄名為 状态[US,JP,KR,CN,EP,CA,AU]，不含 TW，故 TW 恆為 unknown。
+    unknown_status_count: int = 0
+    pending_status_count: int = 0
     family_incomplete: bool = False
     is_surrogate_family: bool = False
 
@@ -170,7 +176,7 @@ def build_family_country_dataset(
         epc_valid      EPC有效國家[EP] 原始字串（可空，僅 expand_ep=True 時使用）
         epc_invalid    EPC無效國家[EP] 原始字串（可空，僅 expand_ep=True 時使用）
     """
-    # family_id -> country_code -> [direct, via_ep]
+    # family_id -> country_code -> [direct, via_ep, unknown, pending]
     coverage: dict[str, dict[str, list[int]]] = {}
     quality: dict[str, FamilyQualityRow] = {}
     # 完整性核對用：family_id -> country_code -> 實際列數（不分状态，核對「有沒有撈齊」）
@@ -205,11 +211,16 @@ def build_family_country_dataset(
 
         status = normalize_legal_status(row.get("legal_status"))
         status_totals[status] += 1
-        if status == STATUS_UNKNOWN:
-            qrow.unknown_status_count += 1
-            continue
-        if status == STATUS_PENDING:
-            qrow.pending_status_count += 1
+        if status in (STATUS_UNKNOWN, STATUS_PENDING):
+            # 品質表計數照舊（可信度儀表板），另記進 coverage 的第三／四槽，
+            # 讓該國家在佈局中看得到，但不混入「現有保護」的 direct 計數。
+            slot = coverage[family_id].setdefault(country or "", [0, 0, 0, 0])
+            if status == STATUS_UNKNOWN:
+                qrow.unknown_status_count += 1
+                slot[2] += 1
+            else:
+                qrow.pending_status_count += 1
+                slot[3] += 1
             continue
         if status == STATUS_DEAD:
             # 規則③：到期/失效不貢獻現有保護（EP 到期件有效國已清空，同樣落到這裡）。
@@ -219,7 +230,7 @@ def build_family_country_dataset(
         if country == "EP":
             if not expand_ep:
                 # 申請國層級：EP 以受理局桶直接貢獻，不展開生效國。
-                slot = coverage[family_id].setdefault("EP", [0, 0])
+                slot = coverage[family_id].setdefault("EP", [0, 0, 0, 0])
                 slot[0] += 1
                 continue
             valid_codes = split_pipe_codes(row.get("epc_valid"))
@@ -232,7 +243,7 @@ def build_family_country_dataset(
                 qrow.ep_missing_epc_count += 1
                 continue
             for code in codes:
-                slot = coverage[family_id].setdefault(code, [0, 0])
+                slot = coverage[family_id].setdefault(code, [0, 0, 0, 0])
                 slot[1] += 1
             continue
 
@@ -241,7 +252,7 @@ def build_family_country_dataset(
             qrow.non_country_row_count += 1
             continue
 
-        slot = coverage[family_id].setdefault(country, [0, 0])
+        slot = coverage[family_id].setdefault(country, [0, 0, 0, 0])
         slot[0] += 1
 
     # 完整性核對：明細五國桶 expected vs 實際撈到列數，不等即不完整（雙向都算）。
@@ -263,13 +274,18 @@ def build_family_country_dataset(
     country_rows: list[FamilyCountryRow] = []
     for family_id, per_country in coverage.items():
         qrow = quality[family_id]
-        for country, (direct, via_ep) in sorted(per_country.items()):
+        for country, (direct, via_ep, unknown_n, pending_n) in sorted(per_country.items()):
+            if not country:
+                # 缺 country_code 的狀態不明件無法歸國，不產生國別列（品質表已計數）。
+                continue
             country_rows.append(
                 FamilyCountryRow(
                     family_id=family_id,
                     country_code=country,
                     direct_patent_count=direct,
                     via_ep_count=via_ep,
+                    unknown_status_count=unknown_n,
+                    pending_status_count=pending_n,
                     family_incomplete=qrow.family_incomplete,
                     is_surrogate_family=qrow.is_surrogate_family,
                 )

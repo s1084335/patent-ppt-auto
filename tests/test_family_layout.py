@@ -167,22 +167,34 @@ class BuildFamilyCountryDatasetTests(unittest.TestCase):
         self.assertEqual(result.quality_rows[0].ep_in_transition_count, 1)
         self.assertEqual(result.summary["ep_in_transition_count"], 1)
 
-    def test_dead_and_pending_do_not_contribute(self) -> None:
-        """dead 跳過、pending 只計數，皆不貢獻國家。"""
+    def test_dead_excluded_pending_listed_separately(self) -> None:
+        """dead 完全不列；pending 要列出國家但不計入 direct（2026-07-28 定案改版）。
+
+        ⚠ 本測試前身斷言 `country_rows == []`（pending 也整筆消失）。使用者定案
+        「有同族 ID 的都要能納入分析」後，pending／unknown 改為列出國家、以獨立欄計數
+        ——原因是 WIPS 狀態欄名為 状态[US,JP,KR,CN,EP,CA,AU] 不含 TW，TW 恆為 unknown，
+        舊行為讓本國市場整個從佈局圖消失。
+        dead 維持排除：那是明確的「已無保護」，與「不知道」語意不同。
+        """
         result = build_family_country_dataset(
             [
                 make_row(patent_id=1, legal_status="到期(Expiration of the term)"),
                 make_row(patent_id=2, legal_status="审查中"),
             ]
         )
-        self.assertEqual(result.country_rows, [])
+        self.assertEqual(len(result.country_rows), 1, "pending 應列出、dead 不列")
+        row = result.country_rows[0]
+        self.assertEqual(row.direct_patent_count, 0, "pending 不得計入現有保護")
+        self.assertEqual(row.pending_status_count, 1)
         self.assertEqual(result.quality_rows[0].pending_status_count, 1)
         self.assertEqual(result.summary["status_totals"]["dead"], 1)
 
     def test_unknown_status_surfaces(self) -> None:
-        """未知状态不貢獻且計數現形。"""
+        """未知状态要列出國家、以 unknown 欄計數，且不混入 direct。"""
         result = build_family_country_dataset([make_row(legal_status="沒看過的狀態")])
-        self.assertEqual(result.country_rows, [])
+        self.assertEqual(len(result.country_rows), 1)
+        self.assertEqual(result.country_rows[0].direct_patent_count, 0)
+        self.assertEqual(result.country_rows[0].unknown_status_count, 1)
         self.assertEqual(result.quality_rows[0].unknown_status_count, 1)
 
     def test_surrogate_family_for_missing_family_id(self) -> None:

@@ -584,14 +584,15 @@ def _enqueue_refresh_derived(summary: dict[str, Any]) -> None:
     ⚠ 失敗隔離（沿 _enqueue_patent_note 範本）：匯入本體已成功落庫，refresh 只是後續便利；
     任何例外只記 log 並回填 summary.refresh_derived_error，不 raise——不把已成功匯入標 failed。
     沒有新專利就不 enqueue（refresh 是全量重建，無新資料時由既有資料自然涵蓋，不必每次跑）。
-    scope 'aliases'＝只刷 report_patent_base（公司名收斂那張表），成本最小。
+    2026-07-28 起不傳 scope——refresh_derived 一律刷全部（含家族兩張表），
+    原本傳 'aliases' 導致家族表永遠不更新、國家佈局與家族完整性兩張報表產不出來。
     """
     from backend.app.db import job_repository as jr
 
     try:
         if not (summary.get("patent_ids") or []):
             return
-        job = jr.create_job("refresh_derived", {"scope": "aliases"})
+        job = jr.create_job("refresh_derived", {})
         summary["refresh_derived_job_id"] = job.job_id
     except Exception as exc:  # noqa: BLE001 - refresh 是輔助，缺了照樣完成匯入
         LOGGER.exception("refresh_derived enqueue failed after import")
@@ -754,21 +755,52 @@ def handle_refresh_derived(payload: dict[str, Any], context: JobContext) -> dict
     標準化名。此表原本只有 MCP 手動觸發，匯入流程沒接，導致匯入後公司名（申請人／專利權人／
     受讓人）顯示欄全空、以申請人過濾的搜尋也搜不到。故匯入完成自動 enqueue 此 job 補上。
 
-    payload.scope（缺省 'aliases'＝只刷 report_patent_base；'all' 另刷 family_country）。
+    2026-07-28 整合（使用者定案「aliases、all 影響的都是我要的需求，要整合起來」）：
+    **一律刷全部**，不再用 scope 分岔。原本缺省 'aliases' 只刷 report_patent_base，
+    而全系統沒有任何自動路徑會送 'all'（匯入後與確認公司名後都送 'aliases'，
+    只有 MCP 能手動指定），導致兩張家族表從專案開始就是 0 列、國家佈局與家族完整性
+    兩張報表永遠產不出來。實測成本：report_patent_base 0.77 秒、家族 0.58 秒——
+    家族計算反而更輕（前者有三個 LATERAL join 逐列查對照表），不是效能取捨。
+
+    payload.scope 保留讀取但不再影響行為（舊 job 相容）。
     複用既有 refresh 函式，不重寫收斂邏輯。refresh 是全量重建，成本隨全庫筆數成長。
     """
+    context.heartbeat("刷新公司名收斂顯示", 20)
+    result = _refresh_all_derived(context)
+    context.heartbeat("完成", 100)
+    return _json_safe({"scope": str(payload.get("scope") or "all"), "result": result})
+
+
+def _refresh_patent_base_only() -> dict[str, Any]:
+    """只刷 report_patent_base（公司名收斂）。抽出供 _refresh_all_derived 組合與測試注入。"""
     from backend.app.derived.refresh_report_patent_base import refresh_report_patent_base
 
-    context.heartbeat("刷新公司名收斂顯示", 20)
-    scope = str(payload.get("scope") or "aliases")
-    result = refresh_report_patent_base()
-    if scope == "all":
+    return refresh_report_patent_base()
+
+
+def _refresh_family_only() -> dict[str, Any]:
+    """只刷家族兩張表。抽出供 _refresh_all_derived 組合與測試注入。"""
+    from backend.app.derived.refresh_report_family_country import refresh_report_family_country
+
+    return refresh_report_family_country()
+
+
+def _refresh_all_derived(context: JobContext | None = None) -> dict[str, Any]:
+    """刷新全部 derived 產出：report_patent_base ＋ 家族兩張表。
+
+    ⚠ 失敗隔離：兩者是獨立產出，家族計算掛掉不該讓已完成的 report_patent_base 刷新
+    一起報廢（公司名收斂是匯入後顯示的必要條件，優先度更高）。家族失敗以
+    family_error 明確回報，不靜默吞掉——靜默正是這兩張表空了這麼久沒被發現的原因。
+    """
+    result: dict[str, Any] = {"report_patent_base": _refresh_patent_base_only()}
+    if context is not None:
         context.heartbeat("刷新家族國別報表視圖", 60)
-        from backend.app.derived.refresh_report_family_country import refresh_report_family_country
-        family = refresh_report_family_country()
-        result = {"report_patent_base": result, "report_family_country": family}
-    context.heartbeat("完成", 100)
-    return _json_safe({"scope": scope, "result": result})
+    try:
+        result["report_family_country"] = _refresh_family_only()
+    except Exception as exc:  # noqa: BLE001 - 家族失敗不拖垮公司名收斂
+        LOGGER.exception("family country refresh failed")
+        result["family_error"] = f"{type(exc).__name__}: {exc}"
+    return result
 
 
 def handle_embeddings(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:

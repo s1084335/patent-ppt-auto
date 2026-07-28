@@ -34,8 +34,9 @@ FROM derived_layer.report_patent_base
 INSERT_COUNTRY_SQL = """
 INSERT INTO legacy_0021.report_family_country (
     family_id, country_code, direct_patent_count, via_ep_count,
+    unknown_status_count, pending_status_count,
     family_incomplete, is_surrogate_family
-) VALUES (%s, %s, %s, %s, %s, %s)
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 INSERT_QUALITY_SQL = """
@@ -79,6 +80,8 @@ def refresh_report_family_country() -> dict[str, Any]:
                         r.country_code,
                         r.direct_patent_count,
                         r.via_ep_count,
+                        r.unknown_status_count,
+                        r.pending_status_count,
                         r.family_incomplete,
                         r.is_surrogate_family,
                     )
