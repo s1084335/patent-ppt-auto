@@ -196,19 +196,36 @@ class CompanyZhNameStore:
     """
 
     # 讀待中文化清單（三態的「未判斷」）：以代碼為單位，取一個代表英文名。
-    # 條件（與 govern_company_names 的 needs_zh_name 一致，但全庫掃，且多排除 AI 草稿）：
-    # - canonical（confirmed 列的公司名稱）不含 CJK（[一-鿿]）＝尚無市場慣用中文名。
+    #
+    # ⚠ 2026-07-28 四欄拆分（使用者第④點）改了兩件事：
+    # - **待處理判斷**：由「公司名稱不含 CJK」改為「**公司中文名稱為空**」。
+    #   語意更直接，不必靠字元類別推測——混合字串（XIAMEN ... | Zeng Qing）
+    #   本來就會被字元判斷誤判。
+    # - **AI 輸入**：改讀 `正規化名稱`（英文正式名）；該欄空時退用**別稱原文**。
+    #   使用者定「AI 本來就是要將正規化或是原值英文轉中文」。
+    #
+    # 其餘條件不變（全庫掃）：
     # - 該代碼無 curation 裁決列（source_file LIKE 'display_name_curation%'，含保留原文）。
     # - 該代碼無 AI 草稿列（review_status='ai_suggested'）＝不重複問同批、不燒 token。
     # 一次 GROUP BY 掃描（代碼數量級，26 筆等級），非 N+1。
     PENDING_SQL = """
         SELECT ca."申請人代碼",
-               mode() WITHIN GROUP (ORDER BY ca."公司名稱") AS company_name
+               mode() WITHIN GROUP (ORDER BY COALESCE(
+                   NULLIF(BTRIM(ca."正規化名稱"), ''),
+                   NULLIF(BTRIM(ca."別稱"), '')
+               )) AS company_name
         FROM derived_layer.company_aliases ca
         WHERE ca.review_status = 'confirmed'
           AND NULLIF(BTRIM(ca."申請人代碼"), '') IS NOT NULL
-          AND NULLIF(BTRIM(ca."公司名稱"), '') IS NOT NULL
-          AND ca."公司名稱" !~ '[一-鿿]'
+          AND COALESCE(
+                NULLIF(BTRIM(ca."正規化名稱"), ''),
+                NULLIF(BTRIM(ca."別稱"), '')
+          ) IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM derived_layer.company_aliases z
+              WHERE z."申請人代碼" = ca."申請人代碼"
+                AND NULLIF(BTRIM(z."公司中文名稱"), '') IS NOT NULL
+          )
           AND NOT EXISTS (
               SELECT 1 FROM derived_layer.company_aliases d
               WHERE d."申請人代碼" = ca."申請人代碼"
@@ -228,12 +245,15 @@ class CompanyZhNameStore:
         "DELETE FROM derived_layer.company_aliases "
         "WHERE \"申請人代碼\" = %s AND review_status = 'ai_suggested'"
     )
+    # ⚠ 草稿的中文名寫進 `公司中文名稱`（2026-07-28 拆四欄）；`keep_original`
+    # 時該值為 None → **中文欄留空**，不把英文塞進中文欄（使用者第④點）。
+    # `別稱` 是 NOT NULL 欄，草稿列以英文原文（source_name）填之，供列表顯示對照。
     _INSERT_DRAFT_SQL = (
         'INSERT INTO derived_layer.company_aliases '
-        '("申請人代碼", "公司名稱", "別稱", source_file, source_type, review_status, '
-        " wips_metadata_json) "
-        "VALUES (%(code)s, %(name)s, %(name)s, %(source_file)s, %(source_type)s, "
-        "        %(review_status)s, %(metadata)s)"
+        '("申請人代碼", "公司中文名稱", "正規化名稱", "別稱", source_file, source_type, '
+        " review_status, wips_metadata_json) "
+        "VALUES (%(code)s, %(zh_name)s, %(source_name)s, %(source_name)s, %(source_file)s, "
+        "        %(source_type)s, %(review_status)s, %(metadata)s)"
     )
 
     def __init__(self, connect_kwargs: dict[str, Any] | None = None) -> None:
@@ -261,6 +281,10 @@ class CompanyZhNameStore:
         草稿列 review_status='ai_suggested'，故不落 confirmed 唯一索引、不進顯示欄收斂。
         verdict 存 wips_metadata_json->'zh_name_verdict'，供前端／確認流程區分
         translated（有中文名）與 keep_original（查無保留原文）。
+
+        ⚠ 2026-07-28 拆四欄：`zh_name` 只在 translated 時有值，寫進 `公司中文名稱`；
+        keep_original 時為 None（中文欄留空，不塞英文）。`source_name`＝AI 的輸入
+        英文名，寫進 `正規化名稱`／`別稱` 供列表對照。
         """
         from psycopg.types.json import Jsonb
 
@@ -277,7 +301,8 @@ class CompanyZhNameStore:
                         self._INSERT_DRAFT_SQL,
                         {
                             "code": code,
-                            "name": draft["zh_name"],
+                            "zh_name": draft.get("zh_name") or None,
+                            "source_name": draft.get("source_name") or draft.get("zh_name"),
                             "source_file": DRAFT_SOURCE_FILE,
                             "source_type": DRAFT_SOURCE_TYPE,
                             "review_status": draft.get("review_status", DRAFT_REVIEW_STATUS),
@@ -360,11 +385,15 @@ def run_company_zh_name(
                 raise CompanyZhNameRunnerError(
                     f"translated 判定缺 zh_name：{item}")
         else:
-            # keep_original：草稿中文名落回英文原文（顯示保留原文、不硬翻）。
-            zh_name = name_by_code[code]
+            # keep_original：查無市場慣用中文名 → **中文欄留空**（2026-07-28 使用者
+            # 第④點）。不再把英文原文塞進中文欄；顯示自然退到「正規化名稱」，
+            # 符合「一律中文，沒中文才退英文正式名」的第①點。
+            zh_name = None
         drafts.append({
             "company_code": code,
             "zh_name": zh_name,
+            # AI 的輸入英文名（正規化名稱，空時為別稱原文）——寫回草稿列供對照。
+            "source_name": name_by_code[code],
             "verdict": verdict,
             "review_status": DRAFT_REVIEW_STATUS,
         })

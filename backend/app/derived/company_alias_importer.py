@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,10 @@ from openpyxl import load_workbook
 from backend.app.transforms.text import clean_text
 
 REQUIRED_COLUMNS = ("申請人代碼", "公司名稱", "別稱")
+
+# CJK 範圍：只服務 `canonical` 舊單欄輸入的相容判斷（見 resolve_group_names）。
+# 新流程由使用者在前端分兩格填中文／英文，不靠字元類別猜。
+_CJK_RE = re.compile(r"[一-鿿]")
 
 
 def normalize_lookup(value: str | None) -> str | None:
@@ -222,9 +227,14 @@ def govern_company_names(
                 continue
             canonical_name = next(iter(names))  # 唯一既有正規化公司名稱，直接沿用
             conn.execute(
+                # ⚠ 衝突目標改為 partial unique index（2026-07-28，0040 拆四欄）：
+                # 舊三元組 UNIQUE (代碼, 公司名稱, 別稱) 已隨拆欄移除，這裡是全 repo
+                # 唯一依賴它的寫入路徑。改用與 import_company_aliases／
+                # apply_confirmed_display_names 同一把 key，唯一性語意不變。
                 'INSERT INTO derived_layer.company_aliases ("申請人代碼", "公司名稱", "別稱", source_file) '
                 "VALUES (%s, %s, %s, %s) "
-                'ON CONFLICT ("申請人代碼", "公司名稱", "別稱") DO NOTHING',
+                'ON CONFLICT ("申請人代碼", alias_lookup_key) '
+                "WHERE review_status = 'confirmed' DO NOTHING",
                 (code, canonical_name, variant, source_label),
             )
             aliases_by_code.setdefault(code, set()).add(norm_variant)
@@ -269,6 +279,29 @@ def register_known_code_variants(
     return govern_company_names(pairs, source_label=source_label, connect_kwargs=connect_kwargs)
 
 
+def resolve_group_names(spec: dict[str, Any]) -> tuple[str | None, str | None]:
+    """從一組 mapping spec 取出 (中文正式名, 英文正式名)。
+
+    2026-07-28 四欄拆分後 mapping 的名稱欄有兩個鍵：
+    - `zh_name`         → `公司中文名稱`（中文正式名）
+    - `normalized_name` → `正規化名稱`（英文正式名）
+
+    ⚠ 相容舊鍵 `canonical`：既有呼叫端（中文名確認端點 confirm_drafts）只給一個
+    顯示名，語意上「有 CJK 就是中文名、否則是英文正式名」。這裡的字元類別判斷
+    **只用於相容舊單欄輸入**，不是新流程的判斷依據——新流程由使用者在前端分兩格
+    填，不靠猜（使用者第③點否決的正是「自動判斷含 CJK 就是中文名」的資料遷移）。
+    兩欄都可空（使用者第②點），全空時回 (None, None)，由呼叫端決定要不要寫。
+    """
+    zh = clean_text(spec.get("zh_name"))
+    en = clean_text(spec.get("normalized_name"))
+    if zh or en:
+        return zh, en
+    legacy = clean_text(spec.get("canonical"))
+    if not legacy:
+        return None, None
+    return (legacy, None) if _CJK_RE.search(legacy) else (None, legacy)
+
+
 def apply_confirmed_display_names(
     mapping: dict[str, dict[str, Any]],
     source_label: str,
@@ -276,18 +309,28 @@ def apply_confirmed_display_names(
 ) -> dict[str, Any]:
     """套用使用者已裁決的公司顯示名（curation 落地機制；載體＝DB 本身，不經 CSV）。
 
-    mapping = {申請人代碼: {"canonical": 顯示名, "aliases": [變體, ...]}}
-    規則（2026-07-21 公司顯示名原則定案；2026-07-23 隨代碼收斂調整）：
-    - canonical 自身也納入別稱，確保顯示名字面可精確命中。
+    mapping = {申請人代碼: {"zh_name": 中文正式名, "normalized_name": 英文正式名,
+                            "aliases": [變體, ...]}}
+    （2026-07-28 四欄拆分；舊形狀 `{"canonical": 顯示名, ...}` 仍相容，
+      見 resolve_group_names）
+
+    規則（2026-07-21 公司顯示名原則定案；2026-07-23 隨代碼收斂調整；2026-07-28 拆四欄）：
+    - **兩個正式名自身也納入別稱**，確保使用者填的中文名／英文名字面在專利表可精確
+      命中（原本只納入單一 canonical；拆欄後兩個都要，否則另一個字面命不中）。
     - 批內按 (代碼, normalize_lookup(別稱)) 去重，與 DB 唯一索引
       ux_company_aliases_code_lookup_confirmed 同一把 key。不同代碼可有同一別稱
       字面，故去重**不再跨 code**——跨 code 去重會誤丟別家公司的合法別稱。
-    - (代碼, lookup key) 已存在 → UPDATE 該列 re-canonicalize：改掛新顯示名／
-      source_file，review_status 一律轉 'confirmed'；不插新列，故不撞唯一索引。
+    - (代碼, lookup key) 已存在 → UPDATE 該列 re-canonicalize：改掛新的中文／英文
+      正式名與 source_file，review_status 一律轉 'confirmed'；不插新列，不撞唯一索引。
       查詢必須同時比對代碼，否則在「一別稱多公司」下會取到別家公司的列。
     - 不存在 → INSERT 一列 confirmed（source_type='manual'＝人工裁決）。
+    - 兩個正式名皆空的組直接略過（使用者第②點：可空、不擋、不報錯；但沒有任何名字
+      也就沒有東西可寫）。
     - 只寫 derived_layer.company_aliases；原始專利表不碰。
     回傳 {"inserted", "updated", "dedup_dropped"}。
+
+    ⚠ 這是 company_aliases 唯一的 confirmed 寫入點。去重、re-canonicalize、
+    review_status 轉換的規則只有這一份，其他模組一律委派，不得自寫 SQL。
     """
     try:
         import psycopg
@@ -298,15 +341,16 @@ def apply_confirmed_display_names(
 
     # 批內去重：唯一索引已含代碼，去重 key 同步改為 (code, lookup key)，
     # 不同代碼的同一別稱字面各自保留，不再互相排擠。
-    entries: list[tuple[str, str, str]] = []  # (code, canonical, 別稱字面)
+    entries: list[tuple[str, str | None, str | None, str]] = []  # (code, 中文名, 英文名, 別稱)
     seen_keys: set[tuple[str, str]] = set()
     dedup_dropped = 0
     for raw_code, spec in mapping.items():
         code = clean_text(raw_code)
-        canonical = clean_text(spec.get("canonical"))
-        if not code or not canonical:
+        zh_name, en_name = resolve_group_names(spec)
+        if not code or not (zh_name or en_name):
             continue
-        for raw_alias in [canonical, *spec.get("aliases", [])]:
+        # 兩個正式名都納入別稱（各自的字面都要能命中），再接使用者填的變體。
+        for raw_alias in [zh_name, en_name, *spec.get("aliases", [])]:
             alias = clean_text(raw_alias)
             if not alias:
                 continue
@@ -315,12 +359,12 @@ def apply_confirmed_display_names(
                 dedup_dropped += 1
                 continue
             seen_keys.add(key)
-            entries.append((code, canonical, alias))
+            entries.append((code, zh_name, en_name, alias))
 
     inserted = 0
     updated = 0
     with psycopg.connect(**(connect_kwargs or get_connection_kwargs())) as conn:
-        for code, canonical, alias in entries:
+        for code, zh_name, en_name, alias in entries:
             # 以 DB 端與 generated 欄完全相同的正規化運算式找既有列。
             # 必須同時比對「申請人代碼」：唯一索引已是 (代碼, lookup key)，
             # 只用別稱會在「一別稱多公司」時取到別家公司的列並把它改掛到本代碼。
@@ -333,19 +377,22 @@ def apply_confirmed_display_names(
                 (alias, code),
             ).fetchone()
             if row:
+                # 舊 `公司名稱` 欄同步寫入（中文優先）：0040 之後它只是相容欄，
+                # 但既有查詢／匯出仍讀得到，留空會讓那些路徑突然變空白。
                 conn.execute(
-                    'UPDATE derived_layer.company_aliases SET "公司名稱" = %s, '
+                    'UPDATE derived_layer.company_aliases SET "公司中文名稱" = %s, '
+                    '"正規化名稱" = %s, "公司名稱" = %s, '
                     "source_file = %s, review_status = 'confirmed', source_type = 'manual', "
                     "updated_at = now() WHERE id = %s",
-                    (canonical, source_label, row[0]),
+                    (zh_name, en_name, zh_name or en_name, source_label, row[0]),
                 )
                 updated += 1
             else:
                 conn.execute(
-                    'INSERT INTO derived_layer.company_aliases ("申請人代碼", "公司名稱", "別稱", '
-                    "source_file, source_type, review_status) "
-                    "VALUES (%s, %s, %s, %s, 'manual', 'confirmed')",
-                    (code, canonical, alias, source_label),
+                    'INSERT INTO derived_layer.company_aliases ("申請人代碼", "公司中文名稱", '
+                    '"正規化名稱", "公司名稱", "別稱", source_file, source_type, review_status) '
+                    "VALUES (%s, %s, %s, %s, %s, %s, 'manual', 'confirmed')",
+                    (code, zh_name, en_name, zh_name or en_name, alias, source_label),
                 )
                 inserted += 1
         conn.commit()
@@ -355,7 +402,9 @@ def apply_confirmed_display_names(
 
 # AI 中文名草稿清單（三態的「草稿待確認」）：只列 ai_suggested 列。
 # 一併帶出：
-#   - draft_name＝AI 產的中文名草稿（keep_original 裁決時此值＝英文原文）
+#   - draft_name＝AI 產的中文名草稿（2026-07-28 起讀 `公司中文名稱`；keep_original
+#     裁決時該欄為 NULL，前端據 verdict 顯示「查無，保留原文」）
+#   - source_name＝AI 的輸入英文名（`正規化名稱`），供對照
 #   - verdict＝translated／keep_original，供前端區分「有中文名」與「查無保留原文」
 #   - original_name＝收斂前的原始字面（該代碼的別稱），確認中文名時的對照依據
 # ⚠ 不帶「該代碼現行顯示名」：它與專利表「申請人」欄同源（皆走 code_alias_names →
@@ -363,7 +412,8 @@ def apply_confirmed_display_names(
 # 以代碼為單位，一代碼至多一草稿列（write_drafts 先刪後插保證）。
 _LIST_DRAFTS_SQL = """
     SELECT d."申請人代碼" AS code,
-           d."公司名稱" AS draft_name,
+           d."公司中文名稱" AS draft_name,
+           d."正規化名稱" AS source_name,
            d.wips_metadata_json->>'zh_name_verdict' AS verdict,
            -- ⚠ 表沒有 created_at（實機 HTTP 500：UndefinedColumn）。時間欄是
            -- imported_at（匯入）與 updated_at（更新）；草稿為「一代碼至多一列、
@@ -421,10 +471,16 @@ def list_zh_name_drafts(
     return {"items": items, "total": total}
 
 
-def get_draft_name(code: str, connect_kwargs: dict[str, Any] | None = None) -> str | None:
-    """取某代碼的草稿名（action='confirm' 時用草稿名確認，不必前端回傳）。
+def get_draft_names(
+    code: str, connect_kwargs: dict[str, Any] | None = None
+) -> tuple[str | None, str | None]:
+    """取某代碼草稿列的 (中文名, 英文正式名)。
 
     前端只送 code＋action，草稿名由後端自己查——避免前端竄改或送到過期的草稿名。
+
+    ⚠ 2026-07-28 拆四欄後回**兩個值**：`keep_original` 草稿的中文欄是 NULL，
+    此時仍要能確認（英文正式名照樣寫進去、顯示退英文），故不能像舊版那樣
+    「查不到名字就 422」。
     """
     import psycopg
 
@@ -432,11 +488,13 @@ def get_draft_name(code: str, connect_kwargs: dict[str, Any] | None = None) -> s
 
     with psycopg.connect(**(connect_kwargs or get_connection_kwargs())) as conn:
         row = conn.execute(
-            'SELECT "公司名稱" FROM derived_layer.company_aliases '
+            'SELECT "公司中文名稱", "正規化名稱" FROM derived_layer.company_aliases '
             "WHERE \"申請人代碼\" = %s AND review_status = 'ai_suggested' LIMIT 1",
             (code,),
         ).fetchone()
-    return str(row[0]) if row and row[0] else None
+    if not row:
+        return None, None
+    return clean_text(row[0]), clean_text(row[1])
 
 
 def main() -> None:

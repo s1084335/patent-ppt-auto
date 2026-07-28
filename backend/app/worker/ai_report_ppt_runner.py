@@ -284,6 +284,49 @@ def _extract_slots(parsed: dict[str, Any]) -> dict[str, str]:
     return {str(k): str(v) for k, v in slots.items() if v is not None}
 
 
+def _clean_str_map(value: Any) -> dict[str, str]:
+    """清理前端覆寫用的一層字串 dict，避免多餘結構進 approvals.json。"""
+    if not isinstance(value, dict):
+        return {}
+    return {str(k): str(v) for k, v in value.items() if v is not None}
+
+
+def _clean_position_overrides(value: Any) -> dict[str, dict[str, float]]:
+    """只保留 PPT 元件位置覆寫的四個 inch 座標欄位。"""
+    if not isinstance(value, dict):
+        return {}
+    allowed = ("left_in", "top_in", "width_in", "height_in")
+    cleaned: dict[str, dict[str, float]] = {}
+    for key, raw_box in value.items():
+        if not isinstance(raw_box, dict):
+            continue
+        box: dict[str, float] = {}
+        for field in allowed:
+            if field not in raw_box:
+                continue
+            try:
+                box[field] = float(raw_box[field])
+            except (TypeError, ValueError):
+                continue
+        if box:
+            cleaned[str(key)] = box
+    return cleaned
+
+
+def _build_approvals(version: str, ai_slots: dict[str, str],
+                     approval_overrides: dict[str, Any] | None) -> dict[str, Any]:
+    """合併 AI 文案與使用者覆寫；人工 slots 優先，版型與座標分 key 保存。"""
+    overrides = approval_overrides if isinstance(approval_overrides, dict) else {}
+    slots = dict(ai_slots)
+    slots.update(_clean_str_map(overrides.get("slots")))
+    return {
+        "report_version": version,
+        "slots": slots,
+        "layout_overrides": _clean_str_map(overrides.get("layout_overrides")),
+        "position_overrides": _clean_position_overrides(overrides.get("position_overrides")),
+    }
+
+
 def _default_build_ppt(*, report_dir, approvals_path, output_dir, theme_path=None):
     """預設組版：以獨立子行程呼 skill 的 build_ppt.py（uv run --no-project，可攜）。
 
@@ -327,6 +370,7 @@ def run_report_ppt(
     timeout_seconds: float = DEFAULT_CLI_TIMEOUT_SECONDS,
     progress: Callable[[str, int], None] | None = None,
     payload_root: Any = None,
+    approval_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """整條報告 PPT 流程：解析報表目錄 → AI 產文案 slots → 寫 approvals.json →
     呼 build_ppt.py 組 .pptx（進 report_dir）→ upload_run_dir 一起上傳到 report_artifacts。
@@ -376,7 +420,7 @@ def run_report_ppt(
     if progress is not None:
         progress("寫入確認槽定稿文案", 55)
     # approvals.json 落在報表版本目錄內，供 build_ppt 讀（沿 SKILL.md D-2 槽位契約）。
-    approvals = {"report_version": version, "slots": slots}
+    approvals = _build_approvals(version, slots, approval_overrides)
     approvals_path = run_dir / "approvals.json"
     approvals_path.write_text(
         json.dumps(approvals, ensure_ascii=False, indent=2), encoding="utf-8")

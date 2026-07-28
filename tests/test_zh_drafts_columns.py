@@ -21,12 +21,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 IMPORTER = PROJECT_ROOT / "backend" / "app" / "derived" / "company_alias_importer.py"
 
-# derived_layer.company_aliases 的實際欄位（0030／0033 migration 定版）。
+# derived_layer.company_aliases 的實際欄位（0030／0033／0040 migration 定版）。
 # ⚠ 沒有 created_at——時間欄是 imported_at（匯入）與 updated_at（更新）。
+# 0040（2026-07-28 四欄拆分）加了 公司中文名稱／正規化名稱 兩欄。
 ACTUAL_COLUMNS = {
-    "id", "申請人代碼", "公司名稱", "別稱", "source_file", "imported_at",
-    "alias_lookup_key", "source_type", "review_status", "wips_metadata_json",
-    "updated_at",
+    "id", "申請人代碼", "公司名稱", "公司中文名稱", "正規化名稱", "別稱",
+    "source_file", "imported_at", "alias_lookup_key", "source_type",
+    "review_status", "wips_metadata_json", "updated_at",
 }
 
 

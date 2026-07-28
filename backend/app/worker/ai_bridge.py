@@ -456,6 +456,7 @@ def _run_ai_report_ppt_job(payload: dict[str, Any], context: JobContext) -> dict
             payload.get("cli_timeout_seconds")
             or ai_report_ppt_runner.DEFAULT_CLI_TIMEOUT_SECONDS
         ),
+        approval_overrides=payload.get("approval_overrides") or None,
         progress=_progress,
     )
 

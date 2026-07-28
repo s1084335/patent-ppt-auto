@@ -180,16 +180,25 @@ class PromptContractTests(unittest.TestCase):
         for banned in ("寫滿", "至少", "不少於", "字數下限", "務必達到"):
             self.assertNotIn(banned, prompt, f"prompt 不得出現湊字數指示：{banned}")
 
-    def test_prompt_states_70_chars_as_target_line(self):
-        """兩層字數線（2026-07-26 定案）：70 字為目標線，讓模型自己收在完整句子。
+    def test_prompt_states_target_and_hard_limit(self):
+        """兩層字數線：目標線讓模型自己收在完整句子、硬上限絕不可超過。
 
-        動因：實測 8 筆備註幾乎每筆都寫到逾 100 字後被 `note[:100]` 硬切，
-        斷在句中（「…第二段減小，形」）。只寫上限模型會當成目標寫滿，
-        故補一條較低的目標線，把死線留給程式當保底。
+        沿革：
+        - 2026-07-26 定兩層線（70／100）。動因：只寫上限時模型當成目標寫滿，
+          實測 8 筆幾乎每筆逾 100 字後被硬切、斷在句中（「…第二段減小，形」）。
+        - 2026-07-28 使用者再定：目標線收到 **60**，且**移除程式硬切**——
+          超過硬上限改為 raise，prompt 明示懲罰機制讓模型自己守住。
+
+        ⚠ 斷言改讀常數而非寫死數字：日後調整字數只需改常數，這條不會變成過期紅線
+        （本檔原斷言寫死 "70"，2026-07-28 改 60 後即誤報）。
         """
+        from backend.app.worker.ai_patent_note_runner import (
+            NOTE_MAX_CHARS, NOTE_TARGET_CHARS,
+        )
         prompt = ai_patent_note_runner.build_prompt([(1, "一種阻力調節機構……")])
-        self.assertIn("70", prompt)
-        self.assertIn("100", prompt, "死線 100 仍須在 prompt 中載明")
+        self.assertIn(str(NOTE_TARGET_CHARS), prompt)
+        self.assertIn(str(NOTE_MAX_CHARS), prompt, "硬上限仍須在 prompt 中載明")
+        self.assertIn("懲罰", prompt, "使用者定案要明示懲罰機制，讓模型知道超過會整批作廢")
 
     def test_prompt_requires_complete_sentence_ending(self):
         """要求最後一句完整：寧可短，也不要寫到被截斷。"""

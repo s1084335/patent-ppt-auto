@@ -137,7 +137,8 @@ class RunnerWorkSeparationTests(unittest.TestCase):
     """runner 分工紅線：AI 只產 slots 文案，build_ppt deterministic 組版，.pptx 進 DB。"""
 
     def _run(self, *, cli, based_on_version=None, resolve_dir=None,
-             build_calls=None, uploaded=None, slots_written=None):
+             build_calls=None, uploaded=None, slots_written=None,
+             approval_overrides=None):
         """跑 runner，build_ppt／upload／resolve 全替身，回傳 result。
 
         payload_root 指到報表目錄底下，避免測試把資料檔寫進專案的 var/ai_payloads。
@@ -174,6 +175,7 @@ class RunnerWorkSeparationTests(unittest.TestCase):
             build_ppt=_fake_build_ppt,
             upload_run_dir=_fake_upload,
             payload_root=resolve_dir.parent / "payloads",
+            approval_overrides=approval_overrides,
         )
 
     def test_ai_produces_slots_written_to_approvals(self):
@@ -189,6 +191,37 @@ class RunnerWorkSeparationTests(unittest.TestCase):
                              "自走式割草機專利情報整合分析")
             self.assertEqual(slots_written["report_version"], run_dir.name)
             self.assertEqual(result["cli_kind"], "claude")
+
+    def test_user_overrides_are_preserved_in_approvals(self):
+        """使用者在預覽頁改文案、版型、座標時，覆寫資料要寫入 approvals.json。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _make_report_dir(tmp)
+            cli = RecordingCli(slots={"trend.narrative": "AI trend"})
+            build_calls, uploaded, slots_written = [], [], {}
+            overrides = {
+                "slots": {"cover.title": "人工標題"},
+                "layout_overrides": {"3": "table"},
+                "position_overrides": {
+                    "3.chart": {
+                        "left_in": 1.2,
+                        "top_in": 2.3,
+                        "width_in": 4.5,
+                        "height_in": 2.0,
+                    }
+                },
+            }
+            self._run(
+                cli=cli,
+                resolve_dir=run_dir,
+                build_calls=build_calls,
+                uploaded=uploaded,
+                slots_written=slots_written,
+                approval_overrides=overrides,
+            )
+            self.assertEqual(slots_written["slots"]["cover.title"], "人工標題")
+            self.assertEqual(slots_written["slots"]["trend.narrative"], "AI trend")
+            self.assertEqual(slots_written["layout_overrides"], overrides["layout_overrides"])
+            self.assertEqual(slots_written["position_overrides"], overrides["position_overrides"])
 
     def test_build_ppt_called_with_report_dir_and_approvals(self):
         """CLI 順手呼 build_ppt：帶 report_dir 與剛寫的 approvals.json。"""

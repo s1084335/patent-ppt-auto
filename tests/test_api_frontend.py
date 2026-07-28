@@ -29,6 +29,25 @@ class FrontendSkeletonTests(unittest.TestCase):
         cls.resp = resp
         cls.html = resp.text
 
+    def js_function(self, name: str) -> str:
+        """用括號深度取出真實 JS function body，避免只被註解或 docstring 餵飽。"""
+        idx = self.html.find(f"function {name}(")
+        if idx < 0:
+            idx = self.html.find(f"async function {name}(")
+        self.assertGreaterEqual(idx, 0, f"找不到 {name}() 定義")
+        start = self.html.find("{", idx)
+        self.assertGreaterEqual(start, 0, f"找不到 {name}() 起始大括號")
+        depth = 0
+        for pos in range(start, len(self.html)):
+            char = self.html[pos]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return self.html[idx:pos + 1]
+        self.fail(f"{name}() 大括號未閉合")
+
     def test_root_serves_html_ok(self):
         """GET / 回 200 且是完整 HTML 文件。"""
         self.assertEqual(self.resp.status_code, 200)
@@ -817,6 +836,76 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("pollExportPptJob", self.html)
         # 下載連結走 report-latest/ppt 下載路由。
         self.assertIn("/report-latest/ppt/", self.html)
+
+    def test_export_ppt_preview_loads_layout_from_api(self):
+        """PPT 頁面預覽必須從後端版型端點載入，不在前端重寫一份版型表。"""
+        body = self.js_function("loadPptLayout")
+
+        self.assertIn("fetch(API + '/reports/ppt-layout'", body)
+        self.assertIn("exportPreview.pptLayout", body)
+        self.assertNotRegex(self.html, r"const\s+PPT_(PAGES|LAYOUT)")
+
+    def test_export_preview_uses_ppt_page_renderer(self):
+        """匯出預覽區改為 PPT 頁面視角，沿用 #export-preview，不開 modal 或新分頁。"""
+        body = self.js_function("renderExportPreview")
+
+        self.assertIn("renderPptPagePreviewHtml", body)
+        self.assertNotIn("renderReportContentHtml(exportPreview)", body)
+        self.assertIn("export-preview", self.html)
+
+    def test_ppt_page_renderer_uses_theme_geometry_and_api_pages(self):
+        """縮圖 renderer 只能吃 API layout.pages 與 theme.geometry，不可寫死頁面清單。"""
+        body = self.js_function("renderPptPagePreviewHtml")
+
+        self.assertIn("layout.pages", body)
+        self.assertIn("theme.geometry", body)
+        self.assertIn("data-page", body)
+        self.assertIn("ppt-watermark", body)
+
+    def test_ppt_preview_colors_come_from_theme(self):
+        """PPT 縮圖色票必須由 API theme.color 注入，避免前端與產檔風格分叉。"""
+        renderer = self.js_function("renderPptPagePreviewHtml")
+        slide_style = self.js_function("pptSlideStyle")
+
+        self.assertIn("theme.color", slide_style)
+        self.assertIn("pptSlideStyle(theme)", renderer)
+        for hardcoded in ("#1F5C3D", "#14402B", "#1C2B22", "#C24437", "#8FAA99", "#eaf2ed"):
+            with self.subTest(hardcoded=hardcoded):
+                self.assertNotIn(hardcoded, self.html)
+        for fallback in ("'1F5C3D'", "'14402B'", "'1C2B22'", "'C24437'", "'8FAA99'", "'FDF3DD'"):
+            with self.subTest(fallback=fallback):
+                self.assertNotIn(fallback, slide_style)
+
+    def test_export_ppt_edit_overrides_are_separated(self):
+        """PPT 編輯覆寫必須分 slots/layout_overrides/position_overrides 三個 key。"""
+        default_body = self.js_function("exportEditsDefault")
+        request_body = self.js_function("requestExportPpt")
+
+        for key in ("slots", "layout_overrides", "position_overrides"):
+            with self.subTest(key=key):
+                self.assertIn(key, default_body)
+                self.assertIn(key, request_body)
+        self.assertIn("exportPptApprovalOverrides", self.html)
+        self.assertIn("approval_overrides", request_body)
+
+    def test_export_ppt_edit_mode_has_layout_select_and_drag(self):
+        """編輯模式可改版型、可拖曳座標，且仍從 API 的 kind 清單產生下拉。"""
+        renderer = self.js_function("renderPptPagePreviewHtml")
+
+        self.assertIn("pptLayoutSelectHtml", renderer)
+        self.assertIn("attachPptDragHandlers", self.html)
+        self.assertIn("savePptLayoutOverride", self.html)
+        self.assertIn("savePptPositionOverride", self.html)
+        self.assertIn("layout.kinds", self.html)
+        self.assertIn("draggable-ppt-box", self.html)
+
+    def test_export_ppt_slot_text_can_be_manually_edited(self):
+        """PPT 頁面文案槽在編輯模式下可改，人工稿優先於 AI 原稿。"""
+        slot_body = self.js_function("pptSlotText")
+
+        self.assertIn("exportPreview.edits.slots", slot_body)
+        self.assertIn("savePptSlotEdit", self.html)
+        self.assertIn("data-ppt-slot", self.html)
 
     # ── E3. 市場×專利同列並排（對標範例第 9 頁；報表顯示區同一 flex row） ──
 

@@ -167,8 +167,13 @@ class DraftWriteTests(unittest.TestCase):
         self.assertEqual(by_code["C001"]["verdict"], "translated")
         self.assertEqual(by_code["C001"]["zh_name"], "泉峰")
         self.assertEqual(by_code["C002"]["verdict"], "keep_original")
-        # keep_original 草稿的中文名應落回原文（顯示不硬翻）。
-        self.assertEqual(by_code["C002"]["zh_name"], "Obscure Widgets LLC")
+        # ⚠ 2026-07-28 四欄拆分（使用者第④點）改了這一條：keep_original 時
+        # **中文欄留空**，不再把英文原文塞進中文名。顯示自然退到「正規化名稱」，
+        # 符合「一律中文，沒中文才退英文正式名」的第①點。
+        # 原文改由 source_name 帶回（寫進 正規化名稱／別稱 供對照）。
+        self.assertIsNone(by_code["C002"]["zh_name"],
+                          "keep_original 仍把英文塞進中文欄——違反使用者第④點")
+        self.assertEqual(by_code["C002"]["source_name"], "Obscure Widgets LLC")
         self.assertEqual(result["drafts_written"], 2)
 
     def test_draft_status_is_ai_suggested_not_confirmed(self):

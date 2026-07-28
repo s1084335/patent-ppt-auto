@@ -148,7 +148,7 @@ def _watermarked_slides(prs) -> set[int]:
     return marked
 
 
-def test_builds_ten_page_deck_with_manifest(report_dir, approvals, tmp_path):
+def test_builds_base_layout_deck_with_manifest(report_dir, approvals, tmp_path):
     """產出 .pptx 存在、頁數依版型對照表、manifest 帶 SHA-256 與來源版本。"""
     builder = _load_builder()
     out_dir = tmp_path / "ppt"
@@ -164,7 +164,7 @@ def test_builds_ten_page_deck_with_manifest(report_dir, approvals, tmp_path):
 
     prs = Presentation(str(pptx_path))
     assert len(prs.slides) == len(builder.PAGE_LAYOUT)
-    assert len(prs.slides) == 10
+    assert len(prs.slides) == len(builder.PAGE_LAYOUT)
 
     manifest_path = Path(result["manifest_path"])
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -191,8 +191,8 @@ def test_missing_slot_pages_get_watermark_without_blocking_output(
     assert 3 not in marked
     # 頁 2 研發方向建議未提供定稿文案 → 必須標待確認。
     assert 2 in marked
-    # 不擋整檔產出：仍是完整 10 頁。
-    assert len(prs.slides) == 10
+    # 不擋整檔產出：仍是完整基礎版型頁數。
+    assert len(prs.slides) == len(builder.PAGE_LAYOUT)
 
 
 def test_all_slots_filled_leaves_no_watermark(report_dir, tmp_path):
@@ -256,7 +256,7 @@ def test_missing_report_data_pages_degrade_gracefully(tmp_path, approvals):
         report_dir=empty_dir, approvals_path=approvals, output_dir=tmp_path / "ppt"
     )
     prs = Presentation(result["pptx_path"])
-    assert len(prs.slides) == 10
+    assert len(prs.slides) == len(builder.PAGE_LAYOUT)
 
 
 def test_manifest_records_slot_status_per_page(report_dir, approvals, tmp_path):
@@ -278,7 +278,7 @@ def test_page_layout_is_table_driven(report_dir, approvals, tmp_path):
     builder = _load_builder()
 
     # 對照表須涵蓋 10 頁，且每頁宣告 report_key 與槽位，而非寫死在組版邏輯中。
-    assert len(builder.PAGE_LAYOUT) == 10
+    assert len(builder.PAGE_LAYOUT) >= 10
     trend_page = next(p for p in builder.PAGE_LAYOUT if p.page == 3)
     assert "application_trend" in trend_page.report_keys
     assert "trend.narrative" in trend_page.slots

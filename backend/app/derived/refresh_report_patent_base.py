@@ -88,18 +88,31 @@ base AS (
     ) fam ON true
 ),
 -- 代碼→對照表公司名（2026-07-23 定案「申請人代碼是公司收斂的依據」）。
--- 對照表的「公司名稱」是人工裁決過的顯示名，優先級高於任何從專利資料統計出來的名稱。
--- 同一代碼在對照表可有多列（多個別稱），公司名稱理應一致；仍以 mode() 取最常見值
+-- 對照表的正式名是人工裁決過的顯示名，優先級高於任何從專利資料統計出來的名稱。
+-- 同一代碼在對照表可有多列（多個別稱），正式名理應一致；仍以 mode() 取最常見值
 -- 並在平手時依名稱排序，確保 deterministic。只採 confirmed 列，未裁決的不參與收斂。
 -- 這是一次 GROUP BY 掃描（代碼數量級，26 筆等級），之後以 hash join 掛回，非 N+1。
+--
+-- ⚠ 2026-07-28 四欄拆分（使用者第①點）：顯示**一律中文，沒中文才退英文正式名**。
+-- 故取 COALESCE("公司中文名稱", "正規化名稱", "公司名稱")——第三順位是拆欄前的舊欄，
+-- 供尚未重走流程的既有列（不自動遷移，見 0040 第②點）繼續顯示，不會突然變空。
+-- mode() 作用在 COALESCE 之後，才不會出現「中文名跟英文名各自 mode 再拼」的錯配。
 code_alias_names AS (
     SELECT
         NULLIF(BTRIM(ca."申請人代碼"), '') AS company_code,
-        mode() WITHIN GROUP (ORDER BY ca."公司名稱") AS company_name
+        mode() WITHIN GROUP (ORDER BY COALESCE(
+            NULLIF(BTRIM(ca."公司中文名稱"), ''),
+            NULLIF(BTRIM(ca."正規化名稱"), ''),
+            NULLIF(BTRIM(ca."公司名稱"), '')
+        )) AS company_name
     FROM derived_layer.company_aliases ca
     WHERE ca.review_status = 'confirmed'
       AND NULLIF(BTRIM(ca."申請人代碼"), '') IS NOT NULL
-      AND NULLIF(BTRIM(ca."公司名稱"), '') IS NOT NULL
+      AND COALESCE(
+            NULLIF(BTRIM(ca."公司中文名稱"), ''),
+            NULLIF(BTRIM(ca."正規化名稱"), ''),
+            NULLIF(BTRIM(ca."公司名稱"), '')
+      ) IS NOT NULL
     GROUP BY NULLIF(BTRIM(ca."申請人代碼"), '')
 ),
 -- 代碼對照：同一 WIPS 人名代碼（申請人代表碼／標準當前專利權人代碼）在庫內
@@ -244,7 +257,8 @@ SELECT
     b."發明人數"
 FROM base b
 LEFT JOIN LATERAL (
-    SELECT ca."公司名稱"
+    -- 顯示順位同 code_alias_names（使用者第①點）：中文 → 英文正式名 → 舊欄。
+    SELECT COALESCE(NULLIF(BTRIM(ca."公司中文名稱"), ''), NULLIF(BTRIM(ca."正規化名稱"), ''), NULLIF(BTRIM(ca."公司名稱"), '')) AS "公司名稱"
     FROM derived_layer.company_aliases ca
     -- 只採 confirmed：未裁決／AI 草稿（ai_suggested）不得經別稱路徑滲進正式顯示名。
     -- 沿 code_alias_names 同一護欄；缺這行時 keep_original 草稿的「別稱」＝英文原文，
@@ -263,7 +277,8 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) applicant_alias ON true
 LEFT JOIN LATERAL (
-    SELECT ca."公司名稱"
+    -- 顯示順位同 code_alias_names（使用者第①點）。
+    SELECT COALESCE(NULLIF(BTRIM(ca."公司中文名稱"), ''), NULLIF(BTRIM(ca."正規化名稱"), ''), NULLIF(BTRIM(ca."公司名稱"), '')) AS "公司名稱"
     FROM derived_layer.company_aliases ca
     -- 只採 confirmed（同 applicant_alias 理由）。
     WHERE ca.review_status = 'confirmed'
@@ -280,7 +295,8 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) owner_alias ON true
 LEFT JOIN LATERAL (
-    SELECT ca."公司名稱"
+    -- 顯示順位同 code_alias_names（使用者第①點）。
+    SELECT COALESCE(NULLIF(BTRIM(ca."公司中文名稱"), ''), NULLIF(BTRIM(ca."正規化名稱"), ''), NULLIF(BTRIM(ca."公司名稱"), '')) AS "公司名稱"
     FROM derived_layer.company_aliases ca
     -- 只採 confirmed（同 applicant_alias 理由）。受讓人無代碼欄，只有這條別稱路徑，
     -- 缺護欄時草稿是**唯一**能命中的來源，風險比另兩欄更高。

@@ -188,6 +188,9 @@ class WriteIntegrationTests(unittest.TestCase):
             conn.return_value.__enter__.return_value.execute.return_value.fetchall.return_value = []
             result = api.confirm_company_codes(body)
 
+        # ⚠ 2026-07-28 四欄拆分：mapping 的名稱鍵由單一 `canonical` 改為
+        # `zh_name`／`normalized_name` 兩鍵。舊單欄輸入（company_name）走
+        # groups_to_alias_mapping 的相容路徑，仍要能送到 writer。
         self.assertEqual(captured["mapping"]["C1"]["canonical"], "甲")
         self.assertTrue(captured["label"].startswith("display_name_curation"))
         self.assertEqual(result["groups"], 1)

@@ -380,6 +380,27 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .export-toolbar { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.9rem; }
 .export-toolbar .switch { display: flex; align-items: center; gap: 0.4rem; font-size: 0.88rem; }
 #export-preview { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.4rem 1.6rem; }
+.ppt-preview-stack { display: grid; gap: 1.1rem; }
+.ppt-slide-wrap { border: 1px solid var(--border); border-radius: 0.45rem; background: var(--panel-2); padding: 0.85rem; }
+.ppt-slide-meta { display: flex; gap: 0.7rem; align-items: baseline; margin-bottom: 0.55rem; color: var(--text-muted); font-size: 0.82rem; }
+.ppt-slide-meta strong { color: var(--text); }
+.ppt-slide { position: relative; width: min(100%, 820px); aspect-ratio: 13.333 / 7.5; overflow: hidden; background: var(--ppt-surface); border: 1px solid var(--border); color: var(--ppt-ink); box-shadow: 0 4px 14px rgba(0,0,0,.08); }
+.ppt-slide .ppt-box { position: absolute; overflow: hidden; }
+.ppt-slide .ppt-cover { background: var(--ppt-brand-dark); color: var(--ppt-on-dark); }
+.ppt-slide .ppt-title { font-weight: 700; font-size: clamp(0.9rem, 2vw, 1.25rem); line-height: 1.2; }
+.ppt-slide .ppt-subtitle { color: var(--ppt-brand-deep); font-size: clamp(0.56rem, 1vw, 0.76rem); line-height: 1.25; }
+.ppt-slide .ppt-page-no { color: var(--ppt-footnote); font-size: 0.72rem; text-align: right; }
+.ppt-slide .ppt-panel { border: 1px solid var(--ppt-line-soft); background: var(--ppt-panel-bg); border-radius: 0.12rem; padding: 0.34rem; font-size: clamp(0.48rem, 0.95vw, 0.7rem); line-height: 1.35; }
+.ppt-slide .ppt-chart { display: flex; align-items: center; justify-content: center; background: var(--ppt-chart-bg); border: 1px solid var(--ppt-line-soft); }
+.ppt-slide .ppt-chart img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.ppt-slide .ppt-table table { width: 100%; border-collapse: collapse; font-size: 0.56rem; }
+.ppt-slide .ppt-table th, .ppt-slide .ppt-table td { border-bottom: 1px solid var(--ppt-line-soft); padding: 0.12rem 0.18rem; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.ppt-slide .ppt-table th { background: var(--ppt-accent-soft); color: var(--ppt-brand-deep); }
+.ppt-slide .ppt-watermark { position: absolute; right: 3%; top: 3%; color: var(--ppt-watermark); border: 1px solid var(--ppt-watermark); padding: 0.1rem 0.35rem; font-size: 0.65rem; transform: rotate(-8deg); background: var(--ppt-watermark-bg); }
+.ppt-layout-select { border: 1px solid var(--border); border-radius: 0.3rem; background: var(--panel); color: var(--text); padding: 0.18rem 0.35rem; font-size: 0.78rem; }
+.ppt-slide .draggable-ppt-box { outline: 1px dashed rgba(15,52,96,.45); cursor: move; }
+.ppt-slide .draggable-ppt-box.dragging { outline: 2px solid #1a6bc4; z-index: 6; }
+.ppt-slide .ppt-slot-edit { width: 100%; height: 100%; min-height: 0; resize: none; font-size: inherit; line-height: inherit; border: 1px solid var(--ppt-line-strong); background: var(--ppt-edit-bg); color: var(--ppt-ink); }
 /* 報表種類頁標題列橫排（2026-07-27 R7／R8）：標題｜檢視選單｜市場 PDF（收合）。
    原本 15 個勾選框＋固定展開的市場區塊佔滿整頁，看不到報表本身。 */
 .reports-header { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.8rem; }
@@ -895,7 +916,12 @@ function pageBrowse(dir) {
 //
 // 成果顯現處：下方專利表的專利權人欄位，以及所有用 applicant_display_name／
 // current_assignee_display_name 的報表。
-let companyCodeGroups = [];      // [{code, company_name, variants:[...]}]
+// ── 2026-07-28 四欄拆分＋無代碼備用＋變體維護 ──
+// 一組 = 代碼(可空) + 公司中文名稱 + 正規化名稱(英文正式名) + N 個變體。
+// 代碼可空：WIPS 要一定數量專利才給代碼，1–3 件的小廠可能永遠沒有；
+// 送出時後端會掛 `TEMP:<slug>` 臨時代碼（系統標記，**不冒充 WIPS 代碼**），
+// 日後查到真代碼可在既有代碼區用「補代碼」換掉，該組所有變體一起換。
+let companyCodeGroups = [];      // [{code, zh_name, normalized_name, variants:[...]}]
 let pendingCodeNames = [];       // 待補清單（僅供參考）
 
 async function renderCompanyCodeRegistry() {
@@ -919,7 +945,37 @@ async function renderCompanyCodeRegistry() {
   }
 }
 
-function blankCodeGroup() { return { code: '', company_name: '', variants: [''] }; }
+function blankCodeGroup() { return { code: '', zh_name: '', normalized_name: '', variants: [''] }; }
+
+// ── 「AI 掃的是已寫入的組」提示（2026-07-28 使用者實機困惑）──
+//
+// 使用者問「AI 中文名是上面要先寫入資料庫再按 AI 草稿?」——是。runner 的
+// PENDING_SQL 只掃 DB 內 review_status='confirmed' 的列，**看不到編輯中尚未寫入
+// 的組**。填完一組沒按「確定寫入資料庫」就去按 AI，只會得到「沒有待確認草稿」，
+// 完全看不出原因（流程說明那行小字在捲軸上方，下方編輯區看不到）。
+//
+// 未寫入＝companyCodeGroups 裡任一組有任何欄位非空。寫入成功後
+// confirmCompanyCodes() 會把它重置成 [blankCodeGroup()]，故空表＝已寫入。
+// ⚠ 判斷必須涵蓋 blankCodeGroup() 的**每一個**欄位（四欄拆分後多了 zh_name／
+// normalized_name）；漏一欄就會在「只填了中文名」時漏判。
+function unsavedCodeGroupCount() {
+  return (companyCodeGroups || []).filter(g => {
+    if (!g) return false;
+    const filled = (g.code || '').trim()
+      || (g.zh_name || '').trim()
+      || (g.normalized_name || '').trim()
+      || (g.variants || []).some(v => (v || '').trim());
+    return !!filled;
+  }).length;
+}
+
+// 有未寫入的組就在 AI 鈕旁警示，並指出補救動作（按「確定寫入資料庫」）。
+function unsavedCodeGroupsWarningHtml() {
+  const n = unsavedCodeGroupCount();
+  if (!n) return '';
+  return '<div class="code-conflict" style="margin-top:.4rem">⚠ 目前有 ' + n
+    + ' 組尚未寫入，AI 不會處理它們——請先在上方代碼區按「確定寫入資料庫」。</div>';
+}
 
 function renderCompanyCodeBody(existingGroups) {
   const body = el('company-code-body');
@@ -949,31 +1005,136 @@ function renderCompanyCodeBody(existingGroups) {
     + '<button class="btn btn-primary" id="btn-code-confirm" onclick="confirmCompanyCodes()">確定寫入資料庫</button>'
     + '</div>'
     + '<div id="code-submit-msg"></div>'
-    // 既有代碼：平時收合，展開看代碼，再展開看該代碼下的公司變體（使用者指定的兩層）
+    // 既有代碼：平時收合，展開看代碼，再展開看該代碼下的公司變體（使用者指定的兩層）。
+    // 2026-07-28 起每組可維護：改名、補真代碼（TEMP 組）、刪整組、移除單一變體。
     + '<details id="existing-codes-details" style="margin-top:.6rem">'
     + '<summary>資料庫已有的代碼（' + existingGroups.length + ' 組）</summary>'
     + (existingGroups.length
-        ? existingGroups.map(g =>
-            '<details style="margin:.3rem 0 .3rem 1rem">'
-            + '<summary>' + escHtml(g.code) + ' — ' + escHtml(g.company_name)
-            + '（' + g.variants.length + ' 個變體）</summary>'
-            + '<ul style="margin:.2rem 0 .2rem 1.6rem;font-size:.85rem">'
-            + g.variants.map(v => '<li>' + escHtml(v) + '</li>').join('')
-            + '</ul></details>').join('')
+        ? existingGroups.map(existingGroupHtml).join('')
         : '<p class="hint" style="padding:.3rem 0 0 1rem">（尚無已確認的代碼）</p>')
-    + '</details>';
+    + '</details>'
+    + '<div id="group-maint-msg"></div>';
+}
+
+// 既有代碼的一組：兩層展開 ＋ 維護操作（改名／補代碼／刪組／移除變體）。
+// ⚠ canonical 那列（別稱字面＝該組正式名）**不給刪**：它被刪掉整組顯示名會壞
+// （寫入端會把正式名自身也寫成一列別稱，顯示靠它精確命中）。後端也會擋（409），
+// 這裡不畫按鈕只是避免使用者白按一次。
+function existingGroupHtml(g) {
+  const codeJs = JSON.stringify(g.code);
+  return '<details style="margin:.3rem 0 .3rem 1rem">'
+    + '<summary>' + escHtml(g.code)
+    + (g.is_temp ? ' <span class="hint">（尚無 WIPS 代碼）</span>' : '')
+    + ' — ' + escHtml(g.company_name)
+    + '（' + g.variants.length + ' 個變體）</summary>'
+    + '<div style="margin:.3rem 0 .3rem 1.6rem">'
+    + '<div class="code-field"><label>公司中文名稱</label>'
+    + '<input class="text-input" id="rn-zh-' + escHtml(g.code) + '" value="' + escHtml(g.zh_name || '') + '"></div>'
+    + '<div class="code-field"><label>正規化名稱</label>'
+    + '<input class="text-input" id="rn-en-' + escHtml(g.code) + '" value="' + escHtml(g.normalized_name || '') + '"></div>'
+    + '<div class="toolbar">'
+    + '<button class="btn-mini" onclick=\'renameCompanyGroup(' + codeJs + ')\'>儲存公司名</button>'
+    // 補真代碼：使用者去 WIPS 查到之後填進來取代 TEMP（系統不產生代碼）。
+    + (g.is_temp
+        ? '<input class="text-input" id="pc-' + escHtml(g.code) + '" placeholder="WIPS 查到的真代碼"'
+          + ' style="max-width:14rem">'
+          + '<button class="btn-mini" onclick=\'promoteCompanyCode(' + codeJs + ')\'>補上代碼</button>'
+        : '')
+    + '<button class="btn-mini" onclick=\'deleteCompanyGroup(' + codeJs + ')\'>刪除整組</button>'
+    + '</div>'
+    + '<ul style="margin:.2rem 0 .2rem 0;font-size:.85rem;list-style:none;padding:0">'
+    + g.variants.map(v =>
+        '<li style="padding:.1rem 0">' + escHtml(v.alias)
+        + (v.is_canonical
+            ? ' <span class="hint">（正式名本身，不可移除）</span>'
+            : ' <button class="btn-mini" onclick="removeCompanyVariant(' + v.id + ')">移除</button>')
+        + '</li>').join('')
+    + '</ul></div></details>';
+}
+
+// 維護操作共用收尾：顯示結果、重載清單、重載專利表（成果直接對照）。
+// ⚠ 三個端點都會 enqueue refresh_derived；這裡順帶刷任務卡讓使用者看得到進度。
+async function afterGroupMaintenance(text) {
+  const msg = el('group-maint-msg');
+  if (msg) msg.innerHTML = '<p class="hint" style="padding:.35rem 0">' + escHtml(text) + '</p>';
+  await fetchTasks();
+  await renderCompanyCodeRegistry();
+  await loadBrowsePatents();
+}
+
+async function callGroupMaintenance(url, options, okText) {
+  const msg = el('group-maint-msg');
+  try {
+    const resp = await fetch(url, options);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      if (msg) msg.innerHTML = '<div class="task-detail-error">操作失敗：'
+        + escHtml(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || resp.status))
+        + '</div>';
+      return;
+    }
+    await afterGroupMaintenance(okText);
+  } catch (e) {
+    if (msg) msg.innerHTML = '<div class="task-detail-error">連線錯誤：' + escHtml(e.message) + '</div>';
+  }
+}
+
+function removeCompanyVariant(aliasId) {
+  if (!confirm('移除這個變體？該寫法會退回待補清單，其專利的公司名回原始字面。')) return;
+  return callGroupMaintenance(
+    API + '/company-codes/variants/' + encodeURIComponent(aliasId),
+    { method: 'DELETE' },
+    '已移除變體，正在刷新收斂名。');
+}
+
+function renameCompanyGroup(code) {
+  const zh = (el('rn-zh-' + code) || {}).value || '';
+  const en = (el('rn-en-' + code) || {}).value || '';
+  return callGroupMaintenance(
+    API + '/company-codes/' + encodeURIComponent(code),
+    { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ zh_name: zh.trim(), normalized_name: en.trim() }) },
+    '已更新公司名，正在刷新收斂名。');
+}
+
+function deleteCompanyGroup(code) {
+  if (!confirm('刪除整組「' + code + '」？該組專利的公司名會退回原始字面。')) return;
+  return callGroupMaintenance(
+    API + '/company-codes/' + encodeURIComponent(code),
+    { method: 'DELETE' },
+    '已刪除整組，正在刷新收斂名。');
+}
+
+function promoteCompanyCode(code) {
+  const input = el('pc-' + code);
+  const newCode = ((input && input.value) || '').trim();
+  if (!newCode) {
+    const msg = el('group-maint-msg');
+    if (msg) msg.innerHTML = '<div class="code-conflict">請先填入 WIPS 查到的代碼。</div>';
+    return;
+  }
+  return callGroupMaintenance(
+    API + '/company-codes/' + encodeURIComponent(code) + '/promote',
+    { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_code: newCode }) },
+    '已補上代碼 ' + newCode + '，正在刷新收斂名。');
 }
 
 function codeGroupHtml(g, idx) {
   return '<div class="code-group" data-group="' + idx + '">'
     + '<div class="code-group-head"><span class="idx">第 ' + (idx + 1) + ' 組</span>'
     + '<button class="btn-mini" onclick="removeCodeGroup(' + idx + ')">刪除本組</button></div>'
+    // 代碼可留空（見上方說明）：留空時後端掛 TEMP: 臨時代碼，仍可正常收斂。
     + '<div class="code-field"><label>代碼</label>'
-    + '<input class="text-input" value="' + escHtml(g.code) + '" placeholder="WIPS 查到的申請人代碼"'
+    + '<input class="text-input" value="' + escHtml(g.code) + '" placeholder="WIPS 查到的申請人代碼（沒有可留空）"'
     + ' oninput="updateCodeGroup(' + idx + ', \'code\', this.value)"></div>'
+    // 四欄拆分：中文正式名與英文正式名分兩格填，不再擠同一欄。兩欄都可空。
+    + '<div class="code-field"><label>公司中文名稱</label>'
+    + '<input class="text-input" value="' + escHtml(g.zh_name) + '" placeholder="中文正式名（顯示第一順位；沒有可留空）"'
+    + ' oninput="updateCodeGroup(' + idx + ', \'zh_name\', this.value)"></div>'
     + '<div class="code-field"><label>正規化名稱</label>'
-    + '<input class="text-input" value="' + escHtml(g.company_name) + '" placeholder="中文公司名（可按下方 AI 翻譯）"'
-    + ' oninput="updateCodeGroup(' + idx + ', \'company_name\', this.value)"></div>'
+    + '<input class="text-input" value="' + escHtml(g.normalized_name) + '" placeholder="英文正式名（沒中文時顯示這個）"'
+    + ' oninput="updateCodeGroup(' + idx + ', \'normalized_name\', this.value)"></div>'
     + '<div class="code-field" style="align-items:flex-start"><label>變體</label><div style="flex:1 1 auto;min-width:0">'
     + g.variants.map((v, vi) =>
         '<div class="code-variant-row">'
@@ -1047,16 +1208,21 @@ async function renderNoteCoverage() {
 
 async function confirmCompanyCodes() {
   const msg = el('code-submit-msg');
-  // 只送填了代碼與名稱的組；變體全空的組沒有意義（後端也會再擋一次）
+  // ⚠ 2026-07-28 起**不再過濾 `g.code &&`**：代碼可空（無 WIPS 代碼的小廠），
+  // 後端會掛 TEMP: 臨時代碼。仍要求「至少一個正式名 ＋ 至少一個變體」——
+  // 兩者缺一就沒有東西可寫（不是驗證嚴格，是真的寫不出列）。
   const groups = companyCodeGroups
     .map(g => ({
       code: (g.code || '').trim(),
-      company_name: (g.company_name || '').trim(),
+      zh_name: (g.zh_name || '').trim(),
+      normalized_name: (g.normalized_name || '').trim(),
       variants: (g.variants || []).map(v => (v || '').trim()).filter(Boolean),
     }))
-    .filter(g => g.code && g.company_name && g.variants.length);
+    .filter(g => (g.zh_name || g.normalized_name) && g.variants.length);
   if (!groups.length) {
-    if (msg) msg.innerHTML = '<div class="code-conflict">請至少填一組完整的代碼、正規化名稱與變體。</div>';
+    if (msg) msg.innerHTML = '<div class="code-conflict">'
+      + '請至少填一組：公司中文名稱或正規化名稱擇一（兩個都填最好）＋ 至少一個變體。'
+      + '代碼沒有可以留空。</div>';
     return;
   }
   const btn = el('btn-code-confirm');
@@ -3233,18 +3399,28 @@ const EXPORT_EDIT_KEY_PREFIX = 'patent_export_edits:';
 const exportPreview = {
   version: null,       // 目前預覽的報表版本（localStorage key 用）
   content: null,       // GET /report-latest/content 的原始回應
+  pptLayout: null,     // GET /reports/ppt-layout：PPT 頁面與 theme geometry 的唯一來源
   editMode: false,
   edits: null,         // { cover: {...}, narratives: {key: manual_text}, notes: [{id,title,text,after}] }
 };
 
 function exportEditsDefault() {
-  return { cover: {}, narratives: {}, notes: [] };
+  return { cover: {}, narratives: {}, notes: [], slots: {}, layout_overrides: {}, position_overrides: {} };
 }
 function loadExportEdits(version) {
   try {
     const raw = localStorage.getItem(EXPORT_EDIT_KEY_PREFIX + version);
     if (!raw) return exportEditsDefault();
-    return Object.assign(exportEditsDefault(), JSON.parse(raw));
+    const parsed = JSON.parse(raw);
+    const base = exportEditsDefault();
+    return Object.assign(base, parsed, {
+      cover: Object.assign({}, parsed.cover || {}),
+      narratives: Object.assign({}, parsed.narratives || {}),
+      notes: Array.isArray(parsed.notes) ? parsed.notes : [],
+      slots: Object.assign({}, parsed.slots || {}),
+      layout_overrides: Object.assign({}, parsed.layout_overrides || {}),
+      position_overrides: Object.assign({}, parsed.position_overrides || {}),
+    });
   } catch (_) { return exportEditsDefault(); }
 }
 function saveExportEdits() {
@@ -3273,10 +3449,20 @@ async function loadExportPreview() {
     exportPreview.content = content;
     exportPreview.version = content.version;
     exportPreview.edits = loadExportEdits(content.version);
+    await loadPptLayout();
     renderExportPreview();
   } catch (e) {
     wrap.innerHTML = '<div class="hint">載入報告內容失敗（' + escHtml(e.message) + '）。</div>';
   }
+}
+
+async function loadPptLayout() {
+  // 前端不得自建版型清單；PPT 頁面、kind 與座標全由後端讀 theme.json/build_ppt.py 後提供。
+  if (exportPreview.pptLayout) return exportPreview.pptLayout;
+  const resp = await fetch(API + '/reports/ppt-layout');
+  if (!resp.ok) throw new Error('PPT 版型載入失敗 HTTP ' + resp.status);
+  exportPreview.pptLayout = await resp.json();
+  return exportPreview.pptLayout;
 }
 
 function toggleExportEditMode() {
@@ -3312,7 +3498,370 @@ function renderReportContentHtml(view) {
 function renderExportPreview() {
   const wrap = el('export-preview');
   if (!wrap || !exportPreview.content) return;
-  wrap.innerHTML = renderReportContentHtml(exportPreview);
+  if (!exportPreview.pptLayout) {
+    wrap.innerHTML = '<div class="hint">PPT 版型尚未載入。</div>';
+    return;
+  }
+  wrap.innerHTML = renderPptPagePreviewHtml(exportPreview.content, exportPreview.pptLayout);
+  attachPptDragHandlers();
+}
+
+function renderPptPagePreviewHtml(content, layout) {
+  const theme = layout.theme || {};
+  const pages = layout.pages || [];
+  const slide = theme.slide || { width_in: 13.333, height_in: 7.5 };
+  const geometry = theme.geometry || {};
+  return '<div class="ppt-preview-stack">'
+    + pages.map(function (page) {
+      const effectivePage = effectivePptPage(page);
+      const missing = pptMissingReportKeys(content, effectivePage);
+      return '<section class="ppt-slide-wrap" data-page="' + effectivePage.page
+        + '" data-layout-kind="' + escHtml(effectivePage.kind) + '">'
+        + '<div class="ppt-slide-meta"><strong>第 ' + page.page + ' 頁</strong>'
+        + '<span>' + escHtml(effectivePage.title || '') + '</span>'
+        + '<span class="badge-plan">' + escHtml(effectivePage.kind) + '</span>'
+        + pptLayoutSelectHtml(layout, page) + '</div>'
+        + '<div class="ppt-slide" style="' + pptSlideStyle(theme) + '">'
+        + pptSlideBodyHtml(content, theme, effectivePage)
+        + (missing.length ? '<div class="ppt-watermark">缺資料：'
+          + escHtml(missing.join('、')) + '</div>' : '')
+        + '</div></section>';
+    }).join('')
+    + '</div>';
+}
+
+function effectivePptPage(page) {
+  const overrides = exportPreview.edits && exportPreview.edits.layout_overrides
+    ? exportPreview.edits.layout_overrides : {};
+  const kind = overrides[String(page.page)];
+  return Object.assign({}, page, kind ? { kind: kind } : {});
+}
+
+function exportPptApprovalOverrides() {
+  const edits = exportPreview.edits || exportEditsDefault();
+  return {
+    slots: edits.slots || {},
+    layout_overrides: edits.layout_overrides || {},
+    position_overrides: edits.position_overrides || {},
+  };
+}
+
+function pptLayoutSelectHtml(layout, page) {
+  if (!exportPreview.editMode) return '';
+  const kinds = layout.kinds || [];
+  const current = effectivePptPage(page).kind;
+  return '<select class="ppt-layout-select" onchange="savePptLayoutOverride(' + page.page + ', this.value)">'
+    + kinds.map(kind => '<option value="' + escHtml(kind) + '"'
+      + (kind === current ? ' selected' : '') + '>' + escHtml(kind) + '</option>').join('')
+    + '</select>';
+}
+
+function savePptLayoutOverride(pageNo, kind) {
+  exportPreview.edits.layout_overrides[String(pageNo)] = kind;
+  saveExportEdits();
+  renderExportPreview();
+}
+
+function pptSlideStyle(theme) {
+  const slide = (theme && theme.slide) || {};
+  const color = (theme && theme.color) || {};
+  const vars = {
+    '--ppt-brand-dark': pptColorValue(color.brand_dark),
+    '--ppt-brand-deep': pptColorValue(color.brand_deep),
+    '--ppt-accent-soft': pptColorValue(color.accent_soft),
+    '--ppt-ink': pptColorValue(color.ink),
+    '--ppt-on-dark': pptColorValue(color.on_dark),
+    '--ppt-footnote': pptColorValue(color.footnote),
+    '--ppt-surface': pptColorValue(color.surface),
+    '--ppt-watermark': pptColorValue(color.watermark || color.alert),
+    '--ppt-panel-bg': pptAlphaColor(color.surface, 0.94),
+    '--ppt-chart-bg': pptAlphaColor(color.surface, 0.9),
+    '--ppt-watermark-bg': pptAlphaColor(color.surface, 0.86),
+    '--ppt-line-soft': pptAlphaColor(color.brand_dark, 0.18),
+    '--ppt-line-strong': pptAlphaColor(color.brand_dark, 0.42),
+    '--ppt-edit-bg': pptAlphaColor(color.surface, 0.92),
+  };
+  return 'aspect-ratio:' + Number(slide.width_in || 13.333) + '/'
+    + Number(slide.height_in || 7.5) + ';' + Object.keys(vars).map(function (name) {
+      return name + ':' + vars[name];
+    }).join(';');
+}
+
+function pptColorValue(value) {
+  const raw = String(value || '').trim().replace(/^#/, '');
+  return raw ? '#' + raw : 'currentColor';
+}
+
+function pptAlphaColor(value, alpha) {
+  const raw = String(value || '').trim().replace(/^#/, '');
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return pptColorValue(raw);
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+}
+
+function pptBoxStyle(theme, left, top, width, height) {
+  const slide = theme.slide || {};
+  const w = Number(slide.width_in || 13.333);
+  const h = Number(slide.height_in || 7.5);
+  return 'left:' + ((left / w) * 100).toFixed(3) + '%;top:' + ((top / h) * 100).toFixed(3)
+    + '%;width:' + ((width / w) * 100).toFixed(3) + '%;height:' + ((height / h) * 100).toFixed(3) + '%';
+}
+
+function pptComponentKey(pageNo, component) {
+  return String(pageNo) + '.' + component;
+}
+
+function pptPositionOverride(pageNo, component) {
+  const edits = exportPreview.edits || exportEditsDefault();
+  return (edits.position_overrides || {})[pptComponentKey(pageNo, component)] || null;
+}
+
+function pptBoxAttrs(theme, page, component, left, top, width, height, classes) {
+  const override = pptPositionOverride(page.page, component) || {};
+  const box = {
+    left_in: Number(override.left_in ?? left),
+    top_in: Number(override.top_in ?? top),
+    width_in: Number(override.width_in ?? width),
+    height_in: Number(override.height_in ?? height),
+  };
+  const draggable = exportPreview.editMode ? ' draggable-ppt-box' : '';
+  return 'class="ppt-box ' + escHtml(classes || '') + draggable + '"'
+    + ' data-page="' + page.page + '" data-component="' + escHtml(component) + '"'
+    + ' data-left-in="' + box.left_in + '" data-top-in="' + box.top_in + '"'
+    + ' data-width-in="' + box.width_in + '" data-height-in="' + box.height_in + '"'
+    + ' style="' + pptBoxStyle(theme, box.left_in, box.top_in, box.width_in, box.height_in) + '"';
+}
+
+function pptSlideBodyHtml(content, theme, page) {
+  const geometry = theme.geometry || {};
+  if (page.kind === 'cover') return pptCoverSlideHtml(content, theme, page);
+  const header = pptHeaderHtml(theme, page);
+  if (page.kind === 'direction') return header + pptDirectionSlideHtml(content, theme, page);
+  if (page.kind === 'table') return header + pptTableSlideHtml(content, theme, page);
+  if (page.kind === 'table_with_narrative') return header + pptTableNarrativeSlideHtml(content, theme, page);
+  if (page.kind === 'narrative_only') return header + pptNarrativeOnlySlideHtml(content, theme, page);
+  return header + pptChartNarrativeSlideHtml(content, theme, page);
+}
+
+function pptHeaderHtml(theme, page) {
+  const geometry = theme.geometry || {};
+  const header = geometry.header || {};
+  const titleStyle = pptBoxStyle(theme, geometry.margin_in || 0.5, geometry.title_top_in || 0.28,
+    header.title_width_in || 11, header.title_height_in || 0.5);
+  const subtitleStyle = pptBoxStyle(theme, geometry.margin_in || 0.5, geometry.subtitle_top_in || 0.8,
+    header.subtitle_width_in || 12.4, header.subtitle_height_in || 0.35);
+  const noStyle = pptBoxStyle(theme, geometry.page_number_left_in || 12.5, geometry.title_top_in || 0.28,
+    header.page_number_width_in || 0.6, header.page_number_height_in || 0.4);
+  return '<div ' + pptBoxAttrs(theme, page, 'title', geometry.margin_in || 0.5, geometry.title_top_in || 0.28,
+      header.title_width_in || 11, header.title_height_in || 0.5, 'ppt-title') + '>'
+    + escHtml(page.title || '') + '</div>'
+    + '<div ' + pptBoxAttrs(theme, page, 'subtitle', geometry.margin_in || 0.5, geometry.subtitle_top_in || 0.8,
+      header.subtitle_width_in || 12.4, header.subtitle_height_in || 0.35, 'ppt-subtitle') + '>'
+    + escHtml(page.subtitle || '') + '</div>'
+    + '<div ' + pptBoxAttrs(theme, page, 'page_number', geometry.page_number_left_in || 12.5, geometry.title_top_in || 0.28,
+      header.page_number_width_in || 0.6, header.page_number_height_in || 0.4, 'ppt-page-no') + '>'
+    + page.page + '</div>';
+}
+
+function pptCoverSlideHtml(content, theme, page) {
+  const geometry = theme.geometry || {};
+  const cover = geometry.cover || {};
+  const title = (exportPreview.edits.cover && exportPreview.edits.cover.title) || '專利分析報告';
+  const scope = (exportPreview.edits.cover && exportPreview.edits.cover.scope_label) || content.scope || '（未填分析範圍）';
+  const count = content.patent_count === undefined || content.patent_count === null ? '（未填）' : content.patent_count;
+  const titleStyle = pptBoxStyle(theme, cover.title_left_in, cover.title_top_in, cover.title_width_in, cover.title_height_in);
+  const periodStyle = pptBoxStyle(theme, cover.period_left_in, cover.period_top_in, cover.period_width_in, cover.period_height_in);
+  const statStyle = pptBoxStyle(theme, cover.stat_left_in, cover.stat_top_in, cover.stat_width_in, cover.stat_height_in);
+  return '<div class="ppt-box ppt-cover" style="' + pptBoxStyle(theme, 0, 0, theme.slide.width_in, theme.slide.height_in) + '"></div>'
+    + '<div ' + pptBoxAttrs(theme, page, 'cover.title', cover.title_left_in, cover.title_top_in,
+      cover.title_width_in, cover.title_height_in, 'ppt-title') + '>'
+    + pptSlotContentHtml('cover.title', title) + '</div>'
+    + '<div ' + pptBoxAttrs(theme, page, 'cover.period', cover.period_left_in, cover.period_top_in,
+      cover.period_width_in, cover.period_height_in, '') + '>'
+    + escHtml(scope) + '</div>'
+    + '<div ' + pptBoxAttrs(theme, page, 'cover.stats', cover.stat_left_in, cover.stat_top_in,
+      cover.stat_width_in, cover.stat_height_in, 'ppt-panel') + '>'
+    + '<strong>' + escHtml(count) + '</strong><br>專利件數<br>' + escHtml(content.version || '') + '</div>';
+}
+
+function pptDirectionSlideHtml(content, theme, page) {
+  const geometry = theme.geometry || {};
+  const g = geometry.direction || {};
+  const text = pptSlotText(content, page, page.slots && page.slots[0]);
+  return '<div ' + pptBoxAttrs(theme, page, 'direction.body', g.body_text_left_in,
+    g.body_text_top_in, g.body_text_width_in, g.body_text_height_in, 'ppt-panel')
+    + '>' + pptSlotContentHtml(page.slots && page.slots[0], text) + '</div>';
+}
+
+function pptChartNarrativeSlideHtml(content, theme, page) {
+  const geometry = theme.geometry || {};
+  const g = geometry.chart_with_narrative || {};
+  const top = geometry.body_top_in || 1.35;
+  const chart = pptChartForPage(content, page);
+  const narrative = pptSlotText(content, page, page.slots && page.slots[0]);
+  const chartHtml = chart
+    ? '<img src="' + escHtml(chart) + '" alt="' + escHtml(page.title || '') + '">'
+    : '<span>圖表佔位</span>';
+  return '<div ' + pptBoxAttrs(theme, page, 'chart', g.image_left_in, top,
+    g.image_width_in, g.placeholder_band_height_in, 'ppt-chart') + '>' + chartHtml + '</div>'
+    + '<div ' + pptBoxAttrs(theme, page, 'narrative', g.text_left_in,
+      top + g.text_top_offset_in, g.text_width_in, g.text_height_in, 'ppt-panel') + '>'
+    + pptSlotContentHtml(page.slots && page.slots[0], narrative) + '</div>';
+}
+
+function pptTableSlideHtml(content, theme, page) {
+  const geometry = theme.geometry || {};
+  const g = geometry.table || {};
+  return '<div ' + pptBoxAttrs(theme, page, 'table', g.left_in, geometry.body_top_in || 1.35,
+    g.width_in, g.height_in, 'ppt-panel ppt-table') + '>' + pptTableHtml(pptFirstSection(content, page)) + '</div>';
+}
+
+function pptTableNarrativeSlideHtml(content, theme, page) {
+  const geometry = theme.geometry || {};
+  const g = geometry.table_with_narrative || {};
+  const top = geometry.body_top_in || 1.35;
+  return '<div ' + pptBoxAttrs(theme, page, 'table', geometry.margin_in || 0.5, top,
+    g.table_width_in, g.table_height_in, 'ppt-panel ppt-table') + '>' + pptTableHtml(pptFirstSection(content, page)) + '</div>'
+    + '<div ' + pptBoxAttrs(theme, page, 'narrative', g.text_left_in,
+      top + g.text_top_offset_in, g.text_width_in, g.text_height_in, 'ppt-panel') + '>'
+    + pptSlotContentHtml(page.slots && page.slots[0], pptSlotText(content, page, page.slots && page.slots[0])) + '</div>';
+}
+
+function pptNarrativeOnlySlideHtml(content, theme, page) {
+  const geometry = theme.geometry || {};
+  const g = geometry.narrative_only || {};
+  return (page.slots || []).map(function (slot, idx) {
+    const top = (geometry.body_top_in || 1.35) + (idx * g.block_step_in);
+    return '<div ' + pptBoxAttrs(theme, page, slot, g.band_left_in, top,
+      g.band_width_in, g.band_height_in, 'ppt-panel') + '><strong>' + escHtml(slot)
+      + '</strong><br>' + pptSlotContentHtml(slot, pptSlotText(content, page, slot)) + '</div>';
+  }).join('');
+}
+
+function pptSlotContentHtml(slot, text) {
+  if (!exportPreview.editMode || !slot) return escHtml(text);
+  return '<textarea class="export-narrative-edit ppt-slot-edit" data-ppt-slot="' + escHtml(slot)
+    + '" oninput="savePptSlotEdit(this)">' + escHtml(text) + '</textarea>';
+}
+
+function savePptSlotEdit(node) {
+  const slot = node.getAttribute('data-ppt-slot');
+  if (!slot) return;
+  exportPreview.edits.slots[slot] = node.value;
+  saveExportEdits();
+}
+
+function resetPptSlotEdit(slot) {
+  delete exportPreview.edits.slots[slot];
+  saveExportEdits();
+  renderExportPreview();
+}
+
+function attachPptDragHandlers() {
+  document.querySelectorAll('#export-preview .draggable-ppt-box').forEach(function (node) {
+    node.addEventListener('pointerdown', function (event) {
+      if (event.target && event.target.tagName === 'TEXTAREA') return;
+      const slide = node.closest('.ppt-slide');
+      if (!slide) return;
+      event.preventDefault();
+      node.classList.add('dragging');
+      node.setPointerCapture(event.pointerId);
+      const slideRect = slide.getBoundingClientRect();
+      const startRect = node.getBoundingClientRect();
+      const start = {
+        x: event.clientX,
+        y: event.clientY,
+        leftPct: ((startRect.left - slideRect.left) / slideRect.width) * 100,
+        topPct: ((startRect.top - slideRect.top) / slideRect.height) * 100,
+        widthPct: (startRect.width / slideRect.width) * 100,
+        heightPct: (startRect.height / slideRect.height) * 100,
+      };
+      function move(moveEvent) {
+        const dxPct = ((moveEvent.clientX - start.x) / slideRect.width) * 100;
+        const dyPct = ((moveEvent.clientY - start.y) / slideRect.height) * 100;
+        const nextLeft = Math.max(0, Math.min(100 - start.widthPct, start.leftPct + dxPct));
+        const nextTop = Math.max(0, Math.min(100 - start.heightPct, start.topPct + dyPct));
+        node.style.left = nextLeft.toFixed(3) + '%';
+        node.style.top = nextTop.toFixed(3) + '%';
+      }
+      function done(upEvent) {
+        node.classList.remove('dragging');
+        node.releasePointerCapture(upEvent.pointerId);
+        node.removeEventListener('pointermove', move);
+        node.removeEventListener('pointerup', done);
+        const slideDef = (exportPreview.pptLayout && exportPreview.pptLayout.theme
+          && exportPreview.pptLayout.theme.slide) || { width_in: 13.333, height_in: 7.5 };
+        const leftPct = parseFloat(node.style.left || '0');
+        const topPct = parseFloat(node.style.top || '0');
+        const pageNo = node.getAttribute('data-page');
+        const component = node.getAttribute('data-component');
+        savePptPositionOverride(pageNo, component, {
+          left_in: Number(((leftPct / 100) * Number(slideDef.width_in || 13.333)).toFixed(3)),
+          top_in: Number(((topPct / 100) * Number(slideDef.height_in || 7.5)).toFixed(3)),
+          width_in: Number(node.getAttribute('data-width-in') || 0),
+          height_in: Number(node.getAttribute('data-height-in') || 0),
+        });
+      }
+      node.addEventListener('pointermove', move);
+      node.addEventListener('pointerup', done);
+    });
+  });
+}
+
+function savePptPositionOverride(pageNo, component, box) {
+  if (!pageNo || !component) return;
+  exportPreview.edits.position_overrides[pptComponentKey(pageNo, component)] = box;
+  saveExportEdits();
+}
+
+function pptTableHtml(section) {
+  if (!section || !(section.rows || []).length) return '<span>表格佔位</span>';
+  const rows = section.rows.slice(0, 6);
+  const columns = Object.keys(rows[0]).slice(0, 5);
+  return '<table><thead><tr>' + columns.map(c => '<th>' + escHtml(c) + '</th>').join('')
+    + '</tr></thead><tbody>'
+    + rows.map(r => '<tr>' + columns.map(c => '<td>' + escHtml(fmtCell(r[c])) + '</td>').join('') + '</tr>').join('')
+    + '</tbody></table>';
+}
+
+function pptSlotText(content, page, slot) {
+  if (!slot) return '（待填文案）';
+  if (exportPreview.edits.slots && Object.prototype.hasOwnProperty.call(exportPreview.edits.slots, slot)) {
+    return exportPreview.edits.slots[slot];
+  }
+  if (slot === 'cover.title') return (exportPreview.edits.cover && exportPreview.edits.cover.title) || '專利分析報告';
+  const section = pptFirstSection(content, page);
+  if (section && (section.variants || []).length) {
+    const text = (section.variants || []).map(v => narrativeAiOriginal(v)).filter(Boolean)[0];
+    if (text) return text;
+  }
+  return '（' + slot + ' 待 AI 文案）';
+}
+
+function pptChartForPage(content, page) {
+  const sections = pptSectionsForPage(content, page);
+  for (const section of sections) {
+    for (const variant of (section.variants || [])) {
+      if (variant.chart_url) return variant.chart_url;
+    }
+  }
+  return '';
+}
+
+function pptFirstSection(content, page) {
+  return pptSectionsForPage(content, page)[0] || null;
+}
+
+function pptSectionsForPage(content, page) {
+  const keys = page.report_keys || [];
+  return (content.sections || []).filter(section => keys.includes(section.report_key));
+}
+
+function pptMissingReportKeys(content, page) {
+  const sections = content.sections || [];
+  return (page.report_keys || []).filter(key => !sections.some(section => section.report_key === key));
 }
 
 // 封面：標題／分析範圍／日期／專利件數。後端缺的欄位留空由使用者填（不猜值）。
@@ -3812,7 +4361,17 @@ async function requestExportPpt() {
   const btn = el('btn-export-ppt');
   if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
   try {
-    const params = { based_on_version: exportPreview.content.version };
+    // 三種人工覆寫分開送，不混成一包：slots＝文案槽人工稿、layout_overrides＝
+    // 每頁改過的版型 kind、position_overrides＝拖曳後的座標。分開才對得上
+    // 「AI 只產文案、排版由確定性程式處理」的分工紅線。
+    const edits = exportPreview.edits || exportEditsDefault();
+    const params = {
+      based_on_version: exportPreview.content.version,
+      approval_overrides: exportPptApprovalOverrides(),
+      slots: edits.slots || {},
+      layout_overrides: edits.layout_overrides || {},
+      position_overrides: edits.position_overrides || {},
+    };
     if (state.workspaceId) params.workspace_id = state.workspaceId;
     const created = await getJson(API + '/ai-tasks', {
       method: 'POST',
@@ -4186,13 +4745,17 @@ async function renderZhNameDrafts() {
       + '<div class="task-detail-error">草稿載入失敗：' + escHtml(e.message) + '</div>';
     return;
   }
+  const scopeHint = '<span class="hint" style="padding:0;font-size:.8rem">'
+    + '掃描<strong>已寫入資料庫</strong>、尚無中文名的代碼組。</span>';
+  const unsavedWarn = unsavedCodeGroupsWarningHtml();
   // 無草稿時整區收起（只留一行觸發入口），不佔版面——沿「待複核區有 pending 才出現」慣例。
   if (zhDrafts.length === 0) {
     wrap.innerHTML = '<div class="toolbar" style="margin-top:0.6rem">'
       + '<button class="btn btn-outline" onclick="triggerZhNameDrafts()">產生公司中文名草稿</button>'
+      + scopeHint
       + '<span class="hint" style="padding:0;font-size:.8rem">'
       + '目前沒有待確認的中文名草稿。</span>'
-      + '</div>';
+      + '</div>' + unsavedWarn;
     return;
   }
   const head = '<div class="ai-section-label" style="margin-top:1rem">公司中文名待確認（'
@@ -4202,17 +4765,21 @@ async function renderZhNameDrafts() {
     + '可就地改寫再確認；<strong>略過</strong>則草稿保留，下次還看得到。</p>'
     + '<div class="toolbar">'
     + '<button class="btn btn-outline" onclick="triggerZhNameDrafts()">產生中文名草稿</button>'
+    + scopeHint
     + '<button class="btn btn-outline" onclick="renderZhNameDrafts()">重新整理</button>'
     + '<button class="btn btn-outline" onclick="confirmAllZhNames()">全部確認</button>'
-    + '</div>';
+    + '</div>' + unsavedWarn;
   const rows = zhDrafts.map((it, i) =>
     '<tr>'
     + '<td>' + escHtml(it.code) + '</td>'
-    + '<td>' + escHtml(it.original_name || '') + '</td>'
+    // source_name＝AI 的輸入英文正式名（正規化名稱）；沒有就退回收斂前的原始字面。
+    + '<td>' + escHtml(it.source_name || it.original_name || '') + '</td>'
     // keep_original＝AI 查無市場慣用中文名、保留原文；標示出來讓使用者知道這不是翻譯結果。
+    // 拆四欄後此類草稿的中文欄是**空的**（不塞英文），確認後顯示自然退英文正式名。
     + '<td>' + (it.verdict === 'keep_original'
         ? '<span class="flag-no">保留原文</span>' : '<span class="flag-yes">中文名</span>') + '</td>'
     + '<td><input type="text" class="text-input" style="width:100%"'
+    + ' placeholder="留空＝沒有中文名，顯示英文正式名"'
     + ' id="zh-draft-' + i + '" value="' + escHtml(it.draft_name || '') + '"></td>'
     + '<td style="white-space:nowrap">'
     + '<button class="btn btn-primary btn-sm" onclick="decideZhName(' + i + ',\'confirm\')">確認</button> '
@@ -4234,7 +4801,9 @@ async function decideZhName(index, action) {
   if (action === 'confirm') {
     const input = el('zh-draft-' + index);
     const typed = (input && input.value.trim()) || '';
-    if (!typed) { alert('中文名不可為空'); return; }
+    // ⚠ 2026-07-28 四欄拆分後**不再擋空白**：keep_original 草稿的中文欄本來就是空的
+    // （查無市場慣用中文名，中文欄留空、顯示退英文正式名）。原本的「中文名不可為空」
+    // 會讓那一整類草稿永遠確認不了。
     if (typed !== (draft.draft_name || '')) { item.action = 'edit'; item.name = typed; }
   }
   await postZhDecisions([item]);
