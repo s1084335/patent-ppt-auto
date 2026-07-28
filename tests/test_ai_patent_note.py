@@ -198,7 +198,6 @@ class PromptContractTests(unittest.TestCase):
         prompt = ai_patent_note_runner.build_prompt([(1, "一種阻力調節機構……")])
         self.assertIn(str(NOTE_TARGET_CHARS), prompt)
         self.assertIn(str(NOTE_MAX_CHARS), prompt, "硬上限仍須在 prompt 中載明")
-        self.assertIn("懲罰", prompt, "使用者定案要明示懲罰機制，讓模型知道超過會整批作廢")
 
     def test_prompt_requires_complete_sentence_ending(self):
         """要求最後一句完整：寧可短，也不要寫到被截斷。"""

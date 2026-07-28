@@ -107,13 +107,16 @@ class OverLimitRaisesTests(unittest.TestCase):
         r.run_patent_note(cli_runner=fake_cli, store=store)
         return store.written
 
-    def test_over_limit_note_raises(self):
-        """101 字的備註必須被擋下，不得靜默寫入。"""
-        from backend.app.worker import ai_patent_note_runner as r
+    def test_over_limit_note_is_written_as_is(self):
+        """超過上限**照樣原樣寫入**（2026-07-28 使用者第二次定案）。
 
-        with self.assertRaises(r.PatentNoteRunnerError) as ctx:
-            self._run_with("字" * 101)
-        self.assertIn("100", str(ctx.exception))
+        沿革：先前改為「超過即 raise 整批作廢」，實機 job #67 一筆 103 字（只超 3 字）
+        害整批 0 筆寫入——懲罰落在整批而非那一筆，代價遠大於效益。
+        使用者定案「不用有懲罰，他超過也可以寫」，兩層線退為 prompt 軟性指引。
+        """
+        note = "字" * 103
+        self.assertEqual(self._run_with(note), [(1, note)],
+                         "超過上限不得攔截也不得截斷——程式完全不干預長度")
 
     def test_exactly_at_limit_passes(self):
         """剛好 100 字要放行（上限是「不得超過」，不是「不得達到」）。"""
