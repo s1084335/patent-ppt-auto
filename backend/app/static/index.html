@@ -2665,19 +2665,23 @@ function ensureReportSelectionDefault() {
 function renderReports() {
   const m = el('main-panel');
   ensureReportSelectionDefault();  // 預設全部勾選
-  // 不再靜默（2026-07-28 使用者定）：分群類報表在全庫檢視下沒有分群範圍，
+  // 不再靜默（2026-07-28 使用者定）：分群類報表需要 workspace 範圍，沒有範圍時
   // 勾了也產不出來。原本安靜跳過，使用者只看到「少了三張卡」而無從得知原因。
-  // 改為停用勾選框並標明原因；其他情況（已選 workspace）一律可勾。
+  //
+  // ⚠ 全庫**不算沒範圍**：它是 is_global=true 的正常 workspace（本庫為 id=2），
+  // 有自己的 patent_ids_json，能分群、能有主題、分群報表照常產。選全庫時
+  // state.workspaceId 會落到全庫真實 id（見 selectGlobalWorkspace）。
+  // 真正擋下的只有「尚未建立全庫 workspace」這個邊界情況（globalWorkspaceId 為 null）。
   const clusterBlocked = (state.workspaceId === null || state.workspaceId === undefined);
   const checks = REPORT_TYPES.map(([name, zh]) => {
     const blocked = clusterBlocked && CLUSTER_REPORT_NAMES.has(name);
     if (blocked) state.reportSelection.delete(name);   // 不送出注定跳過的項目
     return '<label class="report-check' + (blocked ? ' report-check-disabled' : '') + '"'
-      + (blocked ? ' title="分群以 workspace 為單位，全庫檢視沒有分群範圍"' : '')
+      + (blocked ? ' title="尚未選定 workspace（全庫亦可，但需先建立全庫 workspace）"' : '')
       + '><input type="checkbox" value="' + name + '"'
       + (blocked ? ' disabled' : (state.reportSelection.has(name) ? ' checked' : ''))
       + ' onchange="onReportToggle(this)"> ' + escHtml(zh)
-      + (blocked ? '<span class="hint-inline">（需選定 workspace）</span>' : '')
+      + (blocked ? '<span class="hint-inline">（需選定範圍）</span>' : '')
       + '</label>';
   }).join('');
   // 標題列橫排（2026-07-27 使用者定 R7／R8）：報表種類｜檢視選單｜市場 PDF（收合）。
