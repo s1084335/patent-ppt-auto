@@ -129,6 +129,31 @@ class NoteSourceTierTests(unittest.TestCase):
         self.assertIn("PATENT_NOTE_SOURCE_COLUMNS", src)
 
 
+class SqlIsValidTests(unittest.TestCase):
+    """READ_SQL 必須是合法 SQL——實機 job #41 因語法錯直接 failed。
+
+    ⚠ 先前的測試只驗「欄名字串出現在 SQL 裡」，抓不到語法錯：
+    f-string 內寫 `f'...BTRIM(p."{col}"), '')'` 會被當成「字串結束＋空字串串接」，
+    生成 `NULLIF(BTRIM(...), )` ——SQL 的空字串字面值必須是兩個單引號。
+    這條改為實際 parse，語法錯當場 red。
+    """
+
+    def test_read_sql_parses(self):
+        from backend.app.worker.ai_patent_note_runner import PatentNoteStore
+
+        sql = PatentNoteStore.READ_SQL
+        # 明確抓那個曾經出錯的形狀：NULLIF 第二參數不得為空
+        self.assertNotIn(
+            "), )", sql,
+            "NULLIF 第二參數是空的——SQL 空字串字面值必須寫成兩個單引號")
+        self.assertIn("BTRIM", sql)
+        # 每個來源欄都要出現在 COALESCE 內且帶合法空字串比較
+        from backend.app.clustering.sources import PATENT_NOTE_SOURCE_COLUMNS
+        for col in PATENT_NOTE_SOURCE_COLUMNS:
+            with self.subTest(col=col):
+                self.assertIn(f"""NULLIF(BTRIM(p."{col}"), '')""", sql)
+
+
 class ClusteringStillIndependentOnlyTests(unittest.TestCase):
     """分群技術通道固定獨立項，不得跟著 fallback。"""
 

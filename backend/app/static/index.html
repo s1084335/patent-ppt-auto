@@ -300,6 +300,14 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .pending-chip:hover { border-color: var(--accent); }
 .pending-chip .n { color: var(--text-muted); margin-left: 0.3rem; }
 .code-conflict { color: var(--warn); font-size: 0.85rem; padding: 0.35rem 0; }
+/* 資料維護區（2026-07-28 排版整理）：平時收合，展開後每項一張卡。 */
+.maint-details { border: 1px solid var(--border); border-radius: 0.45rem; background: var(--panel);
+  padding: 0.5rem 0.8rem; margin-bottom: 0.7rem; }
+.maint-details > summary { cursor: pointer; font-weight: 600; font-size: 0.9rem; }
+.maint-card { border: 1px solid var(--border); border-radius: 0.4rem; background: var(--panel-2);
+  padding: 0.7rem 0.85rem; margin-top: 0.6rem; }
+.maint-card-title { font-weight: 600; font-size: 0.88rem; margin-bottom: 0.35rem; }
+#company-name-block hr { border: 0; border-top: 1px solid var(--border); margin: 0.7rem 0; }
 /* 不適用的報表：停用態要看得出來，而不是安靜地產不出來（2026-07-28）。 */
 .report-check-disabled { opacity: 0.55; cursor: not-allowed; }
 .report-check-disabled input { cursor: not-allowed; }
@@ -817,36 +825,53 @@ function onPatentSearch() { state.patentsOffset = 0; loadAllPatents(); }
 async function renderBrowse() {
   const m = el('main-panel');
   const scopeLabel = isGlobalSelected() ? '全庫（所有專利）' : '目前 workspace';
+  // 版面（2026-07-28 使用者定「太亂了」後重排）：搜尋列只留瀏覽本身，
+  // 三塊維護作業全收進「資料維護」details 平時收合——原本它們把專利表推到畫面很下面。
+  // 公司名兩塊（代碼組、中文名草稿）合併成一個框：它們本來就是同一條流程
+  // （①建組 → ②AI 翻譯 → ③裁決），拆兩處才會讓人問「有沒有連通」。
   m.innerHTML = '<h2 class="panel-title">瀏覽專利</h2>'
     + '<p class="hint" style="padding:0 0 0.6rem">顯示 ' + escHtml(scopeLabel) + ' 的專利。'
     + '<strong>點任一列可展開該件的完整欄位</strong>。</p>'
     + '<div class="toolbar">'
     + '<input class="text-input" id="browse-kw" placeholder="搜尋 專利號／名稱／申請人" style="min-width:260px">'
     + '<button class="btn btn-outline" onclick="onBrowseSearch()">搜尋</button>'
-    // AI 文獻備註：手動觸發（2026-07-27 定案，原匯入後自動觸發已撤回）。放這裡是因為
-    // 文獻備註是**專利級**資料、在此頁逐列可見，缺哪些一眼看得到。
-    // ⚠ 只補空值不覆蓋（後端 skip_existing=True），可重複按補齊——這是「匯入去重讓
-    //   第一次失敗的批次補不到備註」的唯一出口。
+    + '</div>'
+    // 維護作業區：平時收合，進頁面先看到專利表。
+    + '<details class="maint-details" id="browse-maintenance">'
+    + '<summary>資料維護（文獻備註／專利權人代碼與中文名）</summary>'
+    // ── 文獻備註 ──
+    // 手動觸發（2026-07-27 定案，原匯入後自動觸發已撤回）；只補空值不覆蓋
+    // （後端 skip_existing=True），可重複按補齊——這是「匯入去重讓第一次失敗的
+    // 批次補不到備註」的唯一出口。
+    + '<div class="maint-card">'
+    + '<div class="maint-card-title">文獻備註</div>'
+    + '<div id="note-coverage" class="hint" style="padding:0 0 .4rem"></div>'
+    + '<div class="toolbar" style="margin:0">'
     + (hasRunningJob('ai:patent_note', state.workspaceId)
         ? '<button class="btn" id="btn-patent-note" disabled>產備註中…</button>'
         : '<button class="btn" id="btn-patent-note" onclick="runPatentNotes()">'
           + '產文獻備註</button>')
     + '<span class="hint" style="padding:0;font-size:.8rem">只補空白的備註，不覆蓋既有</span>'
-    + '</div>'
-    // 公司中文名確認：放這頁而非左導覽獨立項（2026-07-27 使用者定案）——低頻維護作業
-    // 不佔常駐導覽位置，且**下方表格就顯示著申請人欄**，確認前後的變化直接對照得到。
-    // 與「產文獻備註」同頁同理：兩者都是手動觸發、影響此頁欄位的 AI 補值作業。
-    + '<div id="zh-name-drafts"></div>'
-    // 專利權人代碼補齊（2026-07-28）：代碼是正規化與中文名的基礎——沒有代碼，
-    // report_patent_base 的四層 COALESCE 全落空，專利表與報表都只能顯示原始字面
-    // （CHI HUA 三種寫法各佔一列）。與上方中文名確認同頁，成果直接在下方表格對照得到。
+    + '</div></div>'
+    // ── 公司名（代碼組 ＋ 中文名草稿 ＋ 既有代碼，同一條流程放同一框）──
+    + '<div class="maint-card" id="company-name-block">'
+    + '<div class="maint-card-title">專利權人代碼與中文名</div>'
+    + '<p class="hint" style="padding:0 0 .5rem">'
+    + '流程：<strong>① 建代碼組</strong>（代碼須自行去 WIPS 查）→ '
+    + '<strong>② 不知道中文名時按「產生草稿」讓 AI 提議</strong>（需先完成 ①，'
+    + 'AI 只看已寫入的代碼）→ <strong>③ 在草稿區逐筆裁決</strong>。'
+    + '成果顯示在下方專利表的申請人／專利權人／受讓人欄與相關報表。</p>'
     + '<div id="company-code-registry"></div>'
+    + '<div id="zh-name-drafts"></div>'
+    + '</div>'
+    + '</details>'
     + '<div id="browse-body"><div class="hint">載入中…</div></div>';
   const kwInput = el('browse-kw');
   if (kwInput) kwInput.addEventListener('keydown', e => { if (e.key === 'Enter') onBrowseSearch(); });
   state.browseOffset = 0;
   renderZhNameDrafts();          // 非阻塞：草稿區自己載，不擋專利表
   renderCompanyCodeRegistry();   // 同上：代碼區自己載
+  renderNoteCoverage();          // 同上：備註覆蓋率
   await loadBrowsePatents();
 }
 function onBrowseSearch() { state.browseOffset = 0; loadBrowsePatents(); }
@@ -900,22 +925,27 @@ function renderCompanyCodeBody(existingGroups) {
   const body = el('company-code-body');
   if (!body) return;
   body.innerHTML =
-    // 待補清單：只列名稱與數量，不分組、不排序暗示關聯（見上方紅線②）
-    '<p class="hint" style="padding:0 0 .3rem">待補代碼的專利權人（' + pendingCodeNames.length + ' 種）。'
-    + '點一下填入目前編輯中的變體格；<strong>系統不判斷誰跟誰是同一家</strong>，'
-    + '請依 WIPS 查到的代碼自行分組。</p>'
-    + '<div style="max-height:9rem;overflow:auto;margin-bottom:.7rem">'
+    // ④ 待補清單收進 details（33 個 chip 會佔掉半個畫面，只在填變體時才需要）。
+    // 只列名稱與數量，不分組、不排序暗示關聯（見上方紅線②）。
+    '<details id="pending-codes-details">'
+    + '<summary>待補代碼的專利權人（' + pendingCodeNames.length + ' 種）</summary>'
+    + '<p class="hint" style="padding:.3rem 0">點一下填入目前編輯中的變體格；'
+    + '<strong>系統不判斷誰跟誰是同一家</strong>，請依 WIPS 查到的代碼自行分組。</p>'
+    + '<div style="max-height:9rem;overflow:auto;margin-bottom:.5rem">'
     + (pendingCodeNames.length
         ? pendingCodeNames.map((it, i) =>
             '<span class="pending-chip" onclick="fillVariantFromPending(' + i + ')" title="'
             + escHtml((it.source_fields || []).join('、')) + '">'
             + escHtml(it.name) + '<span class="n">' + escHtml(it.patent_count) + '</span></span>').join('')
         : '<span class="hint">（無待補項目）</span>')
-    + '</div>'
+    + '</div></details>'
     + '<div id="code-groups">' + companyCodeGroups.map(codeGroupHtml).join('') + '</div>'
+    // ③ 這裡不再放 AI 鈕：它與草稿區的「產生公司中文名草稿」打的是**同一支端點**
+    // （POST /company-zh-drafts/generate），兩顆同功能且這顆位置誤導——看起來像
+    // 「翻譯我現在填的這組」，實際是掃全庫已 confirmed 的代碼產草稿。唯一入口留在
+    // 下方草稿區（緊鄰裁決介面，語意才對）。
     + '<div class="toolbar">'
     + '<button class="btn btn-outline" onclick="addCodeGroup()">＋ 新增一組</button>'
-    + '<button class="btn" id="btn-code-translate" onclick="translateCompanyNames()">AI 翻譯中文名</button>'
     + '<button class="btn btn-primary" id="btn-code-confirm" onclick="confirmCompanyCodes()">確定寫入資料庫</button>'
     + '</div>'
     + '<div id="code-submit-msg"></div>'
@@ -998,29 +1028,20 @@ function fillVariantFromPending(i) {
   redrawCodeGroups();
 }
 
-// AI 只做英文名 → 中文名（使用者定），沿用既有 ai:company_zh_name job；
-// ⚠ 手動觸發，不自動排——自動失敗後沒有補救入口（ai:patent_note 踩過同一個坑）。
-async function translateCompanyNames() {
-  const btn = el('btn-code-translate');
-  const msg = el('code-submit-msg');
-  if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
+// 文獻備註覆蓋率：不顯示的話看不出還缺幾筆、要不要按（2026-07-28 排版整理時補）。
+async function renderNoteCoverage() {
+  const box = el('note-coverage');
+  if (!box) return;
   try {
-    const resp = await fetch(API + '/company-zh-drafts/generate', {
-      method: 'POST', headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      if (msg) msg.innerHTML = '<div class="task-detail-error">AI 翻譯啟動失敗：'
-        + escHtml(err.detail || ('HTTP ' + resp.status)) + '</div>';
-      return;
-    }
-    await fetchTasks();
-    if (msg) msg.innerHTML = '<p class="hint" style="padding:.35rem 0">'
-      + 'AI 中文名草稿產生中，完成後於上方「公司中文名確認」逐筆裁決。</p>';
+    const qs = 'limit=1&offset=0';
+    const url = isGlobalSelected()
+      ? API + '/patents?' + qs
+      : API + '/workspaces/' + encodeURIComponent(state.workspaceId) + '/patents?' + qs;
+    const data = await getJson(url);
+    const total = data.total ?? 0;
+    box.textContent = total ? ('本範圍共 ' + total + ' 件；按下方鈕補齊尚無備註者。') : '';
   } catch (e) {
-    if (msg) msg.innerHTML = '<div class="task-detail-error">連線錯誤：' + escHtml(e.message) + '</div>';
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'AI 翻譯中文名'; }
+    box.textContent = '';   // 靜默：覆蓋率只是輔助資訊，載不到不擋維護作業
   }
 }
 

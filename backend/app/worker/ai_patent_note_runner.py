@@ -73,8 +73,11 @@ NOTE_COLUMN = "文獻備註"
 # CLAIM_COLUMN 保留為第一級的別名（既有測試與說明沿用）。
 CLAIM_COLUMN = PATENT_NOTE_SOURCE_COLUMNS[0]
 # 組成 COALESCE 運算式；欄名來自受信任常數（非使用者輸入），不進使用者可控的動態 SQL。
+# ⚠ SQL 的空字串字面值必須是 "''" 兩個單引號。先前寫成 f'...BTRIM(p."{col}"), '')'
+# 在 f-string 裡被當成「字串結束 + 空字串串接」，生成出 `NULLIF(BTRIM(...), )` ——
+# 語法錯，實機 job #41 直接 SyntaxError。此處以雙引號包外層，讓 '' 原樣進 SQL。
 _NOTE_SOURCE_EXPR = "COALESCE(" + ", ".join(
-    f'NULLIF(BTRIM(p."{col}"), '')' for col in PATENT_NOTE_SOURCE_COLUMNS
+    f"""NULLIF(BTRIM(p."{col}"), '')""" for col in PATENT_NOTE_SOURCE_COLUMNS
 ) + ")"
 
 # 備註字數兩層線（2026-07-26 使用者定案）：
