@@ -279,6 +279,27 @@ table.data td.cell-wrap, table.data th.cell-wrap {
   border: 1px solid var(--border); border-radius: 0.4rem; background: var(--panel-2); font-size: 0.88rem;
 }
 .report-check input { width: 1rem; height: 1rem; }
+
+/* ── 專利權人代碼補齊（2026-07-28）── */
+.code-group { border: 1px solid var(--border); border-radius: 0.45rem; padding: 0.7rem 0.85rem;
+  margin-bottom: 0.7rem; background: var(--panel-2); }
+.code-group-head { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.5rem; }
+.code-group-head .idx { font-weight: 600; font-size: 0.9rem; }
+.code-field { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+.code-field > label { flex: 0 0 6.2rem; font-size: 0.85rem; color: var(--text-muted); }
+.code-field input { flex: 1 1 auto; min-width: 0; }
+.code-variant-row { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.32rem; }
+.code-variant-row input { flex: 1 1 auto; min-width: 0; }
+.btn-mini { padding: 0.18rem 0.55rem; font-size: 0.85rem; line-height: 1.3;
+  border: 1px solid var(--border); border-radius: 0.3rem; background: var(--panel);
+  color: var(--text); cursor: pointer; }
+.btn-mini:hover { border-color: var(--accent); }
+.pending-chip { display: inline-block; margin: 0.12rem 0.25rem 0.12rem 0; padding: 0.2rem 0.5rem;
+  border: 1px solid var(--border); border-radius: 0.9rem; background: var(--panel);
+  font-size: 0.78rem; cursor: pointer; max-width: 100%; overflow-wrap: anywhere; }
+.pending-chip:hover { border-color: var(--accent); }
+.pending-chip .n { color: var(--text-muted); margin-left: 0.3rem; }
+.code-conflict { color: var(--warn); font-size: 0.85rem; padding: 0.35rem 0; }
 /* 不適用的報表：停用態要看得出來，而不是安靜地產不出來（2026-07-28）。 */
 .report-check-disabled { opacity: 0.55; cursor: not-allowed; }
 .report-check-disabled input { cursor: not-allowed; }
@@ -816,11 +837,16 @@ async function renderBrowse() {
     // 不佔常駐導覽位置，且**下方表格就顯示著申請人欄**，確認前後的變化直接對照得到。
     // 與「產文獻備註」同頁同理：兩者都是手動觸發、影響此頁欄位的 AI 補值作業。
     + '<div id="zh-name-drafts"></div>'
+    // 專利權人代碼補齊（2026-07-28）：代碼是正規化與中文名的基礎——沒有代碼，
+    // report_patent_base 的四層 COALESCE 全落空，專利表與報表都只能顯示原始字面
+    // （CHI HUA 三種寫法各佔一列）。與上方中文名確認同頁，成果直接在下方表格對照得到。
+    + '<div id="company-code-registry"></div>'
     + '<div id="browse-body"><div class="hint">載入中…</div></div>';
   const kwInput = el('browse-kw');
   if (kwInput) kwInput.addEventListener('keydown', e => { if (e.key === 'Enter') onBrowseSearch(); });
   state.browseOffset = 0;
   renderZhNameDrafts();          // 非阻塞：草稿區自己載，不擋專利表
+  renderCompanyCodeRegistry();   // 同上：代碼區自己載
   await loadBrowsePatents();
 }
 function onBrowseSearch() { state.browseOffset = 0; loadBrowsePatents(); }
@@ -830,6 +856,223 @@ function pageBrowse(dir) {
   state.browseOffset = next;
   loadBrowsePatents();
 }
+// ══════════ 專利權人代碼補齊（2026-07-28 使用者需求）══════════
+//
+// 為什麼要有：代碼是正規化與中文名的**基礎**。company_aliases 空的時候，
+// report_patent_base 的四層 COALESCE（代碼對照 > 別稱對照 > 庫內統計名 > 標準化名）
+// 全部落空，退回原始「申請人」字面——報表上 CHI HUA 三種寫法各佔一列、中文名全空。
+// 實測代碼覆蓋率 60 筆只有 3 筆，等於幾乎全要人工補。
+//
+// ⚠ 兩條使用者定的紅線：
+//   ① 代碼**只能是使用者去 WIPS 查來的**——本區塊不提供自動產生、不讓 AI 建議代碼
+//   ② 系統**不預先分組**——待補清單只是省打字的參考，誰跟誰共用代碼由使用者填相同
+//      代碼決定。點 chip 只是把字填進當前組，不代表系統認為它們同組。
+//
+// 成果顯現處：下方專利表的專利權人欄位，以及所有用 applicant_display_name／
+// current_assignee_display_name 的報表。
+let companyCodeGroups = [];      // [{code, company_name, variants:[...]}]
+let pendingCodeNames = [];       // 待補清單（僅供參考）
+
+async function renderCompanyCodeRegistry() {
+  const wrap = el('company-code-registry');
+  if (!wrap) return;
+  if (!companyCodeGroups.length) companyCodeGroups = [blankCodeGroup()];
+  wrap.innerHTML = '<details class="reports-market-details" id="company-code-details">'
+    + '<summary>專利權人代碼（正規化與中文名的基礎）</summary>'
+    + '<div id="company-code-body"><div class="hint">載入中…</div></div>'
+    + '</details>';
+  try {
+    const [pending, existing] = await Promise.all([
+      getJson(API + '/company-codes/pending?limit=200'),
+      getJson(API + '/company-codes/existing'),
+    ]);
+    pendingCodeNames = pending.items || [];
+    renderCompanyCodeBody(existing.items || []);
+  } catch (e) {
+    const body = el('company-code-body');
+    if (body) body.innerHTML = '<div class="task-detail-error">載入失敗：' + escHtml(e.message) + '</div>';
+  }
+}
+
+function blankCodeGroup() { return { code: '', company_name: '', variants: [''] }; }
+
+function renderCompanyCodeBody(existingGroups) {
+  const body = el('company-code-body');
+  if (!body) return;
+  body.innerHTML =
+    // 待補清單：只列名稱與數量，不分組、不排序暗示關聯（見上方紅線②）
+    '<p class="hint" style="padding:0 0 .3rem">待補代碼的專利權人（' + pendingCodeNames.length + ' 種）。'
+    + '點一下填入目前編輯中的變體格；<strong>系統不判斷誰跟誰是同一家</strong>，'
+    + '請依 WIPS 查到的代碼自行分組。</p>'
+    + '<div style="max-height:9rem;overflow:auto;margin-bottom:.7rem">'
+    + (pendingCodeNames.length
+        ? pendingCodeNames.map((it, i) =>
+            '<span class="pending-chip" onclick="fillVariantFromPending(' + i + ')" title="'
+            + escHtml((it.source_fields || []).join('、')) + '">'
+            + escHtml(it.name) + '<span class="n">' + escHtml(it.patent_count) + '</span></span>').join('')
+        : '<span class="hint">（無待補項目）</span>')
+    + '</div>'
+    + '<div id="code-groups">' + companyCodeGroups.map(codeGroupHtml).join('') + '</div>'
+    + '<div class="toolbar">'
+    + '<button class="btn btn-outline" onclick="addCodeGroup()">＋ 新增一組</button>'
+    + '<button class="btn" id="btn-code-translate" onclick="translateCompanyNames()">AI 翻譯中文名</button>'
+    + '<button class="btn btn-primary" id="btn-code-confirm" onclick="confirmCompanyCodes()">確定寫入資料庫</button>'
+    + '</div>'
+    + '<div id="code-submit-msg"></div>'
+    // 既有代碼：平時收合，展開看代碼，再展開看該代碼下的公司變體（使用者指定的兩層）
+    + '<details id="existing-codes-details" style="margin-top:.6rem">'
+    + '<summary>資料庫已有的代碼（' + existingGroups.length + ' 組）</summary>'
+    + (existingGroups.length
+        ? existingGroups.map(g =>
+            '<details style="margin:.3rem 0 .3rem 1rem">'
+            + '<summary>' + escHtml(g.code) + ' — ' + escHtml(g.company_name)
+            + '（' + g.variants.length + ' 個變體）</summary>'
+            + '<ul style="margin:.2rem 0 .2rem 1.6rem;font-size:.85rem">'
+            + g.variants.map(v => '<li>' + escHtml(v) + '</li>').join('')
+            + '</ul></details>').join('')
+        : '<p class="hint" style="padding:.3rem 0 0 1rem">（尚無已確認的代碼）</p>')
+    + '</details>';
+}
+
+function codeGroupHtml(g, idx) {
+  return '<div class="code-group" data-group="' + idx + '">'
+    + '<div class="code-group-head"><span class="idx">第 ' + (idx + 1) + ' 組</span>'
+    + '<button class="btn-mini" onclick="removeCodeGroup(' + idx + ')">刪除本組</button></div>'
+    + '<div class="code-field"><label>代碼</label>'
+    + '<input class="text-input" value="' + escHtml(g.code) + '" placeholder="WIPS 查到的申請人代碼"'
+    + ' oninput="updateCodeGroup(' + idx + ', \'code\', this.value)"></div>'
+    + '<div class="code-field"><label>正規化名稱</label>'
+    + '<input class="text-input" value="' + escHtml(g.company_name) + '" placeholder="中文公司名（可按下方 AI 翻譯）"'
+    + ' oninput="updateCodeGroup(' + idx + ', \'company_name\', this.value)"></div>'
+    + '<div class="code-field" style="align-items:flex-start"><label>變體</label><div style="flex:1 1 auto;min-width:0">'
+    + g.variants.map((v, vi) =>
+        '<div class="code-variant-row">'
+        + '<input class="text-input" value="' + escHtml(v) + '" placeholder="原始寫法（點上方清單可填入）"'
+        + ' onfocus="activeVariant = {g:' + idx + ', v:' + vi + '}"'
+        + ' oninput="updateVariant(' + idx + ', ' + vi + ', this.value)">'
+        + (g.variants.length > 1
+            ? '<button class="btn-mini" onclick="removeCodeVariant(' + idx + ', ' + vi + ')">－</button>'
+            : '')
+        + '</div>').join('')
+    + '<button class="btn-mini" onclick="addCodeVariant(' + idx + ')">＋ 新增變體</button>'
+    + '</div></div></div>';
+}
+
+// 目前游標所在的變體格；點待補清單時填到這裡（使用者可先點格子指定要填哪一組）
+let activeVariant = { g: 0, v: 0 };
+
+function addCodeGroup() { companyCodeGroups.push(blankCodeGroup()); redrawCodeGroups(); }
+function removeCodeGroup(i) {
+  companyCodeGroups.splice(i, 1);
+  if (!companyCodeGroups.length) companyCodeGroups = [blankCodeGroup()];
+  activeVariant = { g: 0, v: 0 };
+  redrawCodeGroups();
+}
+function addCodeVariant(i) { companyCodeGroups[i].variants.push(''); redrawCodeGroups(); }
+function removeCodeVariant(i, vi) {
+  companyCodeGroups[i].variants.splice(vi, 1);
+  if (!companyCodeGroups[i].variants.length) companyCodeGroups[i].variants = [''];
+  redrawCodeGroups();
+}
+function updateCodeGroup(i, field, value) { companyCodeGroups[i][field] = value; }
+function updateVariant(i, vi, value) { companyCodeGroups[i].variants[vi] = value; }
+
+// 只重畫組區塊，不重打 API（待補清單與既有代碼不變）
+function redrawCodeGroups() {
+  const box = el('code-groups');
+  if (box) box.innerHTML = companyCodeGroups.map(codeGroupHtml).join('');
+}
+
+function fillVariantFromPending(i) {
+  const item = pendingCodeNames[i];
+  if (!item) return;
+  const g = companyCodeGroups[activeVariant.g];
+  if (!g) return;
+  // 填進游標所在格；該格已有內容就新增一格，不覆蓋使用者打過的字
+  if ((g.variants[activeVariant.v] || '').trim()) {
+    g.variants.push(item.name);
+    activeVariant = { g: activeVariant.g, v: g.variants.length - 1 };
+  } else {
+    g.variants[activeVariant.v] = item.name;
+  }
+  redrawCodeGroups();
+}
+
+// AI 只做英文名 → 中文名（使用者定），沿用既有 ai:company_zh_name job；
+// ⚠ 手動觸發，不自動排——自動失敗後沒有補救入口（ai:patent_note 踩過同一個坑）。
+async function translateCompanyNames() {
+  const btn = el('btn-code-translate');
+  const msg = el('code-submit-msg');
+  if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
+  try {
+    const resp = await fetch(API + '/company-zh-drafts/generate', {
+      method: 'POST', headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      if (msg) msg.innerHTML = '<div class="task-detail-error">AI 翻譯啟動失敗：'
+        + escHtml(err.detail || ('HTTP ' + resp.status)) + '</div>';
+      return;
+    }
+    await fetchTasks();
+    if (msg) msg.innerHTML = '<p class="hint" style="padding:.35rem 0">'
+      + 'AI 中文名草稿產生中，完成後於上方「公司中文名確認」逐筆裁決。</p>';
+  } catch (e) {
+    if (msg) msg.innerHTML = '<div class="task-detail-error">連線錯誤：' + escHtml(e.message) + '</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'AI 翻譯中文名'; }
+  }
+}
+
+async function confirmCompanyCodes() {
+  const msg = el('code-submit-msg');
+  // 只送填了代碼與名稱的組；變體全空的組沒有意義（後端也會再擋一次）
+  const groups = companyCodeGroups
+    .map(g => ({
+      code: (g.code || '').trim(),
+      company_name: (g.company_name || '').trim(),
+      variants: (g.variants || []).map(v => (v || '').trim()).filter(Boolean),
+    }))
+    .filter(g => g.code && g.company_name && g.variants.length);
+  if (!groups.length) {
+    if (msg) msg.innerHTML = '<div class="code-conflict">請至少填一組完整的代碼、正規化名稱與變體。</div>';
+    return;
+  }
+  const btn = el('btn-code-confirm');
+  if (btn) { btn.disabled = true; btn.textContent = '寫入中…'; }
+  try {
+    const resp = await fetch(API + '/company-codes/confirm', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ groups: groups }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.status === 409) {
+      // 同一代碼配到不同正規化名稱＝真衝突（使用者定的唯一驗證）
+      const list = ((data.detail || {}).conflicts || [])
+        .map(c => escHtml(c.code) + '：已是「' + escHtml(c.existing_name)
+          + '」，這次填「' + escHtml(c.new_name) + '」').join('<br>');
+      if (msg) msg.innerHTML = '<div class="code-conflict">代碼衝突，未寫入：<br>' + list + '</div>';
+      return;
+    }
+    if (!resp.ok) {
+      if (msg) msg.innerHTML = '<div class="task-detail-error">寫入失敗：'
+        + escHtml(JSON.stringify(data.detail || resp.status)) + '</div>';
+      return;
+    }
+    companyCodeGroups = [blankCodeGroup()];
+    activeVariant = { g: 0, v: 0 };
+    if (msg) msg.innerHTML = '<p class="hint" style="padding:.35rem 0">已寫入 '
+      + escHtml(data.groups) + ' 組；正在刷新收斂名（下方表格與報表隨後更新）。</p>';
+    await fetchTasks();
+    await renderCompanyCodeRegistry();
+    await loadBrowsePatents();   // 成果直接在下方專利權人欄位對照
+  } catch (e) {
+    if (msg) msg.innerHTML = '<div class="task-detail-error">連線錯誤：' + escHtml(e.message) + '</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '確定寫入資料庫'; }
+  }
+}
+
 // 載當前 workspace 的專利：全庫走 /patents（跨庫、帶所屬 workspace 欄）；一般 ws 走 /workspaces/{id}/patents。
 async function loadBrowsePatents() {
   const body = el('browse-body');

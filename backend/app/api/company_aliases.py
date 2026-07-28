@@ -189,3 +189,214 @@ def generate_drafts() -> dict[str, Any]:
     """
     job_id = create_job("ai:company_zh_name", {})
     return {"job_id": job_id}
+
+
+# ══════════════ 專利權人代碼補齊（2026-07-28 使用者需求）══════════════
+#
+# 背景：company_aliases 0 筆 → applicant_display_name 四層 COALESCE 全落空 →
+# 報表上 CHI HUA 三種寫法各佔一列、中文名全空。代碼覆蓋率實測 60 筆只有 3 筆，
+# 「自動化能解決的」幾乎不存在，等於全部要人工補。
+#
+# ⚠ **與既有中文名確認線整合，不另造第三套**（使用者：「和現有代碼機制以及中文
+# 重新整合，這樣公司這個才不會亂」）：
+#   - 寫入一律委派 apply_confirmed_display_names（去重、re-canonicalize、
+#     review_status 轉換的規則只有那一份）
+#   - 「已處理過」沿用同一個 CONFIRM_SOURCE_LABEL 前綴判定，不另立標記
+#   - AI 中文名沿用既有 ai:company_zh_name job，本區塊不自呼 CLI
+#
+# ⚠ 使用者定案的兩條紅線：
+#   ① **代碼只能是使用者去 WIPS 查來的**——不自動產生、不 AI 建議
+#   ② **系統不預先分組**——誰跟誰共用代碼由使用者填相同代碼決定；
+#      待補清單只作參考與省打字，不暗示分組關係
+#
+# 成果顯現處（使用者指明）：瀏覽專利的專利權人相關欄位、以及所有用
+# applicant_display_name／current_assignee_display_name 的報表。
+
+
+class CodeGroup(BaseModel):
+    """一組 = 代碼 + 正規化名稱 + N 個變體（對應 UI 一列可展開多格）。"""
+
+    code: str = Field(min_length=1, max_length=64)
+    company_name: str = Field(min_length=1, max_length=200)
+    variants: list[str] = Field(default_factory=list)
+
+
+class ConfirmCodesRequest(BaseModel):
+    groups: list[CodeGroup] = Field(min_length=1)
+
+
+def group_aliases_by_code(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把 company_aliases 列聚成「代碼 → 變體清單」，供既有代碼區兩層展開。"""
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        code = str(row.get("申請人代碼") or "").strip()
+        if not code:
+            continue
+        entry = grouped.setdefault(
+            code,
+            {"code": code, "company_name": row.get("公司名稱") or "", "variants": []},
+        )
+        alias = str(row.get("別稱") or "").strip()
+        if alias and alias not in entry["variants"]:
+            entry["variants"].append(alias)
+    return sorted(grouped.values(), key=lambda g: g["code"])
+
+
+def _group_field(group: Any, name: str) -> Any:
+    """CodeGroup（pydantic）與 dict（測試）兩種輸入都能取值。"""
+    if isinstance(group, dict):
+        return group.get(name)
+    return getattr(group, name, None)
+
+
+def groups_to_alias_mapping(groups: list[Any]) -> dict[str, dict[str, Any]]:
+    """轉成既有 apply_confirmed_display_names 的 mapping 形狀。
+
+    {代碼: {"canonical": 正規化名, "aliases": [變體, ...]}}
+    空白變體格剔除——UI 的「＋」會留下未填的格子，寫進去會變成垃圾別稱。
+    """
+    mapping: dict[str, dict[str, Any]] = {}
+    for group in groups:
+        code = str(_group_field(group, "code") or "").strip()
+        name = str(_group_field(group, "company_name") or "").strip()
+        raw_variants = _group_field(group, "variants") or []
+        entry = mapping.setdefault(code, {"canonical": name, "aliases": []})
+        for raw in raw_variants:
+            alias = str(raw).strip()
+            if alias and alias not in entry["aliases"]:
+                entry["aliases"].append(alias)
+    return mapping
+
+
+def find_code_conflicts(groups: list[Any], existing: dict[str, str]) -> list[dict[str, str]]:
+    """同一代碼配到不同正規化名稱＝真衝突（使用者定的唯一驗證）。
+
+    代碼本身**不驗格式**——WIPS 編碼規則未知，擋錯會讓合法代碼輸不進去。
+    比對批內彼此、以及與 DB 既有代碼。
+    """
+    conflicts: list[dict[str, str]] = []
+    seen: dict[str, str] = {}
+    for group in groups:
+        code = str(_group_field(group, "code") or "").strip()
+        name = str(_group_field(group, "company_name") or "").strip()
+        prior = seen.get(code) or existing.get(code)
+        if prior and prior != name:
+            conflicts.append({"code": code, "existing_name": prior, "new_name": name})
+        seen.setdefault(code, name)
+    return conflicts
+
+
+_PENDING_CODES_SQL = """
+    WITH names AS (
+        SELECT lower(regexp_replace(BTRIM(x.raw_name), '\\s+', ' ', 'g')) AS lookup_key,
+               x.raw_name,
+               x.source_field,
+               pp.patent_id
+        FROM core_layer.patent_people pp
+        CROSS JOIN LATERAL (VALUES
+            (NULLIF(BTRIM(pp."申請人"), ''), '申請人'),
+            (NULLIF(BTRIM(pp."標準化申請人"), ''), '標準化申請人'),
+            (NULLIF(BTRIM(pp."最近專利權人[US,JP,KR,CN,CA,AU]"), ''), '最近專利權人'),
+            (NULLIF(BTRIM(pp."標準當前專利權人[US,JP,KR,CN,CA,AU]"), ''), '標準當前專利權人'),
+            (NULLIF(BTRIM(pp."最近受讓人[US,KR,CN]"), ''), '最近受讓人')
+        ) AS x(raw_name, source_field)
+        WHERE x.raw_name IS NOT NULL
+    )
+    SELECT n.lookup_key,
+           min(n.raw_name) AS name,
+           array_agg(DISTINCT n.source_field ORDER BY n.source_field) AS source_fields,
+           count(DISTINCT n.patent_id) AS patent_count
+    FROM names n
+    WHERE NOT EXISTS (
+        SELECT 1 FROM derived_layer.company_aliases ca
+        WHERE ca.review_status = 'confirmed'
+          AND lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) = n.lookup_key
+    )
+    GROUP BY n.lookup_key
+    ORDER BY count(DISTINCT n.patent_id) DESC, min(n.raw_name)
+    LIMIT %(limit)s
+"""
+
+
+@router.get("/company-codes/pending")
+def list_pending_company_codes(limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
+    """待補代碼的專利權人名稱（去重後的原始名稱＋專利數＋出現在哪些欄位）。
+
+    排除（使用者定「已處理過的不再出現」）：已在 company_aliases 且
+    review_status='confirmed' 的名稱。此判定與既有中文名確認線（display_name_curation
+    前綴，見 CONFIRM_SOURCE_LABEL）指向同一批資料，不另立一套標記。
+
+    ⚠ 只列清單、**不做任何分組推斷**——誰跟誰同一個代碼由使用者查 WIPS 後決定。
+    """
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from backend.app.db.connection import get_connection_kwargs
+
+    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
+        rows = conn.execute(_PENDING_CODES_SQL, {"limit": limit}).fetchall()
+    return {"items": [dict(r) for r in rows], "count": len(rows)}
+
+
+@router.get("/company-codes/existing")
+def list_existing_company_codes() -> dict[str, Any]:
+    """DB 既有代碼（供收合區塊兩層展開：代碼 → 該代碼下的公司變體）。"""
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from backend.app.db.connection import get_connection_kwargs
+
+    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
+        rows = conn.execute(
+            '''
+            SELECT "申請人代碼", "公司名稱", "別稱"
+            FROM derived_layer.company_aliases
+            WHERE review_status = 'confirmed'
+              AND NULLIF(BTRIM("申請人代碼"), '') IS NOT NULL
+            ORDER BY "申請人代碼", "別稱"
+            '''
+        ).fetchall()
+    groups = group_aliases_by_code([dict(r) for r in rows])
+    return {"items": groups, "count": len(groups)}
+
+
+@router.post("/company-codes/confirm")
+def confirm_company_codes(body: ConfirmCodesRequest) -> dict[str, Any]:
+    """使用者按「確定」後才寫入；代碼衝突則 409 不寫。
+
+    ⚠ 寫入委派既有 apply_confirmed_display_names——去重（(代碼, lookup key) 同一把
+    key）、既有列 re-canonicalize、review_status／source_type 轉換的規則只有那一份，
+    本端點自寫 SQL 必然漂移（company_alias_importer docstring 亦明載此戒律）。
+
+    寫完 enqueue refresh_derived：收斂名存 report_patent_base，不刷新使用者會看到
+    「表格沒變」（既有中文名確認線踩過同一個坑）。成果顯現在瀏覽專利的專利權人
+    欄位與相關報表。
+    """
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from backend.app.db.connection import get_connection_kwargs
+    from backend.app.derived.company_alias_importer import apply_confirmed_display_names
+
+    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
+        existing_rows = conn.execute(
+            '''
+            SELECT DISTINCT "申請人代碼" AS code, "公司名稱" AS name
+            FROM derived_layer.company_aliases
+            WHERE review_status = 'confirmed'
+              AND NULLIF(BTRIM("申請人代碼"), '') IS NOT NULL
+            '''
+        ).fetchall()
+    existing = {r["code"]: r["name"] for r in existing_rows}
+
+    conflicts = find_code_conflicts(body.groups, existing)
+    if conflicts:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "同一代碼對應到不同正規化名稱", "conflicts": conflicts},
+        )
+
+    mapping = groups_to_alias_mapping(body.groups)
+    written = apply_confirmed_display_names(mapping, CONFIRM_SOURCE_LABEL)
+    refresh_job_id = create_job("refresh_derived", {})
+    return {"groups": len(mapping), "written": written, "refresh_job_id": refresh_job_id}
