@@ -32,6 +32,10 @@ class ReportRequest(BaseModel):
     limit: int | None = Field(default=None, ge=1)
     patent_ids: list[int] | None = None
     idempotency_key: str | None = Field(default=None, max_length=200)
+    # 分群類報表（主題統計表／機會板／痛點板）的範圍：分群一律以 workspace 為單位。
+    # 2026-07-28 補：原本前端沒送、model 也沒這欄，worker 端 workspace_id 恆為 None，
+    # 三份分群報表一律靜默跳過——就算跑過分群也產不出來。None＝全庫報表，沒有分群範圍。
+    workspace_id: int | None = Field(default=None, ge=1)
 
 
 @router.get("/report-definitions")
@@ -93,7 +97,10 @@ def create_report(request: ReportRequest) -> dict[str, Any]:
         payload["patent_ids"] = request.patent_ids
 
     job = job_repository.create_job(
-        "report_generate", payload, idempotency_key=request.idempotency_key
+        "report_generate",
+        payload,
+        workspace_id=request.workspace_id,
+        idempotency_key=request.idempotency_key,
     )
     return job_to_dict(job)
 

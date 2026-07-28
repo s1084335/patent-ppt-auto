@@ -200,7 +200,11 @@ def handle_clustering_incremental(payload: dict[str, Any], context: JobContext) 
     return _json_safe(summary)
 
 
-def _load_report_cluster_data(workspace_id: int, source_field: str) -> dict[str, Any] | None:
+def _load_report_cluster_data(
+    workspace_id: int,
+    source_field: str,
+    pain_data: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     """取該 workspace／通道的分群資料供分群類圖表使用；無主題回 None。
 
     走既有 backend/app/reports/cluster_data_loader.py（已對齊 0021 schema，內含合併重映
@@ -234,32 +238,80 @@ def _load_report_cluster_data(workspace_id: int, source_field: str) -> dict[str,
         cluster_data["normalized_applicants"],
     )
     opportunity = build_opportunity_matrix(topic_rows, cluster_data.get("top_applicants_ws", []))
-    pain = build_pain_point_matrix(topic_rows, [], opportunity["patent_count_median"])
+    # 市場資料（痛點嚴重度）：有就用、沒有也要能產出（2026-07-28 使用者定案）。
+    # 無市場資料時嚴重度落 unknown，痛點板顯示為灰色待調查帶（不當 low），報表照常產出。
+    # ⚠ 原本此處寫死 []，市場線接通後也吃不到——改為參數傳入並存進 cluster_data，
+    # 供 _build_cluster_analytics_section 的 data.get("pain_data") 取用（雙通道各自分段）。
+    market_rows = list(pain_data or cluster_data.get("pain_data") or [])
+    pain = build_pain_point_matrix(topic_rows, market_rows, opportunity["patent_count_median"])
     return {
         **cluster_data,
+        "pain_data": market_rows,
         "topic_rows": topic_rows,
         "opportunity_matrix": opportunity,
         "pain_point_matrix": pain,
+        "has_market_data": bool(market_rows),
     }
 
 
 def _resolve_report_cluster_data(payload: dict[str, Any], context: JobContext) -> dict[str, Any] | None:
     """解析報表 job 要用的 cluster_data；取不到一律回 None（不讓分群拖垮整張報表）。
 
-    範圍取自 job 的 workspace_id（分群一律以 workspace 為單位）；通道由 payload.source_field
-    指定，預設技術通道。沒有 workspace_id＝全庫報表，沒有分群範圍可談。
-    載入失敗（無 topic run、DB 暫時不可用等）只記 log 並回 None——確定性報表本體不該
-    因為分群輔助區塊而整張失敗。
+    範圍取自 job 的 workspace_id（分群一律以 workspace 為單位）。沒有 workspace_id＝
+    全庫報表，沒有分群範圍可談。載入失敗只記 log 並回 None——確定性報表本體不該因為
+    分群輔助區塊而整張失敗。
+
+    通道（2026-07-28 使用者定案：**技術、功效都做報表**）：payload 明確指定 source_field
+    時只取該通道；未指定時**兩個通道都取並合併**。合併後由 chart_runner._source_segments
+    依每列的 source_field 自動分段（技術先、功效後），矩陣板每段各一組、中位數各自計算，
+    不跨通道混算——分段機制早已存在，先前只餵單一通道等於用不到。
     """
     workspace_id = payload.get("workspace_id") or context.job.workspace_id
     if workspace_id is None:
         return None
-    source_field = _source_field(payload.get("source_field"), default=SOURCE_FIELD_TECHNICAL)
+    requested = payload.get("source_field")
+    if requested:
+        targets = [_source_field(requested, default=SOURCE_FIELD_TECHNICAL)]
+    else:
+        from backend.app.clustering.sources import source_fields
+
+        targets = list(source_fields())
+    pain_data = payload.get("pain_data")
     try:
-        return _load_report_cluster_data(int(workspace_id), source_field)
+        return _merge_cluster_channels(int(workspace_id), targets, pain_data)
     except Exception:  # noqa: BLE001 - 分群區塊是輔助，缺了照樣出報表
         LOGGER.exception("report cluster_data load failed: workspace_id=%s", workspace_id)
         return None
+
+
+def _merge_cluster_channels(
+    workspace_id: int,
+    source_fields_: list[str],
+    pain_data: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """載入多個通道的分群資料並合併成單一 cluster_data；全部無主題時回 None。
+
+    合併語意：topics／assignments／topic_rows 直接串接（每列自帶 source_field，
+    下游 `_source_segments` 據此分段）；normalized_applicants 與 top_applicants_ws 是
+    workspace 級的同一份，取第一個非空者即可，不重複串接。
+
+    只有部分通道有主題時（例如只跑了技術分群）照樣回傳有的那部分——
+    報表能出多少算多少，不因為某通道沒分群就整張不給。
+    """
+    merged: dict[str, Any] | None = None
+    for source_field in source_fields_:
+        part = _load_report_cluster_data(workspace_id, source_field, pain_data)
+        if part is None:
+            continue
+        if merged is None:
+            merged = dict(part)
+            merged["source_fields"] = [source_field]
+            continue
+        merged["topics"] = list(merged["topics"]) + list(part["topics"])
+        merged["assignments"] = list(merged["assignments"]) + list(part["assignments"])
+        merged["topic_rows"] = list(merged["topic_rows"]) + list(part["topic_rows"])
+        merged["source_fields"].append(source_field)
+    return merged
 
 
 def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
