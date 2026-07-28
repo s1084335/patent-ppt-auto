@@ -27,6 +27,7 @@ from tempfile import TemporaryDirectory
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from backend.app.worker.ai_narrative_runner import CliResult  # noqa: E402
 from tests.ai_payload_test_helpers import read_payload_from_argv  # noqa: E402
 
 
@@ -43,9 +44,15 @@ class ReportPptPayloadFileTests(unittest.TestCase):
             json.dumps(report_data, ensure_ascii=False), encoding="utf-8")
 
         def _fake_cli(argv, timeout):
+            # 回 CliResult（與真實 _subprocess_cli_runner 同契約）；回純字串會在
+            # parse_cli_result 炸 AttributeError，測不到本檔要鎖的 argv／payload 行為。
             captured["argv"] = list(argv)
             slots = {key: f"{key} 的文案" for key in r.report_slot_keys()}
-            return json.dumps({"result": json.dumps({"slots": slots}, ensure_ascii=False)})
+            return CliResult(
+                exit_code=0,
+                stdout=json.dumps(
+                    {"result": json.dumps({"slots": slots}, ensure_ascii=False)}),
+                stderr="")
 
         return r.run_report_ppt(
             based_on_version=run_dir.name,

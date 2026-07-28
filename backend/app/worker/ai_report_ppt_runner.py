@@ -19,8 +19,13 @@
   不碰數字**；build_ppt.py deterministic 把「已確認文案 + 引擎 report_data 數據 + 圖」組成
   .pptx。全庫也能產 PPT（build_ppt 對全庫不設限，只市場章節第 7/9/10 頁在全庫空著）。
 
-⚠ 安全來自任務設計（沿市場摘要／文獻備註線）：報表數據由 report_data.json 摘要後內嵌 prompt，
-  CLI 不需 Read 檔案、不需連網——CLI 白名單為空（`_PPT_TAIL_ARGS`）。
+⚠ 資料走檔案不走命令列（2026-07-28，沿 topic_label／patent_note／irrelevant_filter／
+  company_zh_name 已搬好的同一套）：報表數據寫成 payload JSON，命令列只帶「短指示＋路徑」，
+  CLI 以 Read 讀檔。改的兩個理由見 `load_report_data()` 與 `build_report_ppt_payload()`
+  的說明——命令列長度上限與**原本 20K 截斷丟掉 9 成報表數據**。
+  白名單因此從「空」放寬到**只有 Read**（共用核心 `pf.READ_ONLY_TOOLS`），
+  安全性仍由任務設計保證：CLI 只讀我們寫的那一個 JSON、不連網、不寫檔
+  （approvals.json 由 runner 自己寫，不交給 CLI）。
 
 設計沿用 ai_market_summary_runner：CLI 呼叫、build_ppt、upload、resolve 皆可注入，測試餵 fake，
 不跑二進位、不燒 token、不真碰 DB／檔案系統。
@@ -45,18 +50,17 @@ from .ai_narrative_runner import (
     parse_cli_result,
     resolve_run_dir as _default_resolve_run_dir,
 )
+from . import ai_payload_file as pf
 from .ai_payload_file import extract_json_payload
 
 
 # 報告 PPT 流程版本；隨 prompt 契約／版型升版而變，寫進結果供追溯。
 PROMPT_VERSION = "report_ppt_v1"
 
-# 🔴 最小權限：報表數據內嵌 prompt，CLI 不需讀檔、不寫檔、不上網。
-# 明確不加 WebSearch／WebFetch／Read／Glob／Grep／Write（沿市場摘要線的空白名單設計）。
+# 🔴 最小權限（**舊路徑專用**）：報表數據內嵌 prompt 時 CLI 不需任何工具。
+# 主路徑自 2026-07-28 起改走資料檔，白名單由共用核心給 Read（見模組頂部說明）；
+# 本常數只服務保留下來的 build_cli_command／build_prompt（離線除錯與既有測試）。
 _PPT_TAIL_ARGS = ["--output-format", "json", "--allowedTools", ""]
-
-# 報表數據內嵌 prompt 的字數上限：避免超長 report_data.json 撐爆 context。
-DEFAULT_REPORT_DATA_CHAR_LIMIT = 20_000
 
 
 class ReportPptRunnerError(RuntimeError):
@@ -140,9 +144,11 @@ def build_cli_command(cli_kind: str, prompt: str, *, model: str | None = None) -
 def build_prompt(report_data_text: str, slot_keys: list[str]) -> str:
     """組報告 PPT 文案任務提示：報表數據內嵌，AI 只產文案 slots。
 
+    ⚠ 2026-07-28 起**不再是主路徑**：報表數據改走 `build_report_ppt_payload` 落檔
+    （命令列長度不隨資料成長、且不必截斷）。本函式保留供既有測試與離線除錯使用。
+
     ⚠ 分工紅線在此明寫：AI 只產各槽的敘述文案、**不碰排版、不碰數字**；排版由
       deterministic 的 build_ppt.py 組，數字一律取自引擎 report_data，AI 不推算不捏造。
-    ⚠ 安全來自任務設計：報表數據直接內嵌下方，CLI 不需讀檔／連網（白名單為空）。
     """
     slots_block = "\n".join(f"- {key}" for key in slot_keys)
     return (
@@ -167,16 +173,86 @@ def build_prompt(report_data_text: str, slot_keys: list[str]) -> str:
     )
 
 
-def summarize_report_data(report_dir: Path, *, char_limit: int = DEFAULT_REPORT_DATA_CHAR_LIMIT) -> str:
-    """把報表版本目錄的 report_data.json 讀成內嵌 prompt 的文字（截斷避免撐爆 context）。
+def load_report_data(report_dir: Path) -> Any:
+    """讀報表版本目錄的 report_data.json，**全量**回傳解析後的結構（不截斷）。
 
-    只讀既有產物、不改寫；缺檔時回明確缺漏說明，讓 AI 知道數據不足而非硬掰。
+    ⚠ 2026-07-28 取代 summarize_report_data 的截斷版（使用者定案「完整資料進檔案」）。
+    原本 `text[:20_000]`，而實測 `report_data.json` 有 279,593 字元——
+    **AI 只看得到 7%，且截點落在 JSON 中間是破碎片段**，模型連解析都解不開，
+    等於拿殘缺數據寫文案卻毫無錯誤訊號（本專案反覆踩過的靜默失敗）。
+
+    回傳解析後的物件而非原字串，讓資料以結構化形式進 payload：
+    落檔時重新序列化會去掉原檔 indent-2 的縮排空白，187,151 字元即全部內容
+    （原檔 279,593 字元有三分之一是排版空白），不丟任何一個數字。
+
+    只讀既有產物、不改寫；缺檔或內容非法 JSON 時回明確缺漏說明字串，
+    讓 AI 知道數據不足而非硬掰（不 raise，缺市場數據的頁本來就允許空著）。
     """
     path = report_dir / "report_data.json"
     if not path.exists():
         return "（無 report_data.json，報表數據不足）"
     text = path.read_text(encoding="utf-8")
-    return text[:char_limit]
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # 檔在但內容壞掉：原樣給 CLI（仍不截斷），由它自行判斷可用範圍。
+        return text
+
+
+# 分工鐵律與輸出契約（2026-07-28 由命令列 prompt 搬進資料檔）。
+# 內容與原 build_prompt 逐條等價，只是改成結構化欄位由 CLI 讀檔取得。
+_PPT_RULES = [
+    "你**只產文案**（各確認槽的敘述／解讀文字）。**不碰排版、不碰版型、不排版面**——"
+    "PPTX 由確定性程式（build_ppt.py）依固定版型組出，你的文案只是填進既有版型的內容。",
+    "**不捏造數字**：所有數字一律以 report_data 為準；report_data 沒有的數字不得"
+    "自行推算或編造，寧可寫質性描述。**不碰數字的正確性**＝不改寫、不四捨五入到失真、"
+    "不無中生有。",
+    "一律繁體中文；每個槽一段精煉文案，附數字依據（若該槽有對應數據）。",
+]
+
+_PPT_OUTPUT_CONTRACT = {
+    "shape": '{"slots": {"cover.title": "...", "trend.narrative": "...", ...}}',
+    "rules": [
+        "key 必須是 slot_keys 列出的槽名（原字不變），不得新增或改寫槽名",
+        "value 為該槽的繁體中文文案",
+        "查無對應數據的槽可留空字串或省略（該頁組版時會標「待確認」浮水印，不擋產出）",
+        "只輸出一個 JSON 物件，不要多餘說明文字",
+    ],
+}
+
+
+def build_report_ppt_payload(report_data: Any, slot_keys: list[str]) -> dict[str, Any]:
+    """組資料檔內容（取代把報表數據截斷後串進命令列）。
+
+    ⚠ 為什麼改（2026-07-28，規格 export-report-flow-spec.md 5-5）：
+    原本 build_prompt 把 report_data 截到 20K 再整段塞進 argv，一次踩兩個坑——
+    1. **命令列長度**：實測 report_data 50KB → argv 51,775 字元、200KB → 205,375，
+       Windows CreateProcess 上限 32,767，必爆 WinError 206（訊息「檔名或副檔名太長」
+       與真因完全對不上，每次都要重查一輪）。改後 argv 固定約 200 字元、不隨資料成長。
+    2. **靜默丟資料**：20K 截斷 vs 實際 279,593 字元＝AI 只看到 7%。走檔案後全量給，
+       不需要任何截斷。
+
+    ⚠ **全量單批、不分批**（2026-07-28 決定，依據見下）：
+    共用核心的 MAX_PAYLOAD_CHARS=150,000 是為 topic_label 那類「逐項目」任務訂的，
+    其理由（輸出上限、注意力分散、失敗隔離）在本任務都不成立：
+    - **輸出上限**：本任務只回 10 個短槽的文案，離單次 128,000 tokens 上限極遠。
+    - **品質**：報表數據落在 187,151 字元（compact），Opus 5 的 1,000,000 token
+      context 綽綽有餘；且各頁文案本來就要跨報表交叉判讀（例如技術分布頁同時要
+      cluster 與 IPC 資料），**切開反而讓模型看不到全貌**，品質更差。
+    - **失敗隔離**：單次呼叫本來就是全有全無，分批只是多幾次往返。
+    故本任務給全量單批；這不是回頭截斷（一個數字都沒少），是不強套不適用的分批。
+    """
+    return {
+        "task": "為專利分析報告 PPT 產出各頁的敘述文案草稿（系統派工、非互動、一次性）",
+        "instruction": (
+            "依 report_data 為每一個 slot_keys 列出的確認槽產一段繁體中文文案；"
+            "只產文案，不碰排版、不碰數字。"
+        ),
+        "rules": list(_PPT_RULES),
+        "slot_keys": list(slot_keys),
+        "report_data": report_data,
+        "output_contract": _PPT_OUTPUT_CONTRACT,
+    }
 
 
 def _extract_slots(parsed: dict[str, Any]) -> dict[str, str]:
@@ -250,6 +326,7 @@ def run_report_ppt(
     upload_run_dir: Callable[[Path], int] | None = None,
     timeout_seconds: float = DEFAULT_CLI_TIMEOUT_SECONDS,
     progress: Callable[[str, int], None] | None = None,
+    payload_root: Any = None,
 ) -> dict[str, Any]:
     """整條報告 PPT 流程：解析報表目錄 → AI 產文案 slots → 寫 approvals.json →
     呼 build_ppt.py 組 .pptx（進 report_dir）→ upload_run_dir 一起上傳到 report_artifacts。
@@ -258,8 +335,8 @@ def run_report_ppt(
       由 build_ppt 自動標「待確認」浮水印，不擋整檔產出。
     ⚠ 分工：AI 只產 slots 文案（不碰排版／數字）；組版一律 deterministic build_ppt。
 
-    cli_runner／resolve_run_dir／build_ppt／upload_run_dir 皆可注入，供測試以 fake 取代，
-    不跑二進位／不燒 token／不真碰 DB。每階段回報進度（0→100），不留無限 spinner。
+    cli_runner／resolve_run_dir／build_ppt／upload_run_dir／payload_root 皆可注入，供測試以
+    fake 取代，不跑二進位／不燒 token／不真碰 DB。每階段回報進度（0→100），不留無限 spinner。
     回傳含 pptx_filename（進 artifact 的檔名）供前端下載路由組 URL。
     """
     resolver = resolve_run_dir if resolve_run_dir is not None else _default_resolve_run_dir
@@ -269,6 +346,7 @@ def run_report_ppt(
     if uploader is None:
         from backend.app.db.report_artifact_store import upload_run_dir as _upload
         uploader = _upload
+    pf.cleanup_old_payloads(root=payload_root)
 
     if progress is not None:
         progress("解析報表版本目錄", 10)
@@ -278,9 +356,20 @@ def run_report_ppt(
     if progress is not None:
         progress("AI 產生報告文案草稿", 35)
     slot_keys = report_slot_keys()
-    report_data_text = summarize_report_data(run_dir)
-    prompt = build_prompt(report_data_text, slot_keys)
-    argv = build_cli_command(cli_kind, prompt, model=model)
+    # 資料走檔案、命令列只留 instruction 與路徑（見 build_report_ppt_payload 的說明）：
+    # 全量報表數據進 payload，不截斷、不隨資料量撐大 argv。
+    payload_path = pf.write_payload_file(
+        "report_ppt",
+        build_report_ppt_payload(load_report_data(run_dir), slot_keys),
+        root=payload_root,
+        label=version,
+    )
+    argv = pf.build_cli_command_with_payload(
+        cli_kind,
+        instruction="任務：為專利分析報告 PPT 產出各頁敘述文案（系統派工、非互動、一次性）。",
+        payload_path=payload_path,
+        model=model,
+    )
     parsed = parse_cli_result(runner(argv, timeout_seconds))
     slots = _extract_slots(parsed)
 

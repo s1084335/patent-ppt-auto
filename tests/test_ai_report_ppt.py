@@ -28,6 +28,7 @@ from backend.app.worker import ai_report_ppt_runner as runner_mod
 from backend.app.worker import runner as worker_runner
 from backend.app.worker.ai_narrative_runner import CliResult
 from backend.app.worker.queue_client import ProcessingJob
+from tests.ai_payload_test_helpers import read_payload_from_argv
 
 
 # ── 測試替身 ───────────────────────────────────────────────────────
@@ -137,7 +138,10 @@ class RunnerWorkSeparationTests(unittest.TestCase):
 
     def _run(self, *, cli, based_on_version=None, resolve_dir=None,
              build_calls=None, uploaded=None, slots_written=None):
-        """跑 runner，build_ppt／upload／resolve 全替身，回傳 result。"""
+        """跑 runner，build_ppt／upload／resolve 全替身，回傳 result。
+
+        payload_root 指到報表目錄底下，避免測試把資料檔寫進專案的 var/ai_payloads。
+        """
 
         def _fake_resolve(bov, *, root=None):
             return resolve_dir
@@ -169,6 +173,7 @@ class RunnerWorkSeparationTests(unittest.TestCase):
             resolve_run_dir=_fake_resolve,
             build_ppt=_fake_build_ppt,
             upload_run_dir=_fake_upload,
+            payload_root=resolve_dir.parent / "payloads",
         )
 
     def test_ai_produces_slots_written_to_approvals(self):
@@ -209,24 +214,33 @@ class RunnerWorkSeparationTests(unittest.TestCase):
             self.assertIn(run_dir.name + ".pptx", uploaded)
             self.assertEqual(result["pptx_filename"], run_dir.name + ".pptx")
 
-    def test_prompt_asks_only_for_text_slots(self):
-        """AI 只被要求產文案 slots——prompt 明寫不碰排版、不碰數字。"""
+    def test_payload_asks_only_for_text_slots(self):
+        """AI 只被要求產文案 slots——資料檔明寫不碰排版、不碰數字。
+
+        ⚠ 2026-07-28 由查 prompt 改查資料檔：分工鐵律隨報表數據一起搬進 payload，
+        argv 只剩「短指示＋路徑」。鎖的行為不變（AI 必須被明確告知不碰排版／數字），
+        只是換到它現在真正所在的位置——查 argv 會變成永遠通不過的假紅線。
+        """
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = _make_report_dir(tmp)
             cli = RecordingCli()
             self._run(cli=cli, resolve_dir=run_dir, build_calls=[], uploaded=[])
-            prompt = cli.prompts[0]
-            # slots 鍵至少出現（引導 AI 產這些槽）。
-            self.assertIn("cover.title", prompt)
-            # 明寫排版由程式處理、AI 不碰數字。
-            self.assertTrue(any(k in prompt for k in ("排版", "組版", "不改", "不捏造", "不碰")),
-                            "prompt 未表達 AI 不碰排版/數字的分工")
+            payload = read_payload_from_argv(cli.calls[0])
+            self.assertTrue(payload, "argv 內找不到資料檔")
+            # 分工鐵律必須在 rules 欄（結構化位置），不是散落在任意文字裡。
+            rules_text = json.dumps(payload.get("rules"), ensure_ascii=False)
+            self.assertTrue(
+                any(k in rules_text for k in ("排版", "組版", "不捏造", "不碰")),
+                f"資料檔 rules 未表達 AI 不碰排版/數字的分工：{rules_text[:200]}")
 
     def test_slot_keys_come_from_build_ppt_not_hardcoded(self):
         """slot 命名一律取自 build_ppt.py 的 all_slot_keys()，不在 runner 另定一套。
 
-        沿用既有 PAGE_LAYOUT 定義（唯一來源）：prompt 列的 slot 必須與 build_ppt 一致，
+        沿用既有 PAGE_LAYOUT 定義（唯一來源）：資料檔 slot_keys 必須與 build_ppt 一致，
         避免 runner 產的槽名與組版程式讀的槽名對不上。
+
+        ⚠ 比對整份 slot_keys 清單相等（不是「有包含」）：多一個或少一個槽都要抓到，
+        才擋得住 runner 日後偷加自定槽名。
         """
         expected = runner_mod.report_slot_keys()
         # 至少包含 spec 第二節列的代表性槽（來自 build_ppt PAGE_LAYOUT）。
@@ -236,25 +250,55 @@ class RunnerWorkSeparationTests(unittest.TestCase):
             run_dir = _make_report_dir(tmp)
             cli = RecordingCli()
             self._run(cli=cli, resolve_dir=run_dir, build_calls=[], uploaded=[])
-            prompt = cli.prompts[0]
-            for slot in expected:
-                self.assertIn(slot, prompt, f"prompt 未列出 build_ppt 定義的槽 {slot}")
+            payload = read_payload_from_argv(cli.calls[0])
+            self.assertEqual(
+                payload.get("slot_keys"), expected,
+                "資料檔 slot_keys 必須與 build_ppt.all_slot_keys() 完全一致")
 
 
 # ── CLI 白名單：不開網路、不寫檔（安全來自任務設計） ─────────────
 
 
 class CliWhitelistTests(unittest.TestCase):
-    """報告 PPT 文案 CLI 白名單為空——報表數據內嵌 prompt，不需讀檔/連網。"""
+    """報告 PPT 文案 CLI 維持最小權限：主路徑只放行 Read（讀那一個資料檔），不連網、不寫檔。"""
 
-    def test_cli_command_opens_no_network_no_write(self):
-        """build_cli_command 產的 argv 不含 WebSearch/WebFetch/Read/Glob/Grep/Write。"""
+    def test_legacy_inline_command_opens_no_tools(self):
+        """保留的內嵌路徑（離線除錯用）白名單仍為空——資料內嵌就不需要任何工具。"""
         argv = runner_mod.build_cli_command("claude", "prompt-body")
         joined = " ".join(argv)
         for banned in ("WebSearch", "WebFetch", "Read", "Glob", "Grep", "Write"):
             self.assertNotIn(banned, joined)
         self.assertIn("--allowedTools", argv)
         self.assertEqual(argv[argv.index("--allowedTools") + 1], "")
+
+    def test_runner_grants_read_only(self):
+        """🔴 主路徑（實際跑的那條）：只放行 Read，不得出現 Write／Bash／連網工具。
+
+        走資料檔後 CLI 必須讀得到檔，故白名單從空放寬到 Read——這是最小必要放寬。
+        以實跑攔 argv 驗證，不查程式碼字串（避免被註解餵飽的假性通過）。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _make_report_dir(tmp)
+            cli = RecordingCli()
+
+            def _fake_resolve(bov, *, root=None):
+                return run_dir
+
+            def _fake_build_ppt(*, report_dir, approvals_path, output_dir, theme_path=None):
+                pptx = Path(output_dir) / (run_dir.name + ".pptx")
+                pptx.write_bytes(b"PK")
+                return {"pptx_path": str(pptx), "manifest_path": "", "manifest": {}}
+
+            runner_mod.run_report_ppt(
+                based_on_version=None, cli_runner=cli, resolve_run_dir=_fake_resolve,
+                build_ppt=_fake_build_ppt, upload_run_dir=lambda rd: 1,
+                payload_root=Path(tmp) / "payloads")
+        argv = cli.calls[0]
+        self.assertIn("--allowedTools", argv)
+        tools = argv[argv.index("--allowedTools") + 1]
+        self.assertEqual(tools, "Read", "主路徑白名單應恰為 Read")
+        for banned in ("WebSearch", "WebFetch", "Write", "Bash", "Glob", "Grep"):
+            self.assertNotIn(banned, tools)
 
 
 # ── 全庫也能產 PPT（build_ppt 對全庫不設限） ───────────────────────
@@ -284,7 +328,7 @@ class GlobalWorkspaceAllowedTests(unittest.TestCase):
             result = runner_mod.run_report_ppt(
                 based_on_version=None, workspace_id=99, cli_runner=cli,
                 resolve_run_dir=_fake_resolve, build_ppt=_fake_build_ppt,
-                upload_run_dir=_fake_upload)
+                upload_run_dir=_fake_upload, payload_root=Path(tmp) / "payloads")
             self.assertEqual(result["pptx_filename"], run_dir.name + ".pptx")
 
 
@@ -312,6 +356,7 @@ class ProgressTests(unittest.TestCase):
                 based_on_version=None, cli_runner=RecordingCli(),
                 resolve_run_dir=_fake_resolve, build_ppt=_fake_build_ppt,
                 upload_run_dir=lambda rd: 1,
+                payload_root=Path(tmp) / "payloads",
                 progress=lambda stage, percent: seen.append((stage, percent)))
             self.assertTrue(seen)
             percents = [p for _, p in seen]
