@@ -59,7 +59,7 @@ class AssigneeUsesSharedAliasTests(unittest.TestCase):
     def test_assignee_coalesce_order(self):
         """順位與另兩欄一致：代碼對照 > 別稱對照 > 原始字面。"""
         idx_code = REFRESH_SQL.find("assignee_code_names")
-        idx_alias = REFRESH_SQL.find('assignee_alias."公司名稱"')
+        idx_alias = REFRESH_SQL.find('assignee_alias.display_name')
         self.assertGreater(idx_code, 0)
         self.assertGreater(idx_alias, 0)
         line_start = REFRESH_SQL.rfind("COALESCE(", 0, REFRESH_SQL.find(
@@ -67,7 +67,7 @@ class AssigneeUsesSharedAliasTests(unittest.TestCase):
         line = REFRESH_SQL[line_start:REFRESH_SQL.find(
             "AS recent_assignee_display_name")]
         self.assertLess(
-            line.find("acan_assignee"), line.find('assignee_alias."公司名稱"'),
+            line.find("acan_assignee"), line.find('assignee_alias.display_name'),
             "代碼對照必須排在別稱對照之前——代碼是使用者的裁決依據，優先級最高")
 
     def test_only_confirmed_aliases_used(self):

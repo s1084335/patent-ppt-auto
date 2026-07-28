@@ -307,7 +307,6 @@ def group_aliases_by_code(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         zh = str(row.get("公司中文名稱") or "").strip()
         en = str(row.get("正規化名稱") or "").strip()
-        legacy = str(row.get("公司名稱") or "").strip()
         entry = grouped.setdefault(
             code,
             {
@@ -315,19 +314,20 @@ def group_aliases_by_code(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "is_temp": is_temp_code(code),
                 "zh_name": zh,
                 "normalized_name": en,
-                # 顯示名：與報表同一順位（中文 → 英文正式名 → 舊欄）。
-                "company_name": zh or en or legacy,
+                # 顯示名：與報表同一順位（中文 → 英文正式名）。
+                # 第三段「原值」屬專利原始欄位，不在對照表這層。
+                "company_name": zh or en,
                 "variants": [],
             },
         )
         # 同組各列的正式名理應一致；先出現的有值就留著，避免被後續空值蓋掉。
         entry["zh_name"] = entry["zh_name"] or zh
         entry["normalized_name"] = entry["normalized_name"] or en
-        entry["company_name"] = entry["company_name"] or zh or en or legacy
+        entry["company_name"] = entry["company_name"] or zh or en
         alias = str(row.get("別稱") or "").strip()
         if not alias:
             continue
-        official = {n.casefold() for n in (zh, en, legacy) if n}
+        official = {n.casefold() for n in (zh, en) if n}
         entry["variants"].append({
             "id": row.get("id"),
             "alias": alias,
@@ -476,7 +476,7 @@ def list_existing_company_codes() -> dict[str, Any]:
         rows = conn.execute(
             # id 一併帶出：變體維護（移除單一變體）要能精確指到哪一列。
             '''
-            SELECT id, "申請人代碼", "公司中文名稱", "正規化名稱", "公司名稱", "別稱"
+            SELECT id, "申請人代碼", "公司中文名稱", "正規化名稱", "別稱"
             FROM derived_layer.company_aliases
             WHERE review_status = 'confirmed'
               AND NULLIF(BTRIM("申請人代碼"), '') IS NOT NULL
@@ -507,12 +507,11 @@ def confirm_company_codes(body: ConfirmCodesRequest) -> dict[str, Any]:
 
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
         existing_rows = conn.execute(
-            # 顯示名順位同報表（中文 → 英文正式名 → 舊欄），衝突判斷才與畫面一致。
+            # 顯示名順位同報表（中文 → 英文正式名），衝突判斷才與畫面一致。
             '''
             SELECT DISTINCT "申請人代碼" AS code,
                    COALESCE(NULLIF(BTRIM("公司中文名稱"), ''),
-                            NULLIF(BTRIM("正規化名稱"), ''),
-                            NULLIF(BTRIM("公司名稱"), '')) AS name
+                            NULLIF(BTRIM("正規化名稱"), '')) AS name
             FROM derived_layer.company_aliases
             WHERE review_status = 'confirmed'
               AND NULLIF(BTRIM("申請人代碼"), '') IS NOT NULL
@@ -571,7 +570,7 @@ def remove_company_variant(alias_id: int) -> dict[str, Any]:
     """
     with _connect_dict_rows() as conn:
         row = conn.execute(
-            'SELECT "申請人代碼", "別稱", "公司中文名稱", "正規化名稱", "公司名稱" '
+            'SELECT "申請人代碼", "別稱", "公司中文名稱", "正規化名稱" '
             "FROM derived_layer.company_aliases WHERE id = %s",
             (alias_id,),
         ).fetchone()
@@ -580,7 +579,7 @@ def remove_company_variant(alias_id: int) -> dict[str, Any]:
         alias = str(row.get("別稱") or "").strip().casefold()
         official = {
             str(row.get(k) or "").strip().casefold()
-            for k in ("公司中文名稱", "正規化名稱", "公司名稱")
+            for k in ("公司中文名稱", "正規化名稱")
         }
         official.discard("")
         if alias in official:

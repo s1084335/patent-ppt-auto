@@ -25,7 +25,7 @@
 ## 資料模型：不需 migration
 
 既有 `company_aliases` 正好承載：一列一個「別稱」，同組共用
-`(申請人代碼, 公司名稱)`。UNIQUE(申請人代碼, 公司名稱, 別稱) 天然防重複。
+`(申請人代碼, 名稱)`。partial unique (申請人代碼, alias_lookup_key) 防重複。
 `A | B` 這類多權利人拆成各自的變體列，是否同組由使用者填相同代碼決定。
 """
 from __future__ import annotations
@@ -75,9 +75,9 @@ class ExistingCodesTests(unittest.TestCase):
         from backend.app.api import company_aliases as api
 
         rows = [
-            {"申請人代碼": "UN226597", "公司名稱": "南通鐵匠", "別稱": "NANTONG A"},
-            {"申請人代碼": "UN226597", "公司名稱": "南通鐵匠", "別稱": "NANTONG B"},
-            {"申請人代碼": "X1", "公司名稱": "甲", "別稱": "A CORP"},
+            {"申請人代碼": "UN226597", "公司中文名稱": "南通鐵匠", "別稱": "NANTONG A"},
+            {"申請人代碼": "UN226597", "公司中文名稱": "南通鐵匠", "別稱": "NANTONG B"},
+            {"申請人代碼": "X1", "公司中文名稱": "甲", "別稱": "A CORP"},
         ]
         grouped = api.group_aliases_by_code(rows)
         self.assertEqual(len(grouped), 2)

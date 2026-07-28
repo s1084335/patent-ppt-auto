@@ -11,7 +11,10 @@ from openpyxl import load_workbook
 
 from backend.app.transforms.text import clean_text
 
-REQUIRED_COLUMNS = ("申請人代碼", "公司名稱", "別稱")
+# 對照檔（xlsx/csv）表頭，2026-07-28 起與 DB 四欄一致（使用者：「對照檔也改四欄」）。
+# ⚠ 順序即使用者指定的順序，不得調換；中文名與英文正式名分兩格填，
+# 匯入不再以字元類別猜哪個是中文（混合字串會判錯且無人覆核）。
+REQUIRED_COLUMNS = ("申請人代碼", "公司中文名稱", "正規化名稱", "別稱")
 
 # CJK 範圍：只服務 `canonical` 舊單欄輸入的相容判斷（見 resolve_group_names）。
 # 新流程由使用者在前端分兩格填中文／英文，不靠字元類別猜。
@@ -67,7 +70,7 @@ def normalize_alias_rows(records: Any, with_dropped: bool = False):
     ——即 (申請人代碼, normalize_lookup("別稱"))（後者為 lower + 壓空白）。
     2026-07-23 定案「代碼是公司收斂的依據」後唯一性下放到代碼層級：
     同一別稱字面可分屬不同代碼，只有「同代碼同別稱」才算重複。
-    舊版用 (代碼, 公司名稱, 別稱) 三元組，抓不到只差大小寫／空白的變體，
+    舊版用 (代碼, 舊單一名稱欄, 別稱) 三元組，抓不到只差大小寫／空白的變體，
     整批 executemany 會撞 UniqueViolation 導致全交易 rollback。
 
     同 key 多筆時保留**來源檔第一筆**：來源順序穩定可重現，不需臆測哪個字面
@@ -79,9 +82,13 @@ def normalize_alias_rows(records: Any, with_dropped: bool = False):
     seen: dict[tuple[str, str], dict[str, str]] = {}
     for record in records:
         company_code = clean_text(record.get("申請人代碼"))
-        company_name = clean_text(record.get("公司名稱"))
+        zh_name = clean_text(record.get("公司中文名稱"))
+        normalized_name = clean_text(record.get("正規化名稱"))
         alias_name = clean_text(record.get("別稱"))
-        if not company_name or not alias_name:
+        # 兩個名稱欄各自可空，但**至少要有一個**——兩欄皆空的列沒有任何顯示名，
+        # 寫進去只會讓顯示端 COALESCE 落空（0040 第②點刻意不加 CHECK 約束，
+        # 由此處把關）。
+        if not (zh_name or normalized_name) or not alias_name:
             continue
         key = (company_code or "", normalize_lookup(alias_name))
         if key in seen:
@@ -90,7 +97,8 @@ def normalize_alias_rows(records: Any, with_dropped: bool = False):
                 {
                     "lookup_key": key[1],
                     "company_code": company_code,
-                    "company_name": company_name,
+                    # 警告訊息用的顯示名：中文優先、沒中文才英文（與顯示端同順位）。
+                    "company_name": zh_name or normalized_name,
                     "alias_name": alias_name,
                     "kept_company_code": kept["company_code"],
                     "kept_alias_name": kept["alias_name"],
@@ -99,7 +107,8 @@ def normalize_alias_rows(records: Any, with_dropped: bool = False):
             continue
         row = {
             "company_code": company_code,
-            "company_name": company_name,
+            "zh_name": zh_name or None,
+            "normalized_name": normalized_name or None,
             "alias_name": alias_name,
         }
         seen[key] = row
@@ -139,16 +148,18 @@ def import_company_aliases(
             cur.executemany(
                 """
                 INSERT INTO derived_layer.company_aliases (
-                    "申請人代碼", "公司名稱", "別稱", source_file
+                    "申請人代碼", "公司中文名稱", "正規化名稱", "別稱", source_file
                 )
                 VALUES (
-                    %(company_code)s, %(company_name)s, %(alias_name)s, %(source_file)s
+                    %(company_code)s, %(zh_name)s, %(normalized_name)s,
+                    %(alias_name)s, %(source_file)s
                 )
                 -- 衝突目標＝ux_company_aliases_code_lookup_confirmed（同代碼同別稱）。
-                -- 重跑同一檔時更新公司名與來源，維持 idempotent。
+                -- 重跑同一檔時更新兩個名稱欄與來源，維持 idempotent。
                 ON CONFLICT ("申請人代碼", alias_lookup_key) WHERE review_status = 'confirmed' DO UPDATE
                 SET
-                    "公司名稱" = EXCLUDED."公司名稱",
+                    "公司中文名稱" = EXCLUDED."公司中文名稱",
+                    "正規化名稱" = EXCLUDED."正規化名稱",
                     "別稱" = EXCLUDED."別稱",
                     source_file = EXCLUDED.source_file,
                     imported_at = now()
@@ -173,9 +184,10 @@ def govern_company_names(
     """名稱治理管線核心：變體註冊＋待中文化偵測，匯入與 sweep 共用同一套邏輯。
 
     輸入 (code, name) 集合（2026-07-21 定案「單一名稱治理管線」）：
-    - code 在 company_aliases 對到唯一「公司名稱」→ 新變體補一列別稱，公司名稱沿用既有值；
+    - code 在 company_aliases 對到唯一名稱組（中文名＋英文正式名）→ 新變體補一列別稱，
+      兩個名稱欄沿用既有值；
       既有別稱（normalize 後相同）跳過。
-    - code 不在表中（unknown_code）或對到多個公司名稱（conflicting_code）→ 進 manual_review，
+    - code 不在表中（unknown_code）或對到多組名稱（conflicting_code）→ 進 manual_review，
       不自行合併、不寫表。
     - needs_zh_name：本批涉及且已在對照表的 code 中，canonical 顯示名不含 CJK 字元
       （尚無市場慣用中文名）且未經 curation 裁決者——該代碼不存在
@@ -194,15 +206,27 @@ def govern_company_names(
     manual: list[dict[str, str]] = []
     needs_zh: list[dict[str, str]] = []
     with psycopg.connect(**(connect_kwargs or get_connection_kwargs())) as conn:
+        # 2026-07-28 四欄定案：只讀 `公司中文名稱`／`正規化名稱`
+        # （拆欄前的單一名稱欄已於 0041 移除，不再有 fallback）。
         rows = conn.execute(
-            'SELECT "申請人代碼", "公司名稱", "別稱" FROM derived_layer.company_aliases '
+            'SELECT "申請人代碼", "公司中文名稱", "正規化名稱", "別稱" '
+            "FROM derived_layer.company_aliases "
             'WHERE "申請人代碼" IS NOT NULL'
         ).fetchall()
-        # code → 既有公司名稱集合／normalize 後別稱集合
-        names_by_code: dict[str, set[str]] = {}
+        # code → 既有 (中文名, 英文正式名) 集合／normalize 後別稱集合
+        # ⚠ 以「(中文, 英文) 這一組」為單位判重，不是各欄獨立比對——只比其中一欄
+        # 會把「中文相同、英文不同」的兩組當成同一組而靜默合併。
+        names_by_code: dict[str, set[tuple[str, str]]] = {}
         aliases_by_code: dict[str, set[str]] = {}
-        for code, name, alias in rows:
-            names_by_code.setdefault(code, set()).add(name)
+        for code, zh_name, normalized, alias in rows:
+            zh = clean_text(zh_name) or ""
+            en = clean_text(normalized) or ""
+            if zh or en:
+                names_by_code.setdefault(code, set()).add((zh, en))
+            else:
+                # 三欄全空的殘列不參與 canonical 判定，但也不讓該代碼變成
+                # unknown_code——先登記空集合，由下方 len 檢查處理。
+                names_by_code.setdefault(code, set())
             norm = normalize_lookup(alias)
             if norm:
                 aliases_by_code.setdefault(code, set()).add(norm)
@@ -221,33 +245,49 @@ def govern_company_names(
             if len(names) > 1:
                 manual.append({"company_code": code, "alias_name": variant, "reason": "conflicting_code"})
                 continue
+            if not names:
+                # 該代碼在表中有列，但兩個名稱欄都是空的（殘列）——沒有可沿用的
+                # canonical，寫進去會是「有代碼有別稱、沒有任何顯示名」的新殘列。
+                # 丟人工處理，不自行編名。⚠ 少了這條 `next(iter(names))` 會 StopIteration
+                # 直接中斷整批，而非只跳過這一筆。
+                manual.append({"company_code": code, "alias_name": variant, "reason": "no_canonical_name"})
+                continue
             norm_variant = normalize_lookup(variant)
             if norm_variant in aliases_by_code.get(code, set()):
                 skipped += 1
                 continue
-            canonical_name = next(iter(names))  # 唯一既有正規化公司名稱，直接沿用
+            canonical_zh, canonical_en = next(iter(names))  # 唯一既有名稱組，直接沿用
             conn.execute(
                 # ⚠ 衝突目標改為 partial unique index（2026-07-28，0040 拆四欄）：
-                # 舊三元組 UNIQUE (代碼, 公司名稱, 別稱) 已隨拆欄移除，這裡是全 repo
+                # 舊三元組 UNIQUE (代碼, 舊名稱欄, 別稱) 已隨拆欄移除，這裡是全 repo
                 # 唯一依賴它的寫入路徑。改用與 import_company_aliases／
                 # apply_confirmed_display_names 同一把 key，唯一性語意不變。
-                'INSERT INTO derived_layer.company_aliases ("申請人代碼", "公司名稱", "別稱", source_file) '
-                "VALUES (%s, %s, %s, %s) "
+                # ⚠ 名稱欄一併改寫四欄口徑：中文進 `公司中文名稱`、英文正式名進
+                # `正規化名稱`（0041 起表上只有這四欄）。
+                'INSERT INTO derived_layer.company_aliases '
+                '("申請人代碼", "公司中文名稱", "正規化名稱", "別稱", source_file) '
+                "VALUES (%s, %s, %s, %s, %s) "
                 'ON CONFLICT ("申請人代碼", alias_lookup_key) '
                 "WHERE review_status = 'confirmed' DO NOTHING",
-                (code, canonical_name, variant, source_label),
+                (code, canonical_zh or None, canonical_en or None, variant, source_label),
             )
             aliases_by_code.setdefault(code, set()).add(norm_variant)
             inserted += 1
 
-        # 待中文化偵測：只看本批涉及的 code；canonical 無 CJK（[一-鿿]）且該代碼
-        # 沒有任何 curation 裁決列（source_file LIKE 'display_name_curation%'）才浮現。
+        # 待中文化偵測：只看本批涉及的 code；尚無中文名且該代碼沒有任何 curation
+        # 裁決列（source_file LIKE 'display_name_curation%'）才浮現。
+        # ⚠ 2026-07-28 四欄定案：判準由「舊單一名稱欄不含 CJK」改為
+        # 「`公司中文名稱` 為空」。舊判準在拆欄後會失效——新列的舊名稱欄是
+        # NULL，而 `NULL !~ '...'` 在 PostgreSQL 得到 NULL（非 TRUE），
+        # WHERE 不成立 → 該代碼**永遠不會浮現待中文化**（靜默失效）。
+        # 待中文化的列必然沒有中文名，故顯示名直接取英文正式名。
         if batch_codes:
             zh_rows = conn.execute(
-                'SELECT DISTINCT ca."申請人代碼", ca."公司名稱" '
+                'SELECT DISTINCT ca."申請人代碼", '
+                '       COALESCE(NULLIF(BTRIM(ca."正規化名稱"), \'\'), \'\') '
                 "FROM derived_layer.company_aliases ca "
                 'WHERE ca."申請人代碼" = ANY(%s) '
-                "  AND ca.\"公司名稱\" !~ '[一-鿿]' "
+                '  AND NULLIF(BTRIM(COALESCE(ca."公司中文名稱", \'\')), \'\') IS NULL '
                 "  AND NOT EXISTS ("
                 "      SELECT 1 FROM derived_layer.company_aliases d "
                 '      WHERE d."申請人代碼" = ca."申請人代碼" AND d.source_file LIKE %s'
@@ -377,22 +417,20 @@ def apply_confirmed_display_names(
                 (alias, code),
             ).fetchone()
             if row:
-                # 舊 `公司名稱` 欄同步寫入（中文優先）：0040 之後它只是相容欄，
-                # 但既有查詢／匯出仍讀得到，留空會讓那些路徑突然變空白。
                 conn.execute(
                     'UPDATE derived_layer.company_aliases SET "公司中文名稱" = %s, '
-                    '"正規化名稱" = %s, "公司名稱" = %s, '
+                    '"正規化名稱" = %s, '
                     "source_file = %s, review_status = 'confirmed', source_type = 'manual', "
                     "updated_at = now() WHERE id = %s",
-                    (zh_name, en_name, zh_name or en_name, source_label, row[0]),
+                    (zh_name, en_name, source_label, row[0]),
                 )
                 updated += 1
             else:
                 conn.execute(
                     'INSERT INTO derived_layer.company_aliases ("申請人代碼", "公司中文名稱", '
-                    '"正規化名稱", "公司名稱", "別稱", source_file, source_type, review_status) '
-                    "VALUES (%s, %s, %s, %s, %s, %s, 'manual', 'confirmed')",
-                    (code, zh_name, en_name, zh_name or en_name, alias, source_label),
+                    '"正規化名稱", "別稱", source_file, source_type, review_status) '
+                    "VALUES (%s, %s, %s, %s, %s, 'manual', 'confirmed')",
+                    (code, zh_name, en_name, alias, source_label),
                 )
                 inserted += 1
         conn.commit()

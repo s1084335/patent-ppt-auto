@@ -46,33 +46,36 @@ class NormalizeAliasRowsTests(unittest.TestCase):
         """來源檔表頭為中文；輸出 key 為英文，供 SQL 具名參數使用。"""
         from backend.app.derived.company_alias_importer import normalize_alias_rows
         rows = normalize_alias_rows([
-            {"申請人代碼": "UN1", "公司名稱": "Alpha Corp", "別稱": "Alpha"},
-            {"申請人代碼": "UN1", "公司名稱": "Alpha Corp", "別稱": "ALPHA CORP"},
+            {"申請人代碼": "UN1", "正規化名稱": "Alpha Corp", "別稱": "Alpha"},
+            {"申請人代碼": "UN1", "正規化名稱": "Alpha Corp", "別稱": "ALPHA CORP"},
         ])
         self.assertEqual(len(rows), 2, "中文表頭應被正確讀取，不得整批濾光")
+        # 2026-07-28 四欄：輸出 key 隨對照檔拆成 zh_name／normalized_name 兩個。
         self.assertEqual(
-            set(rows[0]), {"company_code", "company_name", "alias_name"})
-        self.assertEqual(rows[0]["company_name"], "Alpha Corp")
+            set(rows[0]),
+            {"company_code", "zh_name", "normalized_name", "alias_name"})
+        self.assertEqual(rows[0]["normalized_name"], "Alpha Corp")
+        self.assertIsNone(rows[0]["zh_name"], "沒填中文欄就該是 None，不得回填英文名")
 
     def test_drops_rows_missing_required_values(self):
-        """公司名稱或別稱缺一即略過。"""
+        """兩個名稱欄都空、或別稱缺，即略過（2026-07-28 四欄）。"""
         from backend.app.derived.company_alias_importer import normalize_alias_rows
         rows = normalize_alias_rows([
-            {"申請人代碼": "UN1", "公司名稱": "Alpha Corp", "別稱": ""},
-            {"申請人代碼": "UN2", "公司名稱": "", "別稱": "Beta"},
-            {"申請人代碼": "UN3", "公司名稱": "Gamma", "別稱": "Gamma Inc"},
+            {"申請人代碼": "UN1", "正規化名稱": "Alpha Corp", "別稱": ""},
+            {"申請人代碼": "UN2", "正規化名稱": "", "別稱": "Beta"},
+            {"申請人代碼": "UN3", "正規化名稱": "Gamma", "別稱": "Gamma Inc"},
         ])
-        self.assertEqual([r["company_name"] for r in rows], ["Gamma"])
+        self.assertEqual([r["normalized_name"] for r in rows], ["Gamma"])
 
     def test_dedups_by_code_and_lookup_key_not_triple(self):
         """去重必須用 DB 唯一索引同一把 key（代碼＋normalize_lookup(別稱)），非三元組。
 
-        Red：舊實作以 (代碼, 公司名稱, 別稱) 三元組去重，大小寫變體會漏抓。
+        Red：舊實作以 (代碼, 名稱, 別稱) 三元組去重，大小寫變體會漏抓。
         """
         from backend.app.derived.company_alias_importer import normalize_alias_rows
         rows, dropped = normalize_alias_rows([
-            {"申請人代碼": "UN1", "公司名稱": "Koki Holdings", "別稱": "KOKI HOLDINGS CO LTD"},
-            {"申請人代碼": "UN1", "公司名稱": "Koki Holdings", "別稱": "Koki Holdings Co Ltd"},
+            {"申請人代碼": "UN1", "正規化名稱": "Koki Holdings", "別稱": "KOKI HOLDINGS CO LTD"},
+            {"申請人代碼": "UN1", "正規化名稱": "Koki Holdings", "別稱": "Koki Holdings Co Ltd"},
         ], with_dropped=True)
         self.assertEqual(len(rows), 1, "同代碼同 lookup key 只應留一筆")
         self.assertEqual(len(dropped), 1, "被丟棄的列必須回報，不得靜默丟棄")
@@ -83,8 +86,8 @@ class NormalizeAliasRowsTests(unittest.TestCase):
         """一別稱多公司：同字面別稱分屬不同代碼時兩列都要留（代碼收斂的直接後果）。"""
         from backend.app.derived.company_alias_importer import normalize_alias_rows
         rows, dropped = normalize_alias_rows([
-            {"申請人代碼": "UN1", "公司名稱": "Alpha Corp", "別稱": "Shared Name"},
-            {"申請人代碼": "UN2", "公司名稱": "Beta Corp", "別稱": "shared  name"},
+            {"申請人代碼": "UN1", "正規化名稱": "Alpha Corp", "別稱": "Shared Name"},
+            {"申請人代碼": "UN2", "正規化名稱": "Beta Corp", "別稱": "shared  name"},
         ], with_dropped=True)
         self.assertEqual(len(rows), 2, "不同代碼的同一別稱不得互相排擠")
         self.assertEqual(len(dropped), 0)
@@ -94,8 +97,8 @@ class NormalizeAliasRowsTests(unittest.TestCase):
         from backend.app.derived.company_alias_importer import normalize_alias_rows
         records = []
         for i in range(50):
-            records.append({"申請人代碼": f"C{i}", "公司名稱": f"Co{i}", "別稱": f"Widget {i} Ltd"})
-            records.append({"申請人代碼": f"C{i}", "公司名稱": f"Co{i}", "別稱": f"WIDGET  {i}  LTD"})
+            records.append({"申請人代碼": f"C{i}", "正規化名稱": f"Co{i}", "別稱": f"Widget {i} Ltd"})
+            records.append({"申請人代碼": f"C{i}", "正規化名稱": f"Co{i}", "別稱": f"WIDGET  {i}  LTD"})
         rows, dropped = normalize_alias_rows(records, with_dropped=True)
         self.assertEqual(len(rows), 50)
         self.assertEqual(len(dropped), 50)
@@ -143,7 +146,7 @@ class ImportCompanyAliasesTests(unittest.TestCase):
         import tempfile
         wb = Workbook()
         ws = wb.active
-        ws.append(["申請人代碼", "公司名稱", "別稱"])
+        ws.append(["申請人代碼", "公司中文名稱", "正規化名稱", "別稱"])
         for r in rows:
             ws.append(list(r))
         path = Path(tempfile.mkdtemp()) / "alias.xlsx"
