@@ -21,7 +21,11 @@
 set -euo pipefail
 
 IMAGE="patent-ppt:latest"
-BRANCH="${BRANCH:-fix/clustering-incremental-hash-2026-07-27}"
+# 預設 master（2026-07-28 起）。原本寫死開發分支 fix/clustering-incremental-hash-2026-07-27，
+# 該分支合併進 master 並刪除後，這裡沒同步改 → Lightning 上跑腳本得到
+# `fatal: couldn't find remote ref ...`，看起來像 git 壞掉，實際是預設值過期。
+# ⚠ 分支名寫死在部署腳本裡就會有這個問題；要部署別的分支請用 --branch 傳。
+BRANCH="${BRANCH:-master}"
 DO_PULL=1
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -70,7 +74,29 @@ echo
 # ── 2. pull ──
 if [ $DO_PULL -eq 1 ]; then
     echo "== 1/4 取得最新程式碼 =="
-    git fetch origin
+    # --prune：清掉遠端已刪分支的本機引用。少了它，被刪的分支在本機仍看得到，
+    # checkout 會「成功」但接著的 pull 才報 `couldn't find remote ref`，
+    # 錯誤訊息離真正原因很遠（2026-07-28 實機踩過）。
+    git fetch origin --prune
+
+    # 目標分支在遠端不存在時直接停，訊息講清楚怎麼辦——不要讓 checkout／pull
+    # 各自吐一段 git 原文，使用者得自己拼湊發生什麼事。
+    if ! git rev-parse --verify --quiet "origin/$BRANCH" >/dev/null; then
+        echo "  ✗ 遠端沒有分支 origin/$BRANCH"
+        echo "    可能它已合併進 master 並被刪除。改用：bash $0 --branch master"
+        echo "    遠端現有分支：$(git branch -r --format='%(refname:short)' | tr '\n' ' ')"
+        exit 1
+    fi
+
+    # 本機有未推的 commit 時先擋下，避免 checkout 走掉後找不到
+    ahead=$(git rev-list --count "origin/$(git rev-parse --abbrev-ref HEAD)..HEAD" 2>/dev/null || echo 0)
+    if [ "$ahead" -gt 0 ]; then
+        echo "  ✗ 目前分支有 $ahead 個未推送的 commit，先處理再部署："
+        git log --oneline "-$ahead"
+        echo "    要捨棄請自行 git reset --hard；本腳本不代為丟棄你的 commit。"
+        exit 1
+    fi
+
     git checkout "$BRANCH"
     git pull origin "$BRANCH"
     echo "  現在在：$(git log --oneline -1)"
