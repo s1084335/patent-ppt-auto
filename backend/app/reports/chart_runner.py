@@ -1392,6 +1392,38 @@ def _build_country_map_section(ctx: ChartContext) -> None:
     })
 
 
+def family_quality_note(quality_rows: list[dict[str, Any]]) -> str:
+    """家族資料可信度摘要——**只講有事的**，掛在卡片 note 上。
+
+    2026-07-28 使用者指出：「就算做成卡片，內容跟 json 一樣，那還是不會被看」。
+    原句把六個指標並列（實測 52 個家族只有 3 個不完整，其餘四項全為 0），
+    異常被一串 0 淹沒；把整包明細換個位置呈現也只是換地方繼續不被看。
+
+    改為：異常項才列出、附分母，讓使用者不必主動點就知道要不要理會；
+    完整明細仍留 family_quality.json（要追細節時才點）。
+    ⚠ 全部正常時明講「無異常」——沉默無法區分「沒問題」與「沒檢查」。
+    """
+    total = len(quality_rows)
+    if not total:
+        return "家族品質：本次無家族資料可核對。"
+    checks = (
+        ("不完整家族", sum(1 for q in quality_rows if q.get("family_incomplete")), "家族"),
+        ("無同族ID（家族數為近似值）",
+         sum(1 for q in quality_rows if q.get("is_surrogate_family")), "家族"),
+        ("狀態未知", sum(int(q.get("unknown_status_count") or 0) for q in quality_rows), "件"),
+        ("審查中", sum(int(q.get("pending_status_count") or 0) for q in quality_rows), "件"),
+        ("EP 生效程序進行中", sum(int(q.get("ep_in_transition_count") or 0) for q in quality_rows), "件"),
+        ("EPC 欄缺值", sum(int(q.get("ep_missing_epc_count") or 0) for q in quality_rows), "件"),
+    )
+    flagged = [f"{name} {count} {unit}" for name, count, unit in checks if count]
+    if not flagged:
+        return f"家族品質：{total} 個家族均完整、狀態明確，無異常。"
+    return (
+        f"⚠ 家族品質提醒（共 {total} 個家族）：" + "、".join(flagged)
+        + "。引用佈局數字前請留意；明細見 family_quality.json。"
+    )
+
+
 def _build_family_layout_section(ctx: ChartContext) -> None:
     """國家佈局（現有保護口徑）：家族×國家報表，第一版用長條圖。
 
@@ -1403,14 +1435,7 @@ def _build_family_layout_section(ctx: ChartContext) -> None:
     quality_rows = quality_report["rows"]
     family_notes = [
         "計數單位是「同族（發明）」：group by 同族ID，做到申請國（受理局）層級；EP 以區域標示呈現，暫不展開生效國。",
-        (
-            f"品質現形：生效程序進行中 EP {sum(int(q['ep_in_transition_count']) for q in quality_rows)} 件、"
-            f"不完整家族 {sum(1 for q in quality_rows if q['family_incomplete'])}、"
-            f"unknown 狀態 {sum(int(q['unknown_status_count']) for q in quality_rows)} 件、"
-            f"EPC 欄缺值 EP {sum(int(q['ep_missing_epc_count']) for q in quality_rows)} 件、"
-            f"surrogate 家族（無同族ID）{sum(1 for q in quality_rows if q['is_surrogate_family'])}。"
-            "明細見 family_quality.json。"
-        ),
+        family_quality_note(quality_rows),
     ]
     if ctx.analysis_id is not None or ctx.filters:
         family_notes.append("家族集合依篩選／快照圈定；佈局計入家族全體成員，可能含篩選外的國家。")

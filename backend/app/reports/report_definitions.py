@@ -3,6 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+# IPC／CPC 代碼格式：一律 [A-H] 開頭（八大部；CPC 另有 Y 部，一併放行）。
+# 洛迦諾分類是 NN-NN 純數字，用開頭字元即可穩定辨別，不需維護代碼清單。
+IPC_LIKE_PATTERN = "^[A-HY]"
+
+
+def is_ipc_like(value: str | None) -> bool:
+    """是否為 IPC／CPC 代碼（非洛迦諾等其他分類體系）。"""
+    text = (value or "").strip()
+    return bool(text) and text[0].upper() in "ABCDEFGHY"
+
+
 @dataclass(frozen=True)
 class ReportDefinition:
     name: str
@@ -17,6 +28,12 @@ class ReportDefinition:
     default_order: tuple[tuple[str, str], ...] = ()
     default_limit: int | None = None
     exclude_blank_columns: tuple[str, ...] = ()
+    # 值格式白名單：(欄名, POSIX 正規式)，只收符合格式的列。
+    # 2026-07-28 動因：WIPS 把外觀設計的**洛迦諾分類**（21-02／19-07）塞進與 IPC
+    # 同一個「Orig. IPC(Main)」欄，報表沒分辨就一起統計——圖上多出兩個假 subclass，
+    # 且 60 筆裡有 11 筆不是發明專利的 IPC，集中度佔比被稀釋。
+    # 設計為通用欄位＋正規式（非寫死 IPC），其他欄位日後遇到同類混入可比照使用。
+    value_pattern_columns: tuple[tuple[str, str], ...] = ()
     # 來源表沒有 patent_id 欄（如家族×國家表）時設 False：
     # run_report 收到 patent_ids 會 fail loud，analysis_runner 會跳過此報表。
     supports_patent_ids: bool = True
@@ -112,6 +129,9 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         group_by=("Orig. IPC(Main)",),
         default_order=(("patent_count", "desc"), ("Orig. IPC(Main)", "asc")),
         exclude_blank_columns=("Orig. IPC(Main)",),
+        # 排除洛迦諾分類（外觀設計的 21-02／19-07 等）——非 IPC 體系，混入會產生
+        # 假 subclass 並稀釋集中度佔比。見 IPC_LIKE_PATTERN。
+        value_pattern_columns=(("Orig. IPC(Main)", IPC_LIKE_PATTERN),),
     ),
     "cpc_main_distribution": ReportDefinition(
         name="cpc_main_distribution",
@@ -123,6 +143,8 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         group_by=("Orig. CPC(Main)",),
         default_order=(("patent_count", "desc"), ("Orig. CPC(Main)", "asc")),
         exclude_blank_columns=("Orig. CPC(Main)",),
+        # 同 IPC：CPC 欄同樣可能混入非 CPC 體系的代碼。
+        value_pattern_columns=(("Orig. CPC(Main)", IPC_LIKE_PATTERN),),
     ),
     "applicant_ranking": ReportDefinition(
         name="applicant_ranking",

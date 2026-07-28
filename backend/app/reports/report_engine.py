@@ -119,6 +119,22 @@ def build_exclude_blank_clause(columns: tuple[str, ...]) -> str:
     return " AND ".join(clauses)
 
 
+def build_value_pattern_clause(
+    pattern_columns: tuple[tuple[str, str], ...],
+) -> tuple[str, dict[str, Any]]:
+    """值格式白名單：只收符合正規式的列（例：IPC 欄排除洛迦諾分類）。
+
+    正規式走參數綁定（非字串拼接），欄名走 quote_ident——兩者都不讓外部輸入進 SQL 結構。
+    """
+    clauses = []
+    params: dict[str, Any] = {}
+    for index, (column, pattern) in enumerate(pattern_columns):
+        key = f"value_pattern_{index}"
+        clauses.append(f"BTRIM({quote_ident(column)}::text) ~ %({key})s")
+        params[key] = pattern
+    return " AND ".join(clauses), params
+
+
 def build_order_clause(definition: ReportDefinition) -> str:
     if not definition.default_order:
         return ""
@@ -174,6 +190,9 @@ def build_report_sql(
     patent_ids: list[Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     blank_clause = build_exclude_blank_clause(definition.exclude_blank_columns)
+    pattern_clause, pattern_params = build_value_pattern_clause(
+        getattr(definition, "value_pattern_columns", ()) or ()
+    )
     if definition.supports_patent_ids:
         filter_clause, params = build_filter_clause(
             filters,
@@ -184,7 +203,8 @@ def build_report_sql(
             # Restrict to an explicit patent set snapshot (used by app_layer analyses).
             patent_ids_clause = "patent_id = ANY(%(patent_ids)s)"
             params["patent_ids"] = list(patent_ids)
-        where_parts = [part for part in (filter_clause, blank_clause, patent_ids_clause) if part]
+        where_parts = [part for part in (filter_clause, blank_clause, pattern_clause,
+                                         patent_ids_clause) if part]
     else:
         # 家族層級報表：來源表沒有 patent 層欄位，filters/快照轉譯成家族集合條件
         # （不帶篩選＝全庫，維持既有行為）。
@@ -192,7 +212,9 @@ def build_report_sql(
         params = {}
         if filters or patent_ids is not None:
             family_clause, params = build_family_scope_clause(filters, patent_ids)
-        where_parts = [part for part in (family_clause, blank_clause) if part]
+        where_parts = [part for part in (family_clause, blank_clause, pattern_clause) if part]
+    if pattern_clause:
+        params.update(pattern_params)
     where_sql = " WHERE " + " AND ".join(where_parts) if where_parts else ""
     table_sql = qualified_table_name(definition.source_table)
 

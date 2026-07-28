@@ -139,7 +139,9 @@ def confirm_drafts(body: ZhNameConfirmRequest) -> dict[str, Any]:
 
     # ⚠ 關鍵接線：confirmed 只寫進 company_aliases（對照表），**專利表顯示的收斂名存在
     # derived_layer.report_patent_base**——不重跑 refresh，使用者確認完會看到「表格沒變」。
-    refresh_job_id = create_job("refresh_derived", {"scope": "aliases"})
+    # 2026-07-28 起不傳 scope：refresh_derived 已整合為一律刷全部（含家族兩張表）。
+    # 留著 scope='aliases' 不影響行為（handler 已忽略），但會誤導讀 code 的人以為還有分岔。
+    refresh_job_id = create_job("refresh_derived", {})
 
     return {
         "confirmed": len(applied),
