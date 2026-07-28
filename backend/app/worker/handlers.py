@@ -232,6 +232,12 @@ def _load_report_cluster_data(
     if not cluster_data["topics"]:
         # 尚未分群（或該通道無主題）：分群類圖表沒有輸入，靜默跳過。
         return None
+    # assignment 標記來源通道（loader 契約只給 topic_code／patent_id）。
+    # 單通道時 code 天然唯一、不標也還能歸戶，但那是靠運氣——該通道自己出現重複
+    # code（合併／增量後可能發生）就再次靜默歸零。與 _merge_cluster_channels 同口徑。
+    cluster_data["assignments"] = [
+        {**a, "source_field": source_field} for a in cluster_data["assignments"]
+    ]
     topic_rows = build_topic_effect_table(
         cluster_data["topics"],
         cluster_data["assignments"],
@@ -303,6 +309,10 @@ def _merge_cluster_channels(
         part = _load_report_cluster_data(workspace_id, source_field, pain_data)
         if part is None:
             continue
+        # ⚠ assignment 的 source_field 已由 _load_report_cluster_data 標記
+        # （唯一標記點，不在此重複做）。沒有它的話：topic_code 兩通道各自從 T001
+        # 編號、完全重疊，串接後分不出哪筆屬於哪個通道，歸戶端只能放棄——
+        # 實機症狀＝13 個主題的件數**全變 0**，而報表照常產出不報錯。
         if merged is None:
             merged = dict(part)
             merged["source_fields"] = [source_field]

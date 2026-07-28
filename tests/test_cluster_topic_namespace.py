@@ -241,3 +241,126 @@ class RowsTruncationTests(unittest.TestCase):
         out = _limit_rows_per_source(self._rows(25, 3), self.LIMIT)
         tech = [r["topic_code"] for r in out if r["source_field"] == TECH]
         self.assertEqual(tech, [f"T{i:03d}" for i in range(self.LIMIT)])
+
+
+class AssignmentsCarrySourceFieldTests(unittest.TestCase):
+    """assignment 必須在**合併時**打上 source_field（2026-07-29 實機回報）。
+
+    ## 症狀（使用者截圖）
+
+    主題分類統計表／機會四象限／痛點四象限：13 個主題全列出來了，但
+    `patent_count`／`applicant_count` **全是 0**，而分類區明明顯示
+    「拉繩捲輪回收機構 15、阻力調節拉繩機構 8…」有件數。
+
+    ## 根因＝本檔前一段修正的副作用
+
+    `cluster_data_loader` 的契約明載 **assignment 只含 topic_code／patent_id**
+    （DB 的 topic_assignments 表也確實沒有 source_field 欄）。而複合鍵歸戶
+    在「assignment 無 source_field」時走保守分支「同 code 唯一才歸戶，否則不猜」
+    ——兩通道 code 完全重疊（T001-T005 各有兩個），於是**全部跳過**。
+
+    當初寫那個 fallback 時假設「無 source_field ＝舊資料的少數情況」，
+    實際上現行資料流**本來就不帶**——假設錯了，且錯得靜默（件數變 0 不報錯）。
+
+    ## 正確修法
+
+    **在來源分好**：`_merge_cluster_channels` 串接兩通道時，為每個 assignment
+    打上它來自哪個通道。歸戶端因此永遠拿得到 source_field，
+    「不猜」的保守分支退回真正的邊界情況（單通道舊資料）。
+    """
+
+    def test_merged_assignments_carry_source_field(self):
+        """合併後每筆 assignment 都帶來源通道。
+
+        ⚠ 從**真正的 DB 載入層**（`load_cluster_workspace_data`）往上跑，
+        不 mock `_load_report_cluster_data`——標記點就在它裡面，mock 掉就
+        測不到真正該驗的事（本測試初版即如此，假失敗）。
+        """
+        from unittest import mock
+
+        from backend.app.worker import handlers
+
+        def fake_load_ws(workspace_id, source_field, conn):
+            n = 5 if source_field == TECH else 8
+            return {
+                "topics": [{"topic_code": f"T{i:03d}", "label": f"L{i}",
+                            "source_field": source_field} for i in range(1, n + 1)],
+                "assignments": [{"topic_code": f"T{i:03d}", "patent_id": 100 + i}
+                                for i in range(1, n + 1)],
+                "normalized_applicants": [],
+                "top_applicants_ws": [],
+            }
+
+        with mock.patch("backend.app.reports.cluster_data_loader.load_cluster_workspace_data",
+                        fake_load_ws), \
+                mock.patch("psycopg.connect"):
+            merged = handlers._merge_cluster_channels(1, [TECH, EFFECT], None)
+
+        self.assertIsNotNone(merged)
+        by_src: dict[str, int] = {}
+        for a in merged["assignments"]:
+            self.assertIn("source_field", a,
+                          "assignment 沒有 source_field——歸戶端無從分辨兩通道")
+            by_src[a["source_field"]] = by_src.get(a["source_field"], 0) + 1
+        self.assertEqual(by_src, {TECH: 5, EFFECT: 8})
+        # 件數必須真的算出來（實機症狀的直接驗證）
+        rows = merged["topic_rows"]
+        self.assertEqual(len(rows), 13, f"13 個主題應有 13 列，實得 {len(rows)}")
+
+    def test_counts_survive_overlapping_codes(self):
+        """端到端：兩通道 code 重疊時，件數不得歸零（實機症狀的回歸測試）。"""
+        from backend.app.reports.cluster_analytics import build_topic_effect_table
+
+        topics = (
+            [{"topic_code": f"T{i:03d}", "label": f"技術{i}", "source_field": TECH}
+             for i in range(1, 6)]
+            + [{"topic_code": f"T{i:03d}", "label": f"功效{i}", "source_field": EFFECT}
+               for i in range(1, 9)]
+        )
+        assignments = (
+            [{"topic_code": f"T{i:03d}", "patent_id": 100 + i, "source_field": TECH}
+             for i in range(1, 6)]
+            + [{"topic_code": f"T{i:03d}", "patent_id": 200 + i, "source_field": EFFECT}
+               for i in range(1, 9)]
+        )
+        rows = build_topic_effect_table(topics, assignments, [])
+        self.assertEqual(len(rows), 13)
+        zero = [r for r in rows if r["patent_count"] == 0]
+        self.assertEqual(zero, [], f"{len(zero)} 個主題件數為 0——歸戶又斷了")
+
+    def test_single_channel_path_also_stamps(self):
+        """單通道路徑（payload 指定 source_field）也要標記——兩條路徑同一口徑。
+
+        單通道時 code 天然唯一，「同 code 唯一才歸戶」的 fallback 恰好能過關；
+        但那是**靠運氣**：一旦該通道自己出現重複 code（合併／增量後可能發生），
+        就再次靜默歸零。兩條路徑都標記，歸戶端才永遠不必猜。
+        """
+        from unittest import mock
+
+        from backend.app.worker import handlers
+
+        captured = {}
+
+        def fake_load_ws(workspace_id, source_field, conn):
+            return {
+                "topics": [{"topic_code": "T001", "label": "L", "source_field": source_field}],
+                "assignments": [{"topic_code": "T001", "patent_id": 1}],
+                "normalized_applicants": [],
+                "top_applicants_ws": [],
+            }
+
+        def spy_build(topics, assignments, applicants):
+            captured["assignments"] = assignments
+            return []
+
+        with mock.patch("backend.app.reports.cluster_data_loader.load_cluster_workspace_data",
+                        fake_load_ws), \
+                mock.patch("backend.app.reports.cluster_analytics.build_topic_effect_table",
+                           spy_build), \
+                mock.patch("psycopg.connect"):
+            handlers._load_report_cluster_data(1, TECH)
+
+        self.assertTrue(captured.get("assignments"), "沒取到 assignments")
+        for a in captured["assignments"]:
+            self.assertEqual(a.get("source_field"), TECH,
+                             "單通道路徑的 assignment 也要帶 source_field")
