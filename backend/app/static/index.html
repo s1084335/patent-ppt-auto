@@ -418,6 +418,20 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .report-single-narrative { margin-top: 0.9rem; padding-top: 0.8rem; border-top: 1px solid var(--border); }
 .report-single-narrative .empty { color: var(--text-muted); font-size: 0.86rem; }
 /* 報表種類頁：產製完成後就地顯示完整報表（與匯出工作台共用卡片樣式）。 */
+.report-source-tabs, .ppt-slide .ppt-cluster-tabs { display: flex; gap: 0.45rem; flex-wrap: wrap; margin: 0 0 0.7rem; }
+.report-source-tab, .ppt-slide .ppt-cluster-tab {
+  border: 1px solid var(--border); border-radius: 0.35rem; background: var(--panel-2);
+  color: var(--text); padding: 0.28rem 0.65rem; cursor: pointer; font-size: 0.84rem;
+}
+.report-source-tab.active, .ppt-slide .ppt-cluster-tab.active {
+  border-color: var(--accent); background: var(--accent); color: var(--panel);
+}
+.ppt-slide .ppt-cluster-tabs { margin-bottom: 0.22rem; gap: 0.18rem; }
+.ppt-slide .ppt-cluster-tab { padding: 0.08rem 0.28rem; font-size: 0.52rem; border-color: var(--ppt-line-soft); background: var(--ppt-panel-bg); color: var(--ppt-ink); }
+.ppt-slide .ppt-cluster-tab.active { border-color: var(--ppt-brand-dark); background: var(--ppt-brand-dark); color: var(--ppt-on-dark); }
+.ppt-slide .ppt-cluster-split table { font-size: 0.46rem; }
+.report-chart-frame { width: 100%; min-height: 420px; border: 1px solid var(--border); border-radius: 0.4rem; background: var(--panel); }
+.ppt-chart iframe { width: 100%; height: 100%; border: 0; background: var(--ppt-panel-bg); }
 #report-inline-view:not(:empty) { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.4rem 1.6rem; margin-top: 0.9rem; }
 .report-inline-head { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
 /* 報表版本清單：最新展開、舊版收合可點開。 */
@@ -3401,6 +3415,7 @@ const exportPreview = {
   content: null,       // GET /report-latest/content 的原始回應
   pptLayout: null,     // GET /reports/ppt-layout：PPT 頁面與 theme geometry 的唯一來源
   editMode: false,
+  clusterSourceField: DEFAULT_TOPIC_SOURCE_FIELD,
   edits: null,         // { cover: {...}, narratives: {key: manual_text}, notes: [{id,title,text,after}] }
 };
 
@@ -3639,6 +3654,7 @@ function pptSlideBodyHtml(content, theme, page) {
   if (page.kind === 'cover') return pptCoverSlideHtml(content, theme, page);
   const header = pptHeaderHtml(theme, page);
   if (page.kind === 'direction') return header + pptDirectionSlideHtml(content, theme, page);
+  if (pptIsClusterPage(content, page)) return header + pptClusterSplitSlideHtml(content, theme, page);
   if (page.kind === 'table') return header + pptTableSlideHtml(content, theme, page);
   if (page.kind === 'table_with_narrative') return header + pptTableNarrativeSlideHtml(content, theme, page);
   if (page.kind === 'narrative_only') return header + pptNarrativeOnlySlideHtml(content, theme, page);
@@ -3727,6 +3743,66 @@ function pptTableNarrativeSlideHtml(content, theme, page) {
     + '<div ' + pptBoxAttrs(theme, page, 'narrative', g.text_left_in,
       top + g.text_top_offset_in, g.text_width_in, g.text_height_in, 'ppt-panel') + '>'
     + pptSlotContentHtml(page.slots && page.slots[0], pptSlotText(content, page, page.slots && page.slots[0])) + '</div>';
+}
+
+function pptIsClusterPage(content, page) {
+  return pptSectionsForPage(content, page).some(section => isClusterSection(section));
+}
+
+function pptClusterSplitSlideHtml(content, theme, page) {
+  const geometry = theme.geometry || {};
+  const g = geometry.chart_with_narrative || {};
+  const top = geometry.body_top_in || 1.35;
+  const sourceField = exportPreview.clusterSourceField || DEFAULT_TOPIC_SOURCE_FIELD;
+  const section = pptClusterSectionForSource(content, page, sourceField);
+  const variant = pptClusterVariantForSource(section, sourceField);
+  return '<div ' + pptBoxAttrs(theme, page, 'table', g.image_left_in, top,
+    g.image_width_in, g.placeholder_band_height_in, 'ppt-panel ppt-table ppt-cluster-split') + '>'
+    + pptClusterSourceTabsHtml(sourceField)
+    + pptTableHtml(section) + '</div>'
+    + '<div ' + pptBoxAttrs(theme, page, 'chart', g.text_left_in, top,
+      g.text_width_in, g.placeholder_band_height_in, 'ppt-chart') + '>'
+    + pptVariantChartHtml(variant, page) + '</div>';
+}
+
+function pptClusterSourceTabsHtml(activeSourceField) {
+  return '<div class="ppt-cluster-tabs">'
+    + SOURCE_FIELDS.map(([source_field, label]) =>
+      '<button type="button" class="ppt-cluster-tab' + (source_field === activeSourceField ? ' active' : '')
+      + '" onclick="switchPptClusterSource(\'' + escHtml(source_field) + '\')">' + escHtml(label) + '</button>'
+    ).join('')
+    + '</div>';
+}
+
+function switchPptClusterSource(sourceField) {
+  exportPreview.clusterSourceField = sourceField || DEFAULT_TOPIC_SOURCE_FIELD;
+  renderExportPreview();
+}
+
+function pptClusterSectionForSource(content, page, sourceField) {
+  const section = pptSectionsForPage(content, page).find(section => isClusterSection(section))
+    || ((content.sections || []).find(section => isClusterSection(section)));
+  if (!section) return null;
+  const rows = (section.rows || []).filter(row => row.source_field === sourceField);
+  return Object.assign({}, section, { rows: rows.length ? rows : (section.rows || []) });
+}
+
+function pptClusterVariantForSource(section, sourceField) {
+  if (!section) return null;
+  const slug = sourceField === 'effect_summary' ? 'effect' : 'tech';
+  return (section.variants || []).find(v => clusterVariantMatchesReport(v, 'opportunity_quadrant') && clusterVariantMatchesSource(v, sourceField))
+    || (section.variants || []).find(v => clusterVariantMatchesReport(v, 'pain_point_quadrant') && clusterVariantMatchesSource(v, sourceField))
+    || (section.variants || []).find(v => String(v.variant_key || '').includes(slug) || String(v.file || '').includes(slug))
+    || (section.variants || []).find(v => v.chart_url)
+    || null;
+}
+
+function pptVariantChartHtml(variant, page) {
+  if (!variant || !variant.chart_url) return '<span>?”雿?</span>';
+  if (String(variant.chart_url).toLowerCase().endsWith('.html')) {
+    return '<iframe src="' + escHtml(variant.chart_url) + '" title="' + escHtml(page.title || '') + '"></iframe>';
+  }
+  return '<img src="' + escHtml(variant.chart_url) + '" alt="' + escHtml(page.title || '') + '">';
 }
 
 function pptNarrativeOnlySlideHtml(content, theme, page) {
@@ -3915,9 +3991,10 @@ function saveCoverEdit() {
 // ══════════ 報表種類頁：選單切換 ＋ 單份左右下版面（2026-07-27 R1／R7／R9）══════════
 // 目前檢視中的 content（由 loadReportVersions 取最新版後填入）。
 let reportViewContent = null;
+let reportViewOptions = [];
 
 // 把選單填上目前版本的所有 section（R7）；預設選第一份。
-function fillReportViewSelect(content) {
+function fillReportViewSelectLegacy(content) {
   reportViewContent = content;
   const sel = el('report-view-select');
   if (!sel) return;
@@ -3928,6 +4005,97 @@ function fillReportViewSelect(content) {
   }
   sel.innerHTML = sections
     .map((s, i) => '<option value="' + i + '">' + escHtml(s.title || ('報表 ' + (i + 1))) + '</option>')
+    .join('');
+  sel.value = '0';
+  renderReportViewer();
+}
+
+function reportLabelForKey(reportKey) {
+  const hit = REPORT_TYPES.find(([key]) => key === reportKey);
+  return hit ? hit[1] : reportKey;
+}
+
+function isClusterSection(section) {
+  if (!section) return false;
+  if (CLUSTER_REPORT_NAMES.has(section.report_key)) return true;
+  return (section.variants || []).some(v => clusterVariantMatchesReport(v, 'opportunity_quadrant')
+    || clusterVariantMatchesReport(v, 'pain_point_quadrant')
+    || clusterVariantMatchesReport(v, 'cluster_topic_table'));
+}
+
+function hasClusterVariant(section, reportKey) {
+  return (section.variants || []).some(v => clusterVariantMatchesReport(v, reportKey));
+}
+
+function clusterVariantMatchesReport(variant, reportKey) {
+  const key = String((variant && variant.variant_key) || '');
+  const file = String((variant && variant.file) || (variant && variant.chart_url) || '');
+  if (reportKey === 'cluster_topic_table') return key.includes('topic_table') || file.includes('cluster_topic_table');
+  if (reportKey === 'opportunity_quadrant') return key.includes('opportunity') || file.includes('opportunity_quadrant');
+  if (reportKey === 'pain_point_quadrant') return key.includes('pain') || file.includes('pain_point_quadrant');
+  return false;
+}
+
+function clusterVariantMatchesSource(variant, sourceField) {
+  const key = String((variant && variant.variant_key) || '');
+  const file = String((variant && variant.file) || (variant && variant.chart_url) || '');
+  const slug = sourceField === 'effect_summary' ? 'effect' : 'tech';
+  if (!key.includes('_') && !file.includes('_tech') && !file.includes('_effect')) return true;
+  return key.includes(slug) || file.includes('_' + slug);
+}
+
+function buildReportViewOptions(content) {
+  const sections = (content && content.sections) || [];
+  const options = [];
+  sections.forEach(function (section, sectionIndex) {
+    if (isClusterSection(section)) {
+      clusterReportViews(section).forEach(function (view) {
+        options.push(Object.assign({ sectionIndex: sectionIndex, source_field: DEFAULT_TOPIC_SOURCE_FIELD }, view));
+      });
+      return;
+    }
+    const variants = section.variants || [];
+    if (variants.length > 1) {
+      variants.forEach(function (variant, variantIndex) {
+        options.push({
+          sectionIndex: sectionIndex,
+          variantIndex: variantIndex,
+          label: variant.label || section.title || ('報表 ' + (sectionIndex + 1)),
+        });
+      });
+      return;
+    }
+    options.push({
+      sectionIndex: sectionIndex,
+      label: section.title || ('報表 ' + (sectionIndex + 1)),
+    });
+  });
+  return options;
+}
+
+function clusterReportViews(section) {
+  const views = [
+    { report_key: 'cluster_topic_table', label: reportLabelForKey('cluster_topic_table') },
+    { report_key: 'opportunity_quadrant', label: reportLabelForKey('opportunity_quadrant') },
+    { report_key: 'pain_point_quadrant', label: reportLabelForKey('pain_point_quadrant') },
+  ];
+  return views.filter(function (view) {
+    if (view.report_key === 'cluster_topic_table') return (section.rows || []).length || hasClusterVariant(section, view.report_key);
+    return hasClusterVariant(section, view.report_key);
+  });
+}
+
+function fillReportViewSelect(content) {
+  reportViewContent = content;
+  const sel = el('report-view-select');
+  if (!sel) return;
+  reportViewOptions = buildReportViewOptions(content);
+  if (!reportViewOptions.length) {
+    sel.innerHTML = '<option value="">（尚無報表內容）</option>';
+    return;
+  }
+  sel.innerHTML = reportViewOptions
+    .map((opt, i) => '<option value="' + i + '">' + escHtml(opt.label || ('報表 ' + (i + 1))) + '</option>')
     .join('');
   sel.value = '0';
   renderReportViewer();
@@ -3977,7 +4145,7 @@ async function runNarrative() {
 
 // R9：版本區隨選單變化——一次只顯示選中的那一份，不把整份報告全列出來。
 // R1：單份版面＝左數據、右圖表、下解讀。
-function renderReportViewer() {
+function renderReportViewerLegacy() {
   const wrap = el('report-inline-view');
   const sel = el('report-view-select');
   if (!wrap || !sel) return;
@@ -3991,7 +4159,72 @@ function renderReportViewer() {
 }
 
 // 單份報表：左數據表、右圖表、下解讀（橫跨整寬）。
-function reportSingleHtml(section) {
+function renderReportViewer() {
+  const wrap = el('report-inline-view');
+  const sel = el('report-view-select');
+  if (!wrap || !sel) return;
+  const sections = (reportViewContent && reportViewContent.sections) || [];
+  const idx = parseInt(sel.value, 10);
+  const option = reportViewOptions[idx];
+  if (!sections.length || Number.isNaN(idx) || !option || !sections[option.sectionIndex]) {
+    wrap.innerHTML = '';
+    return;
+  }
+  wrap.innerHTML = reportSingleHtml(sections[option.sectionIndex], option);
+}
+
+function switchReportSourceField(sourceField) {
+  exportPreview.clusterSourceField = sourceField || DEFAULT_TOPIC_SOURCE_FIELD;
+  renderReportViewer();
+}
+
+function sectionForReportView(section, option, sourceField) {
+  option = option || {};
+  if (!isClusterSection(section)) {
+    if (option.variantIndex === undefined || option.variantIndex === null) return section;
+    const variant = (section.variants || [])[option.variantIndex];
+    return Object.assign({}, section, {
+      title: option.label || section.title,
+      variants: variant ? [variant] : [],
+    });
+  }
+  const reportKey = option.report_key || 'cluster_topic_table';
+  const rows = (section.rows || []).filter(row => !row.source_field || row.source_field === sourceField);
+  const variants = (section.variants || []).filter(variant =>
+    clusterVariantMatchesReport(variant, reportKey) && clusterVariantMatchesSource(variant, sourceField)
+  );
+  return Object.assign({}, section, {
+    title: option.label || reportLabelForKey(reportKey),
+    report_key: reportKey,
+    rows: rows.length ? rows : (section.rows || []),
+    variants: variants.length ? variants : (section.variants || []).filter(variant => clusterVariantMatchesReport(variant, reportKey)),
+  });
+}
+
+function reportSourceTabsHtml(activeSourceField) {
+  return '<div class="report-source-tabs">'
+    + SOURCE_FIELDS.map(([source_field, label]) =>
+      '<button type="button" class="report-source-tab' + (source_field === activeSourceField ? ' active' : '')
+      + '" onclick="switchReportSourceField(\'' + escHtml(source_field) + '\')">' + escHtml(label) + '</button>'
+    ).join('')
+    + '</div>';
+}
+
+function reportVariantChartHtml(section, variant) {
+  if (!variant || !variant.chart_url) return '<p class="hint">尚無圖表。</p>';
+  if (String(variant.chart_url).toLowerCase().endsWith('.html')) {
+    return '<figure style="margin:0 0 0.8rem"><iframe class="report-chart-frame" src="' + escHtml(variant.chart_url)
+      + '" title="' + escHtml(section.title || '') + ' ' + escHtml(variant.label || '') + '"></iframe>'
+      + (variant.label ? '<figcaption class="hint">' + escHtml(variant.label) + '</figcaption>' : '')
+      + '</figure>';
+  }
+  return '<figure style="margin:0 0 0.8rem"><img src="' + escHtml(variant.chart_url) + '" alt="'
+    + escHtml(section.title || '') + ' ' + escHtml(variant.label || '') + '" loading="lazy">'
+    + (variant.label ? '<figcaption class="hint">' + escHtml(variant.label) + '</figcaption>' : '')
+    + '</figure>';
+}
+
+function reportSingleHtmlLegacy(section, option) {
   const rows = section.rows || [];
   let dataHtml = '<p class="hint" style="padding:0.3rem 0">無資料</p>';
   if (rows.length) {
@@ -4035,6 +4268,47 @@ function reportSingleHtml(section) {
     + '<div class="report-single-narrative"><strong>解讀</strong>' + narrativeHtml + '</div>'
     + (section.note ? '<p class="hint" style="padding:0.5rem 0 0">'
         + escHtml(section.note) + '</p>' : '')
+    + '</article>';
+}
+
+function reportSingleHtml(section, option) {
+  const sourceField = (option && option.source_field) || exportPreview.clusterSourceField || DEFAULT_TOPIC_SOURCE_FIELD;
+  const viewSection = sectionForReportView(section, option || {}, sourceField);
+  const rows = viewSection.rows || [];
+  let dataHtml = '<p class="hint" style="padding:0.3rem 0">尚無資料。</p>';
+  if (rows.length) {
+    const columns = Object.keys(rows[0]).filter(c => c !== 'source_field');
+    const head = columns.map(c => '<th>' + escHtml(c) + '</th>').join('');
+    const body = rows.map(r => '<tr>'
+      + columns.map(c => '<td>' + escHtml(fmtCell(r[c])) + '</td>').join('') + '</tr>').join('');
+    dataHtml = '<table><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>'
+      + (viewSection.row_count > rows.length
+        ? '<p class="hint" style="padding:0.25rem 0">目前顯示 ' + rows.length
+          + ' 筆，總計 ' + viewSection.row_count + ' 筆。</p>'
+        : '');
+  }
+  const variants = viewSection.variants || [];
+  const chartHtml = variants.length
+    ? variants.map(v => reportVariantChartHtml(viewSection, v)).join('')
+    : '<p class="hint">尚無圖表。</p>';
+  const texts = variants
+    .map(v => (v.narrative && v.narrative.text) ? v.narrative.text.trim() : '')
+    .filter(Boolean);
+  const narrativeHtml = texts.length
+    ? texts.map(t => '<p>' + escHtml(t) + '</p>').join('')
+    : '<p class="empty">AI 解讀尚未產生。'
+      + '<button class="btn btn-sm" id="btn-run-narrative" onclick="runNarrative()"'
+      + ' style="margin-left:0.6rem">產生 AI 解讀</button></p>';
+  return '<article class="export-card">'
+    + '<h3>' + escHtml(viewSection.title || '') + '</h3>'
+    + (isClusterSection(section) ? reportSourceTabsHtml(sourceField) : '')
+    + '<div class="report-single">'
+    + '<div class="report-single-data">' + dataHtml + '</div>'
+    + '<div class="report-single-chart">' + chartHtml + '</div>'
+    + '</div>'
+    + '<div class="report-single-narrative"><strong>解讀</strong>' + narrativeHtml + '</div>'
+    + (viewSection.note ? '<p class="hint" style="padding:0.5rem 0 0">'
+        + escHtml(viewSection.note) + '</p>' : '')
     + '</article>';
 }
 

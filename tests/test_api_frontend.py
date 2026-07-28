@@ -876,6 +876,38 @@ class FrontendSkeletonTests(unittest.TestCase):
             with self.subTest(fallback=fallback):
                 self.assertNotIn(fallback, slide_style)
 
+    def test_ppt_cluster_preview_has_source_tabs_and_left_data_right_chart(self):
+        """分群 PPT 預覽要能切技術/功效，且左側放數據、右側放圖表。"""
+        dispatcher = self.js_function("pptSlideBodyHtml")
+        cluster_body = self.js_function("pptClusterSplitSlideHtml")
+        tabs_body = self.js_function("pptClusterSourceTabsHtml")
+
+        self.assertIn("pptIsClusterPage", dispatcher)
+        self.assertIn("pptClusterSplitSlideHtml", dispatcher)
+        self.assertIn("pptClusterSourceTabsHtml", cluster_body)
+        self.assertIn("pptClusterSectionForSource", cluster_body)
+        self.assertIn("source_field", tabs_body)
+        self.assertIn("SOURCE_FIELDS.map", tabs_body)
+        self.assertLess(cluster_body.find("pptTableHtml"), cluster_body.find("pptVariantChartHtml"))
+        self.assertIn("ppt-cluster-split", self.html)
+        self.assertIn("ppt-cluster-tabs", self.html)
+
+    def test_report_viewer_splits_cluster_reports_by_user_selected_reports(self):
+        """報表檢視下拉要拆開正式報表，不可把三個分群報表都合成分群分析。"""
+        fill_body = self.js_function("fillReportViewSelect")
+        options_body = self.js_function("buildReportViewOptions")
+        cluster_views_body = self.js_function("clusterReportViews")
+        render_body = self.js_function("renderReportViewer")
+
+        self.assertIn("buildReportViewOptions", fill_body)
+        self.assertIn("clusterReportViews", options_body)
+        for key in ("cluster_topic_table", "opportunity_quadrant", "pain_point_quadrant"):
+            with self.subTest(key=key):
+                self.assertIn(key, cluster_views_body)
+        self.assertIn("source_field", options_body)
+        self.assertIn("reportViewOptions", render_body)
+        self.assertIn("reportSingleHtml", render_body)
+
     def test_export_ppt_edit_overrides_are_separated(self):
         """PPT 編輯覆寫必須分 slots/layout_overrides/position_overrides 三個 key。"""
         default_body = self.js_function("exportEditsDefault")
