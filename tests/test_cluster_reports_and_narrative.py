@@ -86,7 +86,18 @@ class ClusterReportArtifactMappingTests(unittest.TestCase):
 
 
 class ReportGenerateAutoNarrativeTests(unittest.TestCase):
-    """report_generate 完成後自動 enqueue ai:narrative（帶 based_on_version、失敗隔離、複用既有 runner）。"""
+    """report_generate 完成後**不再**自動 enqueue ai:narrative（2026-07-29 移除）。
+
+    ## 為何反轉 2026-07-24 的定案
+
+    1. **架構定案是「按需」**：workflows.md（AI 產出落點定案）明載「報表解讀等採
+       **按需**觸發，確定性報表先顯示、不等 AI、AI 掛掉也看得到」。07-24 的
+       自動接續與此矛盾——當時解讀線剛建，前端還沒有手動鈕。
+    2. **重複排程實錘**（待辦 B4）：自動 enqueue ＋ 前端手動鈕各建一筆，
+       同版本兩個 narrative job 搶寫同一份 narratives.json、Companion 燒兩倍 token。
+    3. **先例一致**：patent_note、company_zh_name（皆 07-27）都因「自動觸發失敗
+       無補救入口」改手動鈕；解讀的手動鈕 07-28 已上線。
+    """
 
     def _context(self, payload: dict):
         """最小 JobContext 替身：只記 heartbeat，不碰 DB。"""
@@ -120,36 +131,22 @@ class ReportGenerateAutoNarrativeTests(unittest.TestCase):
         upload = mock.patch("backend.app.db.report_artifact_store.upload_run_dir", return_value=0)
         return chart, cluster, upload
 
-    def test_report_generate_enqueues_narrative_with_based_on_version(self):
-        """報表完成後自動建立一筆 ai:narrative，based_on_version＝該次報表版本。"""
-        from backend.app.worker import handlers
-
-        version = "report_trial_20260724_120000"
-        chart, cluster, upload = self._patched_report(version)
-        with chart, cluster, upload, \
-                mock.patch("backend.app.db.job_repository.create_job") as mock_create:
-            ctx = self._context({})
-            handlers.handle_report_generate({}, ctx)
-
-        mock_create.assert_called_once()
-        args, kwargs = mock_create.call_args
-        self.assertEqual(args[0], "ai:narrative", "應 enqueue ai:narrative（非其他 job_type）")
-        payload = args[1] if len(args) > 1 else kwargs.get("payload")
-        self.assertEqual(payload.get("based_on_version"), version,
-                         "based_on_version 應綁定該次報表版本")
-
-    def test_narrative_enqueue_failure_does_not_break_report(self):
-        """enqueue 解讀丟例外時，報表本身仍成功回傳（失敗隔離）。"""
+    def test_report_generate_does_not_auto_enqueue_narrative(self):
+        """報表完成後**不得**自動建立 ai:narrative——解讀一律由使用者按鈕觸發。"""
         from backend.app.worker import handlers
 
         chart, cluster, upload = self._patched_report()
         with chart, cluster, upload, \
-                mock.patch("backend.app.db.job_repository.create_job",
-                           side_effect=RuntimeError("queue down")):
+                mock.patch("backend.app.db.job_repository.create_job") as mock_create:
             ctx = self._context({})
             result = handlers.handle_report_generate({}, ctx)
 
-        self.assertEqual(result["status"], "ok", "解讀 enqueue 失敗不得讓報表 job 失敗")
+        narrative_calls = [c for c in mock_create.call_args_list
+                           if c.args and c.args[0] == "ai:narrative"]
+        self.assertEqual(narrative_calls, [],
+                         "報表完成不得自動排解讀——與前端手動鈕各建一筆＝同版本雙 job")
+        self.assertNotIn("narrative_job_enqueued", result,
+                         "自動排程移除後不得再回報此欄位（誤導前端以為有自動解讀）")
 
     def test_report_does_not_wait_for_narrative(self):
         """報表回傳不含解讀結果——解讀非同步補上，報表先出（不等 AI）。"""

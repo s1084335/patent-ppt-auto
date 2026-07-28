@@ -187,7 +187,11 @@ class ReportGenerateHandlerTests(unittest.TestCase):
                 "sections_rendered": ["annual_trend"],
             }
 
-        def _fake_load_cluster(workspace_id, source_field):
+        def _fake_load_cluster(workspace_id, source_field, pain_data=None):
+            # ⚠ 簽名跟隨真函式（2026-07-28 雙通道改版加了第三參數 pain_data）。
+            # 原 2 參數 fake 會 TypeError → _merge_cluster_channels 內部吞掉 →
+            # cluster_data 靜默變 None，測試以「參數不合」的姿勢假失敗，
+            # 錯誤訊息（None != {...}）與真因完全對不上——昨日 5 個懸案 F 之一。
             captured.setdefault("cluster_calls", []).append((workspace_id, source_field))
             if cluster_error is not None:
                 raise cluster_error
@@ -241,11 +245,26 @@ class ReportGenerateHandlerTests(unittest.TestCase):
         self.assertEqual(captured["uploaded"], ["a.svg", "report_data.json"])
 
     def test_handler_passes_cluster_data_when_workspace_has_topics(self):
-        """有分群資料時餵給 run_chart_trial，分群類圖表才畫得出來。"""
+        """有分群資料時餵給 run_chart_trial，分群類圖表才畫得出來。
+
+        ⚠ 2026-07-28 雙通道改版後，handler 對**兩個通道各呼一次** loader 再合併
+        （`_merge_cluster_channels`）；本測試的 fake 對兩通道都回同一份資料，
+        故期望值是合併後形狀（topics 串接、帶 source_fields），不再是原樣傳遞
+        ——舊期望值即昨日懸案 F 之一（fake 簽名過期＋期望值過期，雙重過期）。
+        """
         data = {"topics": [{"topic_code": "T01"}], "assignments": [], "topic_rows": []}
         _result, captured, _store = self._run({}, workspace_id=3, cluster_data=data)
-        self.assertEqual(captured["chart_kwargs"]["cluster_data"], data)
-        self.assertEqual(captured["cluster_calls"][0][0], 3)
+        merged = captured["chart_kwargs"]["cluster_data"]
+        self.assertEqual(merged["topics"],
+                         [{"topic_code": "T01"}, {"topic_code": "T01"}],
+                         "兩通道的 topics 應串接（fake 兩通道回同一份）")
+        self.assertEqual(merged["source_fields"],
+                         ["wips_independent_claims", "effect_summary"],
+                         "合併結果要記錄來源通道，順序＝技術先功效後")
+        # 兩通道各呼一次，workspace 一致
+        self.assertEqual([c[0] for c in captured["cluster_calls"]], [3, 3])
+        self.assertEqual([c[1] for c in captured["cluster_calls"]],
+                         ["wips_independent_claims", "effect_summary"])
 
     def test_handler_skips_cluster_charts_when_no_topics(self):
         """無分群資料時 cluster_data=None，run_chart_trial 靜默跳過分群區塊，不 crash。"""

@@ -3391,7 +3391,8 @@ function renderExport() {
     + '<p class="hint" style="padding:0 0 0.7rem">預覽整份報告 → 開編輯模式修改 → 確認無誤 → 匯出單頁 HTML（可用瀏覽器列印成 PDF）。</p>'
     + '<div class="export-toolbar">'
     + '<label class="switch"><input type="checkbox" id="export-edit-toggle" onchange="toggleExportEditMode()"> 編輯模式</label>'
-    + '<button class="btn btn-outline" id="btn-reload-preview" onclick="loadExportPreview()">重新載入預覽</button>'
+    + '<select id="export-version-select" class="ppt-layout-select" onchange="loadExportPreview(this.value)"></select>'
+    + '<button class="btn btn-outline" id="btn-reload-preview" onclick="loadExportPreview(exportPreview.version)">重新載入預覽</button>'
     + '<button class="btn btn-outline" id="btn-export" onclick="triggerExport()">重新產製報表資料</button>'
     + '<span style="flex:1"></span>'
     + '<button class="btn btn-outline" id="btn-export-html" onclick="reviewExportOutput()">匯出單頁 HTML</button>'
@@ -3402,6 +3403,20 @@ function renderExport() {
     + '<div id="export-confirm"></div>'
     + '<div id="export-preview"><div class="hint">載入報告內容中…</div></div>';
   loadExportPreview();
+  loadExportVersionOptions();
+}
+
+// 版本下拉（⑦）：清單載不到不擋預覽（預設仍是最新版）。
+async function loadExportVersionOptions() {
+  const sel = el('export-version-select');
+  if (!sel) return;
+  try {
+    const data = await getJson(API + '/reports/versions?limit=50');
+    const versions = data.versions || [];
+    sel.innerHTML = versions.map(v => '<option value="' + escHtml(v.version) + '">'
+      + escHtml(v.version) + (v.is_latest ? '（最新）' : '') + '</option>').join('');
+    if (exportPreview.version) sel.value = exportPreview.version;
+  } catch (_) { /* 版本清單非必要資訊，失敗不擋工作台 */ }
 }
 
 // ── 匯出報告的編輯狀態（人工修改） ──
@@ -3447,12 +3462,17 @@ function saveExportEdits() {
 }
 
 // 一次取回整份報表內容（卡片＋rows＋圖 URL＋解讀），不逐卡再打 API。
-async function loadExportPreview() {
+async function loadExportPreview(version) {
+  // version 未給＝最新版；給了＝載該版（⑦ 2026-07-29：原本寫死最新版，
+  // 報表種類頁看得到歷史版本、匯出頁卻匯不了舊版）。
   const wrap = el('export-preview');
   if (!wrap) return;
   wrap.innerHTML = '<div class="hint">載入報告內容中…</div>';
   try {
-    const resp = await fetch(API + '/report-latest/content');
+    const url = version
+      ? API + '/reports/versions/' + encodeURIComponent(version) + '/content'
+      : API + '/report-latest/content';
+    const resp = await fetch(url);
     if (resp.status === 404) {
       const err = await resp.json().catch(() => ({}));
       wrap.innerHTML = '<div class="placeholder-box">' + escHtml(err.detail || '尚無報表產出')
@@ -3464,7 +3484,11 @@ async function loadExportPreview() {
     exportPreview.content = content;
     exportPreview.version = content.version;
     exportPreview.edits = loadExportEdits(content.version);
+    // 版面依版本的 report_data 展開，換版本必須重取——留舊快取＝頁碼對不上新版。
+    exportPreview.pptLayout = null;
     await loadPptLayout();
+    const versionSel = el('export-version-select');
+    if (versionSel && exportPreview.version) versionSel.value = exportPreview.version;
     renderExportPreview();
   } catch (e) {
     wrap.innerHTML = '<div class="hint">載入報告內容失敗（' + escHtml(e.message) + '）。</div>';
@@ -3474,7 +3498,10 @@ async function loadExportPreview() {
 async function loadPptLayout() {
   // 前端不得自建版型清單；PPT 頁面、kind 與座標全由後端讀 theme.json/build_ppt.py 後提供。
   if (exportPreview.pptLayout) return exportPreview.pptLayout;
-  const resp = await fetch(API + '/reports/ppt-layout');
+  // 帶版本：頁面展開依該版 report_data（build_ppt 同一份實作），不帶＝拿最新版
+  // 的頁面配當前版本的內容，頁碼與覆寫全部錯位。
+  const q = exportPreview.version ? '?version=' + encodeURIComponent(exportPreview.version) : '';
+  const resp = await fetch(API + '/reports/ppt-layout' + q);
   if (!resp.ok) throw new Error('PPT 版型載入失敗 HTTP ' + resp.status);
   exportPreview.pptLayout = await resp.json();
   return exportPreview.pptLayout;
@@ -3798,7 +3825,9 @@ function pptClusterVariantForSource(section, sourceField) {
 }
 
 function pptVariantChartHtml(variant, page) {
-  if (!variant || !variant.chart_url) return '<span>?”雿?</span>';
+  // ⚠ 2026-07-28：這行原本是編碼壞掉的字串（含 U+E87F/U+E741 兩個 Private Use
+  // Area 字元，全檔唯一），使用者會直接看到亂碼。措辭沿用同檔既有的「無圖」空狀態。
+  if (!variant || !variant.chart_url) return '<span class="figure-empty">無圖</span>';
   if (String(variant.chart_url).toLowerCase().endsWith('.html')) {
     return '<iframe src="' + escHtml(variant.chart_url) + '" title="' + escHtml(page.title || '') + '"></iframe>';
   }
@@ -3932,7 +3961,17 @@ function pptFirstSection(content, page) {
 
 function pptSectionsForPage(content, page) {
   const keys = page.report_keys || [];
-  return (content.sections || []).filter(section => keys.includes(section.report_key));
+  const exact = (content.sections || []).filter(section => keys.includes(section.report_key));
+  if (exact.length) return exact;
+  // ⚠ 2026-07-28：象限頁走不到分群版型的修正。
+  // 後端只產**一個** cluster section（report_key='cluster_topic_table'），
+  // opportunity_quadrant／pain_point_quadrant 的圖是該 section 底下的 variants；
+  // 但 _expand_ppt_pages_with_active_reports 會為它們各建一頁、report_keys=[name]。
+  // 精確比對因此回 [] → pptIsClusterPage 為 false → 退回無 section 的表格版型。
+  // 報表頁的 clusterReportViews 本來就從 variants 判斷，所以那邊三份都正常——
+  // 兩邊行為不一致的根源就在這裡。找不到同名 section 時改用 variants 認。
+  return (content.sections || []).filter(section =>
+    keys.some(key => hasClusterVariant(section, key)));
 }
 
 function pptMissingReportKeys(content, page) {
@@ -3994,21 +4033,6 @@ let reportViewContent = null;
 let reportViewOptions = [];
 
 // 把選單填上目前版本的所有 section（R7）；預設選第一份。
-function fillReportViewSelectLegacy(content) {
-  reportViewContent = content;
-  const sel = el('report-view-select');
-  if (!sel) return;
-  const sections = (content && content.sections) || [];
-  if (!sections.length) {
-    sel.innerHTML = '<option value="">（尚無報表，請先產製）</option>';
-    return;
-  }
-  sel.innerHTML = sections
-    .map((s, i) => '<option value="' + i + '">' + escHtml(s.title || ('報表 ' + (i + 1))) + '</option>')
-    .join('');
-  sel.value = '0';
-  renderReportViewer();
-}
 
 function reportLabelForKey(reportKey) {
   const hit = REPORT_TYPES.find(([key]) => key === reportKey);
@@ -4145,18 +4169,6 @@ async function runNarrative() {
 
 // R9：版本區隨選單變化——一次只顯示選中的那一份，不把整份報告全列出來。
 // R1：單份版面＝左數據、右圖表、下解讀。
-function renderReportViewerLegacy() {
-  const wrap = el('report-inline-view');
-  const sel = el('report-view-select');
-  if (!wrap || !sel) return;
-  const sections = (reportViewContent && reportViewContent.sections) || [];
-  const idx = parseInt(sel.value, 10);
-  if (!sections.length || Number.isNaN(idx) || !sections[idx]) {
-    wrap.innerHTML = '';
-    return;
-  }
-  wrap.innerHTML = reportSingleHtml(sections[idx]);
-}
 
 // 單份報表：左數據表、右圖表、下解讀（橫跨整寬）。
 function renderReportViewer() {
@@ -4222,53 +4234,6 @@ function reportVariantChartHtml(section, variant) {
     + escHtml(section.title || '') + ' ' + escHtml(variant.label || '') + '" loading="lazy">'
     + (variant.label ? '<figcaption class="hint">' + escHtml(variant.label) + '</figcaption>' : '')
     + '</figure>';
-}
-
-function reportSingleHtmlLegacy(section, option) {
-  const rows = section.rows || [];
-  let dataHtml = '<p class="hint" style="padding:0.3rem 0">無資料</p>';
-  if (rows.length) {
-    const columns = Object.keys(rows[0]);
-    const head = columns.map(c => '<th>' + escHtml(c) + '</th>').join('');
-    const body = rows.map(r => '<tr>'
-      + columns.map(c => '<td>' + escHtml(fmtCell(r[c])) + '</td>').join('') + '</tr>').join('');
-    dataHtml = '<table><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>'
-      + (section.row_count > rows.length
-        ? '<p class="hint" style="padding:0.25rem 0">顯示前 ' + rows.length
-          + ' 列｜總列數 ' + section.row_count + '</p>'
-        : '');
-  }
-  const variants = section.variants || [];
-  const chartHtml = variants.length
-    ? variants.map(v => (v.chart_url
-        ? '<figure style="margin:0 0 0.8rem"><img src="' + escHtml(v.chart_url) + '" alt="'
-          + escHtml(section.title) + ' ' + escHtml(v.label || '') + '" loading="lazy">'
-          + (v.label ? '<figcaption class="hint">' + escHtml(v.label) + '</figcaption>' : '')
-          + '</figure>'
-        : '<p class="hint">（' + escHtml(v.label || '此變體') + '無圖檔）</p>')).join('')
-    : '<p class="hint">（無圖表）</p>';
-  // 解讀：AI narratives 目前可能整批不存在（見 todo 9d，narrative runner 讀本機路徑、
-  // 報表在容器裡），故明確給空狀態文案，不留白讓人以為版面壞掉。
-  const texts = variants
-    .map(v => (v.narrative && v.narrative.text) ? v.narrative.text.trim() : '')
-    .filter(Boolean);
-  // 空狀態附觸發鈕（2026-07-28）：舊版只寫「可於右欄 AI 助手送出」，但右欄沒有那條路徑，
-  // 等於解讀失敗後只能重產整份報表。改為就地可送——打既有 /ai-tasks，後端零改動。
-  const narrativeHtml = texts.length
-    ? texts.map(t => '<p>' + escHtml(t) + '</p>').join('')
-    : '<p class="empty">AI 解讀尚未產生。'
-      + '<button class="btn btn-sm" id="btn-run-narrative" onclick="runNarrative()"'
-      + ' style="margin-left:0.6rem">產生 AI 解讀</button></p>';
-  return '<article class="export-card">'
-    + '<h3>' + escHtml(section.title || '') + '</h3>'
-    + '<div class="report-single">'
-    + '<div class="report-single-data">' + dataHtml + '</div>'
-    + '<div class="report-single-chart">' + chartHtml + '</div>'
-    + '</div>'
-    + '<div class="report-single-narrative"><strong>解讀</strong>' + narrativeHtml + '</div>'
-    + (section.note ? '<p class="hint" style="padding:0.5rem 0 0">'
-        + escHtml(section.note) + '</p>' : '')
-    + '</article>';
 }
 
 function reportSingleHtml(section, option) {
@@ -4584,7 +4549,10 @@ async function triggerExport() {
     // 完成後重新載入預覽，讓工作台看到新版本內容。
     const resp = await fetch(API + '/reports', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      // workspace_id 決定三份分群報表的範圍（2026-07-29 補）：原本送空 body，
+      // worker 端 workspace_id=None 就靜默跳過分群報表——07-28 修了報表種類頁的
+      // submitReports（呼叫點①），同檔案的這個呼叫點②漏掉。同 bug 兩個呼叫點。
+      body: JSON.stringify({ workspace_id: state.workspaceId }),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
@@ -4635,16 +4603,12 @@ async function requestExportPpt() {
   const btn = el('btn-export-ppt');
   if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
   try {
-    // 三種人工覆寫分開送，不混成一包：slots＝文案槽人工稿、layout_overrides＝
-    // 每頁改過的版型 kind、position_overrides＝拖曳後的座標。分開才對得上
-    // 「AI 只產文案、排版由確定性程式處理」的分工紅線。
-    const edits = exportPreview.edits || exportEditsDefault();
+    // ⚠ 三種人工覆寫**只走 approval_overrides 一包**（派工端 _run_ai_report_ppt_job
+    // 只讀這個 key）。曾同時在頂層又送 slots／layout_overrides／position_overrides，
+    // 派工端不讀＝死參數，徒留「看起來有傳」的誤導（2026-07-29 移除）。
     const params = {
       based_on_version: exportPreview.content.version,
       approval_overrides: exportPptApprovalOverrides(),
-      slots: edits.slots || {},
-      layout_overrides: edits.layout_overrides || {},
-      position_overrides: edits.position_overrides || {},
     };
     if (state.workspaceId) params.workspace_id = state.workspaceId;
     const created = await getJson(API + '/ai-tasks', {

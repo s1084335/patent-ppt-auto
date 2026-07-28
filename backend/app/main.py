@@ -224,6 +224,33 @@ def _section_report_key(section: dict) -> str:
     return str(variants[0].get("file", "")).rsplit(".", 1)[0]
 
 
+def _limit_rows_per_source(rows: list, limit: int) -> list:
+    """列數上限**按 source_field 各自計**，不是整體取前 N。
+
+    ⚠ 2026-07-28：分群報表的兩個通道（技術／功效）共用同一份 rows。整體
+    `rows[:20]` 會讓排在後面的功效通道被整批切掉——技術主題 ≥ 20 個時一列不剩。
+    前端切到「功效」濾出空陣列後，`sectionForReportView` 的
+    `rows.length ? rows : section.rows` fallback 會**退回未過濾的全部列**，
+    使用者按了功效卻看到技術資料且無提示，比空白更難發現。
+
+    無 source_field 的 rows（非分群報表）走原本的整體上限，行為不變。
+    通道內順序保持原樣（上游 build_topic_effect_table 已排好技術先功效後）。
+    """
+    if not rows:
+        return rows
+    if not any(r.get("source_field") for r in rows if isinstance(r, dict)):
+        return rows[:limit]
+    seen: dict[str, int] = {}
+    out = []
+    for row in rows:
+        key = str(row.get("source_field") or "") if isinstance(row, dict) else ""
+        if seen.get(key, 0) >= limit:
+            continue
+        seen[key] = seen.get(key, 0) + 1
+        out.append(row)
+    return out
+
+
 def _lookup_rows(report_data: dict, report_key: str) -> list:
     """依 report_key 取數據 rows：reports → family_reports → chart_rows，
     查無且鍵帶 _L<n> 層級尾巴時退基底鍵（IPC/CPC 卡以檔名 fallback 會帶層級）。"""
@@ -306,7 +333,9 @@ def _report_content_payload(run_dir):
             "note": section.get("note", ""),
             "links": section.get("links", []),
             "row_count": len(rows),
-            "rows": rows[:20],  # 顯示上限對齊引擎數據卡（前 20 列＋總列數）
+            # 顯示上限對齊引擎數據卡（20 列＋總列數）。分群報表兩通道各自計算上限，
+            # 否則排在後面的功效通道會被整批切掉（見 _limit_rows_per_source）。
+            "rows": _limit_rows_per_source(rows, 20),
             "variants": variants_out,
         })
 
@@ -333,6 +362,82 @@ def serve_latest_report_content():
             content={"detail": "尚無報表產出：請先於報表種類頁產製報表。"},
         )
     return _report_content_payload(run_dir)
+
+
+def _pages_for_report_data(report_data: dict, builder=None) -> list[dict]:
+    """以 build_ppt 的 `_expand_page_layout` 把 report_data 轉成前端頁面 JSON。
+
+    ⚠ 頁面展開的**唯一實作**＝build_ppt（產檔時真正用的那一份）。原本 API 端
+    自有一套展開（reports.py，甚至同檔兩份），與 build_ppt 三個維度全不一致：
+    動態頁來源（全部報表定義 vs 該版實際產出）、插入錨點（標題關鍵字 vs page>=8）、
+    順序（定義 dict 序 vs report_data 條目序）。而版型／座標覆寫都以**頁碼**為 key
+    ——預覽頁碼 ≠ 產檔頁碼時，使用者在預覽第 N 頁拖的元件會套到成品另一頁上，
+    且預覽會列出一堆該版根本沒產的空頁讓人白編輯。（2026-07-29 全線體檢定案）
+    """
+    if builder is None:
+        from backend.app.worker import ai_report_ppt_runner
+
+        builder = ai_report_ppt_runner._load_builder()
+    return [
+        {
+            "page": int(spec.page),
+            "kind": str(spec.kind),
+            "title": str(spec.title),
+            "subtitle": str(spec.subtitle or ""),
+            "report_keys": list(spec.report_keys),
+            "charts": list(spec.charts),
+            "slots": list(spec.slots),
+        }
+        for spec in builder._expand_page_layout(report_data)
+    ]
+
+
+@report_versions_router.get("/reports/ppt-layout")
+def get_report_ppt_layout(version: str | None = None):
+    """PPT 預覽版型：theme ＋ 依該版 report_data 展開的頁面（未給 version＝最新版）。
+
+    掛在 report_versions_router：這組路由會被搬到 app.routes 最前，天然避開
+    `/reports/{job_id}` 把 `ppt-layout` 吃成 int 的 422——不再靠註解提醒宣告順序
+    （舊實作在 reports.py 內就是靠註解，且重複兩份，已於 2026-07-29 移除）。
+
+    kinds 回 build_ppt 的全部 renderer（換版型下拉的合法值域），不是「已用到的
+    kind 集合」——否則使用者永遠換不到當前沒用的版型。
+
+    503＝部署環境缺 skill 檔案（build_ppt.py／theme.json 不在容器 image 內）：
+    明確報錯勝過默默壞掉——本機開發時祖先目錄的 .agents 會掩蓋此問題，
+    只有部署後才暴露（與 9d 跨容器斷鏈同類）。
+    """
+    import json as _json
+
+    from backend.app.worker import ai_report_ppt_runner
+
+    source = _resolve_run_dir(version) if version else _latest_run_dir()
+    if source is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "報表版本不存在：請先於報表種類頁產製報表。"},
+        )
+    raw = source.read_bytes("report_data.json")
+    if raw is None:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": f"版本 {source.name} 缺 report_data.json"},
+        )
+    try:
+        builder = ai_report_ppt_runner._load_builder()
+        theme = _json.loads(ai_report_ppt_runner.THEME_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - 部署缺檔要給可行動的錯誤，不吐 500 追蹤
+        return JSONResponse(
+            status_code=503,
+            content={"detail": f"PPT 版型資源不可用（部署環境缺 skill 檔案？）：{exc}"},
+        )
+    report_data = _json.loads(raw.decode("utf-8"))
+    return {
+        "version": source.name,
+        "theme": theme,
+        "pages": _pages_for_report_data(report_data, builder=builder),
+        "kinds": sorted(builder.RENDERERS),
+    }
 
 
 @report_versions_router.get("/reports/versions")

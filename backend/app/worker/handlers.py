@@ -366,38 +366,14 @@ def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict
     run_dir = Path(result["output_dir"])
     result["artifacts_uploaded"] = report_artifact_store.upload_run_dir(run_dir)
     result["has_cluster_analytics"] = cluster_data is not None
-    # 報表產完自動接 AI 解讀（2026-07-24 定案）：綁定該次報表版本 enqueue ai:narrative，
-    # 由既有 handle_ai_narrative／ai_narrative_runner 消費（不另寫解讀邏輯）。解讀為非同步後續
-    # job，報表本身已產完並上傳，不等解讀；enqueue 失敗只記 log、不擋報表（失敗隔離）。
-    _enqueue_report_narrative(result, context)
+    # ⚠ 不自動排 AI 解讀（2026-07-29 移除 2026-07-24 的自動接續）：
+    # ① 架構定案是「按需」——workflows.md 明載「報表解讀等採按需觸發，確定性報表
+    #    先顯示、不等 AI」；07-24 加自動接續時前端還沒有手動鈕，如今鈕已上線。
+    # ② 重複排程實錘（待辦 B4）：自動 enqueue ＋ 前端手動鈕各建一筆，同版本兩個
+    #    narrative job 搶寫同一份 narratives.json、Companion 燒兩倍 token。
+    # ③ 先例一致：patent_note／company_zh_name 都因「自動觸發失敗無補救入口」改手動。
     context.heartbeat("報表產製完成", 100)
     return _json_safe(result)
-
-
-def _enqueue_report_narrative(result: dict[str, Any], context: JobContext) -> None:
-    """報表產物落庫後 enqueue 一筆 ai:narrative，based_on_version 綁定該次報表版本。
-
-    ⚠ 失敗隔離（沿 _enqueue_post_import_jobs／_enqueue_candidate_explanation 模式）：報表本體已
-    產完並上傳，這裡的解讀只是後續補充；任何例外都只記 log、不 raise——AI 掛掉時報表照常看得到，
-    使用者可重新觸發解讀。based_on_version＝run_chart_trial 回傳的 version（＝報表版本目錄名），
-    對齊 ai_narrative_runner.resolve_run_dir 的版本識別（report_narrative_v1 契約）。缺 version
-    （理論上不會，run_chart_trial 一律回）時不 enqueue，沒有可綁定的版本。
-    """
-    from backend.app.db import job_repository as jr
-
-    try:
-        version = result.get("version")
-        if not version:
-            return
-        jr.create_job(
-            "ai:narrative",
-            {"based_on_version": version},
-            workspace_id=context.job.workspace_id,
-        )
-        result["narrative_job_enqueued"] = True
-    except Exception:  # noqa: BLE001 - 解讀是輔助，缺了報表照常顯示
-        LOGGER.exception("report narrative enqueue failed after report_generate")
-        result["narrative_job_enqueued"] = False
 
 
 def handle_patent_import(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:

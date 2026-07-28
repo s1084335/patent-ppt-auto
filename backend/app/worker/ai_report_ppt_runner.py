@@ -107,18 +107,21 @@ def _load_builder():
 def report_slot_keys() -> list[str]:
     """回傳報告 PPT 的全部確認槽鍵（唯一來源＝build_ppt.py 的 PAGE_LAYOUT）。
 
-    runner 產文案就照這組槽名，不自己另定一套（接線非重寫）。build_ppt 載不到時
-    fallback 到 SKILL.md 步驟 D 列出的槽位契約，避免匯入期硬失敗。
+    runner 產文案就照這組槽名，不自己另定一套（接線非重寫）。
+
+    ⚠ 載不到就 **raise，不做寫死清單 fallback**（2026-07-29 移除）：原 fallback
+    寫死拆欄前的 10 槽，而 PAGE_LAYOUT 已改 17 頁動態——真走到 fallback 時
+    AI 只產 10 槽、新頁全掛「待確認」浮水印，**job 卻顯示成功**（靜默劣化）。
+    寫死副本＝與唯一來源的第二落點，PAGE_LAYOUT 再改就再脫節一次。
+    載不到的環境（缺 skill 檔案／python-pptx）本來就組不了版，早炸早知道。
     """
     try:
         return list(_load_builder().all_slot_keys())
-    except Exception:
-        # build_ppt 暫時載不到（部署缺 python-pptx 等）：用 SKILL.md D-2 的槽位契約保底。
-        return [
-            "cover.title", "direction.body", "trend.narrative", "tech.narrative",
-            "competitor.narrative", "opportunity.narrative", "pain_point.narrative",
-            "key_players.market", "market.scope", "market.size",
-        ]
+    except Exception as exc:
+        raise ReportPptRunnerError(
+            f"載入 build_ppt.py 失敗，取不到確認槽清單（部署環境缺 skill 檔案或 "
+            f"python-pptx？）：{type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def build_cli_command(cli_kind: str, prompt: str, *, model: str | None = None) -> list[str]:

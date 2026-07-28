@@ -8,6 +8,14 @@ from __future__ import annotations
 import statistics
 from typing import Any
 
+# 通道常數取自唯一來源（sources.py 只 import dataclass，是純常數模組，
+# 不破壞本模組「不碰 DB／API／I/O」的邊界）。不自行寫死字串——
+# 值域對不上正是本專案反覆出現的靜默失敗來源。
+from backend.app.clustering.sources import (
+    SOURCE_FIELD_EFFECT,
+    SOURCE_FIELD_TECHNICAL,
+)
+
 
 def _compute_top_applicants(
     topic_patents: set[int],
@@ -50,16 +58,45 @@ def build_topic_effect_table(
         每列：topic_code、label、source_field、patent_count（distinct patent）、
         applicant_count（獨立申請人數）、top_applicants（前三大 {name, count}）。
     """
-    topic_patents: dict[str, set[int]] = {}
+    # ⚠ 歸戶鍵＝(topic_code, source_field) 複合鍵（2026-07-28 驗收發現）。
+    #
+    # `topic_code` 由 clustering/runner.py 產出 `f"T{position:03d}"`，**兩個通道
+    # 各自從 T001 開始編號**，共用同一命名空間。原本以 topic_code 單鍵歸戶：
+    #   - topic_patents：兩通道同 code 的專利集合被**合併**（互相污染件數）
+    #   - topic_map：後出現的通道**整批覆蓋**前者
+    # 實測 4 個主題（技術 T001/T002 ＋ 功效 T001/T002）只出 2 列，技術全滅。
+    # worker/handlers.py 把兩通道 topic_rows 直接串接，正是觸發點。
+    #
+    # 報表仍正常產出、不報錯——又一次靜默失敗。分群報表 07-28 上午接通時
+    # 只驗了「產得出來」，沒驗「兩個通道的資料都在」。
+    #
+    # ⚠ 不改 topic_code 的產生規則：那會牽動 artifact、增量分群、合併/拆分
+    # 一整條線。此處只修「報表層把兩通道當成同一組」。
+    def _key(item: dict[str, Any], code: str) -> tuple[str, str]:
+        return (code, str(item.get("source_field") or ""))
+
+    topic_patents: dict[tuple[str, str], set[int]] = {}
     for t in topics:
-        topic_patents.setdefault(t["topic_code"], set())
+        topic_patents.setdefault(_key(t, t["topic_code"]), set())
+
+    # assignment 未帶 source_field 時（舊資料，單通道時期）退回「同 code 只有
+    # 一個主題」的唯一解；同 code 跨通道則無從判斷，兩邊都不加以免灌錯數。
+    codes_by_topic: dict[str, list[tuple[str, str]]] = {}
+    for key in topic_patents:
+        codes_by_topic.setdefault(key[0], []).append(key)
+
     for a in assignments:
-        tc = a.get("topic_code", a.get("topic_key", ""))
+        tc = str(a.get("topic_code", a.get("topic_key", "")) or "")
         pid = int(a["patent_id"])
-        if tc in topic_patents:
-            topic_patents[tc].add(pid)
+        src = str(a.get("source_field") or "")
+        if src:
+            key = (tc, src)
         else:
-            topic_patents[tc] = {pid}
+            candidates = codes_by_topic.get(tc) or []
+            if len(candidates) != 1:
+                continue  # 同 code 多通道且無來源標記——無法歸戶，不猜
+            key = candidates[0]
+        topic_patents.setdefault(key, set()).add(pid)
 
     app_by_patent: dict[int, set[str]] = {}
     for na in normalized_applicants:
@@ -69,17 +106,23 @@ def build_topic_effect_table(
             continue
         app_by_patent.setdefault(pid, set()).add(aname)
 
-    topic_map = {t["topic_code"]: t for t in topics}
+    topic_map = {_key(t, t["topic_code"]): t for t in topics}
+
+    # 排序：技術先、功效後，各自依 topic_code（與 chart_runner._source_segments
+    # 的分段順序同口徑；未知來源殿後）。單以 tuple 排序會變成字母序
+    # （effect_summary < wips_...），與定案的「技術先」相反。
+    order = {SOURCE_FIELD_TECHNICAL: 0, SOURCE_FIELD_EFFECT: 1}
 
     result: list[dict[str, Any]] = []
-    for tc in sorted(topic_patents.keys()):
-        patents = topic_patents[tc]
+    for key in sorted(topic_patents, key=lambda k: (order.get(k[1], 2), k[1], k[0])):
+        code, source_field = key
+        patents = topic_patents[key]
         top3, app_count = _compute_top_applicants(patents, app_by_patent)
-        info = topic_map.get(tc, {})
+        info = topic_map.get(key, {})
         result.append({
-            "topic_code": tc,
-            "label": info.get("label", tc),
-            "source_field": info.get("source_field", ""),
+            "topic_code": code,
+            "label": info.get("label", code),
+            "source_field": info.get("source_field", source_field),
             "patent_count": len(patents),
             "applicant_count": app_count,
             "top_applicants": top3,
