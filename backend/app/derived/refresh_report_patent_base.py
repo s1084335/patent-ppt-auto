@@ -119,6 +119,30 @@ applicant_code_names AS (
     WHERE NULLIF(BTRIM(pp."申請人代表碼"), '') IS NOT NULL
     GROUP BY NULLIF(BTRIM(pp."申請人代表碼"), '')
 ),
+-- 受讓人共用同一份代碼對照（2026-07-28 使用者定案「受讓人也是用我這套收斂」）。
+--
+-- ⚠ WIPS 匯出**沒有受讓人代碼欄**（實查只有「申请人名称标准化代码[JP]」與
+-- 「标准当前专利权人代码[US,JP,KR,CN,CA,AU]」兩個人名代碼欄），故無法像另兩欄
+-- 那樣直接以代碼 join。改為**以別稱字面反查代碼**：使用者在代碼區塊建立一組
+-- （代碼＋正規化名＋N 變體）時，該組的每個變體都寫成 company_aliases 一列；
+-- 受讓人欄的字面只要命中任一變體，就能反查到代碼、取得該代碼的公司名。
+--
+-- 與 assignee_alias（既有別稱 LATERAL）的差異：那支只回「該列自己的公司名稱」，
+-- 這支經由代碼再取一次，確保同一代碼下**所有變體**收斂到同一顯示名——即使
+-- 使用者事後改了某一列的公司名稱，仍以代碼層的 mode() 為準，不會各列漂移。
+--
+-- 只採 confirmed（同 code_alias_names 護欄）：AI 草稿不得經此路徑滲進正式顯示名。
+assignee_code_names AS (
+    SELECT
+        lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) AS alias_key,
+        mode() WITHIN GROUP (ORDER BY can2.company_name) AS company_name
+    FROM derived_layer.company_aliases ca
+    JOIN code_alias_names can2
+        ON can2.company_code = NULLIF(BTRIM(ca."申請人代碼"), '')
+    WHERE ca.review_status = 'confirmed'
+      AND NULLIF(BTRIM(ca."別稱"), '') IS NOT NULL
+    GROUP BY lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g'))
+),
 owner_code_names AS (
     SELECT
         NULLIF(BTRIM(pp."標準當前專利權人代碼[US,JP,KR,CN,CA,AU]"), '') AS person_code,
@@ -200,9 +224,12 @@ SELECT
     COALESCE(ocan.company_name, owner_alias."公司名稱", ocn.canonical_name, NULLIF(BTRIM(b."標準當前專利權人[US,JP,KR,CN,CA,AU]"), ''), NULLIF(BTRIM(b."最近專利權人[US,JP,KR,CN,CA,AU]"), '')) AS current_assignee_display_name,
     b."最近受讓人[US,KR,CN]",
     -- 最近受讓人在 WIPS 匯出無對應代碼欄（mappings/wips.py 僅有申請人代表碼與
-    -- 標準當前專利權人代碼兩個代碼欄），故只能走別稱路徑；來源日後若新增受讓人
-    -- 代碼欄，此處應比照上面兩欄改為代碼優先。
-    COALESCE(assignee_alias."公司名稱", NULLIF(BTRIM(b."最近受讓人[US,KR,CN]"), '')) AS recent_assignee_display_name,
+    -- 標準當前專利權人代碼兩個代碼欄）。2026-07-28 起改以「別稱字面反查代碼」補上
+    -- 代碼層（assignee_code_names），使受讓人與另兩欄共用同一份使用者對照表；
+    -- 來源日後若真的新增受讓人代碼欄，可改為直接 join，語意不變。
+    -- 順位與另兩欄一致：代碼對照 > 別稱對照 > 原始字面。代碼是使用者的裁決依據，
+    -- 優先級最高（見 assignee_code_names 的說明——受讓人以別稱反查代碼）。
+    COALESCE(acan_assignee.company_name, assignee_alias."公司名稱", NULLIF(BTRIM(b."最近受讓人[US,KR,CN]"), '')) AS recent_assignee_display_name,
     b."主權項",
     b."獨立項[KR,JP,US,CN,EP,IN]",
     b."所有權利要求[JP,KR,CN]",
@@ -271,7 +298,11 @@ LEFT JOIN owner_code_names ocn
 LEFT JOIN code_alias_names acan
     ON acan.company_code = NULLIF(BTRIM(b."申請人代表碼"), '')
 LEFT JOIN code_alias_names ocan
-    ON ocan.company_code = NULLIF(BTRIM(b."標準當前專利權人代碼[US,JP,KR,CN,CA,AU]"), '');
+    ON ocan.company_code = NULLIF(BTRIM(b."標準當前專利權人代碼[US,JP,KR,CN,CA,AU]"), '')
+-- 受讓人以「別稱字面 → 代碼 → 公司名」反查（WIPS 無受讓人代碼欄）。
+-- equi-join 走 hash join，別稱集合是小表，不引入 N+1。
+LEFT JOIN assignee_code_names acan_assignee
+    ON acan_assignee.alias_key = lower(regexp_replace(BTRIM(COALESCE(b."最近受讓人[US,KR,CN]", '')), '\\s+', ' ', 'g'));
 """
 
 
