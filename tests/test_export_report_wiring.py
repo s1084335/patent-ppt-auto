@@ -165,3 +165,42 @@ class ExportVersionSelectTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SkillShipsWithRepoTests(unittest.TestCase):
+    """🔴 部署斷鏈（體檢第 4 紅項）：skill 必須隨專案 repo 進容器。
+
+    build_ppt.py＋theme.json 原本只在中央 `D:\力山\.agents\skills\`——
+    不在專案 repo、Dockerfile 也沒 COPY。Lightning 容器裡 `_load_builder()`
+    必炸 → `/reports/ppt-layout` 503、匯出頁預覽在正式部署起不來。
+    本機開發時 `_resolve_skill_dir` 掃祖先目錄掃得到中央 .agents，
+    把問題完全掩蓋——部署才爆（與 9d 跨容器斷鏈同類）。
+
+    2026-07-29 使用者定案：**skill 搬進專案 repo 當唯一來源**（backend／worker／
+    Companion 的程式都依賴它，部署單位是專案 repo；「同一資訊只有一份唯一來源」），
+    中央 .agents 那份移除。路徑用 `skills/`（非 `.agents/`——AGENTS.md 明定
+    本 repo 不建 .agents/ 目錄，那是工作紀錄與 context 的集中規範）。
+    """
+
+    SKILL_DIR = PROJECT_ROOT / "skills" / "patent-report-ppt"
+
+    def test_skill_files_in_repo(self):
+        for rel in ("scripts/build_ppt.py", "theme.json", "SKILL.md"):
+            with self.subTest(file=rel):
+                self.assertTrue((self.SKILL_DIR / rel).is_file(),
+                                f"skill 檔案 {rel} 不在專案 repo——容器裡載不到")
+
+    def test_dockerfile_copies_skills(self):
+        dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        copies = [l for l in dockerfile.splitlines()
+                  if l.strip().startswith("COPY") and "skills" in l]
+        self.assertTrue(copies,
+                        "Dockerfile 沒 COPY skills/——repo 有檔也進不了 image")
+
+    def test_runner_resolves_repo_local_first(self):
+        """runner 的 SKILL_DIR 必須解析到專案內副本（唯一來源）。"""
+        from backend.app.worker import ai_report_ppt_runner as r
+
+        resolved = r._resolve_skill_dir()
+        self.assertEqual(resolved, self.SKILL_DIR,
+                         f"SKILL_DIR 解析到 {resolved}——應優先取專案內 skills/")

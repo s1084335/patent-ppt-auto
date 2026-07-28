@@ -48,6 +48,10 @@ COPY --chown=patent:patent alembic.ini ./
 COPY --chown=patent:patent alembic ./alembic
 COPY --chown=patent:patent backend ./backend
 COPY --chown=patent:patent scripts ./scripts
+# skills/＝PPT 組版程式（build_ppt.py＋theme.json）的唯一來源（2026-07-29 定案）。
+# 漏掉這行的症狀：/reports/ppt-layout 回 503「缺 skill 檔案」、匯出頁預覽起不來
+# ——本機開發掃得到中央 .agents 掩蓋此問題，只有容器內會爆。
+COPY --chown=patent:patent skills ./skills
 COPY --chown=patent:patent sql ./sql
 
 # PatentSBERTa is intentionally excluded from the image (837MB).  It is downloaded

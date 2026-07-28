@@ -70,18 +70,24 @@ class ReportPptRunnerError(RuntimeError):
 def _resolve_skill_dir() -> Path:
     """定位 patent-report-ppt skill 目錄（含 scripts/build_ppt.py、theme.json）。
 
-    沿 ai_narrative_runner._resolve_skill_path 的作法：優先專案內 .agents/skills，
-    不存在時掃各層祖先（力山 .agents 集中在 D:\\力山\\.agents，非專案子目錄）。
+    ⚠ 唯一來源＝**專案 repo 的 `skills/patent-report-ppt/`**（2026-07-29 使用者定案）。
+    原本只在中央 D:\\力山\\.agents\\skills\\——不在專案 repo、Dockerfile 也沒 COPY，
+    Lightning 容器裡本函式找不到檔案 → `_load_builder()` 必炸 → ppt-layout 503、
+    匯出頁預覽在正式部署起不來；本機開發時祖先掃描掃得到中央 .agents，
+    把問題完全掩蓋（部署才爆，與 9d 跨容器斷鏈同類）。搬進 repo 後
+    backend／worker 容器與 Companion（本機 repo checkout）走同一條路徑。
+
+    祖先 .agents 掃描保留為相容 fallback（舊部署或未 pull 的環境），
     找不到就回專案內路徑（不存在），由讀取階段自然報錯，不在匯入期硬失敗。
     """
-    project_local = PROJECT_ROOT / ".agents" / "skills" / "patent-report-ppt"
-    if (project_local / "scripts" / "build_ppt.py").exists():
-        return project_local
+    repo_local = PROJECT_ROOT / "skills" / "patent-report-ppt"
+    if (repo_local / "scripts" / "build_ppt.py").exists():
+        return repo_local
     for ancestor in PROJECT_ROOT.parents:
         candidate = ancestor / ".agents" / "skills" / "patent-report-ppt"
         if (candidate / "scripts" / "build_ppt.py").exists():
             return candidate
-    return project_local
+    return repo_local
 
 
 SKILL_DIR = _resolve_skill_dir()
