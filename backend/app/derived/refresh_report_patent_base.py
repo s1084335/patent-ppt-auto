@@ -30,6 +30,10 @@ base AS (
         p.application_year,
         p.publication_year,
         p.title,
+        -- abstract（2026-07-28 補搬）：文獻備註第三級來源。外觀設計沒有任何權利要求
+        -- （實測 CN 11 筆四欄全空），只有摘要 11/11、最長 530 字——沒有它那批專利
+        -- 永遠沒備註，AI 補分也拿不到輸入。所有專利類型都有摘要，是通用保底。
+        p.abstract,
         p."Orig. IPC(Main)",
         p."Orig. CPC(Main)",
         -- 現行分類（2026-07-28 補搬）：core_layer.patents 早有值（Curr. IPC 12 筆、
@@ -137,6 +141,7 @@ INSERT INTO legacy_0021.report_patent_base (
     application_year,
     publication_year,
     title,
+    abstract,
     "Orig. IPC(Main)",
     "Orig. CPC(Main)",
     "Curr. IPC(Main)",
@@ -176,6 +181,7 @@ SELECT
     b.application_year,
     b.publication_year,
     b.title,
+    b.abstract,
     b."Orig. IPC(Main)",
     b."Orig. CPC(Main)",
     b."Curr. IPC(Main)",

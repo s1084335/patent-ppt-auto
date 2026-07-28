@@ -252,14 +252,20 @@ class WriteBackTests(unittest.TestCase):
         # 回寫可靠性關鍵：不再落 patent_attributes，也不再選 raw_record 列。
         self.assertNotIn("patent_attributes", sql)
         self.assertNotIn("MAX", sql.upper())
-        # 來源必須與**分群技術通道同一欄**（獨立項），不是 abstract、也不是主權項；
-        # skip_existing 讀主表備註，不 JOIN attributes。
+        # 來源＝三級順位（2026-07-28 使用者定案，唯一定義在 clustering.sources）：
+        # 獨立項 → 所有權利要求 → abstract。
+        # ⚠ 本斷言前身要求「只讀獨立項、不得含 abstract」，理由是與分群同源。該前提在
+        # 同日晚間被推翻：查清「有主權項無獨立項」的 9 筆全是 TW（獨立項欄名列的六國
+        # 不含 TW），而備註正是那些專利交給 AI 補分的**唯一輸入**——只讀獨立項會讓它們
+        # 兩邊皆空、補分機制自我堵死。再查兩級皆空的 11 筆＝CN 外觀設計（權利要求四欄
+        # 全空是專利類型本質，但摘要 11/11、最長 530 字），故加第三級 abstract。
+        # 分群技術通道**仍固定只讀獨立項**（見 test_patent_note_source_tiers.py 的
+        # ClusteringStillIndependentOnlyTests），備註覆蓋較廣是刻意的。
         read_sql = ai_patent_note_runner.PatentNoteStore.READ_SQL
-        from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL, get_source_spec
-        expected_col = get_source_spec(SOURCE_FIELD_TECHNICAL).source_column
-        self.assertIn(f'"{expected_col}"', read_sql)
-        self.assertNotIn('"主權項"', read_sql, '不得再讀主權項——與分群來源不一致')
-        self.assertNotIn("abstract", read_sql.lower())
+        from backend.app.clustering.sources import PATENT_NOTE_SOURCE_COLUMNS
+        for col in PATENT_NOTE_SOURCE_COLUMNS:
+            self.assertIn(f'"{col}"', read_sql, f"備註來源缺第 {col} 級")
+        self.assertNotIn('"主權項"', read_sql, '使用者明示排除主權項——涵蓋附屬項，語意較雜')
         self.assertNotIn("patent_attributes", read_sql)
 
     def test_read_sql_uses_current_workspace_membership_source(self):

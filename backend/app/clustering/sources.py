@@ -54,6 +54,27 @@ SOURCE_SPECS = {
 }
 
 
+# 文獻備註的來源欄順位（2026-07-28 使用者定案，唯一定義處）。
+#
+# 為什麼與分群不同：分群技術通道**固定只讀獨立項、不 fallback**，維持主題切分的純淨；
+# 備註則要盡量全覆蓋——它同時是「給人看的說明」與「無獨立項專利的 AI 補分輸入」，
+# 取不到值等於那些專利兩邊皆空、補分機制自我堵死。
+#
+# 三級的實測依據（60 筆滑雪機資料）：
+#   ① 獨立項        CN 28／US 9／EP 3／TW 0   ← 與分群同源，有就用
+#   ② 所有權利要求   TW 9 由此救回（該欄名雖寫 [JP,KR,CN]，TW 實際有值）
+#   ③ abstract      CN 外觀設計 11 筆由此救回（權利要求四欄全空、摘要 530 字）
+# 合計 60/60。⚠ 明確排除「主權項」——它涵蓋附屬項，語意比獨立項雜（使用者定）。
+#
+# 第一級不寫死字面，直接取分群技術通道的來源欄：日後 WIPS 換欄名時只改 SOURCE_SPECS
+# 一處，備註自動跟上，不會兩處分岔（本專案已多次因此靜默失敗）。
+PATENT_NOTE_SOURCE_COLUMNS: tuple[str, ...] = (
+    SOURCE_SPECS[SOURCE_FIELD_TECHNICAL].source_column,
+    "所有權利要求[JP,KR,CN]",
+    "abstract",
+)
+
+
 def get_source_spec(source_field: str) -> ClusteringSourceSpec:
     """取得受信任來源設定；未知來源不得進入動態 SQL。"""
     try:

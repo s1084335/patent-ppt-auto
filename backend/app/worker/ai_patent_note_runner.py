@@ -49,10 +49,7 @@ from .ai_narrative_runner import (
 )
 from .ai_payload_file import extract_json_payload
 
-from backend.app.clustering.sources import (
-    SOURCE_FIELD_TECHNICAL,
-    get_source_spec,
-)
+from backend.app.clustering.sources import PATENT_NOTE_SOURCE_COLUMNS
 
 
 # 備註流程版本；隨 prompt 契約升版而變，寫進結果供追溯。
@@ -71,7 +68,14 @@ NOTE_COLUMN = "文獻備註"
 # 後果：備註描述的內容與分群依據不同，看備註判斷主題會失準；且那 9 筆沒有獨立項、
 # 本來就不該進技術分群，卻有備註可用，等於用主權項內容冒充獨立項。
 # 改為由 sources 推導，日後分群換欄時備註自動跟著換，不再兩邊各自寫死而悄悄分岔。
-CLAIM_COLUMN = get_source_spec(SOURCE_FIELD_TECHNICAL).source_column
+# 備註來源三級順位（唯一定義在 clustering.sources）：獨立項 → 所有權利要求 → abstract。
+# 第一級即分群技術通道來源，故有獨立項者備註與分群同源；缺了才逐級退，確保全覆蓋。
+# CLAIM_COLUMN 保留為第一級的別名（既有測試與說明沿用）。
+CLAIM_COLUMN = PATENT_NOTE_SOURCE_COLUMNS[0]
+# 組成 COALESCE 運算式；欄名來自受信任常數（非使用者輸入），不進使用者可控的動態 SQL。
+_NOTE_SOURCE_EXPR = "COALESCE(" + ", ".join(
+    f'NULLIF(BTRIM(p."{col}"), '')' for col in PATENT_NOTE_SOURCE_COLUMNS
+) + ")"
 
 # 備註字數兩層線（2026-07-26 使用者定案）：
 # - NOTE_TARGET_CHARS：**給模型的目標線**。只寫死線時模型會當成目標寫滿，
@@ -217,13 +221,16 @@ class PatentNoteStore:
     靜默失敗。搬主表理由（回寫可靠性）見 0032 migration 頂部說明，與 0026 主附圖同一模式。
     """
 
-    # 讀候選：來源＝patents."主權項"（獨立項），非 abstract。
+    # 讀候選：來源＝三級 COALESCE（獨立項 → 所有權利要求 → abstract，見
+    # clustering.sources.PATENT_NOTE_SOURCE_COLUMNS）。2026-07-28 由單一欄改為三級：
+    # 只讀獨立項時 TW 9 筆與 CN 外觀設計 11 筆取不到值，而備註正是那些專利
+    # 交給 AI 補分的唯一輸入——備註空掉等於補分機制自我堵死。
     # skip_existing 為 True 時排除**主表**已有備註者（0032 後備註在 patents，不再 JOIN
     # patent_attributes 取 latest note）——可重跑但不重複燒 token。
     READ_SQL = f"""
-        SELECT p.id, p."{CLAIM_COLUMN}"
+        SELECT p.id, {_NOTE_SOURCE_EXPR}
         FROM core_layer.patents p
-        WHERE NULLIF(BTRIM(p."{CLAIM_COLUMN}"), '') IS NOT NULL
+        WHERE {_NOTE_SOURCE_EXPR} IS NOT NULL
           AND (%(workspace_id)s::bigint IS NULL OR EXISTS (
               -- 0021：workspace 成員為 workspaces.patent_ids_json 陣列
               -- （明細表 workspace_patents 已下沉 legacy_0021），沿 workspace_queries 讀法。
