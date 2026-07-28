@@ -485,10 +485,16 @@ class FrontendSkeletonTests(unittest.TestCase):
         """專利總覽與分類區共用同一份表格實作，只以 scope 決定欄位差異（不做兩套）。"""
         self.assertIn("function patentTableHtml(data, scope)", self.html)
         self.assertIn("function patentColumns(scope)", self.html)
-        # 三個呼叫點都走同一個 patentTableHtml，只差 scope。
-        for scope in ("'overview'", "'topics'", "'topic'"):
-            with self.subTest(scope=scope):
-                self.assertIn("patentTableHtml(data, " + scope + ")", self.html)
+        # 共用的證據＝只有一份實作、所有呼叫點都經它。
+        # ⚠ 舊斷言逐一比對三個「字面」呼叫（patentTableHtml(data, 'topic') 等），但實作已
+        # 改為 scope 用變數傳入（`patentTableHtml(data, scope)`，三處共用一支）——那比
+        # 三個字面呼叫更符合「不做兩套」的本意，斷言卻因鎖死字面而長期紅燈。
+        # 改鎖行為：實作只有一份，且沒有第二套平行的表格產生器。
+        self.assertEqual(
+            self.html.count("function patentTableHtml("), 1,
+            "patentTableHtml 有多份實作——分類區與總覽又走回兩套")
+        self.assertIn("patentTableHtml(data, scope)", self.html)
+        self.assertIn("patentTableHtml(data, 'overview')", self.html)
         # 「所屬 Workspace」欄只在總覽出現，且以資料驅動（不是硬寫在某個表頭字串裡）。
         self.assertRegex(self.html, r"'所屬 Workspace',\s*key:\s*'workspaces',\s*scope:\s*\['overview'\]")
 
@@ -918,15 +924,25 @@ class FrontendSkeletonTests(unittest.TestCase):
         """版本標示可讀化（時間戳轉成 2026-07-22 00:10 之類），不是只丟目錄名。"""
         self.assertIn("fmtReportVersionLabel", self.html)
 
-    def test_version_list_reuses_inline_render_functions(self):
-        """展開的版本內容複用既有渲染函式，不重寫一套。"""
+    def test_version_body_delegates_to_menu_driven_viewer(self):
+        """版本區只放 PPT 清單，報表本體交給選單驅動的 viewer（R9，2026-07-27 改版）。
+
+        ⚠ 本測試前身為 test_version_list_reuses_inline_render_functions，斷言版本區複用
+        `renderReportContentHtml`／`readOnlyReportView`。R7/R8/R9 改版後兩頁分家、版本區
+        不再自己攤開整份報告（那正是使用者說的「不同報表混在一起」），該前提已作廢，
+        斷言隨之過期而長期紅燈。改鎖現行契約：版本區只掛 PPT 清單容器 ＋ 把 content
+        餵給選單。
+        """
         m = re.search(
             r"function loadReportVersionContent\([^)]*\)\s*\{.*?\n\}", self.html, re.S
         )
         self.assertIsNotNone(m, "找不到 loadReportVersionContent() 定義")
         body = m.group(0)
-        self.assertIn("renderReportContentHtml", body)
-        self.assertIn("readOnlyReportView", body)
+        self.assertIn("report-ppt-list-", body, "版本區應只掛 PPT 清單容器")
+        self.assertIn("fillReportViewSelect", body, "版本內容應餵給上方選單驅動的 viewer")
+        self.assertNotIn(
+            "renderReportContentHtml", body,
+            "版本區不得再自己攤開整份報告——R9 已改為選單一次顯示一份")
 
     # ── F. 分群候選：後端自解析最新 run（不再掃全域 /tasks） ──
 

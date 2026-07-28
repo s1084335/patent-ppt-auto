@@ -1486,20 +1486,24 @@ function renderCandidatePicker(data, hasTopics) {
     + escHtml(currentSourceLabel()) + '通道，run #' + escHtml(data.run_id) + '）</div>'
     + '<p class="hint" style="padding:0 0 0.2rem">'
     + (finalized
-        ? '此 run 已採用下方標示「（目前採用中）」的分類，正式主題已建立。'
+        ? '此 run 已採用下方標示「（目前採用中）」的分類。'
+          + '想改用其他主題數，點選另一組候選後按「改用這組分類」即可，不必重跑分類。'
         : '系統已算出下列分類候選，各組主題數與指標不同。'
           + '選一組後按「採用這組分類」，系統會據此建立正式主題。')
     + '</p>'
     + '<div class="cand-list">' + cards + '</div>'
     + '<div class="toolbar">'
-    // 已定案（clustering_status=completed）的 run 不得再送 finalize——後端會回 409。
-    // 顯示可按的鈕只會讓使用者撞錯誤訊息，故改為停用態並說明要重跑分類才能換分法。
-    + (finalized
+    // 2026-07-28：已定案的 run 也能再送 finalize（改選候選）。原本鈕停用並叫使用者
+    // 「按分類重跑一次」——那條路實際走 incremental，沒有新資料時等於空跑，
+    // artifact 遺失時更直接 FileNotFoundError，是承諾了做不到的操作。
+    // 選中的就是目前採用中那組時，鈕維持停用（沒有可改的東西）。
+    + (finalized && !candidatePickIsDifferent()
         ? '<button class="btn btn-primary" disabled>已採用此分類</button>'
           + '<span class="hint" style="padding:0 0 0 .6rem">'
-          + '要改用其他分法，請按上方「分類」重跑一次。</span>'
+          + '點選其他組候選即可改用。</span>'
         : '<button class="btn btn-primary" id="btn-finalize-candidate"'
-          + ' onclick="submitFinalizeCandidate()">採用這組分類</button>')
+          + ' onclick="submitFinalizeCandidate()">'
+          + (finalized ? '改用這組分類' : '採用這組分類') + '</button>')
     + (hasTopics ? '<button class="btn btn-outline" onclick="closeCandidatePicker()">取消</button>' : '')
     + '</div>'
     + '<div id="candidate-finalize-job"></div>'
@@ -1526,12 +1530,37 @@ function candidateCardHtml(c) {
 function formatCandidateMetric(v) {
   return Number.isInteger(v) ? String(v) : v.toFixed(4);
 }
+// 目前點選的候選是否「不同於採用中的那組」——決定鈕要不要放行（2026-07-28）。
+function candidatePickIsDifferent() {
+  const current = (candidateListCache || []).find(c => c.is_selected);
+  if (!current) return true;   // 還沒定案，任何選擇都算有效
+  return state.candidatePickId !== current.candidate_id;
+}
+
 function pickCandidate(candidateId) {
   state.candidatePickId = candidateId;
   // 只重畫候選卡的選取狀態，不重打 API。
   const list = candidateListCache;
   const wrap = document.querySelector('#topic-candidates .cand-list');
   if (wrap) wrap.innerHTML = list.map(c => candidateCardHtml(c)).join('');
+  // 已定案時，鈕的可按狀態隨選擇變動（選回採用中那組就該停用），故一併重畫工具列。
+  renderCandidateToolbar();
+}
+
+// 工具列單獨重畫：pickCandidate 後只更新鈕，不重打 API、不重畫整張卡片區。
+function renderCandidateToolbar() {
+  const bar = document.querySelector('#topic-candidates .toolbar');
+  if (!bar || !candidateListCache) return;
+  const finalized = candidateListCache.some(c => c.is_selected);
+  const hasTopics = finalized;
+  bar.innerHTML =
+    (finalized && !candidatePickIsDifferent()
+      ? '<button class="btn btn-primary" disabled>已採用此分類</button>'
+        + '<span class="hint" style="padding:0 0 0 .6rem">點選其他組候選即可改用。</span>'
+      : '<button class="btn btn-primary" id="btn-finalize-candidate"'
+        + ' onclick="submitFinalizeCandidate()">'
+        + (finalized ? '改用這組分類' : '採用這組分類') + '</button>')
+    + (hasTopics ? '<button class="btn btn-outline" onclick="closeCandidatePicker()">取消</button>' : '');
 }
 
 // 「分類」手動觸發（POST /workspaces/{id}/clustering/auto）：後端自動判斷首次/增量，
@@ -1630,8 +1659,16 @@ async function submitFinalizeCandidate() {
     if (box) box.innerHTML = '<div class="task-detail-error">請先選一組分類候選。</div>';
     return;
   }
+  // 改用其他分法＝重建主題編號，舊主題的 AI 命名與合併／拆分歷史會失效（2026-07-28）。
+  // 不相干桶的人工裁決是專利級的，與主題怎麼切無關，會保留。
+  const switching = (candidateListCache || []).some(c => c.is_selected);
+  if (switching && !confirm(
+      '改用其他分類會重建主題，原本的主題名稱與合併／拆分紀錄將一併清除。\n'
+      + '（「不相干」的人工裁決會保留。）\n\n確定要改用這組分類？')) {
+    return;
+  }
   const btn = el('btn-finalize-candidate');
-  if (btn) { btn.disabled = true; btn.textContent = '採用中…'; }
+  if (btn) { btn.disabled = true; btn.textContent = switching ? '切換中…' : '採用中…'; }
   try {
     const resp = await fetch(API + '/clustering/runs/' + encodeURIComponent(candidateRunId) + '/finalize', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1646,7 +1683,7 @@ async function submitFinalizeCandidate() {
         box.innerHTML = '<div class="task-detail-error">採用分類失敗：'
           + escHtml(err.detail || ('HTTP ' + resp.status)) + '</div>';
       }
-      if (btn) { btn.disabled = false; btn.textContent = '採用這組分類'; }
+      if (btn) { btn.disabled = false; btn.textContent = switching ? '改用這組分類' : '採用這組分類'; }
       return;
     }
     const job = await resp.json();
@@ -1654,7 +1691,7 @@ async function submitFinalizeCandidate() {
     pollFinalizeJob(job.job_id);
   } catch (e) {
     if (box) box.innerHTML = '<div class="task-detail-error">連線錯誤：' + escHtml(e.message) + '</div>';
-    if (btn) { btn.disabled = false; btn.textContent = '採用這組分類'; }
+    if (btn) { btn.disabled = false; btn.textContent = switching ? '改用這組分類' : '採用這組分類'; }
   }
 }
 // 輪詢 clustering_finalize job：沿用統一進度卡（0→100）；成功後重畫分類區顯示正式主題。

@@ -887,7 +887,7 @@ def _load_run_and_candidate(*, run_id: int, candidate_id: int) -> tuple[dict[str
     run_row = load_run_scope(run_id)
     state = dict(run_row.get("topic_state_json") or {})
     clustering_status = state.get("status")
-    if clustering_status not in {"needs_review", "failed"}:
+    if clustering_status not in FINALIZABLE_STATUSES:
         raise ValueError(f"topic run cannot be finalized from status={clustering_status}")
     run_row["input_doc_count"] = state.get("input_doc_count")
     run_row["artifact_version"] = state.get("artifact_version", 1)
@@ -898,6 +898,66 @@ def _load_run_and_candidate(*, run_id: int, candidate_id: int) -> tuple[dict[str
     if candidate_row is None:
         raise ValueError("candidate does not belong to the requested run")
     return run_row, dict(candidate_row)
+
+
+# 可以 finalize 的 clustering_status（唯一來源）。
+# 2026-07-28 加入 completed：使用者要能改選其他候選方案（同一 run 想改幾次就改幾次）。
+# ⚠ 這組值原本在三處各寫一份（api/clustering.py 的 409 守門、runner._load_run_and_candidate、
+# 前端 index.html 的 finalized 判斷），是本專案反覆出現的「同一規則多處實作」。
+# 後端兩處已收口到此常數；前端另有一份判斷，改動時兩邊都要看。
+FINALIZABLE_STATUSES = frozenset({"needs_review", "failed", "completed"})
+
+
+def can_refinalize(scope: dict[str, Any]) -> bool:
+    """該 run 能否再次 finalize（＝使用者改選其他候選方案）。
+
+    2026-07-28 使用者定案：**同一個 run 內想改幾次就改幾次**。原本 `_persist_final_topics`
+    看到已有 topics 就 raise，使得第一次選定後無法反悔——而畫面文案卻寫「要改用其他分法，
+    請按上方『分類』重跑一次」，那條路實際走 incremental（只處理新專利、無新資料時等於空跑，
+    artifact 遺失時更直接 FileNotFoundError），承諾了做不到的操作。
+
+    候選資料本來就完整保留在 `topic_state_json.candidates`（calibrate 一次算完 k=3／5／8），
+    finalize 也本來就靠 candidate_id 指定，故重選在資料上完全成立。
+
+    目前一律放行；保留本函式是為了讓「能不能重選」有單一判斷點——
+    日後若要加條件（例如已進報表的 run 不給改），只改這裡。
+    """
+    return True
+
+
+def clear_topic_scoped_state(run_id: int) -> None:
+    """切換候選前，清掉「掛在舊主題編號上」的下游狀態。
+
+    為什麼要清：k=3 的 T001 與 k=5 的 T001 **不是同一個主題**，沿用舊資料會張冠李戴。
+
+    清這些（主題級）：
+    - 合併／拆分產生的下游 topic_run（`previous_run_id` 指向本 run）——它們的
+      merged_topic_code 指涉舊編號，切換後失去意義。
+    - topic_state_json 內 AI 命名／人工改名的殘留欄位由 `_write_topic_state` 整份取代
+      `topics` 陣列時一併汰換，不需另外處理。
+
+    **不清這些（專利級）**：`workspace_excluded_patents` 的人工裁決是「這篇專利不相干」，
+    與主題怎麼切分無關，切換候選不得動它——使用者的裁決不該因為改了主題數就消失。
+
+    assignments 不在此處理：`_write_topic_state` 寫入前已 `DELETE WHERE run_id`。
+    """
+    with psycopg.connect(**get_connection_kwargs()) as conn:
+        with conn.cursor() as cur:
+            # 下游 run（合併／拆分）連同其 assignments 一併移除；assignments 有 FK 先刪。
+            cur.execute(
+                "SELECT run_id FROM derived_layer.topic_runs WHERE previous_run_id = %s",
+                (run_id,),
+            )
+            downstream = [row[0] for row in cur.fetchall()]
+            if downstream:
+                cur.execute(
+                    "DELETE FROM derived_layer.topic_assignments WHERE run_id = ANY(%s)",
+                    (downstream,),
+                )
+                cur.execute(
+                    "DELETE FROM derived_layer.topic_runs WHERE run_id = ANY(%s)",
+                    (downstream,),
+                )
 
 
 def _persist_final_topics(
@@ -934,8 +994,13 @@ def _persist_final_topics(
     if scope["workspace_id"] is None:
         raise ValueError("workspace run not found while persisting topics")
     source_field = str(scope["source_field"])
-    if (dict(scope.get("topic_state_json") or {}).get("topics") or []):
+    # 2026-07-28：允許同一個 run 重選候選（原本「已有 topics 就 raise」讓選擇無法反悔）。
+    # 舊 topics 與 assignments 由 _write_topic_state 自動汰換（topic_state_json 的 topics
+    # 整個取代、assignments 先 DELETE WHERE run_id），此處只需清掉「掛在舊主題編號上」的
+    # 下游狀態——見 clear_topic_scoped_state。
+    if not can_refinalize(scope):
         raise ValueError("workspace source already has topics; use incremental or merge")
+    clear_topic_scoped_state(run_id)
 
     # 正式主題組成 topic_state_json->'topics'；topic_code 即後續 assignments 的 topic_key
     topic_dicts: list[dict[str, Any]] = []

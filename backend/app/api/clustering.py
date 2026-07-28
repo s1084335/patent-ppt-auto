@@ -201,10 +201,13 @@ def create_finalize(run_id: int, request: FinalizeRequest) -> dict[str, Any]:
             status_code=422,
             detail=f"candidate {request.candidate_id} does not belong to run {run_id}",
         )
-    # 定案只允許 needs_review／failed（見 runner._load_run_and_candidate 的同一組守門）。
-    # 這裡先擋，避免重複按「採用」建出必然失敗的 job，讓使用者只看到 job failed 而不知原因。
+    # 可 finalize 的狀態以 runner.FINALIZABLE_STATUSES 為唯一來源（原本這裡另寫一份，
+    # 與 runner._load_run_and_candidate 兩處各自維護）。含 completed＝允許改選候選。
+    # 這裡先擋，避免建出必然失敗的 job，讓使用者只看到 job failed 而不知原因。
+    from backend.app.clustering.runner import FINALIZABLE_STATUSES
+
     clustering_status = exists[1]
-    if clustering_status not in {"needs_review", "failed"}:
+    if clustering_status not in FINALIZABLE_STATUSES:
         raise HTTPException(
             status_code=409,
             detail=f"run {run_id} cannot be finalized from status={clustering_status}",
