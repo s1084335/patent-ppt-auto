@@ -32,6 +32,13 @@ base AS (
         p.title,
         p."Orig. IPC(Main)",
         p."Orig. CPC(Main)",
+        -- 現行分類（2026-07-28 補搬）：core_layer.patents 早有值（Curr. IPC 12 筆、
+        -- Curr. CPC 19 筆）、legacy_0021 實體表也早有欄位，但這支 refresh 從未搬過，
+        -- 導致 derived 兩欄恆為 NULL、報表永遠只能讀 Orig.。
+        -- ⚠ 只搬 Main（單值）；All 是 ' | ' 分隔多值，混進這張一列一專利的寬表會讓
+        -- group by 把整串當成一個分類，統計必錯——要用 All 需另立展開表。
+        p."Curr. IPC(Main)",
+        p."Curr. CPC(Main)",
         pp."申請人",
         pp."申請人國籍",
         pp."標準化申請人",
@@ -132,6 +139,8 @@ INSERT INTO legacy_0021.report_patent_base (
     title,
     "Orig. IPC(Main)",
     "Orig. CPC(Main)",
+    "Curr. IPC(Main)",
+    "Curr. CPC(Main)",
     "申請人",
     "申請人國籍",
     "標準化申請人",
@@ -169,6 +178,8 @@ SELECT
     b.title,
     b."Orig. IPC(Main)",
     b."Orig. CPC(Main)",
+    b."Curr. IPC(Main)",
+    b."Curr. CPC(Main)",
     b."申請人",
     b."申請人國籍",
     b."標準化申請人",
