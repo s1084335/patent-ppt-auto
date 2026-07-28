@@ -43,6 +43,7 @@ from .ai_narrative_runner import (
     _subprocess_cli_runner,
     parse_cli_result,
 )
+from . import ai_payload_file as pf
 from .ai_payload_file import extract_json_payload
 
 
@@ -87,8 +88,56 @@ def build_cli_command(cli_kind: str, prompt: str, *, model: str | None = None) -
     return [spec["binary"], spec["prompt_flag"], prompt, *model_args, *tail]
 
 
+# 判定規則與輸出契約（2026-07-28 由命令列 prompt 搬進資料檔）。
+# 內容與原 build_prompt 逐條等價，只是改成結構化欄位由 CLI 讀檔取得。
+_ZH_NAME_RULES = [
+    "若該公司在市場上有**廣為人知的慣用中文名**，回報該中文名。"
+    "例：Chervon→泉峰、Makita→牧田、Stanley Black & Decker→史丹利百得、"
+    "Techtronic→創科、Milwaukee→美沃奇。這些是市場慣用叫法，**不是直翻**。",
+    "**不直翻、不音譯**：不得把英文公司名逐字翻成中文，也不得音譯造一個中文名。"
+    "慣用中文名是市場既成叫法，查無就查無，不要自行拼造。",
+    "**查無廣為人知中文名時，回報保留原文**（verdict='keep_original'）——"
+    "這是完全正常且被鼓勵的結果，寧可保留原文也不要硬造。冷門或小公司多屬此類。",
+    "判定用繁體中文思考；zh_name 若有值必為繁體中文，技術詞／型號可保留英文。",
+]
+
+_ZH_NAME_OUTPUT_CONTRACT = {
+    "shape": '{"names": [{"company_code": "X", "verdict": "translated", "zh_name": "泉峰"}, ...]}',
+    "verdict": {
+        "translated": "有市場慣用中文名，zh_name 給該中文名",
+        "keep_original": "查無慣用中文名，保留原文，可省略 zh_name",
+    },
+    "rules": [
+        "company_code 必須原樣取自 companies 清單，不得新增、改寫或遺漏",
+        "只輸出一個 JSON 物件，不要多餘說明文字",
+    ],
+}
+
+
+def build_zh_name_payload(companies: Sequence[tuple[str, str]]) -> dict[str, Any]:
+    """組資料檔內容（取代把整批公司名串進命令列）。
+
+    ⚠ 為什麼改（2026-07-28，使用者原則「AI 分類不要走參數傳遞那種」）：
+    原本 build_prompt 把整批公司名串成一大段字再塞進 argv，長度隨公司數線性成長——
+    實測 20 家 2,384 字元、200 家 17,784、**500 家 43,584 已超過 Windows
+    CreateProcess 的 32,767 上限**（臨界約 370 家）。撞上時是 WinError 206，
+    表象像 CLI 壞掉、極難查；ai:topic_label 2026-07-27 踩過同一個坑（128,101 字元）。
+
+    兩條紅線原封搬進 payload，語意不變：不硬翻、查無回 keep_original。
+    """
+    return {
+        "task": "為每家公司判定「市場慣用中文名」（系統派工、非互動、一次性）",
+        "rules": list(_ZH_NAME_RULES),
+        "companies": [{"code": code, "name_en": name} for code, name in companies],
+        "output_contract": _ZH_NAME_OUTPUT_CONTRACT,
+    }
+
+
 def build_prompt(companies: Sequence[tuple[str, str]]) -> str:
     """把一批「代碼＋英文公司名」組成 headless CLI 提示。
+
+    ⚠ 2026-07-28 起**不再是主路徑**：資料改走 `build_zh_name_payload` 落檔
+    （命令列長度不隨公司數成長）。本函式保留供既有測試與離線除錯使用。
 
     ⚠ 兩條紅線在此執行：
     - **不硬翻**：明令要市場慣用中文名、不直翻、不音譯冷門公司。
@@ -275,8 +324,18 @@ def run_company_zh_name(
     known_codes = {code for code, _ in candidates}
     if progress is not None:
         progress(f"AI 產生公司中文名草稿（{len(candidates)} 家）", 40)
-    prompt = build_prompt(candidates)
-    argv = build_cli_command(cli_kind, prompt, model=model)
+    # 資料走檔案、命令列只留 instruction 與路徑（見 build_zh_name_payload 的說明）。
+    payload_path = pf.write_payload_file(
+        "company_zh_name",
+        build_zh_name_payload(candidates),
+        label=f"n{len(candidates)}",
+    )
+    argv = pf.build_cli_command_with_payload(
+        cli_kind,
+        instruction="任務：為公司判定市場慣用中文名（系統派工、非互動、一次性）。",
+        payload_path=payload_path,
+        model=model,
+    )
     parsed = parse_cli_result(runner(argv, timeout_seconds))
 
     # 代碼→英文名，供 keep_original 時落回原文（顯示不硬翻）。

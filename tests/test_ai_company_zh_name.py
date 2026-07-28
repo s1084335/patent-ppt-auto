@@ -41,9 +41,8 @@ class RecordingCli:
     def __call__(self, argv, timeout):
         argv = list(argv)
         self.calls.append(argv)
-        prompt = argv[2]
         names = []
-        for code in _codes_in_prompt(prompt):
+        for code in _codes_in_argv(argv):
             verdict, zh = self.verdict_map.get(code, ("keep_original", None))
             item = {"company_code": code, "verdict": verdict}
             if zh is not None:
@@ -60,12 +59,35 @@ class RecordingCli:
         return [argv[2] for argv in self.calls]
 
 
-def _codes_in_prompt(prompt: str) -> list[str]:
-    """從 prompt 的「### company_code: X」標頭撈回本批代碼。"""
+def _codes_in_argv(argv: list[str]) -> list[str]:
+    """撈回本批代碼。
+
+    2026-07-28 起 runner 改走**資料檔**（公司名不再進命令列——500 家會撞 Windows
+    32,767 上限），故先找 argv 裡的 payload 路徑讀檔；讀不到才退回舊的 prompt 解析
+    （build_prompt 保留供離線除錯，仍有測試覆蓋）。
+    這樣 fake 的取值方式與真實 CLI 一致（真的 CLI 也是 Read 那個檔）。
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    # 路徑嵌在 instruction 的「資料檔（JSON，UTF-8）：<path>」那一行。
+    # ⚠ 不能用 \S+ 抓——中文不是空白字元，會把「資料檔（JSON，UTF-8）：」一起吃進去。
+    # 改為逐行找 .json 結尾者，取全形冒號後的部分。
+    for token in argv:
+        for line in str(token).splitlines():
+            line = line.strip()
+            if not line.endswith(".json"):
+                continue
+            candidate = line.split("：")[-1].split(": ")[-1].strip()
+            if _Path(candidate).exists():
+                data = _json.loads(_Path(candidate).read_text(encoding="utf-8"))
+                return [c["code"] for c in data.get("companies", [])]
+    # 舊路徑（build_prompt）相容
     codes: list[str] = []
-    for line in prompt.splitlines():
-        if line.startswith("### company_code:"):
-            codes.append(line.split(":", 1)[1].strip())
+    for token in argv:
+        for line in str(token).splitlines():
+            if line.startswith("### company_code:"):
+                codes.append(line.split(":", 1)[1].strip())
     return codes
 
 
