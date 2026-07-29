@@ -15,7 +15,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-SKILL_DIR = Path("D:/力山/.agents/skills/patent-report-ppt")
+# ⚠ 由 repo 根推導，不寫死絕對路徑（skill 已於 2026-07-29 搬進本 repo）。
+SKILL_DIR = Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt"
 BUILDER_PATH = SKILL_DIR / "scripts" / "build_ppt.py"
 THEME_PATH = SKILL_DIR / "theme.json"
 

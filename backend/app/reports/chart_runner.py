@@ -2139,10 +2139,11 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     multi_source = len(segments) > 1
     # ⚠ 單一來源時才放預設項；多來源時由下方迴圈依通道各加一項
     # （否則會有「主題統計表」與「主題統計表——技術主題」兩個重複選項）。
+    # ⚠ 2026-07-29：主題統計表**不再產 HTML 變體**（使用者「沒圖表用表格就好，
+    # 現在跑兩個表格很難看」）。原本這裡與下方迴圈各 append 一次（單一來源／多來源
+    # 兩條路徑），是同一概念兩處落點——只移除其中一處會留下「宣告了變體但檔案不存在」
+    # 的死選項。兩處一併移除，主題統計改由 section 的 rows 走數據表單一呈現。
     variants: list[dict[str, str]] = []
-    if not multi_source:
-        variants.append({"label": "主題統計表", "file": "cluster_topic_table.html",
-                         "variant_key": "topic_table"})
     segment_matrices: list[tuple[str, str, dict[str, Any], dict[str, Any]]] = []
     leading_by_topic: dict[str, dict[str, Any]] = {}
     for sf, segment_label, seg_rows in segments:
@@ -2160,27 +2161,24 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
         row["leading_applicant_count"] = opp_row.get("leading_applicant_count", 0)
         row["leading_applicants_involved"] = opp_row.get("leading_applicants_involved", [])
 
-    # 主題統計表**依通道分檔**（2026-07-29 使用者定案「選 A」）：
-    # 原本是單一 HTML 內含技術＋功效兩段，前端的技術／功效切換鈕對它無效
-    # ——切到「技術」時下方 HTML 仍同時顯示兩段，與上方數據表行為不一致。
-    # 改成一通道一檔後，切換天然生效（與機會／痛點矩陣同一套 suffix 機制）。
-    # 單一來源時維持原檔名，不破壞既有契約。
-    for sf, segment_label, seg_rows in segments:
-        slug = SOURCE_SEGMENT_SLUGS.get(sf, "other")
-        suffix = f"_{slug}" if multi_source else ""
-        tab_suffix = f"——{segment_label}" if multi_source else ""
-        table_file = f"cluster_topic_table{suffix}.html"
-        render_cluster_topic_table_html(
-            ctx.run_dir / table_file,
-            f"主題分類統計{tab_suffix}" if multi_source else "主題／功效分類統計",
-            seg_rows,
-        )
-        if suffix:
-            variants.append({
-                "label": f"主題統計表{tab_suffix}",
-                "file": table_file,
-                "variant_key": f"topic_table{suffix}",
-            })
+    # 主題統計表**只渲染一次**（2026-07-29 使用者實機回報，兩張截圖）：
+    #
+    # 原本同一份資料畫兩次並排——上方是 cluster_topic_table_<slug>.html 變體（圖表區）、
+    # 下方是 chart_rows 的數據表。使用者：「主題分類統計表如果沒圖表用表格就好，
+    # 現在跑兩個表格很難看」。
+    #
+    # 且兩者切換不同步：圖表區逐通道分檔切得動，數據區卻是
+    # `chart_rows["cluster_topic_table"] = topic_rows` 一鍵存**技術＋功效全部**
+    # → 使用者：「技術、功效按鈕切不了」。兩個症狀同一個根因。
+    #
+    # 收斂做法：這支的「圖表」本來就是表格，**不另渲染 HTML 變體**，只留數據表一份。
+    # ⚠ 機會／痛點矩陣是真的 SVG 圖，維持變體不動（見下方迴圈）。
+    #
+    # ⚠ 列**維持單一鍵**：每列本來就帶 `source_field`（實測技術 5 列／功效 8 列），
+    # 前端依該欄過濾（`rows.filter(row => row.source_field === sourceField)`）。
+    # 曾嘗試依通道分鍵（cluster_topic_table_tech／_effect），但前端找的是
+    # `cluster_topic_table`，分鍵反而讓它取不到資料——切換問題的真因不在這裡，
+    # 而是 section 沒把 rows 帶給前端（見下方 sections.append）。
     ctx.chart_rows["cluster_topic_table"] = topic_rows
 
     for sf, segment_label, opp_matrix, pain_matrix in segment_matrices:
@@ -2189,15 +2187,22 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
         suffix = f"_{slug}" if multi_source else ""
         tab_suffix = f"——{segment_label}" if multi_source else ""
         opp_file = f"opportunity_quadrant{suffix}.svg"
-        pain_file = f"pain_point_quadrant{suffix}.svg"
         render_opportunity_quadrant_svg(
             ctx.run_dir / opp_file, f"機會四象限分析——{segment_label}", opp_matrix)
-        render_pain_point_quadrant_svg(
-            ctx.run_dir / pain_file, f"痛點四象限分析——{segment_label}", pain_matrix)
         variants.append({"label": f"機會矩陣{tab_suffix}", "file": opp_file, "variant_key": f"opportunity{suffix}"})
-        variants.append({"label": f"痛點矩陣{tab_suffix}", "file": pain_file, "variant_key": f"pain{suffix}"})
         ctx.chart_rows[f"opportunity_quadrant{suffix}"] = opp_matrix
-        ctx.chart_rows[f"pain_point_quadrant{suffix}"] = pain_matrix
+        # 🔴 痛點矩陣**不產**（2026-07-29 使用者定案「整個藏起來，等市場線做好再放出來」）。
+        #
+        # ⚠ 5b4dbef 只把 pain_point_quadrant 從 DEFAULT_REPORT_NAMES 排除，那擋的是
+        # 「報表勾選清單」那一層——但本函式是**整包產出**，內部無條件 render + append，
+        # 完全不看使用者選了哪些報表。使用者重產報表後（report_trial_20260729_164537）
+        # 痛點矩陣照樣出現在檢視選單，實測打臉了我「已擋住」的判斷。
+        # 教訓：擋一個報表要追**所有**產出路徑，只查 DEFAULT_REPORT_NAMES 不夠。
+        #
+        # 市場線（上傳→AI 摘要→使用者確認）尚未實作，缺資料時痛點軸全是「待調查」，
+        # 產出的圖看不出不完整、匯進 PPT 會被讀成「痛點都很低」。
+        # ⚠ 機會矩陣是純專利資料（x 專利密度、y 競爭者結構強度），**照常產出**，不連坐。
+        # pain_matrix 仍計算（上方迴圈）但不落檔——市場線做好後解除本段即可恢復。
 
     note = (
         "主題統計表包含所有正式主題（含未分類），技術主題與功效分類分段不混表；"
@@ -2210,7 +2215,15 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     # cluster 卡片＝主題統計表＋各來源機會/痛點矩陣 tabs。
     ctx.sections.append({
         "title": "分群分析",
-        "report_key": "cluster_topic_table",  # 數據區從 chart_rows 取主題統計列
+        "report_key": "cluster_topic_table",
+        # 🔴 rows 必須帶進 section（2026-07-29 使用者實機回報「技術、功效按鈕切不了」）：
+        # 原本只寫 report_key、期待前端自己從 chart_rows 取，但 API 回給前端的 section
+        # **沒有 rows 欄**（實測 section keys 只有 title/report_key/variants/note）。
+        # 前端 `rows.filter(row => row.source_field === sourceField)` 過濾的是空陣列，
+        # 切換自然沒有任何效果——這是靜默失敗：表格由另一條路徑顯示得出來，
+        # 只有切換無反應，看起來像按鈕壞掉而不是資料沒給。
+        # 每列本來就帶 source_field（實測技術 5 列／功效 8 列），帶上就能切。
+        "rows": topic_rows,
         "variants": variants,
         "note": note,
     })

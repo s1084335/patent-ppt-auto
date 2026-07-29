@@ -20,7 +20,11 @@ pytest.importorskip("pptx")
 from pptx import Presentation  # noqa: E402
 
 # 產生器實作放在 skill 目錄（可攜），測試以檔案路徑載入，不依賴主專案 import 路徑。
-SKILL_DIR = Path("D:/力山/.agents/skills/patent-report-ppt")
+# ⚠ 路徑由 repo 根推導，**不寫死絕對路徑**：skill 於 2026-07-29（commit 2935fd3）
+# 從中央 `D:/力山/.agents/skills/` 搬進本 repo `skills/`，而這三支測試仍指舊路徑
+# → 12 項全 FileNotFoundError，PPT 這塊等於零測試保護，直到今日才發現。
+# 寫死絕對路徑會在下次搬遷時再壞一次，且失敗訊息（找不到檔）離真因（路徑過期）很遠。
+SKILL_DIR = Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt"
 BUILDER_PATH = SKILL_DIR / "scripts" / "build_ppt.py"
 
 

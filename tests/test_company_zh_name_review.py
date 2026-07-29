@@ -162,45 +162,10 @@ class ConfirmSemanticsTests(unittest.TestCase):
         self.assertIn("refresh_derived", self.src)
 
 
-class FrontendReviewUiTests(unittest.TestCase):
-    """前端：確認區放在瀏覽專利頁（使用者定案，非規格書的左導覽獨立項）。"""
-
-    def setUp(self):
-        self.html = STATIC_INDEX.read_text(encoding="utf-8")
-
-    def test_review_section_rendered(self):
-        """有中文名待確認區塊（渲染函式與容器）。"""
-        for needle in ("renderZhNameDrafts", "zh-name-drafts"):
-            with self.subTest(needle=needle):
-                self.assertTrue(needle in self.html, f"前端缺中文名確認區：{needle}")
-
-    def test_section_lives_in_browse_page(self):
-        """確認區掛在瀏覽專利頁——該頁表格本身顯示申請人欄，確認前後可直接對照。"""
-        import re
-
-        m = re.search(r"function renderBrowse\(\)\s*\{.*?\n\}", self.html, re.S)
-        self.assertTrue(m is not None, "找不到 renderBrowse() 定義")
-        self.assertIn("zh-name-drafts", m.group(0), "瀏覽專利頁未掛中文名確認區")
-
-    def test_confirm_action_wired(self):
-        """有逐筆確認動作，呼叫確認端點。"""
-        self.assertTrue("company-zh-drafts/confirm" in self.html, "前端未接確認端點")
-
-    def test_skip_action_wired(self):
-        """有「略過」動作（草稿保留），非只有確認一途。"""
-        self.assertIn("reject", self.html, "前端缺略過動作")
-
-    def test_generate_action_wired(self):
-        """有手動觸發 AI 產草稿的按鈕（使用者定案：不自動觸發）。"""
-        self.assertTrue("company-zh-drafts/generate" in self.html, "前端缺產草稿觸發")
-
-    def test_empty_state_collapses(self):
-        """無草稿時整區收起，只留觸發入口——不佔版面（使用者要求）。"""
-        self.assertTrue(
-            "目前沒有待確認的中文名草稿" in self.html,
-            "缺無草稿時的收起狀態",
-        )
-
+# ⚠ FrontendReviewUiTests（原在此）已於 2026-07-29 移除：使用者定案「整個中文名草稿
+# 區塊都拿掉」，前端 renderZhNameDrafts／裁決按鈕／#zh-name-drafts 容器均已不存在，
+# 該 class 驗的是已移除的 UI。中文名改由使用者在代碼組「公司中文名稱」欄直接填。
+# 本檔其餘 class（DraftStore／DraftApi／ConfirmSemantics）驗的是**後端**，後端保留不動。
 
 if __name__ == "__main__":
     unittest.main()

@@ -80,13 +80,17 @@ class CompanySectionMergedTests(unittest.TestCase):
         self.assertIsNotNone(block, "找不到 company-name-block")
 
     def test_flow_hint_present(self):
-        """③ 流程說明：兩段式不直覺，使用者今天因此發問。"""
+        """③ 流程說明必須在（使用者曾因兩段式不直覺而發問）。
+
+        ⚠ 2026-07-29 移除「產生草稿」「裁決」兩詞：使用者定案「整個中文名草稿區塊都拿掉」，
+        中文名改由代碼組的「公司中文名稱」欄直接填，流程不再有 AI 草稿與裁決步驟。
+        """
         # 說明由多段字串 + 串接組成，故逐段檢查而非單一正規式。
-        for phrase in ("建代碼組", "產生草稿", "裁決", "WIPS"):
+        for phrase in ("建代碼組", "公司中文名稱", "WIPS"):
             with self.subTest(phrase=phrase):
                 self.assertIn(
                     phrase, self.html,
-                    "缺流程說明——使用者不會知道要先寫入才按 AI，且結果出現在草稿區")
+                    "缺流程說明——使用者不會知道代碼要自己去 WIPS 查、中文名在哪填")
 
 
 class SingleAiButtonTests(unittest.TestCase):
@@ -97,15 +101,22 @@ class SingleAiButtonTests(unittest.TestCase):
         cls.html = client.get("/").text
 
     def test_generate_endpoint_called_once(self):
-        """/company-zh-drafts/generate 只能有一處**呼叫**。
+        """/company-zh-drafts/generate 不得再有任何**呼叫**。
 
-        ⚠ 不能直接數整份 HTML 的出現次數——說明為何移除重複鈕的註解裡也有這個路徑，
+        ⚠ 2026-07-29 由「只能有一處」改為「一處都不能有」：使用者定案整個中文名草稿
+        區塊移除，前端不再觸發 AI 產草稿。本測試反過來守住移除不被還原——
+        若日後要恢復，是有意識的決定，改這裡即可。
+
+        ⚠ 不能直接數整份 HTML 的出現次數——說明移除原因的註解裡也有這個路徑，
         會被計進去（本測試初版即如此）。只數實際的 fetch 呼叫。
+
+        ⚠ 後端端點**保留不動**（`/company-zh-drafts/generate` 仍註冊），
+        由 test_company_zh_name_review.py 的 DraftApiContractTests 守。
         """
         calls = re.findall(r"fetch\(API \+ '/company-zh-drafts/generate'", self.html)
         self.assertEqual(
-            len(calls), 1,
-            "有兩顆同功能按鈕——使用者會困惑差在哪，且下方那顆位置誤導")
+            len(calls), 0,
+            "前端仍有產草稿的呼叫——中文名草稿區塊應已整個移除")
 
     def test_duplicate_function_removed(self):
         """translateCompanyNames 已移除（功能與 triggerZhNameDrafts 完全重複）。"""

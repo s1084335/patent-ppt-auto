@@ -60,22 +60,6 @@ class ZhDraftScopeHintTests(unittest.TestCase):
 
     # ── ① 掃描範圍說明 ──────────────────────────────
 
-    def test_scope_hint_says_written_to_db(self):
-        """鈕旁必須說明 AI 掃的是**已寫入資料庫**的代碼組。"""
-        body = self._body_without_comments("renderZhNameDrafts")
-        self.assertIn("已寫入資料庫", body,
-                      "「產生公司中文名草稿」鈕旁未說明掃描範圍＝已寫入資料庫的組")
-
-    def test_scope_hint_is_next_to_the_button(self):
-        """說明要跟那顆鈕在同一段（不是塞在捲軸上方的流程說明裡）。"""
-        body = self._body_without_comments("renderZhNameDrafts")
-        self.assertIn("triggerZhNameDrafts()", body)
-        btn = body.index("triggerZhNameDrafts()")
-        hint = body.index("已寫入資料庫")
-        self.assertLess(abs(hint - btn), 900,
-                        "掃描範圍說明離觸發鈕太遠，使用者在鈕旁看不到")
-
-    # ── ② 未寫入警示 ────────────────────────────────
 
     def test_unsaved_warning_helper_exists(self):
         """需有判斷「有未寫入編輯中組」的函式。"""
@@ -105,28 +89,6 @@ class ZhDraftScopeHintTests(unittest.TestCase):
         missing = sorted(f for f in fields if f not in body)
         self.assertEqual(missing, [],
                          f"blankCodeGroup() 有欄位未納入未寫入判斷：{missing}")
-
-    def test_warning_rendered_in_draft_area(self):
-        """草稿區**兩個分支**（有草稿／無草稿）都要真的畫出警示。
-
-        追整條鏈：renderZhNameDrafts 呼叫 warning helper → 該 helper 呼叫
-        unsavedCodeGroupCount → 文案指出補救動作。只斷言「有這個字串」會被
-        helper 存在但沒被呼叫的情況騙過。
-        """
-        body = self._body_without_comments("renderZhNameDrafts")
-        self.assertIn("unsavedCodeGroupsWarningHtml()", body,
-                      "renderZhNameDrafts() 沒呼叫未寫入警示——警示不會出現")
-        # 兩個分支各自把警示接進 innerHTML（無草稿分支 return 早，漏掉就看不到）。
-        branches = body.count("unsavedWarn")
-        self.assertGreaterEqual(
-            branches, 3,
-            f"警示未同時掛在有草稿／無草稿兩個分支（unsavedWarn 出現 {branches} 次）")
-
-        helper = self._body_without_comments("unsavedCodeGroupsWarningHtml")
-        self.assertIn("unsavedCodeGroupCount()", helper,
-                      "警示 helper 沒用到未寫入計數")
-        self.assertIn("確定寫入資料庫", helper,
-                      "警示未指出補救動作（按「確定寫入資料庫」）")
 
 
 if __name__ == "__main__":

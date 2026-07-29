@@ -299,6 +299,9 @@ table.data td.cell-wrap, table.data th.cell-wrap {
   font-size: 0.78rem; cursor: pointer; max-width: 100%; overflow-wrap: anywhere; }
 .pending-chip:hover { border-color: var(--accent); }
 .pending-chip .n { color: var(--text-muted); margin-left: 0.3rem; }
+/* 放大鏡：點它篩專利（不觸發標籤本體的「填入變體」）。2026-07-29 新增。 */
+.pending-chip .chip-find { margin-left: 0.35rem; opacity: 0.55; font-size: 0.85em; }
+.pending-chip .chip-find:hover { opacity: 1; }
 .code-conflict { color: var(--warn); font-size: 0.85rem; padding: 0.35rem 0; }
 /* 資料維護區（2026-07-28 排版整理）：平時收合，展開後每項一張卡。 */
 .maint-details { border: 1px solid var(--border); border-radius: 0.45rem; background: var(--panel);
@@ -414,9 +417,16 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .report-single { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
 /* 2026-07-29 使用者看過實機後定案：恢復左數據右圖表，比例 45/55
    （稍早改成的「圖滿寬、表移下方」被推翻）。圖比原本 46% 略大，
-   表格欄少的報表夠用。min-width:0 防 flex 子項溢出。 */
-.report-single-data { flex: 0 0 45%; min-width: 0; overflow-x: auto; }
-.report-single-chart { flex: 1 1 55%; min-width: 0; }
+   表格欄少的報表夠用。min-width:0 防 flex 子項溢出。
+
+   🔴 flex-basis 必須用 calc() 扣掉 gap（2026-07-29 使用者實機回報
+   「圖表大到自己跑去表格下面」）：原本寫死 45% + 55% = 100%，**再加上
+   .report-single 的 gap:1rem 就超過容器寬度**，flex-wrap:wrap 於是把圖表
+   換行到表格下方。且此症狀隨視窗寬度時好時壞（寬時 1rem 佔比小可能勉強塞下），
+   比穩定壞掉更難查。
+   兩欄各扣 0.5rem（gap 的一半），相加即為 100% - 1rem，正好容納 gap。 */
+.report-single-data { flex: 0 0 calc(45% - 0.5rem); min-width: 0; overflow-x: auto; }
+.report-single-chart { flex: 1 1 calc(55% - 0.5rem); min-width: 0; }
 /* 年度矩陣專屬（layout="stacked"）：交叉表欄多列少，橫向需要整個寬度，
    與其他報表相反——使用者定「年度矩陣可以和其他種類報表的版面不同」。 */
 .report-single-stacked { flex-direction: column; }
@@ -566,23 +576,10 @@ table.data td.cell-wrap, table.data th.cell-wrap {
       <div class="ai-section-label">AI 產出</div>
       <div id="ai-task-result"></div>
     </div>
-    <div class="ai-footer">
-      <!-- 金鑰輸入已移除（2026-07-26 定案）：AI 任務端點改為 opt-in 認證——
-           伺服器未設 PATENT_API_TOKEN 即不驗證，使用者不需填任何金鑰。
-           若部署端設了該環境變數，這裡就要改回帶 Authorization（見 aiAuthHeaders）。 -->
-      <!-- ⚠ 示範文字只舉 AI 在本系統真能做的事（2026-07-27 修正）。
-           原文字「把趨勢圖改成近十年、加一段風險摘要」兩項 AI 都做不到：
-           圖表由確定性引擎產出，AI 只准寫 narratives.json（runner 契約第 5 點）；
-           「風險摘要」牴觸 report-narrative-flow.md 模板第 5 點（禁止研發建議、
-           禁止無數字支撐的形容詞）。照著打會得到「無法滿足」的解讀句——
-           看似成功卻沒做事，比失敗更誤導。 -->
-      <div class="ai-section-label">對報表解讀提出需求</div>
-      <textarea class="ai-input" id="ai-input" placeholder="例如：多著墨 Top 3 申請人的年度變化、用更白話的說法、特別點出斷層或空窗年份…"></textarea>
-      <div class="hint" style="margin-top:0.35rem;font-size:0.75rem">
-        只影響<strong>報表解讀文字</strong>；圖表種類與區間由報表引擎決定，AI 不會更動。
-      </div>
-      <button class="btn btn-primary" id="btn-ai-send" style="margin-top:0.5rem;width:100%" onclick="sendAiRequest()">送出給 AI 助手</button>
-    </div>
+    <!-- 金鑰輸入已移除（2026-07-26 定案）：AI 任務端點改為 opt-in 認證。 -->
+    <!-- ⚠ 解讀需求輸入框已移除（2026-07-29 使用者定案）：AI 助手欄只留任務進度。
+         需求輸入移到各報表旁的「重產解讀」——在哪張報表提的需求就只重產那張，
+         比在側欄打一段然後整份重跑精準。 -->
   </aside>
 </div>
 
@@ -665,6 +662,8 @@ const state = {
   // 切換主題／通道／workspace 時歸零，否則會停在上一個主題的頁碼而顯示空白。
   topicPatentsOffset: 0,
   browseOffset: 0,        // 瀏覽專利（跟隨選定 workspace）的分頁 offset
+  // 待補標籤篩選（2026-07-29）：{name, ids}；非 null 時瀏覽專利只顯示這些 patent_id。
+  pendingNameFilter: null,
   topicFilterKey: null,   // 分類區選定的 topic_key（前端篩選用）
   // 分類區目前分頁的通道（技術／功效）；由 tab 切換，所有 topic 相關呼叫共用同一值。
   topicSourceField: DEFAULT_TOPIC_SOURCE_FIELD,
@@ -896,24 +895,25 @@ async function renderBrowse() {
           + '產文獻備註</button>')
     + '<span class="hint" style="padding:0;font-size:.8rem">只補空白的備註，不覆蓋既有</span>'
     + '</div></div>'
-    // ── 公司名（代碼組 ＋ 中文名草稿 ＋ 既有代碼，同一條流程放同一框）──
+    // ── 公司名（代碼組 ＋ 既有代碼，同一條流程放同一框）──
+    // ⚠ AI 中文名草稿區塊已於 2026-07-29 依使用者定案整個移除（「整個中文名草稿區塊都拿掉」）：
+    // 中文名改由使用者直接在代碼組的「公司中文名稱」欄填寫。原本兩個入口做同一件事
+    // （AI 草稿裁決 vs 代碼組直接填），屬本專案反覆出現的「同一概念兩處落點」。
+    // 後端 ai:company_zh_name 的 job、runner 與端點**保留**，將來要恢復只需接回前端。
     + '<div class="maint-card" id="company-name-block">'
     + '<div class="maint-card-title">專利權人代碼與中文名</div>'
     + '<p class="hint" style="padding:0 0 .5rem">'
-    + '流程：<strong>① 建代碼組</strong>（代碼須自行去 WIPS 查）→ '
-    + '<strong>② 不知道中文名時按「產生草稿」讓 AI 提議</strong>（需先完成 ①，'
-    + 'AI 只看已寫入的代碼）→ <strong>③ 在草稿區逐筆裁決</strong>。'
+    + '流程：<strong>① 建代碼組</strong>（代碼須自行去 WIPS 查，沒有可留空）→ '
+    + '<strong>② 直接填公司中文名稱與變體</strong>。'
     + '成果顯示在下方專利表的申請人／專利權人／受讓人欄與相關報表。</p>'
     + '<div id="company-code-registry"></div>'
-    + '<div id="zh-name-drafts"></div>'
     + '</div>'
     + '</details>'
     + '<div id="browse-body"><div class="hint">載入中…</div></div>';
   const kwInput = el('browse-kw');
   if (kwInput) kwInput.addEventListener('keydown', e => { if (e.key === 'Enter') onBrowseSearch(); });
   state.browseOffset = 0;
-  renderZhNameDrafts();          // 非阻塞：草稿區自己載，不擋專利表
-  renderCompanyCodeRegistry();   // 同上：代碼區自己載
+  renderCompanyCodeRegistry();   // 非阻塞：代碼區自己載，不擋專利表
   renderNoteCoverage();          // 同上：備註覆蓋率
   await loadBrowsePatents();
 }
@@ -1017,9 +1017,14 @@ function renderCompanyCodeBody(existingGroups) {
     + '<div style="max-height:9rem;overflow:auto;margin-bottom:.5rem">'
     + (pendingCodeNames.length
         ? pendingCodeNames.map((it, i) =>
+            // 標籤本體＝填入變體格（既有行為不變，使用者定「先試試 C」）；
+            // 放大鏡＝篩出使用這個名稱的專利（2026-07-29 新增），stopPropagation 免觸發填入。
             '<span class="pending-chip" onclick="fillVariantFromPending(' + i + ')" title="'
             + escHtml((it.source_fields || []).join('、')) + '">'
-            + escHtml(it.name) + '<span class="n">' + escHtml(it.patent_count) + '</span></span>').join('')
+            + escHtml(it.name) + '<span class="n">' + escHtml(it.patent_count) + '</span>'
+            + '<span class="chip-find" title="看看是哪些專利"'
+            + ' onclick="event.stopPropagation();showPendingNamePatents(' + i + ')">🔍</span>'
+            + '</span>').join('')
         : '<span class="hint">（無待補項目）</span>')
     + '</div></details>'
     + '<div id="code-groups">' + companyCodeGroups.map(codeGroupHtml).join('') + '</div>'
@@ -1208,7 +1213,8 @@ function codeGroupHtml(g, idx) {
     // 填入目標（2026-07-29 使用者回報「標籤只會出現在第一組」）：原本只靠變體格的
     // onfocus 記錄目標，使用者沒先點過任何格子時 activeVariant 停在 {g:0,v:0}
     // → 點待補清單永遠填到第 1 組，而畫面上**沒有任何提示**。改為明示且可直接指定。
-    + '<button class="btn-mini" onclick="setActiveVariant(' + idx + ', 0)"'
+    // btn-active-target：供 syncActiveGroupButtons() 就地更新高亮，免整區重繪（見該函式）。
+    + '<button class="btn-mini btn-active-target" onclick="setActiveVariant(' + idx + ', 0)"'
     + (activeVariant.g === idx ? ' style="background:var(--accent);color:#fff"' : '')
     + '>' + (activeVariant.g === idx ? '● 待補清單填這組' : '填這組') + '</button></div>'
     // 代碼可留空（見上方說明）：留空時後端掛 TEMP: 臨時代碼，仍可正常收斂。
@@ -1225,7 +1231,10 @@ function codeGroupHtml(g, idx) {
     + '<div class="code-field" style="align-items:flex-start"><label>變體</label><div style="flex:1 1 auto;min-width:0">'
     + g.variants.map((v, vi) =>
         '<div class="code-variant-row">'
-        + '<input class="text-input" value="' + escHtml(v) + '" placeholder="原始寫法（點上方清單可填入）"'
+        // ⚠ placeholder 要講明「兩種都行」：原文「點上方清單可填入」讓使用者以為
+        // 只能點標籤、不能打字（2026-07-29 使用者回報）。欄位本來就可自由輸入
+        // （無 readonly、oninput 已接 updateVariant），是文案誤導不是功能缺漏。
+        + '<input class="text-input" value="' + escHtml(v) + '" placeholder="原始寫法（可直接打字，或點上方標籤填入）"'
         + ' onfocus="setActiveVariant(' + idx + ', ' + vi + ')"'
         + ' oninput="updateVariant(' + idx + ', ' + vi + ', this.value)">'
         + (g.variants.length > 1
@@ -1260,13 +1269,65 @@ function updateVariant(i, vi, value) { companyCodeGroups[i].variants[vi] = value
 // ⚠ 重繪會重建 DOM、輸入框失焦——但 activeVariant 是變數不受影響，
 // 這正是修正前的隱性問題：狀態在但畫面沒有任何提示。
 function setActiveVariant(g, v) {
+  // ⚠ **不呼叫 redrawCodeGroups()**（2026-07-29 使用者回報「變體要能自己打字」）：
+  // 本函式由變體格的 onfocus 呼叫，而重繪會重建整區 DOM 讓輸入框**當場失焦**——
+  // 點一下游標就被踢出，要再點第二次才打得了字，體感就是「這格不能輸入」。
+  // 欄位其實從來沒被鎖（無 readonly、oninput 已接 updateVariant）。
+  //
+  // 目標變更時只需更新「填這組」按鈕的樣式與文字（唯一會隨 activeVariant 變的畫面），
+  // 直接改那幾顆按鈕即可，不必重建輸入框。
   activeVariant = { g: g, v: v };
-  redrawCodeGroups();
+  syncActiveGroupButtons();
+}
+
+// 只同步「填這組」按鈕的高亮與文字，不動輸入框（避免打字中被重繪打斷）。
+function syncActiveGroupButtons() {
+  const box = el('code-groups');
+  if (!box) return;
+  box.querySelectorAll('.code-group').forEach((node) => {
+    const isActive = Number(node.dataset.group) === activeVariant.g;
+    const btn = node.querySelector('.btn-active-target');
+    if (!btn) return;
+    btn.style.background = isActive ? 'var(--accent)' : '';
+    btn.style.color = isActive ? '#fff' : '';
+    btn.textContent = isActive ? '● 待補清單填這組' : '填這組';
+  });
 }
 
 function redrawCodeGroups() {
   const box = el('code-groups');
   if (box) box.innerHTML = companyCodeGroups.map(codeGroupHtml).join('');
+}
+
+// ══════════ 待補標籤 → 篩選專利（2026-07-29 使用者需求） ══════════
+// 使用者：「如果專利權人標籤拿去搜尋，但這間公司的欄位，在前端沒有出現，這樣我無法篩選」。
+// 標籤本來就知道自己的來源欄位（後端已回 source_fields），該用欄位精準篩，
+// 不丟進全文搜尋——既有搜尋只吃 applicant_display_name，專利權人／受讓人一律 0 筆。
+//
+// 流程（使用者定）：點放大鏡 → **跳到完整專利表格**（欄位齊全，看得到「詳細查看連結」）
+// → 使用者點連結去 WIPS 對照 → 回來決定要不要把這個名稱加進變體。
+// ⚠ 跳頁不會弄丟填到一半的代碼組：companyCodeGroups 是 JS 變數不是 DOM。
+async function showPendingNamePatents(i) {
+  const item = pendingCodeNames[i];
+  if (!item) return;
+  try {
+    const data = await getJson(API + '/company-codes/pending/'
+      + encodeURIComponent(item.lookup_key) + '/patents');
+    const ids = data.patent_ids || [];
+    if (!ids.length) { alert('查無使用「' + item.name + '」的專利。'); return; }
+    state.pendingNameFilter = { name: item.name, ids: ids };
+    state.browseOffset = 0;
+    navTo('browse');
+  } catch (e) {
+    alert('篩選失敗：' + e.message);
+  }
+}
+
+// 清掉篩選回到全部——否則使用者被困在篩選狀態、以為庫裡只剩這幾筆。
+function clearPendingNameFilter() {
+  state.pendingNameFilter = null;
+  state.browseOffset = 0;
+  loadBrowsePatents();
 }
 
 function fillVariantFromPending(i) {
@@ -1361,9 +1422,25 @@ async function loadBrowsePatents() {
   if (!body) return;
   const kw = (el('browse-kw') && el('browse-kw').value.trim()) || '';
   const off = state.browseOffset || 0;
+  // 待補標籤篩選（2026-07-29）：帶著 patent_id 集合來的，改走 id 過濾而非關鍵字，
+  // 因為待補名稱來自**原始 WIPS 欄位**，關鍵字搜的是收斂顯示名，兩者對不上。
+  const nameFilter = state.pendingNameFilter;
   try {
     let data;
-    if (isGlobalSelected()) {
+    if (nameFilter) {
+      // ⚠ 後端 /patents 沒有 patent_ids 參數（只有 keyword／limit／offset），
+      // 不為此新增 API：命中集合通常只有數筆～數十筆，取回本頁後在前端以 id 過濾即可。
+      // limit 取 API 上限 200，超過 200 筆的名稱會被截斷——見下方 banner 的提示。
+      const base = isGlobalSelected()
+        ? API + '/patents?'
+        : API + '/workspaces/' + encodeURIComponent(state.workspaceId) + '/patents?';
+      const all = await getJson(base + 'limit=200&offset=0');
+      const idSet = new Set(nameFilter.ids);
+      const hit = (all.items || []).filter(p => idSet.has(p.patent_id));
+      data = { items: hit, total: hit.length, offset: 0, limit: hit.length };
+      body.innerHTML = pendingFilterBannerHtml(nameFilter, hit.length)
+        + browsePatentsTableHtml(data, isGlobalSelected() ? 'overview' : 'topics');
+    } else if (isGlobalSelected()) {
       const qs = 'limit=' + PATENTS_PAGE_SIZE + '&offset=' + off
         + (kw ? '&keyword=' + encodeURIComponent(kw) : '');
       data = await getJson(API + '/patents?' + qs);
@@ -1379,6 +1456,26 @@ async function loadBrowsePatents() {
     body.innerHTML = '<div class="card">載入專利失敗（' + escHtml(e.message) + '）。</div>';
   }
 }
+// 篩選中的提示帶：使用者要知道「現在只看到一部分」，且要有路回到全部。
+// ⚠ 少了這條，畫面看起來就像庫裡只剩這幾筆——正是本專案常見的靜默狀態。
+function pendingFilterBannerHtml(filter, shown) {
+  const expected = (filter.ids || []).length;
+  // 命中數與後端算出的數量不符＝被 limit=200 截斷或不在目前 workspace，要講出來不能靜默。
+  const gap = expected > shown
+    ? '<span class="flag-no" style="margin-left:.5rem">'
+      + '（後端命中 ' + expected + ' 筆，此處顯示 ' + shown
+      + '；差額為不在目前 workspace 或超出單頁上限）</span>'
+    : '';
+  return '<div class="card" style="margin-bottom:.6rem">'
+    + '篩選：使用「<strong>' + escHtml(filter.name) + '</strong>」的專利 '
+    + shown + ' 筆' + gap
+    + ' <button class="btn btn-outline btn-sm" style="margin-left:.6rem"'
+    + ' onclick="clearPendingNameFilter()">清除篩選</button>'
+    + '<p class="hint" style="padding:.3rem 0 0">'
+    + '點各列的「詳細查看連結」到 WIPS 對照，確認是不是同一家後再回代碼區加入變體。</p>'
+    + '</div>';
+}
+
 // 瀏覽專利表＋分頁（沿用 patentTableHtml；scope 決定欄位集合）。
 function browsePatentsTableHtml(data, scope) {
   const items = data.items || [];
@@ -2987,6 +3084,13 @@ function renderReports() {
     + '<div id="market-upload"></div>'
     + '</details>'
     + '<span style="flex:1"></span>'
+    // 一次產全部解讀（2026-07-30 使用者定案「初次通常是一次跑全部，
+    // 而重解讀是個報表獨立」）：不帶 report_keys＝整份重跑。
+    // ⚠ 統一入口的另一半在各報表下方（重產單張＋可帶 prompt），兩者同一支
+    // runNarrative，差別只在有沒有帶 report_keys——不是兩條路。
+    + '<button class="btn btn-outline btn-sm" id="btn-run-all-narrative"'
+    + ' onclick="runNarrative()" title="為目前這一版的所有報表產解讀">'
+    + '產生全部解讀</button>'
     + '<span class="hint" style="padding:0;font-size:.82rem">'
     + '選單切換要看的報表；產製清單在下方「產製報表」展開。</span>'
     + '</div>'
@@ -3299,7 +3403,9 @@ const reportVersions = {
   items: [],        // 已取回的版本清單
   total: 0,         // 後端實際總數（供「顯示更多」判斷）
   limit: REPORT_VERSION_PAGE,
-  loaded: {},       // version -> true，已載過內容的版本（不重複抓）
+  // version -> 該版 content（2026-07-30 由 true 改存內容）：
+  // 展開舊版要重新渲染報表本體，只記 true 的話仍得重打 API。
+  loaded: {},
 };
 
 // 目錄名尾端 <8位日期>_<6位時間> → 「2026-07-22 00:10」；解析不出就原樣顯示目錄名。
@@ -3369,6 +3475,42 @@ function cssSafeVersion(version) {
   return String(version).replace(/[^A-Za-z0-9_-]/g, '_');
 }
 
+// ══ 版本展開連動報表本體（2026-07-30 使用者定案「報表要能跟隨這裡收起來或出現」）══
+
+// 收合除 keepSafe 之外的所有版本（同時只顯示一份報表）。
+function closeOtherReportVersions(keepSafe) {
+  (reportVersions.items || []).forEach(function (v) {
+    const safe = cssSafeVersion(v.version);
+    if (safe === keepSafe) return;
+    const item = el('report-version-item-' + safe);
+    const body = el('report-version-body-' + safe);
+    if (!item || !body || body.hasAttribute('hidden')) return;
+    body.setAttribute('hidden', '');
+    item.classList.remove('open');
+    const caret = item.querySelector('.ver-caret');
+    if (caret) caret.textContent = '▸';
+    const row = item.querySelector('.report-version-row');
+    if (row) row.setAttribute('aria-expanded', 'false');
+  });
+}
+
+// 清空報表本體（版本收合時呼叫）。
+// ⚠ reportViewContent 一併歸零：它是「目前顯示哪一版」的狀態，
+// 留著會讓下次展開誤判成已在顯示。
+function clearReportInlineView() {
+  const view = el('report-inline-view');
+  if (view) view.innerHTML = '';
+  const sel = el('report-view-select');
+  if (sel) sel.innerHTML = '';
+  reportViewContent = null;
+}
+
+// 切回已載過的版本內容——用快取，**不重打 API**（同版本內容不會變）。
+function showLoadedReportVersion(version) {
+  const content = reportVersions.loaded[version];
+  if (content) fillReportViewSelect(content);
+}
+
 function showMoreReportVersions() {
   reportVersions.limit += REPORT_VERSION_PAGE;
   loadReportVersions();
@@ -3382,12 +3524,24 @@ function toggleReportVersion(version) {
   if (!item || !body) return;
   const opening = body.hasAttribute('hidden');
   if (opening) {
+    // ⚠ 先收合其他版本：同時展開兩版＝兩份報表混在畫面上，
+    // 正是 R9 改成選單制要解決的「不同報表混在一起」。
+    closeOtherReportVersions(safe);
     body.removeAttribute('hidden');
     item.classList.add('open');
-    loadReportVersionContent(version);
+    // 已載過的版本 loadReportVersionContent 會提前 return（不重打 API），
+    // 但畫面仍需切回該版內容，故在此明確重餵一次。
+    if (reportVersions.loaded[version]) {
+      showLoadedReportVersion(version);
+    } else {
+      loadReportVersionContent(version);
+    }
   } else {
     body.setAttribute('hidden', '');
     item.classList.remove('open');
+    // 收合＝報表本體跟著收起（使用者：「報表要能跟隨這裡收起來或出現」），
+    // 否則畫面會留著已收合版本的報表。
+    clearReportInlineView();
   }
   const caret = item.querySelector('.ver-caret');
   if (caret) caret.textContent = opening ? '▾' : '▸';
@@ -3409,9 +3563,18 @@ async function loadReportVersionContent(version) {
     // 報告全列出來——那正是使用者說的「不同報表混在一起」。這裡只放 PPT 清單，
     // 報表本體交給上方選單驅動的 #report-inline-view（見 renderReportViewer）。
     body.innerHTML = '<div class="report-ppt-list" id="report-ppt-list-' + safe + '"></div>';
-    // 最新版（第一個載入者）的 content 餵給選單；舊版展開時不搶走選單。
-    if (reportViewContent === null) fillReportViewSelect(content);
-    reportVersions.loaded[version] = true;
+    // 🔴 展開哪一版就顯示哪一版的報表（2026-07-30 使用者實機回報
+    // 「我重產報告後，舊的報表無法再出現」「報表要能跟隨這裡收起來或出現」）。
+    //
+    // 原本是 `if (reportViewContent === null)`——**只有首次載入才餵選單**，
+    // 展開舊版刻意不搶。於是使用者點舊版：容器展開了、裡面只有 PPT 清單，
+    // 報表本體仍停在最新版，看起來就是「舊的報表出不來」。
+    // 版本列管展開、#report-inline-view 管內容，兩個落點沒連動。
+    //
+    // ⚠ 仍維持「同時只顯示一份」（R9 定案，使用者說過「不同報表混在一起」很亂）：
+    // toggleReportVersion 會先收合其他版本，故這裡直接餵不會造成兩份並存。
+    fillReportViewSelect(content);
+    reportVersions.loaded[version] = content;
     loadReportVersionPptFiles(version);   // 非阻塞：報表內容先顯示，PPT 清單隨後填
   } catch (e) {
     body.innerHTML = '<div class="hint">載入報表內容失敗（' + escHtml(e.message) + '）。</div>';
@@ -4221,29 +4384,44 @@ function narrativeJobRunning(version) {
     && t.payload && t.payload.based_on_version === version);
 }
 
-async function runNarrative() {
+// 重產解讀（2026-07-29 使用者定案）：
+//   ①「報表要能各自獨立重產解釋」→ 帶 report_keys，只重產目前檢視的那張
+//   ②「重產解釋要能順帶使用者輸入的 prompt」→ 帶 instruction
+//   ③「原本圖表數據不能少」→ 由 runner 契約保證（只准寫 narratives.json）
+// 不帶 report_keys 時維持整份重跑（例如首次產解讀）。
+async function runNarrative(scopeKey) {
   const version = reportViewContent && reportViewContent.version;
   if (!version) { alert('尚無報表版本，請先產製報表。'); return; }
   if (narrativeJobRunning(version)) { alert('此版本的解讀正在產生中，請稍候。'); return; }
-  const btn = el('btn-run-narrative');
+  // ⚠ 只有「重產單張」才讀輸入框：那個框屬於目前檢視的那張報表，
+  // 整份重跑（scopeKey 未給）時讀它會把單張的需求誤當成全域需求。
+  const btn = el(scopeKey ? 'btn-run-narrative' : 'btn-run-all-narrative');
+  const promptBox = scopeKey ? el('narrative-prompt') : null;
+  const instruction = (promptBox && promptBox.value.trim()) || '';
+  const btnLabel = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
   try {
+    const payload = { task_type: 'ai:narrative', based_on_version: version };
+    // scopeKey 未給時整份重跑；給了就只做那張，其餘解讀由 runner prompt 明令保留。
+    if (scopeKey) payload.report_keys = [scopeKey];
+    if (instruction) payload.instruction = instruction;
     const resp = await fetch(API + '/ai-tasks', {
       method: 'POST',
       headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ task_type: 'ai:narrative', based_on_version: version }),
+      body: JSON.stringify(payload),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       alert('產生 AI 解讀失敗：' + (err.detail || ('HTTP ' + resp.status)));
-      if (btn) { btn.disabled = false; btn.textContent = '產生 AI 解讀'; }
+      // ⚠ 還原成按下前的字面，不寫死——同一支函式服務兩顆按鈕。
+      if (btn) { btn.disabled = false; btn.textContent = btnLabel; }
       return;
     }
     await fetchTasks();   // 右欄立刻看得到這筆任務進度
     if (btn) btn.textContent = '解讀產生中…';
   } catch (e) {
     alert('連線錯誤：' + e.message);
-    if (btn) { btn.disabled = false; btn.textContent = '產生 AI 解讀'; }
+    if (btn) { btn.disabled = false; btn.textContent = btnLabel; }
   }
 }
 
@@ -4388,11 +4566,24 @@ function reportSingleHtml(section, option) {
   const texts = shown
     .map(v => (v.narrative && v.narrative.text) ? v.narrative.text.trim() : '')
     .filter(Boolean);
-  const narrativeHtml = texts.length
+  // 重產入口（2026-07-29 使用者定案「報表要能各自獨立重產解釋」）：
+  // ⚠ 原本只在「尚未產生」時給按鈕——**已有解讀就無法重產**，只能整份重跑。
+  // 改為兩種狀態都給，並帶目前這張的 report_key，只重產它。
+  // 附加需求輸入框就地放在按鈕旁：在哪張報表提的需求就套用到哪張
+  //（原本在 AI 助手側欄，打了會套用到整份報表）。
+  const scopeKey = (option && option.report_key) || viewSection.report_key || '';
+  const rerunHtml = '<div class="narrative-rerun">'
+    + '<textarea class="ai-input" id="narrative-prompt" rows="2"'
+    + ' placeholder="想怎麼改這張的解讀？例如：多著墨 Top 3 的年度變化、用更白話的說法（可留空）"></textarea>'
+    + '<div class="hint" style="font-size:0.75rem;margin:0.3rem 0">'
+    + '只影響<strong>這張報表的解讀文字</strong>；圖表與數據由報表引擎決定，AI 不會更動。</div>'
+    + '<button class="btn btn-sm" id="btn-run-narrative"'
+    + ' onclick="runNarrative(' + JSON.stringify(scopeKey) + ')">'
+    + (texts.length ? '重產這張的解讀' : '產生 AI 解讀') + '</button>'
+    + '</div>';
+  const narrativeHtml = (texts.length
     ? texts.map(t => '<p>' + escHtml(t) + '</p>').join('')
-    : '<p class="empty">AI 解讀尚未產生。'
-      + '<button class="btn btn-sm" id="btn-run-narrative" onclick="runNarrative()"'
-      + ' style="margin-left:0.6rem">產生 AI 解讀</button></p>';
+    : '<p class="empty">AI 解讀尚未產生。</p>') + rerunHtml;
   return '<article class="export-card">'
     + '<h3>' + escHtml(viewSection.title || '') + '</h3>'
     + (isClusterSection(section) ? reportSourceTabsHtml(sourceField) : '')
@@ -5089,140 +5280,13 @@ function setHealth(id, text, ok) {
   node.className = 'value ' + (ok ? 'health-ok' : 'health-warn');
 }
 
-// ══════════ 公司中文名草稿確認 ══════════
-// 三態流程的「確認」環節（2026-07-27 補）：AI 產草稿（ai_suggested）→ 這裡逐筆裁決
-// → confirmed 才進正式顯示名 → 報表／專利表的公司名收斂第 1 順位命中，中文名才顯示得出來。
-// 原本這一環完全沒有介面：草稿寫進 DB 後看不到也確認不了，收斂實際只做到「庫內統計名」。
-//
-// 三態（對齊後端 action）：
-//   確認    ＝以草稿名確認（草稿名由後端自查，前端不回傳）
-//   改後確認 ＝以輸入框當下的值確認
-//   略過    ＝⚠ **草稿保留**，下次仍列在此清單（使用者明示：未裁決的草稿不能消失）
-let zhDrafts = [];   // 目前顯示的草稿（index → {code, draft_name, ...}），供裁決取值
-async function renderZhNameDrafts() {
-  const wrap = el('zh-name-drafts');
-  if (!wrap) return;
-  wrap.innerHTML = '<div class="hint">載入公司中文名草稿…</div>';
-  let total = 0;
-  try {
-    const data = await getJson(API + '/company-zh-drafts?limit=100&offset=0');
-    zhDrafts = data.items || [];
-    total = data.total ?? zhDrafts.length;
-  } catch (e) {
-    wrap.innerHTML = '<div class="ai-section-label" style="margin-top:1rem">公司中文名</div>'
-      + '<div class="task-detail-error">草稿載入失敗：' + escHtml(e.message) + '</div>';
-    return;
-  }
-  const scopeHint = '<span class="hint" style="padding:0;font-size:.8rem">'
-    + '掃描<strong>已寫入資料庫</strong>、尚無中文名的代碼組。</span>';
-  const unsavedWarn = unsavedCodeGroupsWarningHtml();
-  // 無草稿時整區收起（只留一行觸發入口），不佔版面——沿「待複核區有 pending 才出現」慣例。
-  if (zhDrafts.length === 0) {
-    wrap.innerHTML = '<div class="toolbar" style="margin-top:0.6rem">'
-      + '<button class="btn btn-outline" onclick="triggerZhNameDrafts()">產生公司中文名草稿</button>'
-      + scopeHint
-      + '<span class="hint" style="padding:0;font-size:.8rem">'
-      + '目前沒有待確認的中文名草稿。</span>'
-      + '</div>' + unsavedWarn;
-    return;
-  }
-  const head = '<div class="ai-section-label" style="margin-top:1rem">公司中文名待確認（'
-    + zhDrafts.length + (total > zhDrafts.length ? ' / 共 ' + total : '') + ' 筆）</div>'
-    + '<p class="hint" style="padding:0 0 0.5rem">AI 產的中文名草稿；'
-    + '<strong>確認後才會</strong>成為下方表格與報表顯示的公司名（申請人／專利權人／受讓人三欄同步生效）。'
-    + '可就地改寫再確認；<strong>略過</strong>則草稿保留，下次還看得到。</p>'
-    + '<div class="toolbar">'
-    + '<button class="btn btn-outline" onclick="triggerZhNameDrafts()">產生中文名草稿</button>'
-    + scopeHint
-    + '<button class="btn btn-outline" onclick="renderZhNameDrafts()">重新整理</button>'
-    + '<button class="btn btn-outline" onclick="confirmAllZhNames()">全部確認</button>'
-    + '</div>' + unsavedWarn;
-  const rows = zhDrafts.map((it, i) =>
-    '<tr>'
-    + '<td>' + escHtml(it.code) + '</td>'
-    // source_name＝AI 的輸入英文正式名（正規化名稱）；沒有就退回收斂前的原始字面。
-    + '<td>' + escHtml(it.source_name || it.original_name || '') + '</td>'
-    // keep_original＝AI 查無市場慣用中文名、保留原文；標示出來讓使用者知道這不是翻譯結果。
-    // 拆四欄後此類草稿的中文欄是**空的**（不塞英文），確認後顯示自然退英文正式名。
-    + '<td>' + (it.verdict === 'keep_original'
-        ? '<span class="flag-no">保留原文</span>' : '<span class="flag-yes">中文名</span>') + '</td>'
-    + '<td><input type="text" class="text-input" style="width:100%"'
-    + ' placeholder="留空＝沒有中文名，顯示英文正式名"'
-    + ' id="zh-draft-' + i + '" value="' + escHtml(it.draft_name || '') + '"></td>'
-    + '<td style="white-space:nowrap">'
-    + '<button class="btn btn-primary btn-sm" onclick="decideZhName(' + i + ',\'confirm\')">確認</button> '
-    + '<button class="btn btn-outline btn-sm" onclick="decideZhName(' + i + ',\'reject\')">略過</button>'
-    + '</td>'
-    + '</tr>'
-  ).join('');
-  wrap.innerHTML = head
-    + '<div class="table-wrap"><table class="data">'
-    + '<thead><tr><th>代碼</th><th>原文名</th><th>AI 判定</th><th>中文名（可改）</th><th>裁決</th></tr></thead>'
-    + '<tbody>' + rows + '</tbody></table></div>';
-}
-// 單筆裁決。confirm 時比對輸入框：使用者改過就送 edit（帶新名），沒改就送 confirm
-// （草稿名由後端自查，不必也不該由前端回傳）。
-async function decideZhName(index, action) {
-  const draft = zhDrafts[index];
-  if (!draft) return;
-  const item = { code: draft.code, action: action };
-  if (action === 'confirm') {
-    const input = el('zh-draft-' + index);
-    const typed = (input && input.value.trim()) || '';
-    // ⚠ 2026-07-28 四欄拆分後**不再擋空白**：keep_original 草稿的中文欄本來就是空的
-    // （查無市場慣用中文名，中文欄留空、顯示退英文正式名）。原本的「中文名不可為空」
-    // 會讓那一整類草稿永遠確認不了。
-    if (typed !== (draft.draft_name || '')) { item.action = 'edit'; item.name = typed; }
-  }
-  await postZhDecisions([item]);
-}
-// 全部確認：一次 POST 整批（規格：批次確認不逐筆連發）。改過的以 edit 送。
-async function confirmAllZhNames() {
-  if (!zhDrafts.length) return;
-  if (!confirm('確定要確認全部 ' + zhDrafts.length + ' 筆中文名嗎？')) return;
-  const items = zhDrafts.map((d, i) => {
-    const input = el('zh-draft-' + i);
-    const typed = (input && input.value.trim()) || '';
-    return (typed && typed !== (d.draft_name || ''))
-      ? { code: d.code, action: 'edit', name: typed }
-      : { code: d.code, action: 'confirm' };
-  });
-  await postZhDecisions(items);
-}
-async function postZhDecisions(items) {
-  try {
-    const resp = await fetch(API + '/company-zh-drafts/confirm', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items: items }),
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      alert('裁決失敗：' + (err.detail || resp.status));
-      return;
-    }
-    const body = await resp.json();
-    // 確認後端點會自動 enqueue refresh_derived——收斂名存 report_patent_base，
-    // 不重跑 refresh 的話表格看起來會「沒變」。拉任務清單讓使用者看得到刷新進度。
-    await renderZhNameDrafts();   // 已確認者從清單消失；略過者仍在
-    if (body.refreshed_job_id) await fetchTasks();
-  } catch (e) {
-    alert('裁決失敗：' + e.message);
-  }
-}
-// 手動觸發 AI 產草稿（2026-07-27 定案：不做匯入後自動觸發——自動失敗就沒有補救入口）。
-// runner 只挑「無中文名、無裁決、無既有草稿」的代碼，重複按不重複燒 token。
-async function triggerZhNameDrafts() {
-  try {
-    const resp = await fetch(API + '/company-zh-drafts/generate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-    });
-    if (!resp.ok) { alert('觸發失敗：' + resp.status); return; }
-    alert('已排入 AI 產草稿任務；完成後按「重新整理」查看。');
-    await fetchTasks();
-  } catch (e) {
-    alert('觸發失敗：' + e.message);
-  }
-}
+// ══════════ 公司中文名草稿確認（已移除） ══════════
+// 2026-07-29 使用者定案「整個中文名草稿區塊都拿掉」：中文名改由使用者直接在
+// 代碼組的「公司中文名稱」欄填寫。原本 AI 草稿裁決與代碼組直接填是**兩個入口做同一件事**，
+// 屬本專案反覆出現的「同一概念兩處落點」。
+// ⚠ 後端保留不動（ai:company_zh_name job／runner／/company-zh-drafts 端點），
+//   將來要恢復只需接回前端；移除的是 renderZhNameDrafts／decideZhName／
+//   confirmAllZhNames／postZhDecisions／triggerZhNameDrafts 與 #zh-name-drafts 容器。
 
 // ══════════ 右欄 AI 助手：任務列表 + SSE + enqueue ══════════
 // 顯示邏輯（decisions.md「長時任務前端進度顯示」）：succeeded 不顯示（完成即從列表過濾），
@@ -5357,47 +5421,10 @@ async function fetchTasks() {
     renderTaskList(data.tasks);
   } catch (e) { /* 靜默：狀態頁另有系統狀態顯示 */ }
 }
-// 送出 AI 任務（ai:narrative）：右欄輸入框內容走前端 AI 任務入口 /ai-tasks。
-// 註：這是「前端建任務」，不是本機 Patent Companion 的裝置側取任務通道。
-async function sendAiRequest() {
-  const btn = el('btn-ai-send');
-  const input = el('ai-input');
-  const text = (input && input.value.trim()) || '';
-  btn.disabled = true; btn.textContent = '送出中…';
-  try {
-    const payload = { workspace_id: state.workspaceId, cli_kind: 'claude' };
-    if (text) payload.instruction = text;
-    // ⚠ 不要送 based_on_version：state.nav 是頁籤名（'patents'／'topics'…），
-    // 不是報表版本號。2026-07-27 前誤送 state.nav，runner 的 resolve_run_dir 會去找
-    // full_report_latest/<頁籤名>/report_data.json，必然不存在 → ai:narrative 一律
-    // failed（DB 曾累積 30 筆）。不帶此欄位時 runner 本就會自動取最新報表版本。
-    const resp = await fetch(API + '/ai-tasks', {
-      method: 'POST', headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(payload),
-    });
-    // 401＝伺服器有設 PATENT_API_TOKEN 但前端沒帶（aiAuthHeaders 目前不注入）。
-    // 這是部署設定與前端不一致，非使用者可自行修正，故訊息指向設定而非要求填金鑰。
-    if (resp.status === 401) {
-      alert('伺服器已啟用 API 金鑰保護，但前端未設定；請洽管理者確認 PATENT_API_TOKEN 設定。');
-      return;
-    }
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      alert('建立 AI 任務失敗：' + (err.detail || resp.status));
-      return;
-    }
-    const created = await resp.json();
-    if (input) input.value = '';
-    await fetchTasks();
-    // 建立後持續輪詢該 AI 任務，完成即把產出 render 到 AI 產出區（不再取回即丟棄）。
-    pollAiTask(created.run_id);
-  } catch (e) {
-    alert('連線錯誤：' + e.message);
-  } finally {
-    btn.disabled = false; btn.textContent = '送出給 AI 助手';
-  }
-}
-// 輪詢 AI 任務（GET /ai-tasks/{run_id}，需 bearer）：succeeded 顯示產出，failed 顯示 error_message。
+// sendAiRequest 已移除（2026-07-29 使用者定案「只拿掉輸入框，解讀照樣自動產」，
+// AI 助手欄「單純任務進度表就好」）。它與報表區 runNarrative 是同一件事
+// （建 ai:narrative job）的第二個入口，且側欄打的需求會套用到**整份**報表；
+// 改由各報表旁的「重產解讀」帶 report_keys，在哪張報表提的需求就只重產那張。
 async function pollAiTask(runId) {
   const wrap = el('ai-task-result');
   if (!wrap) return;

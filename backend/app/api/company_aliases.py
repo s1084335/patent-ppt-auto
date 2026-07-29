@@ -428,6 +428,52 @@ def find_code_conflicts(groups: list[Any], existing: dict[str, str]) -> list[dic
     return conflicts
 
 
+# 依待補名稱（lookup_key）反查該名稱出現在哪些專利（2026-07-29 使用者需求）。
+#
+# 動因：使用者「如果專利權人標籤拿去搜尋，但這間公司的欄位，在前端沒有出現，
+# 這樣我無法篩選」。標籤本來就知道自己的來源欄位，該用欄位精準篩，不丟全文搜尋。
+#
+# ⚠ 為何不沿用既有的專利搜尋（app_layer._LIST_WHERE）：
+#   ① 它只吃 patent_number／title／applicant_display_name 三欄——**專利權人與受讓人
+#      不在搜尋範圍**，搜這兩欄來的名稱一律 0 筆（且靜默，看起來像「這家沒有專利」）。
+#   ② 它比對的是 report_patent_base 的**收斂顯示名**，而待補清單是從**原始 WIPS 欄位**
+#      算的——兩者對不上，就算把欄位補進去也查不到原文標籤。
+#
+# 故複用 _PENDING_CODES_SQL 同一組來源欄位與 normalize 規則（同一把 lookup_key），
+# 只是反過來以 key 反查 patent。任一欄命中就列出（使用者定），不分欄。
+_PENDING_NAME_PATENTS_SQL = """
+    WITH raw_names AS (
+        SELECT x.raw_name, x.source_field, pp.patent_id
+        FROM core_layer.patent_people pp
+        CROSS JOIN LATERAL (VALUES
+            (NULLIF(BTRIM(pp."申請人"), ''), '申請人'),
+            (NULLIF(BTRIM(pp."標準化申請人"), ''), '標準化申請人'),
+            (NULLIF(BTRIM(pp."最近專利權人[US,JP,KR,CN,CA,AU]"), ''), '最近專利權人'),
+            (NULLIF(BTRIM(pp."標準當前專利權人[US,JP,KR,CN,CA,AU]"), ''), '標準當前專利權人'),
+            (NULLIF(BTRIM(pp."最近受讓人[US,KR,CN]"), ''), '最近受讓人')
+        ) AS x(raw_name, source_field)
+        WHERE x.raw_name IS NOT NULL
+    ),
+    -- 同 _PENDING_CODES_SQL：` | ` 多值要拆，否則共同持有的第二方永遠對不到。
+    matched AS (
+        SELECT r.patent_id, r.source_field
+        FROM raw_names r
+        CROSS JOIN LATERAL regexp_split_to_table(r.raw_name, '\\s*\\|\\s*') AS part
+        WHERE lower(regexp_replace(BTRIM(part), '\\s+', ' ', 'g')) = %(lookup_key)s
+    )
+    -- ⚠ 只回 patent_id 與比對到的欄位，**不重算 patent_number／title／detail_url**：
+    -- 專利號規則（授權公告號→審查公告號→公開號→申請號的 COALESCE）已在
+    -- app_layer.patent_queries._CANDIDATES_CTE，在這裡再寫一份就是同一規則兩處實作。
+    -- 前端拿 patent_id 後走既有專利清單查詢顯示完整欄位（含「詳細查看連結」）。
+    SELECT m.patent_id,
+           array_agg(DISTINCT m.source_field ORDER BY m.source_field) AS matched_fields
+    FROM matched m
+    GROUP BY m.patent_id
+    ORDER BY m.patent_id
+    LIMIT %(limit)s
+"""
+
+
 _PENDING_CODES_SQL = """
     WITH raw_names AS (
         SELECT x.raw_name, x.source_field, pp.patent_id
@@ -494,6 +540,47 @@ def list_pending_company_codes(limit: int = Query(default=200, ge=1, le=1000)) -
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
         rows = conn.execute(_PENDING_CODES_SQL, {"limit": limit}).fetchall()
     return {"items": [dict(r) for r in rows], "count": len(rows)}
+
+
+@router.get("/company-codes/pending/{lookup_key}/patents")
+def list_patents_for_pending_name(
+    lookup_key: str,
+    limit: int = Query(default=500, ge=1, le=2000),
+) -> dict[str, Any]:
+    """待補名稱反查專利 id（2026-07-29 使用者需求「用標籤來篩選」）。
+
+    使用者要在決定「這是不是同一家公司」之前，先看看該名稱掛在哪些專利上——
+    看完（點專利表的「詳細查看連結」去 WIPS 對照）再決定要不要加進變體。
+
+    ⚠ 為何不用既有專利搜尋：它只吃 patent_number／title／applicant_display_name，
+    **專利權人與受讓人不在搜尋範圍**（搜這兩欄的名稱一律 0 筆且靜默）；
+    且它比對收斂顯示名，與待補清單的原始 WIPS 字面對不上。
+
+    `lookup_key` 為 normalize 後的鍵（小寫、空白收斂），與 `/company-codes/pending`
+    回傳的同一把——前端直接把該值帶過來，不自行 normalize（規則只在 SQL 一處）。
+
+    只回 `patent_id` 與命中的欄位；完整欄位由前端走既有專利清單查詢，
+    不在此重算專利號（那規則已在 app_layer._CANDIDATES_CTE）。
+    """
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from backend.app.db.connection import get_connection_kwargs
+
+    key = (lookup_key or "").strip().lower()
+    if not key:
+        return {"items": [], "patent_ids": [], "count": 0}
+    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
+        rows = conn.execute(
+            _PENDING_NAME_PATENTS_SQL, {"lookup_key": key, "limit": limit}
+        ).fetchall()
+    items = [dict(r) for r in rows]
+    return {
+        "items": items,
+        # 前端用它去打既有專利清單端點取完整欄位。
+        "patent_ids": [r["patent_id"] for r in items],
+        "count": len(items),
+    }
 
 
 @router.get("/company-codes/existing")

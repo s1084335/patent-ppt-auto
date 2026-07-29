@@ -129,8 +129,19 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("aiAuthHeaders", self.html)
 
     def test_ai_send_button_kept(self):
-        """送出功能保留（使用者要求）：ai:narrative 任務仍可從前端建立。"""
-        for needle in ("btn-ai-send", "sendAiRequest", "ai-input"):
+        """送出功能保留（使用者要求）：ai:narrative 任務仍可從前端建立。
+
+        ⚠ 2026-07-30 入口換位，原斷言的 `btn-ai-send`／`sendAiRequest`／`ai-input`
+        （AI 助手側欄）已移除——使用者定案「只拿掉輸入框，解讀照樣自動產」，
+        AI 助手欄「單純任務進度表就好」。
+
+        本測試的**用意仍然成立**（前端要建得了 ai:narrative），故改驗新入口：
+        - `btn-run-all-narrative`：一次跑全部（初次用）
+        - `btn-run-narrative`：各報表獨立重產（可帶該張的 prompt）
+        兩者走同一支 runNarrative，差別只在有沒有帶 report_keys。
+        """
+        for needle in ("btn-run-all-narrative", "btn-run-narrative",
+                       "runNarrative", "narrative-prompt"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.html)
 
