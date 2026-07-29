@@ -2187,15 +2187,22 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
         suffix = f"_{slug}" if multi_source else ""
         tab_suffix = f"——{segment_label}" if multi_source else ""
         opp_file = f"opportunity_quadrant{suffix}.svg"
-        pain_file = f"pain_point_quadrant{suffix}.svg"
         render_opportunity_quadrant_svg(
             ctx.run_dir / opp_file, f"機會四象限分析——{segment_label}", opp_matrix)
-        render_pain_point_quadrant_svg(
-            ctx.run_dir / pain_file, f"痛點四象限分析——{segment_label}", pain_matrix)
         variants.append({"label": f"機會矩陣{tab_suffix}", "file": opp_file, "variant_key": f"opportunity{suffix}"})
-        variants.append({"label": f"痛點矩陣{tab_suffix}", "file": pain_file, "variant_key": f"pain{suffix}"})
         ctx.chart_rows[f"opportunity_quadrant{suffix}"] = opp_matrix
-        ctx.chart_rows[f"pain_point_quadrant{suffix}"] = pain_matrix
+        # 🔴 痛點矩陣**不產**（2026-07-29 使用者定案「整個藏起來，等市場線做好再放出來」）。
+        #
+        # ⚠ 5b4dbef 只把 pain_point_quadrant 從 DEFAULT_REPORT_NAMES 排除，那擋的是
+        # 「報表勾選清單」那一層——但本函式是**整包產出**，內部無條件 render + append，
+        # 完全不看使用者選了哪些報表。使用者重產報表後（report_trial_20260729_164537）
+        # 痛點矩陣照樣出現在檢視選單，實測打臉了我「已擋住」的判斷。
+        # 教訓：擋一個報表要追**所有**產出路徑，只查 DEFAULT_REPORT_NAMES 不夠。
+        #
+        # 市場線（上傳→AI 摘要→使用者確認）尚未實作，缺資料時痛點軸全是「待調查」，
+        # 產出的圖看不出不完整、匯進 PPT 會被讀成「痛點都很低」。
+        # ⚠ 機會矩陣是純專利資料（x 專利密度、y 競爭者結構強度），**照常產出**，不連坐。
+        # pain_matrix 仍計算（上方迴圈）但不落檔——市場線做好後解除本段即可恢復。
 
     note = (
         "主題統計表包含所有正式主題（含未分類），技術主題與功效分類分段不混表；"

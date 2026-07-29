@@ -226,9 +226,9 @@ class DisplaySpecTests(unittest.TestCase):
             # 變體只剩真正的圖（機會板／痛點板）；統計表改由 section 的 rows 走數據表。
             self.assertEqual(
                 files,
-                ["opportunity_quadrant.svg", "pain_point_quadrant.svg"],
-                "板圖回歸：變體應只剩機會板＋痛點板（統計表已改走數據表）")
-            self.assertEqual(labels, ["機會矩陣", "痛點矩陣"])
+                ["opportunity_quadrant.svg"],
+                "⚠ 2026-07-29：統計表改走數據表、痛點板停產（市場線未實作），只剩機會板")
+            self.assertEqual(labels, ["機會矩陣"])
         # 龍頭涉入欄改在數據列上驗（原本驗的是已移除的 HTML 檔）。
         self.assertIn("leading_applicant_count", ctx.chart_rows["cluster_topic_table"][0],
                       "統計列缺龍頭涉入欄")
@@ -553,12 +553,14 @@ class TopicSegmentTests(unittest.TestCase):
             files = [v["file"] for v in ctx.sections[0]["variants"]]
             tech_opp = (Path(tmp) / "opportunity_quadrant_tech.svg").read_text(encoding="utf-8")
             effect_opp = (Path(tmp) / "opportunity_quadrant_effect.svg").read_text(encoding="utf-8")
-            self.assertTrue((Path(tmp) / "pain_point_quadrant_tech.svg").exists())
-            self.assertTrue((Path(tmp) / "pain_point_quadrant_effect.svg").exists())
+            # ⚠ 痛點板已停產（2026-07-29 使用者定案，市場線未實作），不應存在。
+            self.assertFalse((Path(tmp) / "pain_point_quadrant_tech.svg").exists(),
+                             "痛點板應已停產")
+            self.assertFalse((Path(tmp) / "pain_point_quadrant_effect.svg").exists(),
+                             "痛點板應已停產")
         # ⚠ 2026-07-29 統計表不再是變體，變體只剩真正的圖（每來源機會／痛點各一）。
-        self.assertEqual(len(files), 4, "兩來源＝每來源機會/痛點各一，共 4 tabs")
-        for f in ("opportunity_quadrant_tech.svg", "pain_point_quadrant_tech.svg",
-                  "opportunity_quadrant_effect.svg", "pain_point_quadrant_effect.svg"):
+        self.assertEqual(len(files), 2, "兩來源＝每來源機會板各一，共 2 tabs（痛點已停產）")
+        for f in ("opportunity_quadrant_tech.svg", "opportunity_quadrant_effect.svg"):
             self.assertIn(f, files)
         self.assertIn("機會四象限分析——技術主題", tech_opp)
         self.assertIn("機會四象限分析——功效分類", effect_opp)
@@ -578,8 +580,8 @@ class TopicSegmentTests(unittest.TestCase):
             rows = ctx.sections[0].get("rows") or []
             opp = (Path(tmp) / "opportunity_quadrant.svg").read_text(encoding="utf-8")
         # ⚠ 2026-07-29 統計表不再是變體；單一來源維持原檔名的契約只剩兩張圖。
-        self.assertEqual(files, ["opportunity_quadrant.svg", "pain_point_quadrant.svg"],
-                         "單一來源維持原檔名（統計表已改走數據表）")
+        self.assertEqual(files, ["opportunity_quadrant.svg"],
+                         "單一來源維持原檔名（統計表改走數據表、痛點板已停產）")
         self.assertEqual({r.get("source_field") for r in rows}, {"wips_independent_claims"},
                          "只有一種來源時只出現該段的列")
         self.assertIn("機會四象限分析——技術主題", opp, "板標題帶來源段名")

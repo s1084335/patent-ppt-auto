@@ -94,3 +94,51 @@ class TopicTableDataColumnsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PainPointNotProducedTests(unittest.TestCase):
+    """🔴 需市場資料的痛點矩陣不得在分群 section 內被無條件產出。
+
+    ## 使用者實機回報（2026-07-29，附截圖）
+
+    重新產製報表後（report_trial_20260729_164537），`pain_point_quadrant`
+    **仍出現在報表種類的檢視選單與畫面上**。
+
+    ## 我先前的誤判
+
+    5b4dbef 只把 `pain_point_quadrant` 從 `DEFAULT_REPORT_NAMES` 排除——那擋的是
+    「報表勾選清單」那一層。但 `_build_cluster_analytics_section` 是**整包產出**：
+    它內部無條件 `render_pain_point_quadrant_svg(...)` 並 `variants.append(...)`，
+    完全不看使用者選了哪些報表。
+
+    ⚠ 只查 DEFAULT_REPORT_NAMES 就下結論「已擋住」是錯的，實際產出路徑另有一條。
+
+    ## 定案
+
+    市場線未實作前不產痛點矩陣（使用者：「整個藏起來，等市場線做好再放出來」）。
+    ⚠ 機會矩陣是純專利資料（x 專利密度、y 競爭者結構強度），**照常產出**。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from backend.app.reports import chart_runner
+
+        cls.src = inspect.getsource(chart_runner._build_cluster_analytics_section)
+
+    def test_pain_point_render_is_guarded(self):
+        """產痛點 SVG 必須有條件判斷，不得無條件呼叫。"""
+        called = re.search(r"^\s*render_pain_point_quadrant_svg\(", self.src, re.M)
+        if called:
+            self.fail("仍無條件產痛點矩陣 SVG——使用者重產報表後照樣看得到")
+
+    def test_pain_variant_not_appended(self):
+        """痛點矩陣不得加進 variants（加了畫面就有那個 tab）。"""
+        self.assertNotIn('"label": f"痛點矩陣', self.src,
+                         "痛點矩陣仍被加進 variants，檢視選單會出現它")
+
+    def test_opportunity_still_produced(self):
+        """⚠ 機會矩陣是純專利資料，必須照常產出——不可連坐移除。"""
+        self.assertIn("render_opportunity_quadrant_svg", self.src,
+                      "機會矩陣被誤刪：它不需要市場資料")
+        self.assertIn('"label": f"機會矩陣', self.src,
+                      "機會矩陣的 variant 被誤刪")

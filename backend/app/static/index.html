@@ -576,23 +576,10 @@ table.data td.cell-wrap, table.data th.cell-wrap {
       <div class="ai-section-label">AI 產出</div>
       <div id="ai-task-result"></div>
     </div>
-    <div class="ai-footer">
-      <!-- 金鑰輸入已移除（2026-07-26 定案）：AI 任務端點改為 opt-in 認證——
-           伺服器未設 PATENT_API_TOKEN 即不驗證，使用者不需填任何金鑰。
-           若部署端設了該環境變數，這裡就要改回帶 Authorization（見 aiAuthHeaders）。 -->
-      <!-- ⚠ 示範文字只舉 AI 在本系統真能做的事（2026-07-27 修正）。
-           原文字「把趨勢圖改成近十年、加一段風險摘要」兩項 AI 都做不到：
-           圖表由確定性引擎產出，AI 只准寫 narratives.json（runner 契約第 5 點）；
-           「風險摘要」牴觸 report-narrative-flow.md 模板第 5 點（禁止研發建議、
-           禁止無數字支撐的形容詞）。照著打會得到「無法滿足」的解讀句——
-           看似成功卻沒做事，比失敗更誤導。 -->
-      <div class="ai-section-label">對報表解讀提出需求</div>
-      <textarea class="ai-input" id="ai-input" placeholder="例如：多著墨 Top 3 申請人的年度變化、用更白話的說法、特別點出斷層或空窗年份…"></textarea>
-      <div class="hint" style="margin-top:0.35rem;font-size:0.75rem">
-        只影響<strong>報表解讀文字</strong>；圖表種類與區間由報表引擎決定，AI 不會更動。
-      </div>
-      <button class="btn btn-primary" id="btn-ai-send" style="margin-top:0.5rem;width:100%" onclick="sendAiRequest()">送出給 AI 助手</button>
-    </div>
+    <!-- 金鑰輸入已移除（2026-07-26 定案）：AI 任務端點改為 opt-in 認證。 -->
+    <!-- ⚠ 解讀需求輸入框已移除（2026-07-29 使用者定案）：AI 助手欄只留任務進度。
+         需求輸入移到各報表旁的「重產解讀」——在哪張報表提的需求就只重產那張，
+         比在側欄打一段然後整份重跑精準。 -->
   </aside>
 </div>
 
@@ -4331,17 +4318,28 @@ function narrativeJobRunning(version) {
     && t.payload && t.payload.based_on_version === version);
 }
 
-async function runNarrative() {
+// 重產解讀（2026-07-29 使用者定案）：
+//   ①「報表要能各自獨立重產解釋」→ 帶 report_keys，只重產目前檢視的那張
+//   ②「重產解釋要能順帶使用者輸入的 prompt」→ 帶 instruction
+//   ③「原本圖表數據不能少」→ 由 runner 契約保證（只准寫 narratives.json）
+// 不帶 report_keys 時維持整份重跑（例如首次產解讀）。
+async function runNarrative(scopeKey) {
   const version = reportViewContent && reportViewContent.version;
   if (!version) { alert('尚無報表版本，請先產製報表。'); return; }
   if (narrativeJobRunning(version)) { alert('此版本的解讀正在產生中，請稍候。'); return; }
   const btn = el('btn-run-narrative');
+  const promptBox = el('narrative-prompt');
+  const instruction = (promptBox && promptBox.value.trim()) || '';
   if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
   try {
+    const payload = { task_type: 'ai:narrative', based_on_version: version };
+    // scopeKey 未給時整份重跑；給了就只做那張，其餘解讀由 runner prompt 明令保留。
+    if (scopeKey) payload.report_keys = [scopeKey];
+    if (instruction) payload.instruction = instruction;
     const resp = await fetch(API + '/ai-tasks', {
       method: 'POST',
       headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ task_type: 'ai:narrative', based_on_version: version }),
+      body: JSON.stringify(payload),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
@@ -4498,11 +4496,24 @@ function reportSingleHtml(section, option) {
   const texts = shown
     .map(v => (v.narrative && v.narrative.text) ? v.narrative.text.trim() : '')
     .filter(Boolean);
-  const narrativeHtml = texts.length
+  // 重產入口（2026-07-29 使用者定案「報表要能各自獨立重產解釋」）：
+  // ⚠ 原本只在「尚未產生」時給按鈕——**已有解讀就無法重產**，只能整份重跑。
+  // 改為兩種狀態都給，並帶目前這張的 report_key，只重產它。
+  // 附加需求輸入框就地放在按鈕旁：在哪張報表提的需求就套用到哪張
+  //（原本在 AI 助手側欄，打了會套用到整份報表）。
+  const scopeKey = (option && option.report_key) || viewSection.report_key || '';
+  const rerunHtml = '<div class="narrative-rerun">'
+    + '<textarea class="ai-input" id="narrative-prompt" rows="2"'
+    + ' placeholder="想怎麼改這張的解讀？例如：多著墨 Top 3 的年度變化、用更白話的說法（可留空）"></textarea>'
+    + '<div class="hint" style="font-size:0.75rem;margin:0.3rem 0">'
+    + '只影響<strong>這張報表的解讀文字</strong>；圖表與數據由報表引擎決定，AI 不會更動。</div>'
+    + '<button class="btn btn-sm" id="btn-run-narrative"'
+    + ' onclick="runNarrative(' + JSON.stringify(scopeKey) + ')">'
+    + (texts.length ? '重產這張的解讀' : '產生 AI 解讀') + '</button>'
+    + '</div>';
+  const narrativeHtml = (texts.length
     ? texts.map(t => '<p>' + escHtml(t) + '</p>').join('')
-    : '<p class="empty">AI 解讀尚未產生。'
-      + '<button class="btn btn-sm" id="btn-run-narrative" onclick="runNarrative()"'
-      + ' style="margin-left:0.6rem">產生 AI 解讀</button></p>';
+    : '<p class="empty">AI 解讀尚未產生。</p>') + rerunHtml;
   return '<article class="export-card">'
     + '<h3>' + escHtml(viewSection.title || '') + '</h3>'
     + (isClusterSection(section) ? reportSourceTabsHtml(sourceField) : '')
@@ -5340,47 +5351,10 @@ async function fetchTasks() {
     renderTaskList(data.tasks);
   } catch (e) { /* 靜默：狀態頁另有系統狀態顯示 */ }
 }
-// 送出 AI 任務（ai:narrative）：右欄輸入框內容走前端 AI 任務入口 /ai-tasks。
-// 註：這是「前端建任務」，不是本機 Patent Companion 的裝置側取任務通道。
-async function sendAiRequest() {
-  const btn = el('btn-ai-send');
-  const input = el('ai-input');
-  const text = (input && input.value.trim()) || '';
-  btn.disabled = true; btn.textContent = '送出中…';
-  try {
-    const payload = { workspace_id: state.workspaceId, cli_kind: 'claude' };
-    if (text) payload.instruction = text;
-    // ⚠ 不要送 based_on_version：state.nav 是頁籤名（'patents'／'topics'…），
-    // 不是報表版本號。2026-07-27 前誤送 state.nav，runner 的 resolve_run_dir 會去找
-    // full_report_latest/<頁籤名>/report_data.json，必然不存在 → ai:narrative 一律
-    // failed（DB 曾累積 30 筆）。不帶此欄位時 runner 本就會自動取最新報表版本。
-    const resp = await fetch(API + '/ai-tasks', {
-      method: 'POST', headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(payload),
-    });
-    // 401＝伺服器有設 PATENT_API_TOKEN 但前端沒帶（aiAuthHeaders 目前不注入）。
-    // 這是部署設定與前端不一致，非使用者可自行修正，故訊息指向設定而非要求填金鑰。
-    if (resp.status === 401) {
-      alert('伺服器已啟用 API 金鑰保護，但前端未設定；請洽管理者確認 PATENT_API_TOKEN 設定。');
-      return;
-    }
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      alert('建立 AI 任務失敗：' + (err.detail || resp.status));
-      return;
-    }
-    const created = await resp.json();
-    if (input) input.value = '';
-    await fetchTasks();
-    // 建立後持續輪詢該 AI 任務，完成即把產出 render 到 AI 產出區（不再取回即丟棄）。
-    pollAiTask(created.run_id);
-  } catch (e) {
-    alert('連線錯誤：' + e.message);
-  } finally {
-    btn.disabled = false; btn.textContent = '送出給 AI 助手';
-  }
-}
-// 輪詢 AI 任務（GET /ai-tasks/{run_id}，需 bearer）：succeeded 顯示產出，failed 顯示 error_message。
+// sendAiRequest 已移除（2026-07-29 使用者定案「只拿掉輸入框，解讀照樣自動產」，
+// AI 助手欄「單純任務進度表就好」）。它與報表區 runNarrative 是同一件事
+// （建 ai:narrative job）的第二個入口，且側欄打的需求會套用到**整份**報表；
+// 改由各報表旁的「重產解讀」帶 report_keys，在哪張報表提的需求就只重產那張。
 async function pollAiTask(runId) {
   const wrap = el('ai-task-result');
   if (!wrap) return;

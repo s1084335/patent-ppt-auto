@@ -161,16 +161,32 @@ def build_prompt(
     *,
     skill_path: Path | None = None,
     instruction: str | None = None,
+    report_keys: list[str] | None = None,
 ) -> str:
     """組 headless 解讀任務提示：只指示 CLI 讀 skill 全文並遵守，不複製規格內文。
 
-    instruction＝使用者在右欄「對目前頁面提出修改需求」打的字（可為空）。
+    instruction＝使用者在報表旁「重產解讀」時輸入的附加需求（可為空）。
     2026-07-27 前 payload 有存但這裡零消費，使用者打了完全沒作用——
     比失敗更誤導（看似成功卻沒照要求做），故納入 prompt。
     附加需求**不得凌駕輸出契約**：仍只寫 narratives.json、維持 v2 兩層結構。
+
+    report_keys＝只重產這幾張報表的解讀（2026-07-29 使用者定案「報表要能各自
+    獨立重產解釋」）。不給＝整份重跑（原行為）。
+    ⚠ 限定範圍時**必須明確要求保留其他報表的既有解讀**——否則 CLI 會寫出只含
+    這幾張的 narratives.json，其餘解讀全部消失，且檔案結構合法、驗不出來
+    （靜默資料損失）。
     """
     skill = skill_path if skill_path is not None else SKILL_PATH
     narratives_path = run_dir / "narratives.json"
+    scope = ""
+    if report_keys:
+        listed = "、".join(str(k) for k in report_keys)
+        scope = (
+            f"\n\n**本次只重產這幾張報表的解讀**：{listed}\n"
+            f"   ⚠ {narratives_path} 內**其他報表的既有解讀必須原樣保留**：\n"
+            "   先讀入現有檔案，只替換上列 report_key 的內容，其餘鍵值不得刪除或改寫。\n"
+            "   （寫成只含本次範圍的檔案＝其他解讀全部遺失，且檔案結構仍合法、驗不出來。）"
+        )
     extra = ""
     if instruction and instruction.strip():
         extra = (
@@ -193,6 +209,7 @@ def build_prompt(
         "   report_key→variants→variant_key→{text,ai_model,prompt_version,generated_at} 兩層結構。\n"
         "5. 只准寫 narratives.json 這一個檔案；不得改動目錄內其他檔案、不得執行 shell 指令；\n"
         "   寫完即結束，不輸出多餘說明。"
+        + scope
         + extra
     )
 
@@ -274,6 +291,8 @@ def run_narrative(
     root: Path | None = None,
     skill_path: Path | None = None,
     instruction: str | None = None,
+    # 只重產這幾張報表的解讀（2026-07-29）；不給＝整份重跑。
+    report_keys: list[str] | None = None,
     resolve_run_dir: Callable[..., Path] | None = None,
     upload_run_dir: Callable[[Path], int] | None = None,
 ) -> dict[str, Any]:
@@ -297,7 +316,8 @@ def run_narrative(
     if progress is not None:
         progress("cli_running", 30)
 
-    prompt = build_prompt(run_dir, version, skill_path=skill_path, instruction=instruction)
+    prompt = build_prompt(run_dir, version, skill_path=skill_path,
+                          instruction=instruction, report_keys=report_keys)
     argv = build_cli_command(cli_kind, prompt, model=model)
     cli_result = runner(argv, timeout_seconds)
     parse_cli_result(cli_result)  # 退出碼／JSON 檢查；不硬用其內容，narratives.json 才是產物
