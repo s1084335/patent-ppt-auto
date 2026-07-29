@@ -999,7 +999,12 @@ function unsavedCodeGroupsWarningHtml() {
     + ' 組尚未寫入，AI 不會處理它們——請先在上方代碼區按「確定寫入資料庫」。</div>';
 }
 
+// 既有代碼組的當前快照（集中入口的下拉要據此帶入代碼／中文名／正規化名稱）。
+// 存全域而非只當參數：addVariantToGroup 在使用者按下按鈕時才需要它。
+let existingCompanyGroups = [];
+
 function renderCompanyCodeBody(existingGroups) {
+  existingCompanyGroups = existingGroups || [];
   const body = el('company-code-body');
   if (!body) return;
   body.innerHTML =
@@ -1035,7 +1040,58 @@ function renderCompanyCodeBody(existingGroups) {
         ? existingGroups.map(existingGroupHtml).join('')
         : '<p class="hint" style="padding:.3rem 0 0 1rem">（尚無已確認的代碼）</p>')
     + '</details>'
+    // 新增變體集中入口（2026-07-29 使用者定「做成集中入口」「一個區塊下拉選組」）：
+    // 原本要把新寫法歸進既有組，只能繞路用上方「新增一組」表單填既有代碼，
+    // 且中文名與正規化名稱必須完全一致否則 409。這裡選了組就自動帶入那三個值，
+    // 使用者只填變體字面。無既有組時不顯示（沒得選）。
+    + (existingGroups.length
+        ? '<div class="card" style="margin-top:.6rem">'
+          + '<div style="font-weight:600;margin-bottom:.4rem">新增變體到既有組</div>'
+          + '<p class="hint" style="padding:0 0 .4rem">'
+          + '把新的公司寫法歸進已建立的代碼組；代碼與公司名沿用該組現值，只需填寫法。</p>'
+          + '<div class="toolbar">'
+          + '<select class="text-input" id="add-variant-group-select" style="max-width:26rem">'
+          + addVariantGroupOptionsHtml(existingGroups) + '</select>'
+          + '<input class="text-input" id="add-variant-alias" placeholder="新的公司寫法（原始字面）" style="min-width:18rem">'
+          + '<button class="btn btn-primary" onclick="addVariantToGroup()">新增</button>'
+          + '</div></div>'
+        : '')
     + '<div id="group-maint-msg"></div>';
+}
+
+// 選組下拉的選項：顯示「代碼 — 公司名」，value 用代碼（送出時再查回整組資料）。
+function addVariantGroupOptionsHtml(groups) {
+  return (groups || []).map(g => {
+    const label = g.code + (g.company_name ? ' — ' + g.company_name : '');
+    return '<option value="' + escHtml(g.code) + '">' + escHtml(label) + '</option>';
+  }).join('');
+}
+
+// 新增變體：走既有 POST /company-codes/confirm（後端 apply_confirmed_display_names
+// 對「別稱不存在」本來就是 INSERT，不覆蓋既有列）——**不另造端點**，
+// 否則寫入規則會有第二個落點。
+// ⚠ payload 必須帶該組的 zh_name／normalized_name：後端 find_code_conflicts 比對
+// 「同代碼是否配到不同正規化名稱」，少帶或帶錯就 409。
+async function addVariantToGroup() {
+  const code = (el('add-variant-group-select') || {}).value || '';
+  const aliasInput = el('add-variant-alias');
+  const alias = ((aliasInput || {}).value || '').trim();
+  if (!code || !alias) { alert('請選擇代碼組並填寫變體。'); return; }
+  const group = existingCompanyGroups.find(g => g.code === code);
+  if (!group) { alert('找不到該代碼組，請重新載入。'); return; }
+  const payload = { groups: [{
+    code: code,
+    zh_name: group.zh_name || '',
+    normalized_name: group.normalized_name || '',
+    aliases: [alias],
+  }] };
+  const ok = await callGroupMaintenance(
+    API + '/company-codes/confirm',
+    { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload) },
+    '已新增變體「' + alias + '」，正在刷新收斂名。');
+  if (ok !== false && aliasInput) aliasInput.value = '';
+  return ok;
 }
 
 // 既有代碼的一組：兩層展開 ＋ 維護操作（改名／補代碼／刪組／移除變體）。
@@ -1145,7 +1201,13 @@ function promoteCompanyCode(code) {
 function codeGroupHtml(g, idx) {
   return '<div class="code-group" data-group="' + idx + '">'
     + '<div class="code-group-head"><span class="idx">第 ' + (idx + 1) + ' 組</span>'
-    + '<button class="btn-mini" onclick="removeCodeGroup(' + idx + ')">刪除本組</button></div>'
+    + '<button class="btn-mini" onclick="removeCodeGroup(' + idx + ')">刪除本組</button>'
+    // 填入目標（2026-07-29 使用者回報「標籤只會出現在第一組」）：原本只靠變體格的
+    // onfocus 記錄目標，使用者沒先點過任何格子時 activeVariant 停在 {g:0,v:0}
+    // → 點待補清單永遠填到第 1 組，而畫面上**沒有任何提示**。改為明示且可直接指定。
+    + '<button class="btn-mini" onclick="setActiveVariant(' + idx + ', 0)"'
+    + (activeVariant.g === idx ? ' style="background:var(--accent);color:#fff"' : '')
+    + '>' + (activeVariant.g === idx ? '● 待補清單填這組' : '填這組') + '</button></div>'
     // 代碼可留空（見上方說明）：留空時後端掛 TEMP: 臨時代碼，仍可正常收斂。
     + '<div class="code-field"><label>代碼</label>'
     + '<input class="text-input" value="' + escHtml(g.code) + '" placeholder="WIPS 查到的申請人代碼（沒有可留空）"'
@@ -1161,7 +1223,7 @@ function codeGroupHtml(g, idx) {
     + g.variants.map((v, vi) =>
         '<div class="code-variant-row">'
         + '<input class="text-input" value="' + escHtml(v) + '" placeholder="原始寫法（點上方清單可填入）"'
-        + ' onfocus="activeVariant = {g:' + idx + ', v:' + vi + '}"'
+        + ' onfocus="setActiveVariant(' + idx + ', ' + vi + ')"'
         + ' oninput="updateVariant(' + idx + ', ' + vi + ', this.value)">'
         + (g.variants.length > 1
             ? '<button class="btn-mini" onclick="removeCodeVariant(' + idx + ', ' + vi + ')">－</button>'
@@ -1191,6 +1253,14 @@ function updateCodeGroup(i, field, value) { companyCodeGroups[i][field] = value;
 function updateVariant(i, vi, value) { companyCodeGroups[i].variants[vi] = value; }
 
 // 只重畫組區塊，不重打 API（待補清單與既有代碼不變）
+// 設定「待補清單要填進哪一組哪一格」並重繪，讓標示即時反映。
+// ⚠ 重繪會重建 DOM、輸入框失焦——但 activeVariant 是變數不受影響，
+// 這正是修正前的隱性問題：狀態在但畫面沒有任何提示。
+function setActiveVariant(g, v) {
+  activeVariant = { g: g, v: v };
+  redrawCodeGroups();
+}
+
 function redrawCodeGroups() {
   const box = el('code-groups');
   if (box) box.innerHTML = companyCodeGroups.map(codeGroupHtml).join('');
