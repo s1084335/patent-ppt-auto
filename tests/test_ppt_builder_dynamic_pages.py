@@ -1,4 +1,4 @@
-"""PPT builder 的動態頁面與使用者覆寫契約測試。"""
+"""PPT builder 動態頁與覆寫契約。"""
 
 from __future__ import annotations
 
@@ -13,13 +13,13 @@ pytest.importorskip("pptx")
 from pptx import Presentation  # noqa: E402
 from pptx.util import Inches  # noqa: E402
 
-# ⚠ 由 repo 根推導，不寫死絕對路徑（skill 已於 2026-07-29 搬進本 repo）。
+
 SKILL_DIR = Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt"
 BUILDER_PATH = SKILL_DIR / "scripts" / "build_ppt.py"
 
 
 def _load_builder():
-    """直接載入 skill 內的 build_ppt.py，驗證正式組版腳本行為。"""
+    """載入 skill 內的 build_ppt.py。"""
     spec = importlib.util.spec_from_file_location("build_ppt_dynamic", BUILDER_PATH)
     module = importlib.util.module_from_spec(spec)
     sys.modules["build_ppt_dynamic"] = module
@@ -29,7 +29,7 @@ def _load_builder():
 
 @pytest.fixture()
 def report_dir(tmp_path: Path) -> Path:
-    """建立最小報表資料，供 builder 產生可檢查的 PPT。"""
+    """建立含基礎資料與一個額外報表的版本。"""
     version = "report_trial_20260723_000000"
     path = tmp_path / "output" / version
     path.mkdir(parents=True)
@@ -43,10 +43,24 @@ def report_dir(tmp_path: Path) -> Path:
                 "report_type": "trend",
                 "rows": [{"year": 2025, "patent_count": 3}],
             },
+            "country_distribution": {
+                "report_name": "country_distribution",
+                "label": "Country Distribution",
+                "label_zh": "地域分布",
+                "report_type": "distribution",
+                "rows": [{"country": "TW", "patent_count": 3}],
+            },
+            "cluster_topic_table": {
+                "report_name": "cluster_topic_table",
+                "label": "Cluster Topic Table",
+                "label_zh": "全分類技術指標總表",
+                "report_type": "table",
+                "rows": [{"label": "收繩機構", "patent_count": 3}],
+            },
             "owner_year_matrix": {
                 "report_name": "owner_year_matrix",
                 "label": "Owner Year Matrix",
-                "label_zh": "專利權人年度布局矩陣",
+                "label_zh": "專利權人年份矩陣",
                 "report_type": "matrix",
                 "rows": [{"company": "Rexon", "2025": 3}],
             },
@@ -62,8 +76,8 @@ def report_dir(tmp_path: Path) -> Path:
     return path
 
 
-def test_build_ppt_expands_extra_report_pages_before_appendix(report_dir, tmp_path):
-    """未列在基礎大綱的報表要追加頁面，且結論／附錄保留在後段。"""
+def test_build_ppt_expands_extra_report_pages_before_appendix_anchor(report_dir, tmp_path):
+    """額外報表要插在第一個 is_appendix 頁之前，不用頁碼魔術數字。"""
     builder = _load_builder()
     approvals = tmp_path / "approvals.json"
     approvals.write_text(
@@ -74,18 +88,22 @@ def test_build_ppt_expands_extra_report_pages_before_appendix(report_dir, tmp_pa
     result = builder.build_ppt(
         report_dir=report_dir, approvals_path=approvals, output_dir=tmp_path / "ppt"
     )
-    prs = Presentation(result["pptx_path"])
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
 
-    assert len(prs.slides) == len(builder.PAGE_LAYOUT) + 1
-    owner_page = next(page for page in manifest["pages"] if page["report_keys"] == ["owner_year_matrix"])
-    assert owner_page["page"] == 8
-    assert manifest["pages"][-3]["report_keys"] == ["cluster_topic_table"]
-    assert manifest["pages"][-1]["kind"] == "narrative_only"
+    owner_index = next(
+        index for index, page in enumerate(manifest["pages"])
+        if page["report_keys"] == ["owner_year_matrix"]
+    )
+    first_appendix_index = next(
+        index for index, page in enumerate(manifest["pages"]) if page["is_appendix"]
+    )
+
+    assert owner_index < first_appendix_index
+    assert manifest["pages"][first_appendix_index]["report_keys"] == ["cluster_topic_table"]
 
 
 def test_build_ppt_applies_layout_and_position_overrides(report_dir, tmp_path):
-    """前端送出的版型與座標覆寫要實際套進產出的 PPT。"""
+    """仍保留既有版型與座標覆寫相容性。"""
     builder = _load_builder()
     approvals = tmp_path / "approvals.json"
     approvals.write_text(

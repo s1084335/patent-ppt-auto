@@ -49,7 +49,8 @@ class PageSpec:
     title／subtitle：標題與副標（可含 {slot} 由確認槽填入）。
     report_keys：本頁引用的 report_data.json report_key，依序取用。
     charts：本頁配圖候選檔名（依序取第一個存在者）。
-    slots：本頁需經使用者確認的文案槽；缺任一即標浮水印。
+    slots：本頁需經使用者確認的文案槽；缺漏只寫 manifest，不印進 PPT。
+    is_appendix：附錄段顯式旗標，動態插頁靠它找錨點，不用頁碼魔術數字。
     """
 
     page: int
@@ -59,6 +60,7 @@ class PageSpec:
     charts: tuple[str, ...] = ()
     slots: tuple[str, ...] = ()
     subtitle: str = ""
+    is_appendix: bool = False
 
 
 PAGE_LAYOUT: tuple[PageSpec, ...] = (
@@ -73,10 +75,11 @@ PAGE_LAYOUT: tuple[PageSpec, ...] = (
     PageSpec(
         page=2,
         kind="direction",
-        title="研發方向建議：依專利地圖分析結果",
-        report_keys=("cluster_topic_table",),
+        title="研發方向建議",
+        report_keys=(),
+        charts=("opportunity_quadrant.svg", "cluster_topic_table.svg"),
         slots=("direction.body",),
-        subtitle="篩選邏輯＝客戶痛點高 × 專利佈局薄（倖存者偏差校正後）",
+        subtitle="綜合本次實際包含的報表產出建議",
     ),
     PageSpec(
         page=3,
@@ -112,33 +115,19 @@ PAGE_LAYOUT: tuple[PageSpec, ...] = (
     ),
     PageSpec(
         page=7,
-        kind="chart_with_narrative",
-        title="初步使用者痛點調查交叉驗證：專利訊號 × 客戶痛點",
-        report_keys=("pain_point_quadrant",),
-        charts=("pain_point_quadrant.svg",),
-        slots=("pain_point.narrative",),
-        subtitle="※質化、公開來源初判，非量化資料",
-    ),
-    PageSpec(
-        page=8,
         kind="table",
         title="附錄1：全分類技術指標總表",
         report_keys=("cluster_topic_table",),
         slots=(),
+        is_appendix=True,
     ),
     PageSpec(
-        page=9,
+        page=8,
         kind="table_with_narrative",
-        title="附錄2：專利 Key Players × 市場 Key Players",
+        title="附錄2：主要專利權人與申請人",
         report_keys=("applicant_ranking", "owner_ranking"),
-        slots=("key_players.market",),
-    ),
-    PageSpec(
-        page=10,
-        kind="narrative_only",
-        title="附錄3：市場規模、區域趨勢與銷售對象",
-        report_keys=(),
-        slots=("market.scope", "market.size"),
+        slots=("key_players.summary",),
+        is_appendix=True,
     ),
 )
 
@@ -153,6 +142,7 @@ def _copy_page_spec(spec: PageSpec, *, page: int | None = None, kind: str | None
         charts=spec.charts,
         slots=spec.slots,
         subtitle=spec.subtitle,
+        is_appendix=spec.is_appendix,
     )
 
 
@@ -182,12 +172,67 @@ def _kind_for_report(report: dict[str, Any]) -> str:
     return "chart_with_narrative"
 
 
+def _report_key_has_data(report_data: dict[str, Any], report_key: str) -> bool:
+    """判斷 report_key 是否在本次報表版本中真的有資料。"""
+    for bucket in ("reports", "family_reports"):
+        entry = (report_data.get(bucket) or {}).get(report_key)
+        if not isinstance(entry, dict):
+            continue
+        rows = entry.get("rows")
+        if isinstance(rows, list) and rows:
+            return True
+        try:
+            if int(entry.get("row_count") or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _actual_report_keys(report_data: dict[str, Any], keys: tuple[str, ...]) -> tuple[str, ...]:
+    """多 key 頁面只保留本次有資料的 key，避免空框與錯資料。"""
+    return tuple(key for key in keys if _report_key_has_data(report_data, key))
+
+
+def _page_should_render(report_data: dict[str, Any], spec: PageSpec) -> bool:
+    """cover/direction 恆出；其他頁面至少需有一個實際 report_key。"""
+    if spec.kind in {"cover", "direction"}:
+        return True
+    return bool(_actual_report_keys(report_data, spec.report_keys))
+
+
+def _filter_spec_report_keys(report_data: dict[str, Any], spec: PageSpec) -> PageSpec:
+    """套用選擇驅動規則：只把實際存在的 report_key 交給 renderer。"""
+    if spec.kind in {"cover", "direction"}:
+        return spec
+    actual = _actual_report_keys(report_data, spec.report_keys)
+    if actual == spec.report_keys:
+        return spec
+    return PageSpec(
+        page=spec.page,
+        kind=spec.kind,
+        title=spec.title,
+        report_keys=actual,
+        charts=spec.charts,
+        slots=spec.slots,
+        subtitle=spec.subtitle,
+        is_appendix=spec.is_appendix,
+    )
+
+
 def _expand_page_layout(report_data: dict[str, Any]) -> list[PageSpec]:
     """把未列在基礎大綱的報表插到附錄／結論前，頁碼重新連號。"""
+    base_layout = [
+        _filter_spec_report_keys(report_data, spec)
+        for spec in PAGE_LAYOUT
+        if _page_should_render(report_data, spec)
+    ]
     covered = {key for spec in PAGE_LAYOUT for key in spec.report_keys}
     extra_pages: list[PageSpec] = []
     for report_key, report in _iter_report_entries(report_data):
         if report_key in covered:
+            continue
+        if not _report_key_has_data(report_data, report_key):
             continue
         title = str(report.get("label_zh") or report.get("label") or report_key)
         subtitle = str(report.get("label") or "")
@@ -203,14 +248,14 @@ def _expand_page_layout(report_data: dict[str, Any]) -> list[PageSpec]:
         )
 
     if not extra_pages:
-        return [_copy_page_spec(spec, page=index) for index, spec in enumerate(PAGE_LAYOUT, start=1)]
+        return [_copy_page_spec(spec, page=index) for index, spec in enumerate(base_layout, start=1)]
 
-    # 附錄與結論頁一定靠後；目前 base layout 從第 8 頁開始是附錄段。
+    # 附錄錨點由顯式旗標決定，不使用 spec.page >= N 這類魔術數字。
     appendix_index = next(
-        (index for index, spec in enumerate(PAGE_LAYOUT) if spec.page >= 8),
-        len(PAGE_LAYOUT),
+        (index for index, spec in enumerate(base_layout) if spec.is_appendix),
+        len(base_layout),
     )
-    expanded = list(PAGE_LAYOUT[:appendix_index]) + extra_pages + list(PAGE_LAYOUT[appendix_index:])
+    expanded = list(base_layout[:appendix_index]) + extra_pages + list(base_layout[appendix_index:])
     return [_copy_page_spec(spec, page=index) for index, spec in enumerate(expanded, start=1)]
 
 
@@ -451,6 +496,15 @@ def _narrative_of(narratives: dict, report_key: str) -> str:
     return ""
 
 
+def _year_value(row: dict[str, Any]) -> int | None:
+    """從趨勢 row 取年份，支援既有 year 與 application_year 欄位。"""
+    raw = row.get("year", row.get("application_year"))
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 # --------------------------------------------------------------------------
 # 頁面組版：依 PageSpec.kind 分派
 # --------------------------------------------------------------------------
@@ -489,6 +543,11 @@ def _render_cover(slide, theme, spec, ctx) -> None:
             " ｜ ".join(str(r.get("country") or "-") for r in top),
             "地域分布(件數)",
         ))
+    if trend_rows:
+        years = sorted(y for row in trend_rows if (y := _year_value(row)) is not None)
+        if years:
+            year_range = str(years[0]) if years[0] == years[-1] else f"{years[0]}–{years[-1]}"
+            stats.append((year_range, "年", "年份區間"))
     if not stats:
         stats.append(("—", "件", "資料待補"))
 
@@ -546,7 +605,7 @@ def _render_chart_with_narrative(slide, theme, spec, ctx) -> None:
     text = _first_slot_text(spec, ctx) or _narrative_of(ctx["narratives"], spec.report_keys[0] if spec.report_keys else "")
     _add_band(slide, theme, g["text_band_left_in"], top,
               g["text_band_width_in"], g["text_band_height_in"], "accent_soft")
-    _add_text(slide, theme, text or "（解讀待確認）",
+    _add_text(slide, theme, text or "（解讀尚未產生）",
               left=g["text_left_in"], top=top + g["text_top_offset_in"],
               width=g["text_width_in"], height=g["text_height_in"],
               size=theme.font["body_pt"], color="ink")
@@ -564,7 +623,7 @@ def _render_direction(slide, theme, spec, ctx) -> None:
                   left=column["left_in"], top=top + g["header_label_top_offset_in"],
                   width=column["width_in"], height=g["header_label_height_in"],
                   size=theme.font["table_header_pt"], color="on_dark", bold=True)
-    body = ctx["slots"].get("direction.body") or "（研發方向建議待確認）"
+    body = ctx["slots"].get("direction.body") or "（研發方向建議尚未產生）"
     _add_band(slide, theme, g["body_band_left_in"], g["body_band_top_in"],
               g["body_band_width_in"], g["body_band_height_in"], "accent_soft")
     _add_text(slide, theme, body,
@@ -605,7 +664,7 @@ def _render_table(slide, theme, spec, ctx) -> None:
 
 
 def _render_table_with_narrative(slide, theme, spec, ctx) -> None:
-    """左表（專利側，引擎數據）＋右文（市場側，需人工確認）。"""
+    """左表（專利側，引擎數據）＋右文（主要權人／申請人摘要）。"""
     _render_header(slide, theme, spec, ctx)
     top = theme.geometry["body_top_in"]
     rows = []
@@ -617,14 +676,14 @@ def _render_table_with_narrative(slide, theme, spec, ctx) -> None:
     _add_table(slide, theme, rows, top=top, height=g["table_height_in"], width=g["table_width_in"])
     _add_band(slide, theme, g["text_band_left_in"], top,
               g["text_band_width_in"], g["text_band_height_in"], "accent_soft")
-    _add_text(slide, theme, _first_slot_text(spec, ctx) or "（市場側名單待確認）",
+    _add_text(slide, theme, _first_slot_text(spec, ctx) or "（主要權人與申請人摘要尚未產生）",
               left=g["text_left_in"], top=top + g["text_top_offset_in"],
               width=g["text_width_in"], height=g["text_height_in"],
               size=theme.font["body_pt"], color="ink")
 
 
 def _render_narrative_only(slide, theme, spec, ctx) -> None:
-    """純敘述頁（市場章節）：逐槽分區呈現定稿文案。"""
+    """純敘述頁：逐槽分區呈現定稿文案；目前保留供相容動態頁使用。"""
     _render_header(slide, theme, spec, ctx)
     top = theme.geometry["body_top_in"]
     g = theme.geometry["narrative_only"]
@@ -634,7 +693,7 @@ def _render_narrative_only(slide, theme, spec, ctx) -> None:
                   left=g["slot_title_left_in"], top=top + g["slot_title_top_offset_in"],
                   width=g["slot_title_width_in"], height=g["slot_title_height_in"],
                   size=theme.font["table_header_pt"], color="brand_dark", bold=True)
-        _add_text(slide, theme, ctx["slots"].get(slot) or "（待確認）",
+        _add_text(slide, theme, ctx["slots"].get(slot) or "（內容尚未產生）",
                   left=g["slot_text_left_in"], top=top + g["slot_text_top_offset_in"],
                   width=g["slot_text_width_in"], height=g["slot_text_height_in"],
                   size=theme.font["body_pt"], color="ink")
@@ -697,7 +756,7 @@ def _first_slot_text(spec: PageSpec, ctx: dict) -> str:
 
 
 def _add_watermark(slide, theme: Theme) -> None:
-    """缺確認槽的頁標「待確認」浮水印，提醒尚未過稿。"""
+    """舊版相容函式；v2.3 起缺漏不印進 PPT，呼叫端不再使用。"""
     geo = theme.geometry["watermark"]
     _add_text(
         slide, theme, WATERMARK_TEXT,
@@ -758,7 +817,7 @@ def build_ppt(
 ) -> dict[str, Any]:
     """依版型對照表組出報告 PPTX，回傳輸出路徑與 manifest 路徑。
 
-    缺確認槽的頁面標浮水印但仍產出；輸出不覆蓋既有版本。
+    缺確認槽或缺報表只寫入 manifest；輸出不覆蓋既有版本。
     """
     report_dir = Path(report_dir)
     report_data = _load_json(report_dir / "report_data.json", {})
@@ -800,17 +859,20 @@ def build_ppt(
 
         filled = [s for s in spec.slots if slots.get(s)]
         missing = [s for s in spec.slots if not slots.get(s)]
-        if missing:
-            _add_watermark(slide, theme)
+        missing_reports = [
+            key for key in spec.report_keys if not _report_key_has_data(report_data, key)
+        ]
         pages.append({
             "page": spec.page,
             "kind": spec.kind,
             "title": spec.title,
             "report_keys": list(spec.report_keys),
+            "is_appendix": spec.is_appendix,
             "filled_slots": filled,
             "missing_slots": missing,
+            "missing_reports": missing_reports,
             "position_overrides_applied": _position_overrides_for_page(ctx, spec),
-            "watermarked": bool(missing),
+            "watermarked": False,
         })
 
     pptx_path = _next_available_path(output_dir, version)
@@ -824,6 +886,13 @@ def build_ppt(
         "sha256": _sha256_of(pptx_path),
         "slot_total": len(all_slot_keys()),
         "slot_filled": sum(len(p["filled_slots"]) for p in pages),
+        "missing_slot_total": sum(len(p["missing_slots"]) for p in pages),
+        "missing_report_total": sum(len(p["missing_reports"]) for p in pages),
+        "metadata": {
+            key: (report_data.get("parameters") or {}).get(key)
+            for key in ("topic_run_id", "topic_state_version")
+            if (report_data.get("parameters") or {}).get(key) is not None
+        },
         "layout_overrides": layout_overrides,
         "position_override_total": len(position_overrides),
         "pages": pages,

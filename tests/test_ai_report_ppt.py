@@ -71,6 +71,25 @@ def _make_report_dir(tmp: str, version: str = "report_trial_20260724_120000") ->
                     "reports": {"application_trend": {"rows": [
                         {"application_year": 2025, "patent_count": 4}]}}}),
         encoding="utf-8")
+    (run_dir / "narratives.json").write_text(
+        json.dumps(
+            {
+                "based_on_version": version,
+                "reports": {
+                    "application_trend": {
+                        "variants": {
+                            "default": {
+                                "text": "2025 年有 4 件申請。",
+                                "prompt_version": "report_narrative_v3",
+                            }
+                        }
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     return run_dir
 
 
@@ -266,6 +285,20 @@ class RunnerWorkSeparationTests(unittest.TestCase):
                 any(k in rules_text for k in ("排版", "組版", "不捏造", "不碰")),
                 f"資料檔 rules 未表達 AI 不碰排版/數字的分工：{rules_text[:200]}")
 
+    def test_payload_includes_narratives_for_cross_page_context(self):
+        """PPT slots payload 必須帶 narratives，讓第二階段能沿用第一階段解讀。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _make_report_dir(tmp)
+            cli = RecordingCli()
+            self._run(cli=cli, resolve_dir=run_dir, build_calls=[], uploaded=[])
+            payload = read_payload_from_argv(cli.calls[0])
+
+        self.assertIn("narratives", payload)
+        self.assertEqual(payload["narratives"]["based_on_version"], run_dir.name)
+        rules_text = json.dumps(payload.get("rules"), ensure_ascii=False)
+        for expected in ("全部報表", "頁間脈絡", "不得編造因果", "實際存在"):
+            self.assertIn(expected, rules_text)
+
     def test_slot_keys_come_from_build_ppt_not_hardcoded(self):
         """slot 命名一律取自 build_ppt.py 的 all_slot_keys()，不在 runner 另定一套。
 
@@ -277,8 +310,10 @@ class RunnerWorkSeparationTests(unittest.TestCase):
         """
         expected = runner_mod.report_slot_keys()
         # 至少包含 spec 第二節列的代表性槽（來自 build_ppt PAGE_LAYOUT）。
-        for slot in ("cover.title", "trend.narrative", "direction.body", "market.scope"):
+        for slot in ("cover.title", "trend.narrative", "direction.body", "key_players.summary"):
             self.assertIn(slot, expected)
+        for removed in ("pain_point.narrative", "key_players.market", "market.scope", "market.size"):
+            self.assertNotIn(removed, expected)
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = _make_report_dir(tmp)
             cli = RecordingCli()
@@ -287,6 +322,31 @@ class RunnerWorkSeparationTests(unittest.TestCase):
             self.assertEqual(
                 payload.get("slot_keys"), expected,
                 "資料檔 slot_keys 必須與 build_ppt.all_slot_keys() 完全一致")
+
+    def test_invalid_slots_are_filtered_and_reported(self):
+        """AI 或使用者 override 給無效 slot 時要過濾，並在結果中回報。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = _make_report_dir(tmp)
+            cli = RecordingCli(slots={
+                "cover.title": "valid",
+                "market.scope": "legacy invalid",
+                "ai.made_up": "invalid",
+            })
+            build_calls, uploaded, slots_written = [], [], {}
+            result = self._run(
+                cli=cli,
+                resolve_dir=run_dir,
+                build_calls=build_calls,
+                uploaded=uploaded,
+                slots_written=slots_written,
+                approval_overrides={"slots": {"market.size": "manual invalid"}},
+            )
+
+        self.assertEqual(slots_written["slots"], {"cover.title": "valid"})
+        self.assertEqual(
+            sorted(result["invalid_slots"]),
+            ["ai.made_up", "market.scope", "market.size"],
+        )
 
 
 # ── CLI 白名單：不開網路、不寫檔（安全來自任務設計） ─────────────

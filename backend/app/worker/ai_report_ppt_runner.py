@@ -208,6 +208,18 @@ def load_report_data(report_dir: Path) -> Any:
         return text
 
 
+def load_narratives(report_dir: Path) -> Any:
+    """讀 narratives.json；缺檔時回空結構，讓 PPT 產製可自動提示缺漏。"""
+    path = report_dir / "narratives.json"
+    if not path.exists():
+        return {"reports": {}}
+    text = path.read_text(encoding="utf-8")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
 # 分工鐵律與輸出契約（2026-07-28 由命令列 prompt 搬進資料檔）。
 # 內容與原 build_prompt 逐條等價，只是改成結構化欄位由 CLI 讀檔取得。
 _PPT_RULES = [
@@ -217,6 +229,10 @@ _PPT_RULES = [
     "自行推算或編造，寧可寫質性描述。**不碰數字的正確性**＝不改寫、不四捨五入到失真、"
     "不無中生有。",
     "一律繁體中文；每個槽一段精煉文案，附數字依據（若該槽有對應數據）。",
+    "direction.body 必須綜合本次實際包含的全部報表與 narratives，不得只看單一分群或單一圖表。",
+    "各頁文案要有頁間脈絡，但不得編造因果關係，也不得為了串接故事而補不存在的關聯。",
+    "只能討論 report_data 裡實際存在的報表；未產出的報表不得提及，也不得用常識補資料。",
+    "若 narratives 與 report_data 有衝突，以 report_data 的數字為準，narratives 只作語意脈絡參考。",
 ]
 
 _PPT_OUTPUT_CONTRACT = {
@@ -224,13 +240,14 @@ _PPT_OUTPUT_CONTRACT = {
     "rules": [
         "key 必須是 slot_keys 列出的槽名（原字不變），不得新增或改寫槽名",
         "value 為該槽的繁體中文文案",
-        "查無對應數據的槽可留空字串或省略（該頁組版時會標「待確認」浮水印，不擋產出）",
+        "查無對應數據的槽可留空字串或省略；缺漏由平台任務進度與 manifest 顯示，不印進 PPT",
         "只輸出一個 JSON 物件，不要多餘說明文字",
     ],
 }
 
 
-def build_report_ppt_payload(report_data: Any, slot_keys: list[str]) -> dict[str, Any]:
+def build_report_ppt_payload(report_data: Any, slot_keys: list[str],
+                             narratives: Any | None = None) -> dict[str, Any]:
     """組資料檔內容（取代把報表數據截斷後串進命令列）。
 
     ⚠ 為什麼改（2026-07-28，規格 export-report-flow-spec.md 5-5）：
@@ -260,6 +277,7 @@ def build_report_ppt_payload(report_data: Any, slot_keys: list[str]) -> dict[str
         "rules": list(_PPT_RULES),
         "slot_keys": list(slot_keys),
         "report_data": report_data,
+        "narratives": narratives if narratives is not None else {"reports": {}},
         "output_contract": _PPT_OUTPUT_CONTRACT,
     }
 
@@ -300,6 +318,18 @@ def _clean_str_map(value: Any) -> dict[str, str]:
     return {str(k): str(v) for k, v in value.items() if v is not None}
 
 
+def _filter_slots(slots: dict[str, str], allowed_slots: set[str]) -> tuple[dict[str, str], list[str]]:
+    """只保留合法 slot；非法 key 回報給任務進度與 result。"""
+    valid: dict[str, str] = {}
+    invalid: list[str] = []
+    for key, value in slots.items():
+        if key in allowed_slots:
+            valid[key] = value
+        else:
+            invalid.append(key)
+    return valid, sorted(invalid)
+
+
 def _clean_position_overrides(value: Any) -> dict[str, dict[str, float]]:
     """只保留 PPT 元件位置覆寫的四個 inch 座標欄位。"""
     if not isinstance(value, dict):
@@ -323,17 +353,25 @@ def _clean_position_overrides(value: Any) -> dict[str, dict[str, float]]:
 
 
 def _build_approvals(version: str, ai_slots: dict[str, str],
-                     approval_overrides: dict[str, Any] | None) -> dict[str, Any]:
-    """合併 AI 文案與使用者覆寫；人工 slots 優先，版型與座標分 key 保存。"""
+                     approval_overrides: dict[str, Any] | None,
+                     allowed_slots: set[str] | None = None) -> tuple[dict[str, Any], list[str]]:
+    """合併 AI 文案與使用者覆寫；非法 slot 不寫入 approvals.json。"""
     overrides = approval_overrides if isinstance(approval_overrides, dict) else {}
+    invalid: list[str] = []
     slots = dict(ai_slots)
-    slots.update(_clean_str_map(overrides.get("slots")))
+    override_slots = _clean_str_map(overrides.get("slots"))
+    if allowed_slots is not None:
+        slots, invalid_ai = _filter_slots(slots, allowed_slots)
+        override_slots, invalid_overrides = _filter_slots(override_slots, allowed_slots)
+        invalid.extend(invalid_ai)
+        invalid.extend(invalid_overrides)
+    slots.update(override_slots)
     return {
         "report_version": version,
         "slots": slots,
         "layout_overrides": _clean_str_map(overrides.get("layout_overrides")),
         "position_overrides": _clean_position_overrides(overrides.get("position_overrides")),
-    }
+    }, sorted(set(invalid))
 
 
 def _default_build_ppt(*, report_dir, approvals_path, output_dir, theme_path=None):
@@ -356,14 +394,25 @@ def _default_build_ppt(*, report_dir, approvals_path, output_dir, theme_path=Non
         raise ReportPptRunnerError(
             f"build_ppt 子行程失敗（exit={completed.returncode}）："
             f"{completed.stderr.strip() or completed.stdout.strip()}")
-    # 解析 build_ppt 印出的 pptx 路徑（"pptx: <path>"）。
+    # 解析 build_ppt 印出的 pptx 與 manifest 路徑。
     pptx_path = None
+    manifest_path = None
     for line in completed.stdout.splitlines():
         if line.startswith("pptx:"):
             pptx_path = line.split(":", 1)[1].strip()
+        if line.startswith("manifest:"):
+            manifest_path = line.split(":", 1)[1].strip()
     if not pptx_path:
         raise ReportPptRunnerError(f"build_ppt 未回報 pptx 路徑；輸出：{completed.stdout[:500]}")
-    return {"pptx_path": pptx_path, "manifest_path": "", "manifest": {}}
+    manifest: dict[str, Any] = {}
+    if manifest_path:
+        path = Path(manifest_path)
+        if path.exists():
+            try:
+                manifest = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                manifest = {}
+    return {"pptx_path": pptx_path, "manifest_path": manifest_path or "", "manifest": manifest}
 
 
 def run_report_ppt(
@@ -409,11 +458,12 @@ def run_report_ppt(
     if progress is not None:
         progress("AI 產生報告文案草稿", 35)
     slot_keys = report_slot_keys()
+    allowed_slots = set(slot_keys)
     # 資料走檔案、命令列只留 instruction 與路徑（見 build_report_ppt_payload 的說明）：
     # 全量報表數據進 payload，不截斷、不隨資料量撐大 argv。
     payload_path = pf.write_payload_file(
         "report_ppt",
-        build_report_ppt_payload(load_report_data(run_dir), slot_keys),
+        build_report_ppt_payload(load_report_data(run_dir), slot_keys, load_narratives(run_dir)),
         root=payload_root,
         label=version,
     )
@@ -429,7 +479,9 @@ def run_report_ppt(
     if progress is not None:
         progress("寫入確認槽定稿文案", 55)
     # approvals.json 落在報表版本目錄內，供 build_ppt 讀（沿 SKILL.md D-2 槽位契約）。
-    approvals = _build_approvals(version, slots, approval_overrides)
+    approvals, invalid_slots = _build_approvals(version, slots, approval_overrides, allowed_slots)
+    if invalid_slots and progress is not None:
+        progress(f"已過濾無效 PPT 文案槽：{', '.join(invalid_slots)}", 60)
     approvals_path = run_dir / "approvals.json"
     approvals_path.write_text(
         json.dumps(approvals, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -457,8 +509,21 @@ def run_report_ppt(
         "run_dir": str(run_dir),
         "pptx_filename": pptx_filename,
         "uploaded_files": uploaded,
-        "slots_filled": sum(1 for v in slots.values() if v),
+        "slots_filled": sum(1 for v in approvals["slots"].values() if v),
         "slots_total": len(slot_keys),
+        "invalid_slots": invalid_slots,
+        "manifest_path": result.get("manifest_path", ""),
+        "manifest": result.get("manifest") or {},
+        "missing_slots": [
+            slot
+            for page in (result.get("manifest") or {}).get("pages", [])
+            for slot in page.get("missing_slots", [])
+        ],
+        "missing_reports": [
+            report_key
+            for page in (result.get("manifest") or {}).get("pages", [])
+            for report_key in page.get("missing_reports", [])
+        ],
         "prompt_version": PROMPT_VERSION,
         "cli_kind": cli_kind,
         "workspace_id": workspace_id,
