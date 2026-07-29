@@ -680,6 +680,14 @@ function escHtml(s) {
   if (s === null || s === undefined) return '';
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+// 內嵌 onclick 用的字串字面：**單引號**包裹，並跳脫反斜線與單引號。
+// ⚠ 不可改用 JSON.stringify——它產雙引號，而 onclick="..." 也是雙引號，
+// 屬性會**提前結束**（2026-07-30 實機：onclick 只剩 'runNarrative('，點了沒反應）。
+// 這是靜默失敗：HTML 不報錯、按鈕照畫、指標照樣變手形。
+function jsQuote(s) {
+  return "'" + String(s === null || s === undefined ? '' : s)
+    .replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
+}
 function el(id) { return document.getElementById(id); }
 // fetch + JSON；非 2xx 丟帶 status 的 Error，讓呼叫端能分辨 404／其他錯誤並給可讀訊息
 // （不吞錯：狀態碼保留在 err.status，訊息保留後端 detail）。
@@ -4577,8 +4585,13 @@ function reportSingleHtml(section, option) {
     + ' placeholder="想怎麼改這張的解讀？例如：多著墨 Top 3 的年度變化、用更白話的說法（可留空）"></textarea>'
     + '<div class="hint" style="font-size:0.75rem;margin:0.3rem 0">'
     + '只影響<strong>這張報表的解讀文字</strong>；圖表與數據由報表引擎決定，AI 不會更動。</div>'
+    // 🔴 參數用**單引號**包（2026-07-30 使用者實機回報「按不下去」）：
+    // 原本 `JSON.stringify(scopeKey)` 產出 "ipc_main_distribution"（雙引號），
+    // 塞進 onclick="..." 會**提前結束屬性**——headless 實測 onclick 只剩 'runNarrative('，
+    // 點下去毫無反應。⚠ 靜默失敗：HTML 不報錯、按鈕照畫、指標照樣變手形。
+    // jsQuote 同時跳脫參數內的單引號與反斜線，避免同型問題換方向再犯。
     + '<button class="btn btn-sm" id="btn-run-narrative"'
-    + ' onclick="runNarrative(' + JSON.stringify(scopeKey) + ')">'
+    + ' onclick="runNarrative(' + jsQuote(scopeKey) + ')">'
     + (texts.length ? '重產這張的解讀' : '產生 AI 解讀') + '</button>'
     + '</div>';
   const narrativeHtml = (texts.length

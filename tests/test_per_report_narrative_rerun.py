@@ -235,3 +235,49 @@ class NarrativeUnifiedEntryTests(unittest.TestCase):
         self.assertNotIn("btn.textContent = '產生 AI 解讀'", body,
                          "寫死字面會把「產生全部解讀」改名")
         self.assertIn("btnLabel", body, "未保存原字面供還原")
+
+
+class OnclickQuotingTests(unittest.TestCase):
+    """🔴 內嵌 onclick 的字串參數不得用雙引號（2026-07-30 使用者實機回報「按不下去」）。
+
+    ## 根因
+
+    `onclick="runNarrative(' + JSON.stringify(scopeKey) + ')"` 產出：
+
+        onclick="runNarrative("ipc_main_distribution")"
+                             ↑ 這個雙引號**提前結束 onclick 屬性**
+
+    headless 瀏覽器實測：
+
+        修正前 onclick 屬性: 'f('        ← 被截斷，點擊毫無反應
+        修正後 onclick 屬性: "f('ipc_main_distribution')"
+
+    ⚠ 靜默失敗：HTML 不會報錯、按鈕照樣畫得出來、滑鼠指標照樣變手形，
+    只是點下去什麼都沒發生——比拋錯更難查。
+
+    ## 修法
+
+    本檔其餘 onclick 一律用單引號包參數（`onclick="fn(\'x\')"`）。
+    ⚠ 連帶要跳脫參數內的單引號，避免同型問題換個方向再發生。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def test_no_json_stringify_inside_onclick(self):
+        """onclick 內不得用 JSON.stringify——它產雙引號，會截斷屬性。"""
+        hits = re.findall(r"onclick=\"[^\"]*JSON\.stringify", self.html)
+        self.assertEqual(
+            hits, [],
+            f"onclick 內用了 JSON.stringify（雙引號會截斷屬性）：{hits}")
+
+    def test_rerun_button_onclick_is_callable(self):
+        """重產鈕的 onclick 要是完整、可呼叫的表達式。"""
+        match = re.search(
+            r"id=\"btn-run-narrative\"'\s*\+\s*'\s*onclick=\"([^\"]*)\"", self.html)
+        self.assertIsNotNone(match, "找不到重產鈕的 onclick")
+        expr = match.group(1)
+        self.assertIn("runNarrative(", expr)
+        self.assertTrue(expr.rstrip().endswith(")") or "'" in expr,
+                        f"onclick 表達式不完整：{expr!r}")
