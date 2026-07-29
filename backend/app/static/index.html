@@ -417,9 +417,16 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .report-single { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
 /* 2026-07-29 使用者看過實機後定案：恢復左數據右圖表，比例 45/55
    （稍早改成的「圖滿寬、表移下方」被推翻）。圖比原本 46% 略大，
-   表格欄少的報表夠用。min-width:0 防 flex 子項溢出。 */
-.report-single-data { flex: 0 0 45%; min-width: 0; overflow-x: auto; }
-.report-single-chart { flex: 1 1 55%; min-width: 0; }
+   表格欄少的報表夠用。min-width:0 防 flex 子項溢出。
+
+   🔴 flex-basis 必須用 calc() 扣掉 gap（2026-07-29 使用者實機回報
+   「圖表大到自己跑去表格下面」）：原本寫死 45% + 55% = 100%，**再加上
+   .report-single 的 gap:1rem 就超過容器寬度**，flex-wrap:wrap 於是把圖表
+   換行到表格下方。且此症狀隨視窗寬度時好時壞（寬時 1rem 佔比小可能勉強塞下），
+   比穩定壞掉更難查。
+   兩欄各扣 0.5rem（gap 的一半），相加即為 100% - 1rem，正好容納 gap。 */
+.report-single-data { flex: 0 0 calc(45% - 0.5rem); min-width: 0; overflow-x: auto; }
+.report-single-chart { flex: 1 1 calc(55% - 0.5rem); min-width: 0; }
 /* 年度矩陣專屬（layout="stacked"）：交叉表欄多列少，橫向需要整個寬度，
    與其他報表相反——使用者定「年度矩陣可以和其他種類報表的版面不同」。 */
 .report-single-stacked { flex-direction: column; }

@@ -221,14 +221,20 @@ class DisplaySpecTests(unittest.TestCase):
             section = ctx.sections[0]
             files = [v["file"] for v in section["variants"]]
             labels = [v["label"] for v in section["variants"]]
+            # ⚠ 2026-07-29：主題統計表**不再是圖表變體**（使用者「沒圖表用表格就好，
+            # 現在跑兩個表格很難看」）——它與下方數據表是同一份資料，重複呈現。
+            # 變體只剩真正的圖（機會板／痛點板）；統計表改由 section 的 rows 走數據表。
             self.assertEqual(
                 files,
-                ["cluster_topic_table.html", "opportunity_quadrant.svg", "pain_point_quadrant.svg"],
-                "板圖回歸：卡片應為統計表＋機會板＋痛點板三 tabs")
-            self.assertEqual(labels, ["主題統計表", "機會矩陣", "痛點矩陣"])
-            table_html = (Path(tmp) / "cluster_topic_table.html").read_text(encoding="utf-8")
-        self.assertIn("龍頭涉入", table_html, "統計表缺龍頭涉入欄")
+                ["opportunity_quadrant.svg", "pain_point_quadrant.svg"],
+                "板圖回歸：變體應只剩機會板＋痛點板（統計表已改走數據表）")
+            self.assertEqual(labels, ["機會矩陣", "痛點矩陣"])
+        # 龍頭涉入欄改在數據列上驗（原本驗的是已移除的 HTML 檔）。
+        self.assertIn("leading_applicant_count", ctx.chart_rows["cluster_topic_table"][0],
+                      "統計列缺龍頭涉入欄")
         self.assertEqual(ctx.chart_rows["cluster_topic_table"][0].get("leading_applicant_count"), 1)
+        self.assertTrue(ctx.sections[0].get("rows"),
+                        "section 未帶 rows，前端技術／功效切換會沒有資料可切")
 
     def test_classification_toggle_top20(self):
         """IPC/CPC 三次修正沿革（2026-07-21）：①初版 L4/L5 toggle 全列→②二次修正誤解
@@ -518,18 +524,26 @@ class TopicSegmentTests(unittest.TestCase):
     }
 
     def test_table_two_segments_no_source_field_literal(self):
+        """兩通道的列都要在，且供前端依 source_field 切換。
+
+        ⚠ 2026-07-29 改驗**數據列**而非 HTML 檔：主題統計表不再產 HTML 變體
+        （使用者「沒圖表用表格就好，現在跑兩個表格很難看」），改由 section 的
+        rows 單一呈現。原始欄名不出現在畫面是 DATA_TABLE_EXCLUDED_COLUMNS 的職責，
+        由 test_data_card_excludes_source_field_column 守。
+        """
         with tempfile.TemporaryDirectory() as tmp:
             ctx = self._fake_ctx(tmp)
             ctx.cluster_data = self._TWO_SOURCE_DATA
             chart_runner._build_cluster_analytics_section(ctx)
-            table_html = (Path(tmp) / "cluster_topic_table.html").read_text(encoding="utf-8")
-        self.assertIn("<h3>技術主題</h3>", table_html)
-        self.assertIn("<h3>功效分類</h3>", table_html)
-        self.assertEqual(table_html.count("<table"), 2, "兩來源應各自一張表，不混同表")
-        for literal in ("Source Field", "wips_independent_claims", "effect_summary"):
-            self.assertNotIn(literal, table_html, f"原始欄名/欄值不得出現：{literal}")
-        # 技術段在前、功效段在後（以段標題 h3 判斷，避免誤中 h2 總標題字面）
-        self.assertLess(table_html.index("<h3>技術主題</h3>"), table_html.index("<h3>功效分類</h3>"))
+            rows = ctx.sections[0].get("rows") or []
+        self.assertTrue(rows, "section 未帶 rows，前端切換沒有資料可切")
+        sources = {r.get("source_field") for r in rows}
+        self.assertEqual(sources, {"wips_independent_claims", "effect_summary"},
+                         "兩通道的列都要在，前端才切得動")
+        # ⚠ 每列都要有 source_field：前端 rows.filter(row => row.source_field === sourceField)
+        # 對沒有該欄的列會**全部放行**，切換等於失效。
+        self.assertTrue(all(r.get("source_field") for r in rows),
+                        "有列缺 source_field，前端過濾會放行全部")
 
     def test_matrix_boards_per_source_with_segment_titles(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -541,8 +555,8 @@ class TopicSegmentTests(unittest.TestCase):
             effect_opp = (Path(tmp) / "opportunity_quadrant_effect.svg").read_text(encoding="utf-8")
             self.assertTrue((Path(tmp) / "pain_point_quadrant_tech.svg").exists())
             self.assertTrue((Path(tmp) / "pain_point_quadrant_effect.svg").exists())
-        self.assertEqual(files[0], "cluster_topic_table.html")
-        self.assertEqual(len(files), 5, "兩來源＝統計表＋每來源機會/痛點各一，共 5 tabs")
+        # ⚠ 2026-07-29 統計表不再是變體，變體只剩真正的圖（每來源機會／痛點各一）。
+        self.assertEqual(len(files), 4, "兩來源＝每來源機會/痛點各一，共 4 tabs")
         for f in ("opportunity_quadrant_tech.svg", "pain_point_quadrant_tech.svg",
                   "opportunity_quadrant_effect.svg", "pain_point_quadrant_effect.svg"):
             self.assertIn(f, files)
@@ -561,13 +575,13 @@ class TopicSegmentTests(unittest.TestCase):
             ctx.cluster_data = data
             chart_runner._build_cluster_analytics_section(ctx)
             files = [v["file"] for v in ctx.sections[0]["variants"]]
-            table_html = (Path(tmp) / "cluster_topic_table.html").read_text(encoding="utf-8")
+            rows = ctx.sections[0].get("rows") or []
             opp = (Path(tmp) / "opportunity_quadrant.svg").read_text(encoding="utf-8")
-        self.assertEqual(files, ["cluster_topic_table.html", "opportunity_quadrant.svg", "pain_point_quadrant.svg"],
-                         "單一來源維持原檔名（與 three-tabs 契約一致）")
-        self.assertIn("<h3>技術主題</h3>", table_html)
-        # 只斷段標題（h2 總標題「主題／功效分類統計」本身含「功效分類」字面）
-        self.assertNotIn("<h3>功效分類</h3>", table_html, "只有一種來源時只出現該段")
+        # ⚠ 2026-07-29 統計表不再是變體；單一來源維持原檔名的契約只剩兩張圖。
+        self.assertEqual(files, ["opportunity_quadrant.svg", "pain_point_quadrant.svg"],
+                         "單一來源維持原檔名（統計表已改走數據表）")
+        self.assertEqual({r.get("source_field") for r in rows}, {"wips_independent_claims"},
+                         "只有一種來源時只出現該段的列")
         self.assertIn("機會四象限分析——技術主題", opp, "板標題帶來源段名")
 
     def test_data_card_excludes_source_field_column(self):
@@ -577,7 +591,11 @@ class TopicSegmentTests(unittest.TestCase):
         html = chart_runner._data_table_html(rows, "cluster_topic_table")
         self.assertNotIn("wips_independent_claims", html, "數據卡不得出現 source_field 原始值")
         self.assertNotIn("source_field", html, "數據卡不得出現 source_field 欄")
-        self.assertIn("主題代碼", html)  # 其餘欄照 DATA_COLUMN_LABELS 顯示
+        # ⚠ 2026-07-29 使用者定案「T001/T002，機制能識別就好，表格和報告不用顯示」
+        # → topic_code 進 DATA_TABLE_EXCLUDED_COLUMNS。本行原斷言「主題代碼」要出現，
+        # 是定案前的舊契約。改驗其餘欄仍照 DATA_COLUMN_LABELS 顯示中文欄名。
+        self.assertNotIn("主題代碼", html, "topic_code 已定案不顯示（機制識別用）")
+        self.assertIn("主題標籤", html, "其餘欄仍應照 DATA_COLUMN_LABELS 顯示中文欄名")
 
 
 class DataTableHumanizeTests(unittest.TestCase):
