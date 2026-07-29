@@ -224,6 +224,23 @@ def _section_report_key(section: dict) -> str:
     return str(variants[0].get("file", "")).rsplit(".", 1)[0]
 
 
+def _column_labels(rows: list) -> dict:
+    """本批 rows 的欄位中文名對照（R2，2026-07-29）。
+
+    唯一來源＝`chart_runner.DATA_COLUMN_LABELS`——那份對照表早就存在且完整
+    （`patent_count → 專利件數` 等），前端卻自己用 `Object.keys(rows[0])`
+    吐原始 key，等於同一資訊兩處落點。
+
+    查無對照的欄不放進回應，前端據此退回顯示原 key
+    ——後端日後新增欄位不必同步改前端。
+    """
+    if not rows or not isinstance(rows[0], dict):
+        return {}
+    from backend.app.reports.chart_runner import DATA_COLUMN_LABELS
+
+    return {c: DATA_COLUMN_LABELS[c] for c in rows[0] if c in DATA_COLUMN_LABELS}
+
+
 def _limit_rows_per_source(rows: list, limit: int) -> list:
     """列數上限**按 source_field 各自計**，不是整體取前 N。
 
@@ -336,6 +353,11 @@ def _report_content_payload(run_dir):
             # 顯示上限對齊引擎數據卡（20 列＋總列數）。分群報表兩通道各自計算上限，
             # 否則排在後面的功效通道會被整批切掉（見 _limit_rows_per_source）。
             "rows": _limit_rows_per_source(rows, 20),
+            # 欄位中文名（R2）：唯一來源＝chart_runner.DATA_COLUMN_LABELS。
+            # 前端原本用 Object.keys(rows[0]) 直接吐 patent_count 這種原始 key，
+            # 而後端早就有完整對照表——第 5 個「同一資訊兩處落點」。
+            # 只回本次 rows 實際有的欄，不整份倒給前端。
+            "column_labels": _column_labels(rows),
             "variants": variants_out,
         })
 

@@ -411,9 +411,11 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .reports-market-details[open] { flex-basis: 100%; }
 .report-generate-box { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.6rem 0.9rem; margin-bottom: 0.9rem; background: var(--panel); }
 /* R1 單份報表版面：左數據、右圖表、下解讀（橫跨整寬）。 */
-.report-single { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
-.report-single-data { flex: 1 1 46%; min-width: 0; }   /* min-width:0 防 flex 溢出 */
-.report-single-chart { flex: 1 1 46%; min-width: 0; }
+.report-single { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; flex-direction: column; }
+/* R3（2026-07-29）：圖改滿寬、數據表移到圖下方。原本左右各 46%，
+   四象限那類圖被壓到看不清字。min-width:0 仍保留（防 flex 子項溢出）。 */
+.report-single-data { width: 100%; min-width: 0; overflow-x: auto; }
+.report-single-chart { width: 100%; min-width: 0; }
 .report-single-chart img, .report-single-chart svg { max-width: 100%; height: auto; }
 .report-single-narrative { margin-top: 0.9rem; padding-top: 0.8rem; border-top: 1px solid var(--border); }
 .report-single-narrative .empty { color: var(--text-muted); font-size: 0.86rem; }
@@ -4078,17 +4080,10 @@ function buildReportViewOptions(content) {
       });
       return;
     }
-    const variants = section.variants || [];
-    if (variants.length > 1) {
-      variants.forEach(function (variant, variantIndex) {
-        options.push({
-          sectionIndex: sectionIndex,
-          variantIndex: variantIndex,
-          label: variant.label || section.title || ('報表 ' + (sectionIndex + 1)),
-        });
-      });
-      return;
-    }
+    // R1（2026-07-29）：一個 section 一項，**不再依 variant 攤平**。
+    // 原本 variants>1 就把每個 variant 攤成獨立選項、且只用 variant.label，
+    // 於是選單出現孤立的「4 階·Subclass」「Top 10」，IPC 與 CPC 還各有同名一份
+    // ——看起來就是重複。子項改由內容區的分頁鈕切換（reportVariantTabsHtml）。
     options.push({
       sectionIndex: sectionIndex,
       label: section.title || ('報表 ' + (sectionIndex + 1)),
@@ -4236,6 +4231,35 @@ function reportVariantChartHtml(section, variant) {
     + '</figure>';
 }
 
+// 欄名查表（R2）：後端 column_labels 有就用中文，沒有就顯示原 key。
+// 不在前端自己維護一份對照——那正是這次要消滅的「兩處落點」。
+function columnLabel(key, labels) {
+  return (labels && labels[key]) || key;
+}
+
+// 目前選中的 variant（R1：子項從選單移到內容區分頁後，需要記住選了哪個）。
+// key 用 sectionIndex，切報表時各自獨立。
+const reportVariantPick = {};
+
+function switchReportVariant(sectionIndex, variantIndex) {
+  reportVariantPick[sectionIndex] = variantIndex;
+  renderReportViewer();
+}
+
+// variant 分頁鈕：沿用既有 report-source-tab 樣式，不另造一套。
+// 只有一個 variant 時不顯示（沒得切就不佔版面）。
+function reportVariantTabsHtml(section, sectionIndex) {
+  const variants = (section && section.variants) || [];
+  if (variants.length < 2) return '';
+  const active = reportVariantPick[sectionIndex] || 0;
+  return '<div class="report-source-tabs">'
+    + variants.map((v, i) => '<button type="button" class="report-source-tab'
+        + (i === active ? ' active' : '') + '"'
+        + ' onclick="switchReportVariant(' + sectionIndex + ', ' + i + ')">'
+        + escHtml(v.label || ('版本 ' + (i + 1))) + '</button>').join('')
+    + '</div>';
+}
+
 function reportSingleHtml(section, option) {
   const sourceField = (option && option.source_field) || exportPreview.clusterSourceField || DEFAULT_TOPIC_SOURCE_FIELD;
   const viewSection = sectionForReportView(section, option || {}, sourceField);
@@ -4243,20 +4267,30 @@ function reportSingleHtml(section, option) {
   let dataHtml = '<p class="hint" style="padding:0.3rem 0">尚無資料。</p>';
   if (rows.length) {
     const columns = Object.keys(rows[0]).filter(c => c !== 'source_field');
-    const head = columns.map(c => '<th>' + escHtml(c) + '</th>').join('');
+    const labels = viewSection.column_labels || {};
+    // R2：表頭查後端給的中文對照（唯一來源＝chart_runner.DATA_COLUMN_LABELS）；
+    // 查無對照就顯示原 key，後端新增欄位不必同步改前端。
+    const head = columns.map(c => '<th>' + escHtml(columnLabel(c, labels)) + '</th>').join('');
     const body = rows.map(r => '<tr>'
       + columns.map(c => '<td>' + escHtml(fmtCell(r[c])) + '</td>').join('') + '</tr>').join('');
-    dataHtml = '<table><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>'
+    // class="data"：套用既有 table.data 樣式（欄邊界、表頭底色、sticky）。
+    // 原本產裸 <table> 套不到任何樣式，才會欄跟欄糊在一起。
+    dataHtml = '<table class="data">'
+      + '<thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>'
       + (viewSection.row_count > rows.length
         ? '<p class="hint" style="padding:0.25rem 0">目前顯示 ' + rows.length
           + ' 筆，總計 ' + viewSection.row_count + ' 筆。</p>'
         : '');
   }
   const variants = viewSection.variants || [];
-  const chartHtml = variants.length
-    ? variants.map(v => reportVariantChartHtml(viewSection, v)).join('')
+  // R1：一次只畫選中的那個 variant（子項已從選單移到分頁鈕）。
+  // 原本全部 variant 一起畫，配合選單攤平；現在改為分頁切換。
+  const pick = reportVariantPick[(option && option.sectionIndex) || 0] || 0;
+  const shown = variants.length > 1 ? [variants[pick] || variants[0]] : variants;
+  const chartHtml = shown.length
+    ? shown.map(v => reportVariantChartHtml(viewSection, v)).join('')
     : '<p class="hint">尚無圖表。</p>';
-  const texts = variants
+  const texts = shown
     .map(v => (v.narrative && v.narrative.text) ? v.narrative.text.trim() : '')
     .filter(Boolean);
   const narrativeHtml = texts.length
@@ -4267,6 +4301,7 @@ function reportSingleHtml(section, option) {
   return '<article class="export-card">'
     + '<h3>' + escHtml(viewSection.title || '') + '</h3>'
     + (isClusterSection(section) ? reportSourceTabsHtml(sourceField) : '')
+    + reportVariantTabsHtml(viewSection, (option && option.sectionIndex) || 0)
     + '<div class="report-single">'
     + '<div class="report-single-data">' + dataHtml + '</div>'
     + '<div class="report-single-chart">' + chartHtml + '</div>'
