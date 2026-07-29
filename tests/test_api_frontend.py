@@ -632,13 +632,26 @@ class FrontendSkeletonTests(unittest.TestCase):
     # ── f. 報表種類列出現況全部可用報表 ──
 
     def test_report_types_list_all_backend_definitions(self):
-        """報表種類清單須列出 report_definitions 全部可用報表（含分群三支），不隱藏任一種。"""
+        """報表種類清單須列出全部**現況支援**的報表，不隱藏任一種。
+
+        ⚠ 2026-07-29 加例外：`requires_market_data` 的報表（痛點四象限）在市場線
+        （上傳→AI 摘要→使用者確認）實作前刻意不列出——使用者定案「整個藏起來，等市場線
+        做好再放出來」。缺資料時痛點軸全標「待調查」，產出的圖看不出不完整、匯進 PPT
+        會被讀成「痛點都很低」，比不產更糟。那類報表在市場線實作前不算「現況支援」。
+
+        本測試原本要求「前端 ⊇ 後端全部定義」，與同日新增的
+        tests/test_report_types_frontend_backend_parity.py（前端 ⊆ 後端，避免出現
+        按了會 400 的死選項）在痛點這一項上直接衝突。兩支各自守一個方向，
+        例外必須寫在同一個判準上（requires_market_data），否則兩套契約會互相拉扯。
+        """
         from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 
         m = re.search(r"const REPORT_TYPES\s*=\s*\[(.*?)\n\];", self.html, re.S)
         self.assertIsNotNone(m, "找不到 REPORT_TYPES 定義")
         block = m.group(1)
-        for name in REPORT_DEFINITIONS:
+        for name, definition in REPORT_DEFINITIONS.items():
+            if definition.requires_market_data:
+                continue
             with self.subTest(report=name):
                 self.assertIn("'" + name + "'", block, f"報表種類缺少 {name}")
 
