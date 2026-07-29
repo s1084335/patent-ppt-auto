@@ -940,9 +940,13 @@ def handle_ai_narrative(payload: dict[str, Any], context: JobContext) -> dict[st
         cli_runner=payload.get("_cli_runner"),
         timeout_seconds=timeout_seconds,
         progress=_progress,
-        # 使用者在右欄輸入框打的修改需求；2026-07-27 前 payload 有存但一路沒傳到
-        # runner，打了完全沒作用（待辦 C-7b bug ②）。
+        # 使用者在報表旁「重產解讀」輸入的修改需求；2026-07-27 前 payload 有存但一路
+        # 沒傳到 runner，打了完全沒作用（待辦 C-7b bug ②）。
         instruction=payload.get("instruction"),
+        # 只重產這幾張報表的解讀（2026-07-29）；不給＝整份重跑。
+        # ⚠ 這一段與 instruction 是同一個坑：API model 要宣告、handler 要轉傳、
+        # runner 要收——少任一段就靜默失效（前端照樣 200，只是永遠整份重跑）。
+        report_keys=payload.get("report_keys"),
     )
     context.heartbeat("解讀已回存", 90)
     result = {

@@ -49,6 +49,12 @@ class CreateAiTaskRequest(BaseModel):
     cli_kind: Literal["claude", "opencode"] = "claude"
     based_on_version: str | None = None
     instruction: str | None = None
+    # 只重產這幾張報表的解讀（2026-07-29 使用者定案「報表要能各自獨立重產解釋」）。
+    # ⚠ 必須在此宣告：Pydantic 對未知欄位**靜默忽略**——前端送了、API 回 200、
+    # job 也建了，但 payload 裡沒有它，永遠整份重跑，使用者以為只重產一張。
+    # 本專案同型錯誤已犯兩次（前次：前端送 aliases、後端欄位是 variants），
+    # 故 test_per_report_narrative_rerun.NarrativeChainWiringTests 逐段驗整條線。
+    report_keys: list[str] | None = None
     model: str | None = None
     cli_timeout_seconds: float | None = Field(default=None, gt=0)
     idempotency_key: str | None = None

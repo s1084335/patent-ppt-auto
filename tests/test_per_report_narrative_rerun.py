@@ -134,3 +134,58 @@ class NarrativeRerunUiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NarrativeChainWiringTests(unittest.TestCase):
+    """🔴 report_keys 必須走完整條線，不能在中途被靜默丟棄。
+
+    ## 實測發現（2026-07-29）
+
+    前端送 `{report_keys: [...], instruction: "..."}`，實測 payload：
+
+        {'cli_kind':'claude', 'based_on_version':'v1', 'instruction':'用白話說'}
+                                          ↑ report_keys 不見了
+
+    ⚠ `CreateAiTaskRequest` 沒宣告 `report_keys`，**Pydantic 對未知欄位靜默忽略**
+    ——API 照樣回 200、job 照樣建立，只是永遠整份重跑。使用者以為只重產一張。
+
+    ⚠ 本專案今日第二次同型錯誤（前次為前端送 `aliases`、後端欄位是 `variants`）。
+    只驗兩端、不驗中間那段就會漏掉。本測試**逐段**驗：
+    API model → to_payload → handler → runner。
+    """
+
+    def test_api_model_declares_report_keys(self):
+        from backend.app.api.ai_tasks import CreateAiTaskRequest
+
+        self.assertIn("report_keys", CreateAiTaskRequest.model_fields,
+                      "API model 未宣告 report_keys，Pydantic 會靜默丟棄")
+
+    def test_payload_carries_report_keys(self):
+        """to_payload 要把它帶下去（這是實測抓到斷點的那一段）。"""
+        from backend.app.api.ai_tasks import CreateAiTaskRequest
+
+        req = CreateAiTaskRequest(**{
+            "task_type": "ai:narrative", "based_on_version": "v1",
+            "report_keys": ["application_trend"], "instruction": "用白話說"})
+        payload = req.to_payload()
+        self.assertEqual(payload.get("report_keys"), ["application_trend"],
+                         "report_keys 未進 payload，worker 收不到")
+        self.assertEqual(payload.get("instruction"), "用白話說")
+
+    def test_handler_forwards_report_keys(self):
+        """handler 要把 payload 的 report_keys 傳給 runner。"""
+        import inspect
+
+        from backend.app.worker.handlers import handle_ai_narrative
+
+        src = inspect.getsource(handle_ai_narrative)
+        self.assertIn("report_keys", src,
+                      "handler 未轉傳 report_keys，runner 收不到")
+
+    def test_runner_accepts_report_keys(self):
+        """runner 簽名要收得下（前面幾段都通了才有意義）。"""
+        import inspect
+
+        from backend.app.worker.ai_narrative_runner import run_narrative
+
+        self.assertIn("report_keys", inspect.signature(run_narrative).parameters)
