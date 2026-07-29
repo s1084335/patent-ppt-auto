@@ -1079,11 +1079,14 @@ async function addVariantToGroup() {
   if (!code || !alias) { alert('請選擇代碼組並填寫變體。'); return; }
   const group = existingCompanyGroups.find(g => g.code === code);
   if (!group) { alert('找不到該代碼組，請重新載入。'); return; }
+  // ⚠ 欄位名是 `variants` 不是 `aliases`——後端 CodeGroup model 用前者，
+  // 而 Pydantic 對未知欄位**靜默忽略**：送錯名時變體被丟掉、只更新兩個正式名的列，
+  // API 照回 200（實測 inserted:0 updated:2），使用者以為成功但資料沒進去。
   const payload = { groups: [{
     code: code,
     zh_name: group.zh_name || '',
     normalized_name: group.normalized_name || '',
-    aliases: [alias],
+    variants: [alias],
   }] };
   const ok = await callGroupMaintenance(
     API + '/company-codes/confirm',

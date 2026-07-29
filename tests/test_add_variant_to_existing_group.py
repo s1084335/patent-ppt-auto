@@ -81,16 +81,26 @@ class AddVariantBehaviourTests(unittest.TestCase):
     def _body() -> str:
         return _js_function(INDEX_HTML.read_text(encoding="utf-8"), "addVariantToGroup")
 
-    def test_carries_group_identity(self):
-        """送出的 payload 必須帶該組的代碼與兩個名稱。
+    def test_payload_keys_match_backend_model(self):
+        """🔴 payload 欄位名必須與後端 `CodeGroup` model 完全一致。
 
-        ⚠ 這是避開 409 的關鍵：後端 find_code_conflicts 比對「同代碼是否配到
-        不同正規化名稱」，少帶或帶錯就會被擋。
+        實測踩過：前端送 `aliases`、後端欄位叫 `variants`——**Pydantic 對未知
+        欄位靜默忽略**，變體被丟掉、只更新兩個正式名的列，API 照回 200
+        （inserted:0 updated:2）。使用者以為新增成功，資料庫裡沒有。
+
+        ⚠ 本測試初版只驗「payload 裡有 aliases 這個字串」，正好鎖住了錯的名字
+        ——驗欄位名必須以**後端 model 為準**，不能自己列一份。
         """
+        from backend.app.api.company_aliases import CodeGroup
+
         body = self._body()
-        for key in ("code", "zh_name", "normalized_name", "aliases"):
+        model_fields = set(CodeGroup.model_fields)
+        for key in ("code", "zh_name", "normalized_name", "variants"):
             with self.subTest(key=key):
-                self.assertIn(key, body, f"payload 缺 {key}")
+                self.assertIn(key, model_fields, f"{key} 不是後端 model 的欄位")
+                self.assertIn(key + ":", body, f"payload 缺 {key}")
+        self.assertNotIn("aliases:", body,
+                         "`aliases` 不是 CodeGroup 的欄位，會被 Pydantic 靜默丟棄")
 
     def test_reuses_confirm_endpoint(self):
         """走既有 /company-codes/confirm，不另造端點。
