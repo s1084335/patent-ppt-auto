@@ -173,9 +173,12 @@ class DisplayOrderTests(unittest.TestCase):
         nxt = sql.index("_code_names AS (", start + 1)
         block = sql[start:nxt]
 
-        zh = block.index("公司中文名稱")
-        norm = block.index("正規化名稱")
-        self.assertLess(zh, norm, "中文名必須排在正規化名稱之前")
+        # ⚠ 不比對字元位置——2026-07-29 中文名改用 MAX() 取任一非空值後，
+        # 註解與 COALESCE 的排列讓位置比較失去意義（實測 518 vs 432 假失敗）。
+        # 改驗真正的語意：中文名走 MAX（優先），正規化名稱走 mode（眾數）。
+        self.assertRegex(block, r'(?i)MAX\(NULLIF\(BTRIM\(ca\."公司中文名稱"',
+                         "中文名應以 MAX 取任一非空值，不得只靠 mode 賭眾數")
+        self.assertIn("正規化名稱", block)
         self.assertNotIn("公司名稱", block.replace("公司中文名稱", ""),
                          "收斂 CTE 不得再有舊欄")
 

@@ -36,6 +36,14 @@ class ReportDefinition:
     value_pattern_columns: tuple[tuple[str, str], ...] = ()
     # 來源表沒有 patent_id 欄（如家族×國家表）時設 False：
     # run_report 收到 patent_ids 會 fail loud，analysis_runner 會跳過此報表。
+    # 前端版面（2026-07-29 使用者定案「年度矩陣可以和其他種類報表的版面不同」）：
+    #   side_by_side＝左數據右圖表 45/55（一般報表）
+    #   stacked     ＝上下排列（年度矩陣：交叉表欄多列少，橫向需要空間）
+    layout: str = "side_by_side"
+    # 需要市場資料才能產（2026-07-29 使用者定案）：痛點四象限的 Y 軸是痛點嚴重度，
+    # 無市場資料時全部落 unknown，整張圖沒有判讀價值。前端據此禁用選項。
+    # ⚠ 主題統計表與機會四象限**不需要**——使用者明示「可以選」。
+    requires_market_data: bool = False
     supports_patent_ids: bool = True
     allowed_filter_columns: tuple[str, ...] = ()
     # aggregate 型報表的額外聚合欄：(函式, 來源欄, 輸出別名)。
@@ -48,6 +56,12 @@ class ReportDefinition:
 
 
 REPORT_SOURCE_TABLE = "derived_layer.report_patent_base"
+
+# 申請人展開視圖（0042，2026-07-29 使用者定案）：共同申請人 `A | B` 拆成兩列，
+# 各自計數。**只給三個申請人報表用**——其餘報表必須維持一專利一列的 base，
+# 否則專利總數會從 60 變成 74（重複計數）。
+# ⚠ 件數總和大於專利總數是刻意的（使用者確認為專利分析慣例），報表需加註。
+APPLICANT_EXPANDED_TABLE = "derived_layer.report_patent_applicant_expanded"
 
 REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
     "application_trend": ReportDefinition(
@@ -109,7 +123,7 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         report_type="aggregate",
         label="Applicant × Jurisdiction Matrix",
         label_zh="公司×國家交叉表",
-        source_table=REPORT_SOURCE_TABLE,
+        source_table=APPLICANT_EXPANDED_TABLE,  # 0042：共同申請人各自計數
         columns=("applicant_display_name", "country_code"),
         group_by=("applicant_display_name", "country_code"),
         default_order=(
@@ -151,13 +165,16 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         report_type="aggregate",
         label="Top Patent Applicants",
         label_zh="主要申請人排名",
-        source_table=REPORT_SOURCE_TABLE,
+        source_table=APPLICANT_EXPANDED_TABLE,  # 0042：共同申請人各自計數
         columns=("applicant_display_name",),
         group_by=("applicant_display_name",),
         aggregates=(
             # _excl_group：申請人＝最新受讓人（未離手）不算轉讓（2026-07-22 使用者定案）
             ("count_nonblank_excl_group", "recent_assignee_display_name", "recent_assignee_count"),
             ("string_agg_distinct_nonblank_excl_group", "recent_assignee_display_name", "recent_assignee_display_names"),
+            # 受讓取得（2026-07-29 A 方案）：反向計數——有多少專利的最新受讓人是本公司。
+            # 上面兩欄是「轉出」方向；沒有這欄的話，受讓方那列看不到自己拿到幾件。
+            ("count_as_value_of", "recent_assignee_display_name", "acquired_count"),
         ),
         default_order=(("patent_count", "desc"), ("applicant_display_name", "asc")),
         default_limit=100,
@@ -175,24 +192,13 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         default_limit=100,
         exclude_blank_columns=("current_assignee_display_name",),
     ),
-    "recent_assignee_ranking": ReportDefinition(
-        name="recent_assignee_ranking",
-        report_type="aggregate",
-        label="Recent Assignee Ranking",
-        label_zh="最新受讓人排名",
-        source_table=REPORT_SOURCE_TABLE,
-        columns=("recent_assignee_display_name",),
-        group_by=("recent_assignee_display_name",),
-        default_order=(("patent_count", "desc"), ("recent_assignee_display_name", "asc")),
-        default_limit=100,
-        exclude_blank_columns=("recent_assignee_display_name",),
-    ),
     "applicant_year_matrix": ReportDefinition(
         name="applicant_year_matrix",
+        layout="stacked",  # 交叉表欄多，需滿寬
         report_type="aggregate",
         label="Applicant Year Matrix",
         label_zh="申請人年度專利分布矩陣",
-        source_table=REPORT_SOURCE_TABLE,
+        source_table=APPLICANT_EXPANDED_TABLE,  # 0042：共同申請人各自計數
         columns=("applicant_display_name", "application_year"),
         group_by=("applicant_display_name", "application_year"),
         default_order=(
@@ -204,6 +210,7 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
     ),
     "owner_year_matrix": ReportDefinition(
         name="owner_year_matrix",
+        layout="stacked",  # 交叉表欄多，需滿寬
         report_type="aggregate",
         label="Owner Year Matrix",
         label_zh="專利權人年度布局矩陣",
@@ -307,6 +314,7 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
     # pain_data 產出（severity 全部 unknown＝待調查灰帶），優雅回空、不假造痛點。
     "pain_point_quadrant": ReportDefinition(
         name="pain_point_quadrant",
+        requires_market_data=True,
         report_type="cluster",
         label="Pain Point Quadrant",
         label_zh="痛點四象限",

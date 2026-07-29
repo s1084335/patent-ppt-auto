@@ -102,10 +102,20 @@ base AS (
 code_alias_names AS (
     SELECT
         NULLIF(BTRIM(ca."申請人代碼"), '') AS company_code,
-        mode() WITHIN GROUP (ORDER BY COALESCE(
-            NULLIF(BTRIM(ca."公司中文名稱"), ''),
-            NULLIF(BTRIM(ca."正規化名稱"), '')
-        )) AS company_name
+        -- ⚠ 中文名**不走眾數**（2026-07-29 使用者實測抓到）：
+        -- 中文名是人工裁決的結果，只要該代碼**有任何一列**填了就該用它，
+        -- 不該被「有幾列填了」這種資料形狀決定。
+        --
+        -- 實測 UN226597 的 4 列：中文、英文、英文、中文 → mode() 2:2 平手，
+        -- 平手取字母序而 'N' < '南' → **使用者填了中文卻顯示英文**。
+        -- （成因是中文名只寫進 1 列、又被當別稱多寫 1 列，兩個寫入端缺陷，
+        --   另有測試鎖住；但顯示端本來就不該賭眾數。）
+        --
+        -- 正規化名稱仍用 mode()：那是多個英文寫法擇一，眾數是對的口徑。
+        COALESCE(
+            MAX(NULLIF(BTRIM(ca."公司中文名稱"), '')),
+            mode() WITHIN GROUP (ORDER BY NULLIF(BTRIM(ca."正規化名稱"), ''))
+        ) AS company_name
     FROM derived_layer.company_aliases ca
     WHERE ca.review_status = 'confirmed'
       AND NULLIF(BTRIM(ca."申請人代碼"), '') IS NOT NULL
@@ -275,6 +285,10 @@ LEFT JOIN LATERAL (
         lower(regexp_replace(BTRIM(split_part(COALESCE(b."申請人", ''), '|', 1)), '\\s+', ' ', 'g'))
     )
     ORDER BY
+        -- ⚠ 有填中文名的列優先（2026-07-29）：同一代碼的多個變體列，
+        -- 只有部分列填了中文名（寫入端只更新命中的那一列）。若照 id 排，
+        -- 可能取到中文欄為空的列 → 顯示英文，使用者以為中文名沒生效。
+        CASE WHEN NULLIF(BTRIM(ca."公司中文名稱"), '') IS NOT NULL THEN 0 ELSE 1 END,
         CASE
             WHEN lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) = lower(regexp_replace(BTRIM(split_part(COALESCE(b."標準化申請人", ''), '|', 1)), '\\s+', ' ', 'g')) THEN 1
             ELSE 2
@@ -293,6 +307,10 @@ LEFT JOIN LATERAL (
         lower(regexp_replace(BTRIM(split_part(COALESCE(b."最近專利權人[US,JP,KR,CN,CA,AU]", ''), '|', 1)), '\\s+', ' ', 'g'))
     )
     ORDER BY
+        -- ⚠ 有填中文名的列優先（2026-07-29）：同一代碼的多個變體列，
+        -- 只有部分列填了中文名（寫入端只更新命中的那一列）。若照 id 排，
+        -- 可能取到中文欄為空的列 → 顯示英文，使用者以為中文名沒生效。
+        CASE WHEN NULLIF(BTRIM(ca."公司中文名稱"), '') IS NOT NULL THEN 0 ELSE 1 END,
         CASE
             WHEN lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) = lower(regexp_replace(BTRIM(split_part(COALESCE(b."標準當前專利權人[US,JP,KR,CN,CA,AU]", ''), '|', 1)), '\\s+', ' ', 'g')) THEN 1
             ELSE 2
@@ -308,7 +326,8 @@ LEFT JOIN LATERAL (
     -- 缺護欄時草稿是**唯一**能命中的來源，風險比另兩欄更高。
     WHERE ca.review_status = 'confirmed'
       AND lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) = lower(regexp_replace(BTRIM(split_part(COALESCE(b."最近受讓人[US,KR,CN]", ''), '|', 1)), '\\s+', ' ', 'g'))
-    ORDER BY ca.id
+    -- 有填中文名的列優先（同上兩處 LATERAL 的理由）
+    ORDER BY CASE WHEN NULLIF(BTRIM(ca."公司中文名稱"), '') IS NOT NULL THEN 0 ELSE 1 END, ca.id
     LIMIT 1
 ) assignee_alias ON true
 LEFT JOIN applicant_code_names acn

@@ -56,6 +56,11 @@ def list_report_definitions() -> dict[str, Any]:
             "label": definition.label,
             "report_type": definition.report_type,
             "filter_mode": "patent_level" if definition.supports_patent_ids else "family_translated",
+            # 前端據此禁用選項（2026-07-29）：痛點四象限的 Y 軸是痛點嚴重度，
+            # 沒有市場資料時全部 unknown，整張圖無判讀價值。
+            "requires_market_data": definition.requires_market_data,
+            # 版面：年度矩陣的交叉表欄多，需滿寬（stacked）；其餘左右 45/55。
+            "layout": definition.layout,
         }
         for name, definition in sorted(REPORT_DEFINITIONS.items())
     ]

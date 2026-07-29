@@ -224,6 +224,18 @@ def _section_report_key(section: dict) -> str:
     return str(variants[0].get("file", "")).rsplit(".", 1)[0]
 
 
+def _report_layout(report_key: str) -> str:
+    """該報表的前端版面（唯一來源＝ReportDefinition.layout）。
+
+    未知 report_key（動態頁、分群 section）回預設值，不 raise
+    ——版面是呈現細節，取不到就用一般版面，不該讓整份 content 失敗。
+    """
+    from backend.app.reports.report_definitions import REPORT_DEFINITIONS
+
+    d = REPORT_DEFINITIONS.get(report_key)
+    return getattr(d, "layout", "side_by_side") if d else "side_by_side"
+
+
 def _column_labels(rows: list) -> dict:
     """本批 rows 的欄位中文名對照（R2，2026-07-29）。
 
@@ -239,6 +251,21 @@ def _column_labels(rows: list) -> dict:
     from backend.app.reports.chart_runner import DATA_COLUMN_LABELS
 
     return {c: DATA_COLUMN_LABELS[c] for c in rows[0] if c in DATA_COLUMN_LABELS}
+
+
+def _hidden_columns(report_key: str) -> list:
+    """該報表不顯示的欄（唯一來源＝chart_runner.DATA_TABLE_EXCLUDED_COLUMNS）。
+
+    ⚠ 「不顯示」不等於「不存在」：這些欄的資料仍在 rows 裡，供圖表與機制使用。
+    例：`recent_assignee_count` 是 applicant_ranking 圖表的 segment_key（藍色區段），
+    `topic_code` 是主題合併/拆分的識別鍵——移掉資料會壞掉，只能不顯示。
+
+    前端原本硬排除 `source_field` 一欄，與後端這份清單各走各的（第 6 個兩處落點）；
+    改由後端統一送出，前端零判斷。
+    """
+    from backend.app.reports.chart_runner import DATA_TABLE_EXCLUDED_COLUMNS
+
+    return list(DATA_TABLE_EXCLUDED_COLUMNS.get(report_key, ()))
 
 
 def _limit_rows_per_source(rows: list, limit: int) -> list:
@@ -358,6 +385,12 @@ def _report_content_payload(run_dir):
             # 而後端早就有完整對照表——第 5 個「同一資訊兩處落點」。
             # 只回本次 rows 實際有的欄，不整份倒給前端。
             "column_labels": _column_labels(rows),
+            # 版面（2026-07-29）：直接放進 section，前端零判斷、零清單。
+            # 前端的 REPORT_TYPES 是寫死清單且不含 layout，靠它判斷會是第 6 個
+            # 「同一資訊兩處落點」——讓後端把答案送過來即可。
+            "layout": _report_layout(report_key),
+            # 不顯示但保留資料的欄（見 _hidden_columns）
+            "hidden_columns": _hidden_columns(report_key),
             "variants": variants_out,
         })
 

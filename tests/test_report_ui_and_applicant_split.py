@@ -89,22 +89,20 @@ class R2ColumnLabelsTests(unittest.TestCase):
         self.assertIn("columnLabel(", body, "reportSingleHtml 的表頭沒查表")
 
 
-class R3ChartFullWidthTests(unittest.TestCase):
-    """R3：圖滿寬、表在下。"""
+class R3ChartWidthTests(unittest.TestCase):
+    """R3：圖要比原本大。
 
-    def test_layout_is_stacked_not_side_by_side(self):
-        html = INDEX_HTML.read_text(encoding="utf-8")
-        m = re.search(r"\.report-single\s*\{([^}]*)\}", html)
-        self.assertIsNotNone(m, "找不到 .report-single 樣式")
-        block = m.group(1)
-        self.assertIn("column", block,
-                      ".report-single 應為上下排列（flex-direction: column）")
+    ⚠ **本項定案改過一次**：稍早是「圖滿寬、數據表移到下方」，使用者看過實機後
+    改為「恢復左數據右圖表，表 45%／圖 55%」。原本各 46%，故圖仍略為放大。
+    上下排列改由年度矩陣專用（`layout="stacked"`，見 test_report_batch_b）。
+    """
 
-    def test_chart_no_longer_half_width(self):
+    def test_chart_wider_than_data(self):
         html = INDEX_HTML.read_text(encoding="utf-8")
         m = re.search(r"\.report-single-chart\s*\{([^}]*)\}", html)
         self.assertIsNotNone(m)
-        self.assertNotIn("46%", m.group(1), "圖仍被壓在半寬")
+        self.assertIn("55%", m.group(1), "圖應佔 55%")
+        self.assertNotIn("46%", m.group(1), "不得退回原本的 46%")
 
 
 if __name__ == "__main__":

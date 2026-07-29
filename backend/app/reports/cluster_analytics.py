@@ -119,12 +119,24 @@ def build_topic_effect_table(
         patents = topic_patents[key]
         top3, app_count = _compute_top_applicants(patents, app_by_patent)
         info = topic_map.get(key, {})
+        # 集中度兩欄（2026-07-29 使用者定案「兩欄都要」）：
+        #   top3_share＝前三大合計占比 → 看整體集中程度
+        #   max_share ＝最大一家占比   → 看有沒有單一壟斷者
+        # 只看其一會誤判：實測使用者資料，「風阻磁阻調節 83%/33%（三家均分）」與
+        # 「馬達捲繩自鎖 88%/62%（一家獨大）」前三大占比接近，競爭態勢卻相反。
+        # 分母＝該主題專利件數；件數 0 時回 0，不除以零。
+        total = len(patents)
+        counts = [int(a.get("count", 0)) for a in top3]
+        top3_share = round(sum(counts[:3]) / total * 100) if total else 0
+        max_share = round(max(counts, default=0) / total * 100) if total else 0
         result.append({
             "topic_code": code,
             "label": info.get("label", code),
             "source_field": info.get("source_field", source_field),
-            "patent_count": len(patents),
+            "patent_count": total,
             "applicant_count": app_count,
+            "top3_share": top3_share,
+            "max_share": max_share,
             "top_applicants": top3,
         })
     return result
@@ -180,6 +192,11 @@ def build_opportunity_matrix(
             "patent_count": r["patent_count"],
             "applicant_count": r["applicant_count"],
             "top_applicants": r.get("top_applicants", []),
+            # 集中度兩欄一併帶進矩陣（2026-07-29 使用者定案「機會四象限和痛點
+            # 四象限也改兩欄都要」）。值由 build_topic_effect_table 算好，
+            # 此處只轉傳——不重算，避免兩處算法漂移。
+            "top3_share": r.get("top3_share", 0),
+            "max_share": r.get("max_share", 0),
             "leading_applicants_involved": involved,
             "leading_applicant_count": len(involved),
         })
@@ -232,6 +249,9 @@ def build_pain_point_matrix(
             # label 傳遞給圖表顯示中文主題名；缺 label 時由 renderer fallback 到 code
             "label": r.get("label"),
             "patent_count": r["patent_count"],
+            # 集中度兩欄（同機會矩陣，2026-07-29 定案）：只轉傳、不重算。
+            "top3_share": r.get("top3_share", 0),
+            "max_share": r.get("max_share", 0),
             "severity": info.get("severity", "unknown"),
             "basis": info.get("basis"),
             "source": info.get("source"),

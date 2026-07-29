@@ -33,6 +33,19 @@ AGGREGATE_FUNCTIONS = {
         "COUNT(*) FILTER (WHERE NULLIF(BTRIM({col}::text), '') IS NOT NULL "
         "AND NULLIF(BTRIM({col}::text), '') IS DISTINCT FROM NULLIF(BTRIM({group_col}::text), ''))::int"
     ),
+    # 反向計數（2026-07-29「受讓取得」欄）：算**有多少列的 {col} 等於本組分組鍵**。
+    # 與 _excl_group 變體方向相反——那些查「自己這列的欄位」，這個查「別人指向我」。
+    # 用途：YIXUAN 那列要顯示「有 2 筆專利的最新受讓人是 YIXUAN」，
+    # 而那 2 筆的申請人是 MARIO，不在 YIXUAN 自己的分組裡。
+    # ⚠ 相關子查詢每組執行一次；60 筆資料無感，上萬筆需改 LEFT JOIN 預聚合。
+    "count_as_value_of": (
+        # ⚠ 外層分組欄必須用 {table}.{group_col} 完整限定：子查詢裡有 _rev 別名，
+        # 裸欄名會被 PostgreSQL 解析成 _rev 自己的欄位（最內層作用域優先），
+        # 相關子查詢退化成無關聯常數——實測所有 37 列都回同一個數字 2。
+        "(SELECT COUNT(*) FROM {table} _rev "
+        "WHERE NULLIF(BTRIM(_rev.{col}::text), '') "
+        "IS NOT DISTINCT FROM NULLIF(BTRIM({table}.{group_col}::text), ''))::int"
+    ),
     "string_agg_distinct_nonblank_excl_group": (
         "COALESCE(STRING_AGG(DISTINCT NULLIF(BTRIM({col}::text), ''), '; ' "
         "ORDER BY NULLIF(BTRIM({col}::text), '')) "
@@ -52,7 +65,13 @@ def build_aggregate_columns(definition: ReportDefinition) -> str:
             raise ValueError(f"Unsupported aggregate function: {func} (report {definition.name})")
         if "{group_col}" in template and group_col is None:
             raise ValueError(f"Aggregate {func} requires group_by (report {definition.name})")
-        parts.append(f"{template.format(col=quote_ident(column), group_col=group_col)} AS {quote_ident(alias)}")
+        # {table}＝來源表（反向子查詢用）。舊模板不含此佔位符，format 會忽略多餘參數。
+        rendered = template.format(
+            col=quote_ident(column),
+            group_col=group_col,
+            table=qualified_table_name(definition.source_table),
+        )
+        parts.append(f"{rendered} AS {quote_ident(alias)}")
     return (", " + ", ".join(parts)) if parts else ""
 
 

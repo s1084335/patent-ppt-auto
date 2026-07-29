@@ -411,11 +411,17 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .reports-market-details[open] { flex-basis: 100%; }
 .report-generate-box { border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.6rem 0.9rem; margin-bottom: 0.9rem; background: var(--panel); }
 /* R1 單份報表版面：左數據、右圖表、下解讀（橫跨整寬）。 */
-.report-single { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; flex-direction: column; }
-/* R3（2026-07-29）：圖改滿寬、數據表移到圖下方。原本左右各 46%，
-   四象限那類圖被壓到看不清字。min-width:0 仍保留（防 flex 子項溢出）。 */
-.report-single-data { width: 100%; min-width: 0; overflow-x: auto; }
-.report-single-chart { width: 100%; min-width: 0; }
+.report-single { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
+/* 2026-07-29 使用者看過實機後定案：恢復左數據右圖表，比例 45/55
+   （稍早改成的「圖滿寬、表移下方」被推翻）。圖比原本 46% 略大，
+   表格欄少的報表夠用。min-width:0 防 flex 子項溢出。 */
+.report-single-data { flex: 0 0 45%; min-width: 0; overflow-x: auto; }
+.report-single-chart { flex: 1 1 55%; min-width: 0; }
+/* 年度矩陣專屬（layout="stacked"）：交叉表欄多列少，橫向需要整個寬度，
+   與其他報表相反——使用者定「年度矩陣可以和其他種類報表的版面不同」。 */
+.report-single-stacked { flex-direction: column; }
+.report-single-stacked .report-single-data,
+.report-single-stacked .report-single-chart { flex: 1 1 100%; width: 100%; }
 .report-single-chart img, .report-single-chart svg { max-width: 100%; height: auto; }
 .report-single-narrative { margin-top: 0.9rem; padding-top: 0.8rem; border-top: 1px solid var(--border); }
 .report-single-narrative .empty { color: var(--text-muted); font-size: 0.86rem; }
@@ -4248,6 +4254,13 @@ function switchReportVariant(sectionIndex, variantIndex) {
 
 // variant 分頁鈕：沿用既有 report-source-tab 樣式，不另造一套。
 // 只有一個 variant 時不顯示（沒得切就不佔版面）。
+// 版面判斷（2026-07-29）：後端已把 layout 放進 section，前端直接讀。
+// 不自己維護報表清單——前端的 REPORT_TYPES 是寫死的且不含 layout，
+// 靠它判斷會變成同一資訊兩處落點。
+function reportLayoutClass(section) {
+  return section && section.layout === 'stacked';
+}
+
 function reportVariantTabsHtml(section, sectionIndex) {
   const variants = (section && section.variants) || [];
   if (variants.length < 2) return '';
@@ -4266,7 +4279,10 @@ function reportSingleHtml(section, option) {
   const rows = viewSection.rows || [];
   let dataHtml = '<p class="hint" style="padding:0.3rem 0">尚無資料。</p>';
   if (rows.length) {
-    const columns = Object.keys(rows[0]).filter(c => c !== 'source_field');
+    // 隱藏欄由後端統一給（唯一來源＝chart_runner.DATA_TABLE_EXCLUDED_COLUMNS）。
+    // 原本前端只硬排除 source_field，與後端各走各的——第 6 個兩處落點。
+    const hidden = new Set(viewSection.hidden_columns || ['source_field']);
+    const columns = Object.keys(rows[0]).filter(c => !hidden.has(c));
     const labels = viewSection.column_labels || {};
     // R2：表頭查後端給的中文對照（唯一來源＝chart_runner.DATA_COLUMN_LABELS）；
     // 查無對照就顯示原 key，後端新增欄位不必同步改前端。
@@ -4302,7 +4318,7 @@ function reportSingleHtml(section, option) {
     + '<h3>' + escHtml(viewSection.title || '') + '</h3>'
     + (isClusterSection(section) ? reportSourceTabsHtml(sourceField) : '')
     + reportVariantTabsHtml(viewSection, (option && option.sectionIndex) || 0)
-    + '<div class="report-single">'
+    + '<div class="report-single' + (reportLayoutClass(viewSection) ? ' report-single-stacked' : '') + '">'
     + '<div class="report-single-data">' + dataHtml + '</div>'
     + '<div class="report-single-chart">' + chartHtml + '</div>'
     + '</div>'

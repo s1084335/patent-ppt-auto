@@ -148,7 +148,6 @@ CHART_FILE_REPORTS: dict[str, list[str]] = {
     "cpc_main_distribution_L5.svg": ["cpc_main_distribution"],
     "applicant_ranking.svg": ["applicant_ranking"],
     "owner_ranking.svg": ["owner_ranking"],
-    "recent_assignee_ranking.svg": ["recent_assignee_ranking"],
     "applicant_country_matrix.svg": ["applicant_country_distribution"],
     "applicant_year_matrix.svg": ["applicant_year_matrix"],
     "applicant_year_matrix_more.svg": ["applicant_year_matrix"],
@@ -176,10 +175,16 @@ def report_names_for_artifact(filename: str) -> list[str]:
     mapped = CHART_FILE_REPORTS.get(filename)
     if mapped is not None:
         return mapped
-    # 分群象限板多來源時帶 slug 後綴（opportunity_quadrant_tech.svg 等）；
-    # 對回基底報表名，讓 manifest／解讀查找不因分段檔名而落空。
-    for base in ("opportunity_quadrant", "pain_point_quadrant"):
-        if filename.startswith(f"{base}_") and filename.endswith(".svg"):
+    # 分群產物多來源時帶 slug 後綴（opportunity_quadrant_tech.svg、
+    # cluster_topic_table_effect.html 等）；對回基底報表名，讓 manifest／解讀
+    # 查找不因分段檔名而落空。
+    # ⚠ 2026-07-29 加入 cluster_topic_table：主題統計表改為依通道分檔後，
+    # 舊的精確比對（CHART_FILE_REPORTS 只有無後綴的 .html）對不上，
+    # manifest 會少掉這兩個檔的報表歸屬——靜默失敗，只有查 manifest 才發現。
+    for base, ext in (("opportunity_quadrant", ".svg"),
+                      ("pain_point_quadrant", ".svg"),
+                      ("cluster_topic_table", ".html")):
+        if filename.startswith(f"{base}_") and filename.endswith(ext):
             return [base]
     return []
 
@@ -857,6 +862,9 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "label": "主題標籤",
     "source_field": "來源欄位",
     "top_applicants": "前三大申請人",
+    "top3_share": "前三大占比(%)",
+    "max_share": "最大一家(%)",
+    "acquired_count": "受讓取得",
     "leading_applicant_count": "龍頭涉入(家)",
     "leading_applicants_involved": "龍頭涉入名單",
     "doc_count": "專利件數",
@@ -886,7 +894,18 @@ def _read_narratives(run_dir: Path, version: str) -> dict[str, Any]:
 # cluster_topic_table：source_field 原始欄名不出現在使用者介面（2026-07-21 定案，
 # 技術/功效已由統計表分段標題表達）。
 DATA_TABLE_EXCLUDED_COLUMNS: dict[str, tuple[str, ...]] = {
-    "cluster_topic_table": ("source_field",),
+    # 2026-07-29 使用者定案：
+    #   topic_code  → 「機制能識別就好，表格和報告不用顯示」（資料仍帶著，供合併/拆分識別）
+    #   leading_*   → 「有前三大申請人好像就不用龍頭涉入了」（改以集中度兩欄表達競爭結構）
+    "cluster_topic_table": (
+        "source_field", "topic_code",
+        "leading_applicant_count", "leading_applicants_involved",
+    ),
+    # recent_assignee_count → 使用者：「這欄可以不用，後面欄都列出公司了」。
+    # ⚠ 只排除**顯示**，資料仍在 rows——applicant_ranking 的圖表用它當
+    # segment_key 畫藍色區段（轉出件數），移掉資料會讓圖表退化成單色長條。
+    # 使用者定案：「欄位移除，圖表保留分段」。
+    "applicant_ranking": ("recent_assignee_count",),
 }
 
 # 總計列可加總的欄（加總有意義＝件數類）；其餘一律「—」——applicant_count 跨主題
@@ -1240,7 +1259,7 @@ CLASSIFICATION_LEVEL_LABELS = {4: "Level 4 (Subclass)", 5: "Level 5 (Main Group)
 # ---------------------------------------------------------------------------
 
 # 排名類報表出圖時套 ranking_limit（其餘報表用各自定義的預設列數）。
-RANKING_LIMIT_REPORTS = ("applicant_ranking", "owner_ranking", "recent_assignee_ranking")
+RANKING_LIMIT_REPORTS = ("applicant_ranking", "owner_ranking")
 
 # ---------------------------------------------------------------------------
 # 入庫截取（2026-07-21 定案修正）：排名類「保存」也只留前 20、年度序列只留最新
@@ -1253,7 +1272,7 @@ PERSIST_YEAR_SPAN = 25      # 年度序列入庫年份數上限（取最新）
 
 # 排名類報表：入庫 rows 截前 20（含 IPC/CPC 分布與公司×國家交叉）
 PERSIST_TOP20_REPORTS = (
-    "applicant_ranking", "owner_ranking", "recent_assignee_ranking",
+    "applicant_ranking", "owner_ranking",
     "applicant_country_distribution", "ipc_main_distribution", "cpc_main_distribution",
 )
 # 年度序列報表：入庫只留最新 25 年（value＝該報表的年份欄位名）
@@ -1517,21 +1536,6 @@ def _build_owner_ranking_section(ctx: ChartContext) -> None:
     ctx.sections.append({"title": report["label_zh"], "variants": [{"label": "Assignees", "file": "owner_ranking.svg", "variant_key": "default"}]})
 
 
-def _build_recent_assignee_ranking_section(ctx: ChartContext) -> None:
-    """最新受讓人公司排名，受讓人公司名稱必須直接出現在圖表上。"""
-    report = ctx.report("recent_assignee_ranking")
-    render_bar_chart(
-        ctx.run_dir / "recent_assignee_ranking.svg",
-        report["label_zh"],
-        report["rows"],
-        "recent_assignee_display_name",
-    )
-    ctx.sections.append({
-        "title": report["label_zh"],
-        "variants": [{"label": "Recent assignees", "file": "recent_assignee_ranking.svg", "variant_key": "default"}],
-        "note": "只統計 recent_assignee_display_name 非空的專利；原申請人與原始欄位值不改寫。",
-    })
-
 
 def _build_applicant_year_matrix_section(ctx: ChartContext) -> None:
     """申請人 × 申請年份泡泡矩陣。"""
@@ -1553,6 +1557,10 @@ def _build_applicant_year_matrix_section(ctx: ChartContext) -> None:
             top_rows[10:20],
         )
         more_variants.append({"label": "11-20", "file": "applicant_year_matrix_more.svg", "variant_key": "more"})
+    # 數據區改交叉表（2026-07-29 使用者定案「數據表是長格式，難讀」）：
+    # 原本每列 (公司, 年份, 件數)，同一家公司的不同年份分散在不同列。
+    # 轉置在後端做，前端不必知道差異。
+    ctx.chart_rows["applicant_year_matrix"] = pivot_year_matrix(report["rows"], "applicant_display_name")
     ctx.sections.append({
         "title": report["label_zh"],
         "variants": [{"label": "Top 10", "file": "applicant_year_matrix.svg", "variant_key": "default"}],
@@ -1582,6 +1590,10 @@ def _build_owner_year_matrix_section(ctx: ChartContext) -> None:
             top_rows[10:20],
         )
         more_variants.append({"label": "11-20", "file": "owner_year_matrix_more.svg", "variant_key": "more"})
+    # 數據區改交叉表（2026-07-29 使用者定案「數據表是長格式，難讀」）：
+    # 原本每列 (公司, 年份, 件數)，同一家公司的不同年份分散在不同列。
+    # 轉置在後端做，前端不必知道差異。
+    ctx.chart_rows["owner_year_matrix"] = pivot_year_matrix(report["rows"], "current_assignee_display_name")
     ctx.sections.append({
         "title": report["label_zh"],
         "variants": [{"label": "Top 10", "file": "owner_year_matrix.svg", "variant_key": "default"}],
@@ -1648,6 +1660,40 @@ def _build_growth_section(ctx: ChartContext) -> None:
 # 主題來源段名／檔名後綴（2026-07-21 定案：技術、功效不混；原始欄名不進使用者介面）
 SOURCE_SEGMENT_LABELS = {"wips_independent_claims": "技術主題", "effect_summary": "功效分類"}
 SOURCE_SEGMENT_SLUGS = {"wips_independent_claims": "tech", "effect_summary": "effect"}
+
+
+def pivot_year_matrix(rows: list[dict[str, Any]], entity_key: str) -> list[dict[str, Any]]:
+    """年度矩陣長格式 → 交叉表（2026-07-29 使用者定案「數據表是長格式，難讀」）。
+
+    輸入每列＝(公司, 年份, 件數)；同一家公司的不同年份分散在不同列，
+    使用者要自己對照才看得出趨勢（實測 45 列 / 31 列）。
+
+    輸出每列＝一家公司，年份成為欄位，末欄 total：
+
+        {entity_key: "A", "2022": 3, "2024": 5, "total": 8}
+
+    設計取捨：
+    - **該年無資料回空字串不是 0**——0 讀起來像「查過但沒有」，空白才是「無此資料」
+    - 依 total 降冪：這是排名報表，件數多的在上
+    - 年份欄由舊到新（時間序），欄名用字串以維持 JSON key 型別一致
+    - 轉置在後端做，前端不必知道差異（同一資訊一個落點）
+    """
+    if not rows:
+        return []
+    years = sorted({str(r.get("application_year")) for r in rows
+                    if r.get("application_year") is not None})
+    grouped: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        name = str(r.get(entity_key) or "")
+        if not name:
+            continue
+        year = str(r.get("application_year"))
+        cnt = int(r.get("patent_count") or 0)
+        cell = grouped.setdefault(name, {entity_key: name, **{y: "" for y in years},
+                                         "total": 0})
+        cell[year] = int(cell.get(year) or 0) + cnt
+        cell["total"] += cnt
+    return sorted(grouped.values(), key=lambda x: (-x["total"], str(x[entity_key])))
 
 
 def _source_segments(rows: list[dict[str, Any]]) -> list[tuple[str, str, list[dict[str, Any]]]]:
@@ -2091,7 +2137,12 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     # （中位數門檻按段各自計算，不跨來源混算）；單一來源維持原檔名與原 tab 名。
     segments = _source_segments(topic_rows)
     multi_source = len(segments) > 1
-    variants: list[dict[str, str]] = [{"label": "主題統計表", "file": "cluster_topic_table.html", "variant_key": "topic_table"}]
+    # ⚠ 單一來源時才放預設項；多來源時由下方迴圈依通道各加一項
+    # （否則會有「主題統計表」與「主題統計表——技術主題」兩個重複選項）。
+    variants: list[dict[str, str]] = []
+    if not multi_source:
+        variants.append({"label": "主題統計表", "file": "cluster_topic_table.html",
+                         "variant_key": "topic_table"})
     segment_matrices: list[tuple[str, str, dict[str, Any], dict[str, Any]]] = []
     leading_by_topic: dict[str, dict[str, Any]] = {}
     for sf, segment_label, seg_rows in segments:
@@ -2109,11 +2160,27 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
         row["leading_applicant_count"] = opp_row.get("leading_applicant_count", 0)
         row["leading_applicants_involved"] = opp_row.get("leading_applicants_involved", [])
 
-    render_cluster_topic_table_html(
-        ctx.run_dir / "cluster_topic_table.html",
-        "主題／功效分類統計",
-        topic_rows,
-    )
+    # 主題統計表**依通道分檔**（2026-07-29 使用者定案「選 A」）：
+    # 原本是單一 HTML 內含技術＋功效兩段，前端的技術／功效切換鈕對它無效
+    # ——切到「技術」時下方 HTML 仍同時顯示兩段，與上方數據表行為不一致。
+    # 改成一通道一檔後，切換天然生效（與機會／痛點矩陣同一套 suffix 機制）。
+    # 單一來源時維持原檔名，不破壞既有契約。
+    for sf, segment_label, seg_rows in segments:
+        slug = SOURCE_SEGMENT_SLUGS.get(sf, "other")
+        suffix = f"_{slug}" if multi_source else ""
+        tab_suffix = f"——{segment_label}" if multi_source else ""
+        table_file = f"cluster_topic_table{suffix}.html"
+        render_cluster_topic_table_html(
+            ctx.run_dir / table_file,
+            f"主題分類統計{tab_suffix}" if multi_source else "主題／功效分類統計",
+            seg_rows,
+        )
+        if suffix:
+            variants.append({
+                "label": f"主題統計表{tab_suffix}",
+                "file": table_file,
+                "variant_key": f"topic_table{suffix}",
+            })
     ctx.chart_rows["cluster_topic_table"] = topic_rows
 
     for sf, segment_label, opp_matrix, pain_matrix in segment_matrices:
@@ -2167,7 +2234,6 @@ SECTION_SPECS: tuple[SectionSpec, ...] = (
     SectionSpec("family_layout", ("family_country_layout", "family_quality_detail"), _build_family_layout_section),
     SectionSpec("ipc", ("ipc_main_distribution",), _build_ipc_section),
     SectionSpec("cpc", ("cpc_main_distribution",), _build_cpc_section),
-    SectionSpec("recent_assignee_ranking", ("recent_assignee_ranking",), _build_recent_assignee_ranking_section),
     SectionSpec("applicant_ranking", ("applicant_ranking",), _build_applicant_ranking_section),
     SectionSpec("owner_ranking", ("owner_ranking",), _build_owner_ranking_section),
     SectionSpec("applicant_year_matrix", ("applicant_year_matrix",), _build_applicant_year_matrix_section),

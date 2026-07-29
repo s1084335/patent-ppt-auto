@@ -364,3 +364,59 @@ class AssignmentsCarrySourceFieldTests(unittest.TestCase):
         for a in captured["assignments"]:
             self.assertEqual(a.get("source_field"), TECH,
                              "單通道路徑的 assignment 也要帶 source_field")
+
+
+class ConcentrationColumnsTests(unittest.TestCase):
+    """主題統計表加集中度兩欄（2026-07-29 使用者定案）。
+
+    ## 為何要兩欄而非一欄
+
+    使用者原話：「兩欄都要」。實測他的資料，只看單一指標會誤判：
+
+    | 主題 | 前三大占比 | 最大一家 | 態勢 |
+    |---|---|---|---|
+    | 風阻磁阻調節 | 83% | 33% | 集中但**三家均分**，還有空間 |
+    | 馬達捲繩自鎖 | 88% | **62%** | 集中且**一家獨大**，要迴避設計 |
+
+    只看「前三大占比」兩者都是 8x%，看起來一樣——但競爭態勢完全相反。
+
+    ## 同時移除
+
+    - `leading_applicant_count`／`leading_applicants_involved`（龍頭涉入兩欄）
+      ——使用者：「有前三大申請人好像就不用龍頭涉入了」
+    - `topic_code` 改為**不顯示**（機制仍需它識別，走 DATA_TABLE_EXCLUDED_COLUMNS）
+    """
+
+    def test_top3_share_and_max_share(self):
+        from backend.app.reports.cluster_analytics import build_topic_effect_table
+
+        topics = [{"topic_code": "T001", "label": "L", "source_field": TECH}]
+        # 5 家：3、2、2、1、1 共 9 件 → 前三大 7/9=78%、最大 3/9=33%
+        assignments = [{"topic_code": "T001", "patent_id": i, "source_field": TECH}
+                       for i in range(1, 10)]
+        apps = ([{"patent_id": i, "applicant_name": "A"} for i in (1, 2, 3)]
+                + [{"patent_id": i, "applicant_name": "B"} for i in (4, 5)]
+                + [{"patent_id": i, "applicant_name": "C"} for i in (6, 7)]
+                + [{"patent_id": 8, "applicant_name": "D"},
+                   {"patent_id": 9, "applicant_name": "E"}])
+        row = build_topic_effect_table(topics, assignments, apps)[0]
+        self.assertEqual(row["top3_share"], 78, f"前三大占比錯：{row['top3_share']}")
+        self.assertEqual(row["max_share"], 33, f"最大一家錯：{row['max_share']}")
+
+    def test_zero_patents_no_division_error(self):
+        """件數 0 的主題不得除以零。"""
+        from backend.app.reports.cluster_analytics import build_topic_effect_table
+
+        row = build_topic_effect_table(
+            [{"topic_code": "T001", "label": "L", "source_field": TECH}], [], [])[0]
+        self.assertEqual(row["top3_share"], 0)
+        self.assertEqual(row["max_share"], 0)
+
+    def test_leading_columns_removed_from_display(self):
+        """龍頭涉入兩欄不再顯示（使用者定案移除）。"""
+        from backend.app.reports.chart_runner import DATA_TABLE_EXCLUDED_COLUMNS
+
+        excluded = DATA_TABLE_EXCLUDED_COLUMNS.get("cluster_topic_table", ())
+        for col in ("topic_code", "leading_applicant_count", "leading_applicants_involved"):
+            with self.subTest(col=col):
+                self.assertIn(col, excluded, f"{col} 應從顯示中排除（資料仍保留）")

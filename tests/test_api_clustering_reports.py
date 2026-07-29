@@ -23,8 +23,11 @@ class ClusteringReportsConstantTests(unittest.TestCase):
     def test_default_report_names_match_definitions(self):
         """確認固定預設報表名單與定義順序完全一致。"""
         self.assertIsInstance(DEFAULT_REPORT_NAMES, tuple)
-        # 14 現有屬性統計 ＋ 3 分群報表＝17 種全列（2026-07-24 報表種類定案）。
-        self.assertEqual(len(DEFAULT_REPORT_NAMES), 17)
+        # 13 屬性統計 ＋ 3 分群報表＝16 種（2026-07-29 移除「最新受讓人排名」後）。
+        # ⚠ 移除理由：實測該報表只有 6 筆有值，其中 3 筆是同公司大小寫不同（非真轉讓），
+        # 資訊量已由 applicant_ranking 的「受讓取得」欄涵蓋（使用者定案 A 方案）。
+        # 數字鎖在這裡是刻意的——報表增減必須是有意識的決定，不能悄悄漂移。
+        self.assertEqual(len(DEFAULT_REPORT_NAMES), 16)
         self.assertEqual(DEFAULT_REPORT_NAMES, tuple(REPORT_DEFINITIONS))
 
     def test_get_report_definitions_returns_catalog(self):

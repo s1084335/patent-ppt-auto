@@ -53,20 +53,30 @@ class R4ApplicantSplitTests(unittest.TestCase):
                     REPORT_DEFINITIONS[name].source_table, REPORT_SOURCE_TABLE,
                     f"{name} 仍讀一專利一列的寬表，共同申請人算不進去")
 
-        # 其餘報表必須維持原來源——一專利一列的語意不能被破壞
-        for name, d in REPORT_DEFINITIONS.items():
-            if name in expanded or d.report_type != "aggregate":
-                continue
+        # 其餘**原本就讀 report_patent_base** 的報表必須維持原來源
+        # ——一專利一列的語意不能被破壞。
+        # ⚠ 排除本來就用別張表的（family_* 走家族表、cluster 型不走 SQL），
+        # 否則會把「本來就不同」誤判成「被改壞」（本測試初版即如此）。
+        untouched = {
+            name for name, d in REPORT_DEFINITIONS.items()
+            if name not in expanded
+            and d.report_type == "aggregate"
+            and not d.source_table.endswith(("report_family_country", "report_family_quality"))
+        }
+        for name in untouched:
             with self.subTest(report=name):
-                self.assertEqual(d.source_table, REPORT_SOURCE_TABLE,
+                self.assertEqual(REPORT_DEFINITIONS[name].source_table, REPORT_SOURCE_TABLE,
                                  f"{name} 不該改來源（會重複計數）")
 
     def test_detail_display_keeps_full_text(self):
         """⚠ 詳情層的「申請人」必須保留完整 `A | B`（使用者明示要維持）。"""
         sql = (PROJECT_ROOT / "backend" / "app" / "derived"
                / "refresh_report_patent_base.py").read_text(encoding="utf-8")
-        self.assertRegex(sql, r'^\s+b\."申請人",\s*$',
-                         "原始申請人欄被改動了——詳情層要顯示完整字面")
+        # ⚠ 逐行比對，不用 assertRegex 的 ^$（預設非 multiline，會整份當一行而永遠不匹配
+        # ——本測試初版即如此假失敗）。
+        lines = [l.strip() for l in sql.splitlines()]
+        self.assertIn('b."申請人",', lines,
+                      "原始申請人欄被改動了——詳情層要顯示完整字面 `A | B`")
 
 
 if __name__ == "__main__":
