@@ -3084,6 +3084,13 @@ function renderReports() {
     + '<div id="market-upload"></div>'
     + '</details>'
     + '<span style="flex:1"></span>'
+    // 一次產全部解讀（2026-07-30 使用者定案「初次通常是一次跑全部，
+    // 而重解讀是個報表獨立」）：不帶 report_keys＝整份重跑。
+    // ⚠ 統一入口的另一半在各報表下方（重產單張＋可帶 prompt），兩者同一支
+    // runNarrative，差別只在有沒有帶 report_keys——不是兩條路。
+    + '<button class="btn btn-outline btn-sm" id="btn-run-all-narrative"'
+    + ' onclick="runNarrative()" title="為目前這一版的所有報表產解讀">'
+    + '產生全部解讀</button>'
     + '<span class="hint" style="padding:0;font-size:.82rem">'
     + '選單切換要看的報表；產製清單在下方「產製報表」展開。</span>'
     + '</div>'
@@ -3396,7 +3403,9 @@ const reportVersions = {
   items: [],        // 已取回的版本清單
   total: 0,         // 後端實際總數（供「顯示更多」判斷）
   limit: REPORT_VERSION_PAGE,
-  loaded: {},       // version -> true，已載過內容的版本（不重複抓）
+  // version -> 該版 content（2026-07-30 由 true 改存內容）：
+  // 展開舊版要重新渲染報表本體，只記 true 的話仍得重打 API。
+  loaded: {},
 };
 
 // 目錄名尾端 <8位日期>_<6位時間> → 「2026-07-22 00:10」；解析不出就原樣顯示目錄名。
@@ -3466,6 +3475,42 @@ function cssSafeVersion(version) {
   return String(version).replace(/[^A-Za-z0-9_-]/g, '_');
 }
 
+// ══ 版本展開連動報表本體（2026-07-30 使用者定案「報表要能跟隨這裡收起來或出現」）══
+
+// 收合除 keepSafe 之外的所有版本（同時只顯示一份報表）。
+function closeOtherReportVersions(keepSafe) {
+  (reportVersions.items || []).forEach(function (v) {
+    const safe = cssSafeVersion(v.version);
+    if (safe === keepSafe) return;
+    const item = el('report-version-item-' + safe);
+    const body = el('report-version-body-' + safe);
+    if (!item || !body || body.hasAttribute('hidden')) return;
+    body.setAttribute('hidden', '');
+    item.classList.remove('open');
+    const caret = item.querySelector('.ver-caret');
+    if (caret) caret.textContent = '▸';
+    const row = item.querySelector('.report-version-row');
+    if (row) row.setAttribute('aria-expanded', 'false');
+  });
+}
+
+// 清空報表本體（版本收合時呼叫）。
+// ⚠ reportViewContent 一併歸零：它是「目前顯示哪一版」的狀態，
+// 留著會讓下次展開誤判成已在顯示。
+function clearReportInlineView() {
+  const view = el('report-inline-view');
+  if (view) view.innerHTML = '';
+  const sel = el('report-view-select');
+  if (sel) sel.innerHTML = '';
+  reportViewContent = null;
+}
+
+// 切回已載過的版本內容——用快取，**不重打 API**（同版本內容不會變）。
+function showLoadedReportVersion(version) {
+  const content = reportVersions.loaded[version];
+  if (content) fillReportViewSelect(content);
+}
+
 function showMoreReportVersions() {
   reportVersions.limit += REPORT_VERSION_PAGE;
   loadReportVersions();
@@ -3479,12 +3524,24 @@ function toggleReportVersion(version) {
   if (!item || !body) return;
   const opening = body.hasAttribute('hidden');
   if (opening) {
+    // ⚠ 先收合其他版本：同時展開兩版＝兩份報表混在畫面上，
+    // 正是 R9 改成選單制要解決的「不同報表混在一起」。
+    closeOtherReportVersions(safe);
     body.removeAttribute('hidden');
     item.classList.add('open');
-    loadReportVersionContent(version);
+    // 已載過的版本 loadReportVersionContent 會提前 return（不重打 API），
+    // 但畫面仍需切回該版內容，故在此明確重餵一次。
+    if (reportVersions.loaded[version]) {
+      showLoadedReportVersion(version);
+    } else {
+      loadReportVersionContent(version);
+    }
   } else {
     body.setAttribute('hidden', '');
     item.classList.remove('open');
+    // 收合＝報表本體跟著收起（使用者：「報表要能跟隨這裡收起來或出現」），
+    // 否則畫面會留著已收合版本的報表。
+    clearReportInlineView();
   }
   const caret = item.querySelector('.ver-caret');
   if (caret) caret.textContent = opening ? '▾' : '▸';
@@ -3506,9 +3563,18 @@ async function loadReportVersionContent(version) {
     // 報告全列出來——那正是使用者說的「不同報表混在一起」。這裡只放 PPT 清單，
     // 報表本體交給上方選單驅動的 #report-inline-view（見 renderReportViewer）。
     body.innerHTML = '<div class="report-ppt-list" id="report-ppt-list-' + safe + '"></div>';
-    // 最新版（第一個載入者）的 content 餵給選單；舊版展開時不搶走選單。
-    if (reportViewContent === null) fillReportViewSelect(content);
-    reportVersions.loaded[version] = true;
+    // 🔴 展開哪一版就顯示哪一版的報表（2026-07-30 使用者實機回報
+    // 「我重產報告後，舊的報表無法再出現」「報表要能跟隨這裡收起來或出現」）。
+    //
+    // 原本是 `if (reportViewContent === null)`——**只有首次載入才餵選單**，
+    // 展開舊版刻意不搶。於是使用者點舊版：容器展開了、裡面只有 PPT 清單，
+    // 報表本體仍停在最新版，看起來就是「舊的報表出不來」。
+    // 版本列管展開、#report-inline-view 管內容，兩個落點沒連動。
+    //
+    // ⚠ 仍維持「同時只顯示一份」（R9 定案，使用者說過「不同報表混在一起」很亂）：
+    // toggleReportVersion 會先收合其他版本，故這裡直接餵不會造成兩份並存。
+    fillReportViewSelect(content);
+    reportVersions.loaded[version] = content;
     loadReportVersionPptFiles(version);   // 非阻塞：報表內容先顯示，PPT 清單隨後填
   } catch (e) {
     body.innerHTML = '<div class="hint">載入報表內容失敗（' + escHtml(e.message) + '）。</div>';
@@ -4327,9 +4393,12 @@ async function runNarrative(scopeKey) {
   const version = reportViewContent && reportViewContent.version;
   if (!version) { alert('尚無報表版本，請先產製報表。'); return; }
   if (narrativeJobRunning(version)) { alert('此版本的解讀正在產生中，請稍候。'); return; }
-  const btn = el('btn-run-narrative');
-  const promptBox = el('narrative-prompt');
+  // ⚠ 只有「重產單張」才讀輸入框：那個框屬於目前檢視的那張報表，
+  // 整份重跑（scopeKey 未給）時讀它會把單張的需求誤當成全域需求。
+  const btn = el(scopeKey ? 'btn-run-narrative' : 'btn-run-all-narrative');
+  const promptBox = scopeKey ? el('narrative-prompt') : null;
   const instruction = (promptBox && promptBox.value.trim()) || '';
+  const btnLabel = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
   try {
     const payload = { task_type: 'ai:narrative', based_on_version: version };
@@ -4344,14 +4413,15 @@ async function runNarrative(scopeKey) {
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       alert('產生 AI 解讀失敗：' + (err.detail || ('HTTP ' + resp.status)));
-      if (btn) { btn.disabled = false; btn.textContent = '產生 AI 解讀'; }
+      // ⚠ 還原成按下前的字面，不寫死——同一支函式服務兩顆按鈕。
+      if (btn) { btn.disabled = false; btn.textContent = btnLabel; }
       return;
     }
     await fetchTasks();   // 右欄立刻看得到這筆任務進度
     if (btn) btn.textContent = '解讀產生中…';
   } catch (e) {
     alert('連線錯誤：' + e.message);
-    if (btn) { btn.disabled = false; btn.textContent = '產生 AI 解讀'; }
+    if (btn) { btn.disabled = false; btn.textContent = btnLabel; }
   }
 }
 

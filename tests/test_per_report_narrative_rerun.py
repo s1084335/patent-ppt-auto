@@ -189,3 +189,49 @@ class NarrativeChainWiringTests(unittest.TestCase):
         from backend.app.worker.ai_narrative_runner import run_narrative
 
         self.assertIn("report_keys", inspect.signature(run_narrative).parameters)
+
+
+class NarrativeUnifiedEntryTests(unittest.TestCase):
+    """統一入口：初次一次跑全部、重解讀各報表獨立（2026-07-30 使用者定案）。
+
+    使用者原話：「AI 解讀如果要統一入口要做成初次和重解讀都能啟動，
+    現在沒有 prompt 就無法啟動，初次通常是一次跑全部而重解讀是個報表獨立」。
+
+    ⚠ 查證：`instruction` 本來就選填（空字串不送），程式沒擋。
+    真正缺的是**「一次跑全部」的入口**——各報表下方只有單張重產鈕。
+
+    兩者走**同一支** `runNarrative`，差別只在有沒有帶 `report_keys`，不是兩條路。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = INDEX_HTML.read_text(encoding="utf-8")
+
+    def test_run_all_button_exists(self):
+        """檢視列要有「產生全部解讀」入口（初次用）。"""
+        self.assertIn("btn-run-all-narrative", self.html,
+                      "缺一次跑全部的入口，初次只能逐張點")
+
+    def test_run_all_omits_report_keys(self):
+        """整份重跑＝不帶 report_keys（runner 據此走原本的全份語意）。"""
+        self.assertIn('onclick="runNarrative()"', self.html,
+                      "全部解讀鈕應不帶 scopeKey")
+
+    def test_prompt_box_only_for_single(self):
+        """🔴 整份重跑不得讀單張的輸入框。
+
+        那個框屬於目前檢視的那張報表，整份重跑時讀它會把單張的需求
+        誤當成全域需求套用到所有報表。
+        """
+        body = _fn_narrative = re.search(
+            r"async function runNarrative\(.*?\n\}", self.html, re.S).group(0)
+        self.assertIn("scopeKey ? el('narrative-prompt') : null", body,
+                      "整份重跑仍會讀單張輸入框")
+
+    def test_button_label_restored_not_hardcoded(self):
+        """⚠ 還原按鈕字面不可寫死——同一支函式服務兩顆按鈕。"""
+        body = re.search(
+            r"async function runNarrative\(.*?\n\}", self.html, re.S).group(0)
+        self.assertNotIn("btn.textContent = '產生 AI 解讀'", body,
+                         "寫死字面會把「產生全部解讀」改名")
+        self.assertIn("btnLabel", body, "未保存原字面供還原")
