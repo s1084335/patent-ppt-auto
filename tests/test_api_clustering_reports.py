@@ -21,14 +21,24 @@ class ClusteringReportsConstantTests(unittest.TestCase):
     """不須 DB 的純常數驗證。"""
 
     def test_default_report_names_match_definitions(self):
-        """確認固定預設報表名單與定義順序完全一致。"""
+        """確認預設報表名單＝定義扣除「需市場資料」者，且順序一致。"""
         self.assertIsInstance(DEFAULT_REPORT_NAMES, tuple)
-        # 13 屬性統計 ＋ 3 分群報表＝16 種（2026-07-29 移除「最新受讓人排名」後）。
-        # ⚠ 移除理由：實測該報表只有 6 筆有值，其中 3 筆是同公司大小寫不同（非真轉讓），
-        # 資訊量已由 applicant_ranking 的「受讓取得」欄涵蓋（使用者定案 A 方案）。
+        # 13 屬性統計 ＋ 2 分群報表＝15 種。
+        # 沿革：2026-07-29 先移除「最新受讓人排名」（實測只有 6 筆有值，其中 3 筆是同公司
+        # 大小寫不同、非真轉讓；資訊量已由 applicant_ranking 的「受讓取得」欄涵蓋）→ 16 種；
+        # 同日再把「痛點四象限」排出預設批次（使用者定案「整個藏起來，等市場線做好再放
+        # 出來」——市場線未實作時痛點軸全是「待調查」，產出的圖看不出不完整）→ 15 種。
         # 數字鎖在這裡是刻意的——報表增減必須是有意識的決定，不能悄悄漂移。
-        self.assertEqual(len(DEFAULT_REPORT_NAMES), 16)
-        self.assertEqual(DEFAULT_REPORT_NAMES, tuple(REPORT_DEFINITIONS))
+        self.assertEqual(len(DEFAULT_REPORT_NAMES), 15)
+        # ⚠ 不再等於 tuple(REPORT_DEFINITIONS)：痛點四象限的**定義保留**（市場線做好後
+        # 只需解除過濾，不必重寫報表），只是不進預設批次。改驗「扣除需市場資料者相等」，
+        # 順序仍鎖住。
+        self.assertEqual(
+            DEFAULT_REPORT_NAMES,
+            tuple(name for name, definition in REPORT_DEFINITIONS.items()
+                  if not definition.requires_market_data))
+        self.assertIn("pain_point_quadrant", REPORT_DEFINITIONS,
+                      "定義不應刪除，只是暫不進預設批次")
 
     def test_get_report_definitions_returns_catalog(self):
         """GET /report-definitions 必須回傳完整報表目錄（前端探索入口）。"""

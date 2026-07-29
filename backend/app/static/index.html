@@ -2909,8 +2909,10 @@ function topicPatentsTableHtml(data, scope) {
 // 報表清單直接內嵌（來源：backend report_definitions；label_zh）。
 // 報表清單涵蓋引擎所有 active 報表（對齊 report_definitions.DEFAULT_REPORT_NAMES，
 // 含家族完整性明細 family_quality_detail），預設全部勾選（使用者可再取消個別項）。
-// 須列出 report_definitions 全部可用報表（含分群三支 cluster_topic_table／
-// opportunity_quadrant／pain_point_quadrant），不隱藏任一種現況支援的報表（2026-07-24）。
+// 須列出 report_definitions 全部可用報表（含分群 cluster_topic_table／
+// opportunity_quadrant）。2026-07-24「不隱藏任一種現況支援的報表」仍適用，但
+// 2026-07-29 使用者定案將 requires_market_data 者（痛點四象限）整個藏起來——
+// 那類報表在市場線實作前並非「現況支援」，缺資料時產出的圖看不出不完整。
 // 分群三支資料源＝分群定案，由 chart_runner 的 cluster section 出圖（run_report 對 cluster
 // 型回 skipped，但「報表種類」仍須列出，見 report_definitions 該三支的定義註解）。
 // 分群類報表：需要 workspace 範圍（分群一律以 workspace 為單位），全庫檢視下不適用。
@@ -2927,7 +2929,8 @@ const REPORT_TYPES = [
   ['cpc_main_distribution', 'CPC 主分類分布'],
   ['applicant_ranking', '主要申請人排名'],
   ['owner_ranking', '現專利權人排名'],
-  ['recent_assignee_ranking', '最新受讓人排名'],
+  // 最新受讓人排名已整合進 applicant_ranking（2026-07-29 使用者定案「整合就對了」）；
+  // 後端無此定義，留著會讓「全選」整批 400（unknown report_names）。
   ['applicant_year_matrix', '申請人年度分布矩陣'],
   ['owner_year_matrix', '專利權人年度布局矩陣'],
   ['lifecycle', '專利生命週期'],
@@ -2935,7 +2938,10 @@ const REPORT_TYPES = [
   ['family_quality_detail', '家族完整性明細'],
   ['cluster_topic_table', '主題分類統計表'],
   ['opportunity_quadrant', '機會四象限'],
-  ['pain_point_quadrant', '痛點四象限'],
+  // 痛點四象限（pain_point_quadrant）暫不列出：需市場資料，而市場線（上傳→AI 摘要→
+  // 使用者確認）尚未實作。2026-07-29 使用者定案「整個藏起來，等市場線做好再放出來」——
+  // 原行為是照產但痛點軸全標「待調查」，圖看不出不完整，匯進 PPT 會被誤讀成痛點都很低。
+  // 後端定義保留（DEFAULT_REPORT_NAMES 已排除），將來只需解除這裡與後端的過濾。
 ];
 // 預設全勾：首次進報表區時，把全部報表填入選取集合（含 family_quality_detail）。
 let reportSelectionInitialized = false;

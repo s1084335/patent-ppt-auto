@@ -326,7 +326,15 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
 }
 
 
-DEFAULT_REPORT_NAMES: tuple[str, ...] = tuple(REPORT_DEFINITIONS)
+# 預設批次排除「需市場資料」的報表（2026-07-29 使用者定案「整個藏起來」）。
+# 市場線（上傳→AI 摘要→使用者確認）尚未實作，缺資料時痛點軸全是「待調查」，
+# 產出的圖看不出不完整、匯進 PPT 會被誤讀。定義本身保留，市場線做好後移除本過濾即可。
+# ⚠ 前端 REPORT_TYPES 另有一份清單也要同步（同一概念兩處落點，由
+# tests/test_report_types_frontend_backend_parity.py 鎖住）。
+DEFAULT_REPORT_NAMES: tuple[str, ...] = tuple(
+    name for name, definition in REPORT_DEFINITIONS.items()
+    if not definition.requires_market_data
+)
 
 
 ALLOWED_FILTER_COLUMNS = {
