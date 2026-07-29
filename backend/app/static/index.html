@@ -427,6 +427,9 @@ table.data td.cell-wrap, table.data th.cell-wrap {
    兩欄各扣 0.5rem（gap 的一半），相加即為 100% - 1rem，正好容納 gap。 */
 .report-single-data { flex: 0 0 calc(45% - 0.5rem); min-width: 0; overflow-x: auto; }
 .report-single-chart { flex: 1 1 calc(55% - 0.5rem); min-width: 0; }
+/* 無圖表時表格用整寬（2026-07-30 使用者定案「這邊沒有圖表，那表格就可以用左右邊」）。
+   主題統計表改純數據表後右半邊空著，表格被壓在 45% 欄位擠成多行。 */
+.report-single-nochart .report-single-data { flex: 1 1 100%; width: 100%; }
 /* 年度矩陣專屬（layout="stacked"）：交叉表欄多列少，橫向需要整個寬度，
    與其他報表相反——使用者定「年度矩陣可以和其他種類報表的版面不同」。 */
 .report-single-stacked { flex-direction: column; }
@@ -4539,7 +4542,15 @@ function reportVariantTabsHtml(section, sectionIndex) {
 }
 
 function reportSingleHtml(section, option) {
-  const sourceField = (option && option.source_field) || exportPreview.clusterSourceField || DEFAULT_TOPIC_SOURCE_FIELD;
+  // 🔴 **使用者點選的通道優先**（2026-07-30 使用者實機回報「功效按不下去」）：
+  // 原本 `(option && option.source_field) || exportPreview.clusterSourceField`，
+  // 而 option.source_field 在建選單時就寫死成 DEFAULT_TOPIC_SOURCE_FIELD（技術），
+  // **永遠蓋掉**使用者點的值 → 點「功效」後 switchReportSourceField 確實更新了
+  // clusterSourceField，這行卻拿不到，畫面重繪仍是技術。
+  // ⚠ 靜默失敗：按鈕 active 樣式切了、資料沒換，比毫無反應更誤導。
+  // option.source_field 降為 fallback（僅在使用者尚未點過任何通道時生效）。
+  const sourceField = exportPreview.clusterSourceField
+    || (option && option.source_field) || DEFAULT_TOPIC_SOURCE_FIELD;
   const viewSection = sectionForReportView(section, option || {}, sourceField);
   const rows = viewSection.rows || [];
   let dataHtml = '<p class="hint" style="padding:0.3rem 0">尚無資料。</p>';
@@ -4601,9 +4612,15 @@ function reportSingleHtml(section, option) {
     + '<h3>' + escHtml(viewSection.title || '') + '</h3>'
     + (isClusterSection(section) ? reportSourceTabsHtml(sourceField) : '')
     + reportVariantTabsHtml(viewSection, (option && option.sectionIndex) || 0)
-    + '<div class="report-single' + (reportLayoutClass(viewSection) ? ' report-single-stacked' : '') + '">'
+    // 沒有圖表時表格用整寬（2026-07-30 使用者定案「這邊沒有圖表，那表格就可以用左右邊」）：
+    // 主題統計表改為純數據表後右半邊只顯示「尚無圖表」，表格卻被壓在 45% 寬、
+    // 欄位擠成多行難讀。⚠ 判斷用 shown.length 而非 chartHtml 字面——後者是佔位文字，
+    // 比對字串會在文案改動時失效。
+    + '<div class="report-single'
+    + (reportLayoutClass(viewSection) ? ' report-single-stacked' : '')
+    + (shown.length ? '' : ' report-single-nochart') + '">'
     + '<div class="report-single-data">' + dataHtml + '</div>'
-    + '<div class="report-single-chart">' + chartHtml + '</div>'
+    + (shown.length ? '<div class="report-single-chart">' + chartHtml + '</div>' : '')
     + '</div>'
     + '<div class="report-single-narrative"><strong>解讀</strong>' + narrativeHtml + '</div>'
     + (viewSection.note ? '<p class="hint" style="padding:0.5rem 0 0">'
