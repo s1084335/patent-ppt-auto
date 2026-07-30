@@ -857,9 +857,56 @@ class FrontendSkeletonTests(unittest.TestCase):
 
     def test_export_ppt_polls_and_shows_download_link(self):
         """PPT job 完成後（經輪詢／SSE 回流）顯示 .pptx 下載連結（打下載路由）。"""
+        body = self.js_function("pollExportPptJob")
         self.assertIn("pollExportPptJob", self.html)
         # 下載連結走 report-latest/ppt 下載路由。
-        self.assertIn("/report-latest/ppt/", self.html)
+        self.assertIn("/report-latest/ppt/", body)
+        self.assertIn("loadExportPptFiles(version)", body)
+
+    def test_export_ppt_uses_vendored_real_pptx_renderer(self):
+        """批次二：匯出報告 PPT 預覽必須用 repo 內 vendored renderer，不走 CDN。"""
+        self.assertIn("/static/vendor/pptx-renderer/aiden0z-pptx-renderer.browser.es.js", self.html)
+        self.assertIn("PptxViewer", self.html)
+        self.assertNotIn("unpkg.com/@aiden0z/pptx-renderer", self.html)
+
+    def test_vendored_pptx_renderer_asset_is_served(self):
+        """批次二：repo 內 renderer asset 必須能由 FastAPI static route 取到。"""
+        resp = client.get("/static/vendor/pptx-renderer/aiden0z-pptx-renderer.browser.es.js")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("PptxViewer", resp.text)
+
+    def test_export_preview_loads_ppt_files_and_renders_latest_pptx(self):
+        """批次二：選報表版本後，從 /ppt-files 取最新 .pptx 並以真實檔案預覽。"""
+        load_body = self.js_function("loadExportPreview")
+        ppt_body = self.js_function("loadExportPptFiles")
+        real_body = self.js_function("renderRealPptPreview")
+
+        self.assertIn("loadExportPptFiles", load_body)
+        self.assertIn("/reports/versions/", ppt_body)
+        self.assertIn("/ppt-files", ppt_body)
+        self.assertIn("renderRealPptPreview", ppt_body)
+        self.assertIn("download_url", real_body)
+
+    def test_export_preview_without_ppt_shows_generate_button(self):
+        """批次二：該版本沒有 PPT 時顯示「請先產生 PPT」與產生按鈕。"""
+        body = self.js_function("renderMissingPptState")
+
+        self.assertIn("請先產生 PPT", body)
+        self.assertIn("btn-generate-ppt", body)
+        self.assertIn("requestExportPpt", body)
+
+    def test_export_ppt_missing_narrative_chains_narrative_before_ppt(self):
+        """批次二：按產生 PPT 時，缺 narrative 要先送 ai:narrative，成功後才送 ai:report_ppt。"""
+        request_body = self.js_function("requestExportPpt")
+        chain_body = self.js_function("runNarrativeThenExportPpt")
+        poll_body = self.js_function("pollNarrativeThenExportPpt")
+
+        self.assertIn("exportReportHasNarratives", request_body)
+        self.assertIn("runNarrativeThenExportPpt", request_body)
+        self.assertIn("ai:narrative", chain_body)
+        self.assertIn("pollNarrativeThenExportPpt", chain_body)
+        self.assertIn("requestExportPpt({ skipNarrativeCheck: true })", poll_body)
 
     def test_export_ppt_preview_loads_layout_from_api(self):
         """PPT 頁面預覽必須從後端版型端點載入，不在前端重寫一份版型表。"""

@@ -383,6 +383,8 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .export-toolbar { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.9rem; }
 .export-toolbar .switch { display: flex; align-items: center; gap: 0.4rem; font-size: 0.88rem; }
 #export-preview { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.4rem 1.6rem; }
+.real-pptx-preview { max-height: calc(100vh - 15rem); overflow: auto; border: 1px solid var(--border); border-radius: 0.45rem; background: var(--panel-2); padding: 0.75rem; }
+.real-pptx-preview > * { margin-left: auto; margin-right: auto; }
 .ppt-preview-stack { display: grid; gap: 1.1rem; }
 .ppt-slide-wrap { border: 1px solid var(--border); border-radius: 0.45rem; background: var(--panel-2); padding: 0.85rem; }
 .ppt-slide-meta { display: flex; gap: 0.7rem; align-items: baseline; margin-bottom: 0.55rem; color: var(--text-muted); font-size: 0.82rem; }
@@ -3657,7 +3659,7 @@ function renderExport() {
     + '<button class="btn btn-outline" id="btn-export" onclick="triggerExport()">重新產製報表資料</button>'
     + '<span style="flex:1"></span>'
     + '<button class="btn btn-outline" id="btn-export-html" onclick="reviewExportOutput()">匯出單頁 HTML</button>'
-    + '<button class="btn btn-primary" id="btn-export-ppt" onclick="requestExportPpt()">輸出 PPT</button>'
+    + '<button class="btn btn-primary" id="btn-export-ppt" onclick="requestExportPpt()">產生 PPT</button>'
     + '</div>'
     + '<div id="export-job"></div>'
     + '<div id="export-ppt-result"></div>'
@@ -3686,10 +3688,15 @@ async function loadExportVersionOptions() {
 // 原稿 ai_original 保留供「還原 AI 原稿」；兩者分欄，人工稿永不覆蓋 AI 稿。
 // 限制：只存在本機瀏覽器，換裝置／清快取會遺失（未落 DB，詳見工作紀錄）。
 const EXPORT_EDIT_KEY_PREFIX = 'patent_export_edits:';
+const PPTX_RENDERER_ASSET = '/static/vendor/pptx-renderer/aiden0z-pptx-renderer.browser.es.js';
+let pptxRendererModule = null;
 const exportPreview = {
   version: null,       // 目前預覽的報表版本（localStorage key 用）
   content: null,       // GET /report-latest/content 的原始回應
   pptLayout: null,     // GET /reports/ppt-layout：PPT 頁面與 theme geometry 的唯一來源
+  pptFiles: [],
+  selectedPptFile: null,
+  pptViewer: null,
   editMode: false,
   clusterSourceField: DEFAULT_TOPIC_SOURCE_FIELD,
   edits: null,         // { cover: {...}, narratives: {key: manual_text}, notes: [{id,title,text,after}] }
@@ -3750,9 +3757,88 @@ async function loadExportPreview(version) {
     await loadPptLayout();
     const versionSel = el('export-version-select');
     if (versionSel && exportPreview.version) versionSel.value = exportPreview.version;
-    renderExportPreview();
+    await loadExportPptFiles(content.version);
   } catch (e) {
     wrap.innerHTML = '<div class="hint">載入報告內容失敗（' + escHtml(e.message) + '）。</div>';
+  }
+}
+
+async function ensurePptxRenderer() {
+  if (!pptxRendererModule) {
+    pptxRendererModule = await import(PPTX_RENDERER_ASSET);
+  }
+  return pptxRendererModule;
+}
+
+function pptDownloadUrl(file) {
+  const url = file && file.download_url ? String(file.download_url) : '';
+  if (!url) return '';
+  return url.startsWith('http') || url.startsWith(API) ? url : API + url;
+}
+
+async function loadExportPptFiles(version) {
+  const wrap = el('export-preview');
+  if (!wrap || !version) return;
+  wrap.innerHTML = '<div class="hint">載入 PPT 檔案中…</div>';
+  try {
+    const data = await getJson(API + '/reports/versions/' + encodeURIComponent(version) + '/ppt-files');
+    const files = data.ppt_files || [];
+    exportPreview.pptFiles = files;
+    exportPreview.selectedPptFile = files.length ? files[files.length - 1] : null;
+    if (!exportPreview.selectedPptFile) {
+      wrap.innerHTML = renderMissingPptState();
+      return;
+    }
+    await renderRealPptPreview(exportPreview.selectedPptFile);
+  } catch (e) {
+    wrap.innerHTML = '<div class="hint">載入 PPT 預覽失敗（' + escHtml(e.message) + '）。</div>';
+  }
+}
+
+function renderMissingPptState() {
+  return '<div class="placeholder-box">'
+    + '<strong>請先產生 PPT</strong>'
+    + '<p class="hint" style="padding:0.5rem 0 0">此報表版本尚未有 .pptx 檔案。按下後若尚無 AI 解讀，系統會先跑 narrative，再接續產生 PPT。</p>'
+    + '<div class="export-edit-actions" style="margin-top:0.7rem">'
+    + '<button class="btn btn-primary" id="btn-generate-ppt" onclick="requestExportPpt()">產生 PPT</button>'
+    + '</div>'
+    + '</div>';
+}
+
+async function renderRealPptPreview(file) {
+  const wrap = el('export-preview');
+  if (!wrap) return;
+  if (!file.download_url) {
+    wrap.innerHTML = '<div class="hint">PPT 檔案缺少下載路徑，無法預覽。</div>';
+    return;
+  }
+  const url = pptDownloadUrl(file);
+  const filename = file.filename || 'report.pptx';
+  wrap.innerHTML = '<div class="card">'
+    + '<div class="report-ppt-head">PPT 預覽：' + escHtml(filename) + '</div>'
+    + '<div class="export-edit-actions" style="margin:0.55rem 0 0.8rem">'
+    + '<a class="btn btn-outline" href="' + escHtml(url) + '" download="' + escHtml(filename) + '">下載 PPT</a>'
+    + '<button class="btn btn-outline btn-sm" onclick="loadExportPptFiles(exportPreview.version)">重新載入 PPT</button>'
+    + '</div>'
+    + '<div id="export-real-pptx-preview" class="real-pptx-preview"><div class="hint">渲染真實 .pptx 中…</div></div>'
+    + '</div>';
+  try {
+    const mod = await ensurePptxRenderer();
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const buffer = await resp.arrayBuffer();
+    const container = el('export-real-pptx-preview');
+    if (!container) return;
+    container.innerHTML = '';
+    exportPreview.pptViewer = await mod.PptxViewer.open(buffer, container, {
+      zipLimits: mod.RECOMMENDED_ZIP_LIMITS,
+      lazyMedia: true,
+      lazySlides: true,
+      listOptions: { windowed: true, initialSlides: 4, batchSize: 4, showSlideLabels: true },
+    });
+  } catch (e) {
+    const container = el('export-real-pptx-preview');
+    if (container) container.innerHTML = '<div class="hint">PPT 預覽渲染失敗（' + escHtml(e.message) + '）。仍可下載檔案實機檢查。</div>';
   }
 }
 
@@ -4948,9 +5034,73 @@ async function pollExportJob(jobId) {
 // ⚠ 預覽閘門不跳過：必須先有預覽內容（exportPreview.content）＝使用者已預覽，才送。
 // ⚠ workspace_id 放進 params（to_payload 會 exclude 具名 workspace_id）；報表版本以
 //    based_on_version 帶入（runner 據以解析報表版本目錄）。
-async function requestExportPpt() {
+function exportReportHasNarratives(content) {
+  content = content || exportPreview.content;
+  const sections = (content && content.sections) || [];
+  return sections.some(section =>
+    (section.variants || []).some(variant => narrativeAiOriginal(variant)));
+}
+
+async function runNarrativeThenExportPpt() {
+  const wrap = el('export-ppt-result');
+  const content = exportPreview.content;
+  const version = content && content.version;
+  if (!version) { alert('請先載入報表版本。'); return; }
+  if (narrativeJobRunning(version)) {
+    if (wrap) wrap.innerHTML = '<div class="hint">AI 解讀任務已在執行中；完成後會接續產生 PPT。</div>';
+    return;
+  }
+  try {
+    const created = await getJson(API + '/ai-tasks', {
+      method: 'POST',
+      headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ task_type: 'ai:narrative', based_on_version: version }),
+    });
+    if (wrap) wrap.innerHTML = '<div class="hint">尚無 AI 解讀，已先送出 narrative 任務（run '
+      + escHtml(created.run_id) + '）；成功後會接續產生 PPT。</div>';
+    await fetchTasks();
+    pollNarrativeThenExportPpt(created.run_id);
+  } catch (e) {
+    if (wrap) wrap.innerHTML = '<div class="card">啟動 narrative 失敗（' + escHtml(e.message) + '）。</div>';
+  }
+}
+
+async function pollNarrativeThenExportPpt(runId) {
+  const wrap = el('export-ppt-result');
+  async function tick() {
+    if (state.nav !== 'export') return;
+    try {
+      const t = await getJson(API + '/ai-tasks/' + runId, { headers: aiAuthHeaders() });
+      if (t.status === 'succeeded') {
+        if (wrap) wrap.innerHTML = '<div class="hint">AI 解讀完成，接續產生 PPT…</div>';
+        if (exportPreview.version) await loadExportPreview(exportPreview.version);
+        await requestExportPpt({ skipNarrativeCheck: true });
+        return;
+      }
+      if (['failed', 'cancelled'].includes(t.status)) {
+        if (wrap) wrap.innerHTML = '<div class="card">AI 解讀 ' + escHtml(t.status)
+          + '（' + escHtml(t.error_message || '無錯誤訊息') + '）。PPT 未送出。</div>';
+        return;
+      }
+      if (wrap) wrap.innerHTML = '<div class="hint">AI 解讀 #' + escHtml(runId) + ' '
+        + escHtml(t.status) + '　' + escHtml(t.current_stage || '') + '</div>';
+    } catch (e) {
+      if (wrap) wrap.innerHTML = '<div class="hint">查詢 narrative 任務失敗（' + escHtml(e.message) + '）。</div>';
+      return;
+    }
+    registerTimer(tick, 3000);
+  }
+  tick();
+}
+
+async function requestExportPpt(options) {
+  options = options || {};
   const wrap = el('export-ppt-result');
   if (!exportPreview.content) { alert('請先於下方預覽報告內容，再輸出 PPT。'); return; }
+  if (!options.skipNarrativeCheck && !exportReportHasNarratives(exportPreview.content)) {
+    await runNarrativeThenExportPpt();
+    return;
+  }
   const btn = el('btn-export-ppt');
   if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
   try {
@@ -4973,7 +5123,7 @@ async function requestExportPpt() {
   } catch (e) {
     if (wrap) wrap.innerHTML = '<div class="card">輸出 PPT 失敗（' + escHtml(e.message) + '）。</div>';
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '輸出 PPT'; }
+    if (btn) { btn.disabled = false; btn.textContent = '產生 PPT'; }
   }
 }
 // 輪詢 PPT 任務（GET /ai-tasks/{run_id}）；SSE 回流時 updateTaskFromEvent 也會推進，
@@ -4999,6 +5149,7 @@ async function pollExportPptJob(runId) {
             + '<p class="hint" style="padding:0.4rem 0 0">已填文案 '
             + escHtml(r.slots_filled) + '／' + escHtml(r.slots_total) + ' 槽；未填槽於該頁標「待確認」浮水印。</p>'
             + '</div>';
+          await loadExportPptFiles(version);
         } else {
           wrap.innerHTML = '<div class="hint">PPT 任務完成，但未回報檔名。</div>';
         }

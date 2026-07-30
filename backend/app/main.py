@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.app import settings
 from backend.app.db import report_artifact_store
@@ -46,6 +47,9 @@ app.include_router(patents.router, prefix=settings.API_V1_PREFIX)
 app.include_router(market.router, prefix=settings.API_V1_PREFIX)
 # 公司中文名草稿確認：補上三態流程的「確認」環節（原本產得出草稿但無處確認）。
 app.include_router(company_aliases.router, prefix=settings.API_V1_PREFIX)
+
+_STATIC_DIR = settings.PROJECT_ROOT / "backend" / "app" / "static"
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
 _REPORT_LATEST = settings.PROJECT_ROOT / "output" / "full_report_latest" / "index.html"
