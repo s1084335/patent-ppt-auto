@@ -76,8 +76,21 @@ _pool = None
 _pool_lock = threading.Lock()
 
 
+# psycopg 的 client 端設定，**不是 libpq 連線參數**。
+# ⚠ 這些 key 不能塞進 conninfo：`make_conninfo` 不認得，會靜默丟掉
+#   （實測 2026-07-30：conninfo 字串裡根本沒有 prepare_threshold）。
+#   池必須改用 `kwargs=` 才會套到每條借出的連線。
+_CLIENT_ONLY_KEYS = ("prepare_threshold",)
+
+
 def get_pool():
-    """取得全域 psycopg 連線池（首次呼叫時建立）。"""
+    """取得全域 psycopg 連線池（首次呼叫時建立）。
+
+    ⚠ 連線參數分兩類送：libpq 參數併成 conninfo，client 端設定走 `kwargs=`。
+    合在一起送會讓 `prepare_threshold=None` 遺失——直連路徑有防護、池路徑沒有，
+    直到同一句 SQL 執行第 6 次跨過預設門檻才炸（2026-07-30 job #136：
+    `upload_run_dir` 逐檔 INSERT 20+ 檔，撞 DuplicatePreparedStatement）。
+    """
     global _pool
     if _pool is None:
         with _pool_lock:
@@ -85,8 +98,13 @@ def get_pool():
                 from psycopg.conninfo import make_conninfo
                 from psycopg_pool import ConnectionPool
 
+                params = dict(get_connection_kwargs())
+                client_kwargs = {
+                    key: params.pop(key) for key in _CLIENT_ONLY_KEYS if key in params
+                }
                 _pool = ConnectionPool(
-                    conninfo=make_conninfo(**get_connection_kwargs()),
+                    conninfo=make_conninfo(**params),
+                    kwargs=client_kwargs,
                     min_size=1,
                     max_size=5,
                     open=True,
