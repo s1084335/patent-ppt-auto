@@ -908,60 +908,42 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("pollNarrativeThenExportPpt", chain_body)
         self.assertIn("requestExportPpt({ skipNarrativeCheck: true })", poll_body)
 
-    def test_export_ppt_preview_loads_layout_from_api(self):
-        """PPT 頁面預覽必須從後端版型端點載入，不在前端重寫一份版型表。"""
-        body = self.js_function("loadPptLayout")
+    # ── 2026-07-30 起：CSS 模擬版面移除，預覽一律走真實 .pptx 渲染 ──
+    # 原本這裡有五支測試斷言「模擬投影片渲染器存在」（loadPptLayout／
+    # renderPptPagePreviewHtml／pptSlideStyle／pptClusterSplitSlideHtml…）。
+    # ⚠ 使用者定案移除模擬版面後，那些測試的契約整個反轉——模擬版還留著早已
+    # 定案不印的浮水印，證明兩套版面必然分岔。舊測試改寫如下。
 
-        self.assertIn("fetch(API + '/reports/ppt-layout'", body)
-        self.assertIn("exportPreview.pptLayout", body)
-        self.assertNotRegex(self.html, r"const\s+PPT_(PAGES|LAYOUT)")
+    def test_export_preview_has_no_css_simulation(self):
+        """匯出預覽不得再有 CSS 模擬投影片——PPT 長相一律看真實 .pptx 渲染。"""
+        for gone in ("loadPptLayout", "renderPptPagePreviewHtml", "pptSlideStyle",
+                     "pptSlideBodyHtml", "pptClusterSplitSlideHtml"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(f"function {gone}", self.html,
+                                 f"模擬版面的 {gone} 仍在")
+        self.assertNotIn("exportPreview.pptLayout", self.html,
+                         "pptLayout state 仍在——前端已不需要版型座標")
 
-    def test_export_preview_uses_ppt_page_renderer(self):
-        """匯出預覽區改為 PPT 頁面視角，沿用 #export-preview，不開 modal 或新分頁。"""
+    def test_export_preview_renders_content_view(self):
+        """匯出預覽沿用 #export-preview，畫的是內容視圖（與報表種類頁共用）。"""
         body = self.js_function("renderExportPreview")
 
-        self.assertIn("renderPptPagePreviewHtml", body)
-        self.assertNotIn("renderReportContentHtml(exportPreview)", body)
+        self.assertIn("renderReportContentHtml(exportPreview)", body)
         self.assertIn("export-preview", self.html)
 
-    def test_ppt_page_renderer_uses_theme_geometry_and_api_pages(self):
-        """縮圖 renderer 只能吃 API layout.pages 與 theme.geometry，不可寫死頁面清單。"""
-        body = self.js_function("renderPptPagePreviewHtml")
+    def test_edit_mode_toggles_between_content_and_real_pptx(self):
+        """編輯模式開＝內容視圖可改；關＝回到真實 .pptx 預覽。"""
+        body = self.js_function("toggleExportEditMode")
 
-        self.assertIn("layout.pages", body)
-        self.assertIn("theme.geometry", body)
-        self.assertIn("data-page", body)
-        self.assertIn("ppt-watermark", body)
+        self.assertIn("renderExportPreview", body)
+        self.assertIn("loadExportPptFiles", body,
+                      "關閉編輯模式沒回到真實 PPT 預覽")
 
-    def test_ppt_preview_colors_come_from_theme(self):
-        """PPT 縮圖色票必須由 API theme.color 注入，避免前端與產檔風格分叉。"""
-        renderer = self.js_function("renderPptPagePreviewHtml")
-        slide_style = self.js_function("pptSlideStyle")
-
-        self.assertIn("theme.color", slide_style)
-        self.assertIn("pptSlideStyle(theme)", renderer)
+    def test_ppt_theme_colors_not_hardcoded_in_frontend(self):
+        """⚠ 沿用舊測試仍有效的部分：PPT 色票不得寫死在前端（防與產檔風格分叉）。"""
         for hardcoded in ("#1F5C3D", "#14402B", "#1C2B22", "#C24437", "#8FAA99", "#eaf2ed"):
             with self.subTest(hardcoded=hardcoded):
                 self.assertNotIn(hardcoded, self.html)
-        for fallback in ("'1F5C3D'", "'14402B'", "'1C2B22'", "'C24437'", "'8FAA99'", "'FDF3DD'"):
-            with self.subTest(fallback=fallback):
-                self.assertNotIn(fallback, slide_style)
-
-    def test_ppt_cluster_preview_has_source_tabs_and_left_data_right_chart(self):
-        """分群 PPT 預覽要能切技術/功效，且左側放數據、右側放圖表。"""
-        dispatcher = self.js_function("pptSlideBodyHtml")
-        cluster_body = self.js_function("pptClusterSplitSlideHtml")
-        tabs_body = self.js_function("pptClusterSourceTabsHtml")
-
-        self.assertIn("pptIsClusterPage", dispatcher)
-        self.assertIn("pptClusterSplitSlideHtml", dispatcher)
-        self.assertIn("pptClusterSourceTabsHtml", cluster_body)
-        self.assertIn("pptClusterSectionForSource", cluster_body)
-        self.assertIn("source_field", tabs_body)
-        self.assertIn("SOURCE_FIELDS.map", tabs_body)
-        self.assertLess(cluster_body.find("pptTableHtml"), cluster_body.find("pptVariantChartHtml"))
-        self.assertIn("ppt-cluster-split", self.html)
-        self.assertIn("ppt-cluster-tabs", self.html)
 
     def test_report_viewer_splits_cluster_reports_by_user_selected_reports(self):
         """報表檢視下拉要拆開正式報表，不可把三個分群報表都合成分群分析。"""
@@ -1020,24 +1002,27 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("exportPptApprovalOverrides", self.html)
         self.assertIn("approval_overrides", request_body)
 
-    def test_export_ppt_edit_mode_has_layout_select_and_drag(self):
-        """編輯模式可改版型、可拖曳座標，且仍從 API 的 kind 清單產生下拉。"""
-        renderer = self.js_function("renderPptPagePreviewHtml")
+    def test_export_ppt_drag_editing_removed(self):
+        """⚠ 拖曳定位（2026-07-29 已定案取消）與模擬版面的就地編輯一併移除。
 
-        self.assertIn("pptLayoutSelectHtml", renderer)
-        self.assertIn("attachPptDragHandlers", self.html)
-        self.assertIn("savePptLayoutOverride", self.html)
-        self.assertIn("savePptPositionOverride", self.html)
-        self.assertIn("layout.kinds", self.html)
-        self.assertIn("draggable-ppt-box", self.html)
+        舊測試斷言 attachPptDragHandlers／savePptPositionOverride 存在——
+        那是在假投影片上拖曳，模擬版面移除後整組退場。
+        編輯模式改建在真實 PPT 架構上（方案見 ppt-visual-rework-spec.md 四之二節）。
+        """
+        for gone in ("attachPptDragHandlers", "savePptPositionOverride",
+                     "savePptSlotEdit", "pptSlotText", "pptLayoutSelectHtml"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(f"function {gone}", self.html,
+                                 f"模擬版面的編輯機制 {gone} 仍在")
+        self.assertNotIn("draggable-ppt-box", self.html)
 
-    def test_export_ppt_slot_text_can_be_manually_edited(self):
-        """PPT 頁面文案槽在編輯模式下可改，人工稿優先於 AI 原稿。"""
-        slot_body = self.js_function("pptSlotText")
+    def test_export_edits_structure_kept_for_future_edit_mode(self):
+        """⚠ edits 資料結構保留——編輯模式改建在真實 PPT 上時沿用同一結構。"""
+        default_body = self.js_function("exportEditsDefault")
 
-        self.assertIn("exportPreview.edits.slots", slot_body)
-        self.assertIn("savePptSlotEdit", self.html)
-        self.assertIn("data-ppt-slot", self.html)
+        for key in ("slots", "layout_overrides", "position_overrides"):
+            with self.subTest(key=key):
+                self.assertIn(key, default_body)
 
     # ── E3. 市場×專利同列並排（對標範例第 9 頁；報表顯示區同一 flex row） ──
 

@@ -152,15 +152,16 @@ class ExportVersionSelectTests(unittest.TestCase):
         self.assertIn("/reports/versions/", body,
                       "loadExportPreview 應能載入指定版本的 content")
 
-    def test_layout_fetch_carries_version(self):
-        """版型端點要帶版本——展開依 report_data，不帶版本＝拿錯版的頁面。"""
+    def test_layout_endpoint_not_fetched(self):
+        """⚠ 2026-07-30 起前端不再拉版型端點——CSS 模擬版面移除後沒有消費者。
+
+        舊測試驗「loadPptLayout 帶 version」；模擬版面移除後該函式整支退場，
+        本測試改釘「前端不得再 fetch /reports/ppt-layout」。
+        ⚠ 後端端點本身先留著（若第二步編輯模式選 E2 疊層式，座標還會用到）。
+        """
         html = INDEX_HTML.read_text(encoding="utf-8")
-        # 驗 loadPptLayout 函式本體（query 在 fetch 前一行組字串，鎖單行會假失敗；
-        # 鎖整檔又會被說明註解餵飽——取函式本體恰好）。
-        body = _js_function(html, "loadPptLayout")
-        self.assertIn("version=", body,
-                      "layout 請求沒帶 version，預覽頁面與所選版本對不上")
-        self.assertIn("exportPreview.version", body)
+        self.assertNotIn("'/reports/ppt-layout'", html,
+                         "前端仍在拉版型端點——模擬版面已移除，沒有消費者")
 
 
 if __name__ == "__main__":

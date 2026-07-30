@@ -385,27 +385,7 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 #export-preview { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.4rem 1.6rem; }
 .real-pptx-preview { max-height: calc(100vh - 15rem); overflow: auto; border: 1px solid var(--border); border-radius: 0.45rem; background: var(--panel-2); padding: 0.75rem; }
 .real-pptx-preview > * { margin-left: auto; margin-right: auto; }
-.ppt-preview-stack { display: grid; gap: 1.1rem; }
-.ppt-slide-wrap { border: 1px solid var(--border); border-radius: 0.45rem; background: var(--panel-2); padding: 0.85rem; }
-.ppt-slide-meta { display: flex; gap: 0.7rem; align-items: baseline; margin-bottom: 0.55rem; color: var(--text-muted); font-size: 0.82rem; }
-.ppt-slide-meta strong { color: var(--text); }
-.ppt-slide { position: relative; width: min(100%, 820px); aspect-ratio: 13.333 / 7.5; overflow: hidden; background: var(--ppt-surface); border: 1px solid var(--border); color: var(--ppt-ink); box-shadow: 0 4px 14px rgba(0,0,0,.08); }
-.ppt-slide .ppt-box { position: absolute; overflow: hidden; }
-.ppt-slide .ppt-cover { background: var(--ppt-brand-dark); color: var(--ppt-on-dark); }
-.ppt-slide .ppt-title { font-weight: 700; font-size: clamp(0.9rem, 2vw, 1.25rem); line-height: 1.2; }
-.ppt-slide .ppt-subtitle { color: var(--ppt-brand-deep); font-size: clamp(0.56rem, 1vw, 0.76rem); line-height: 1.25; }
-.ppt-slide .ppt-page-no { color: var(--ppt-footnote); font-size: 0.72rem; text-align: right; }
-.ppt-slide .ppt-panel { border: 1px solid var(--ppt-line-soft); background: var(--ppt-panel-bg); border-radius: 0.12rem; padding: 0.34rem; font-size: clamp(0.48rem, 0.95vw, 0.7rem); line-height: 1.35; }
-.ppt-slide .ppt-chart { display: flex; align-items: center; justify-content: center; background: var(--ppt-chart-bg); border: 1px solid var(--ppt-line-soft); }
-.ppt-slide .ppt-chart img { max-width: 100%; max-height: 100%; object-fit: contain; }
-.ppt-slide .ppt-table table { width: 100%; border-collapse: collapse; font-size: 0.56rem; }
-.ppt-slide .ppt-table th, .ppt-slide .ppt-table td { border-bottom: 1px solid var(--ppt-line-soft); padding: 0.12rem 0.18rem; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
-.ppt-slide .ppt-table th { background: var(--ppt-accent-soft); color: var(--ppt-brand-deep); }
-.ppt-slide .ppt-watermark { position: absolute; right: 3%; top: 3%; color: var(--ppt-watermark); border: 1px solid var(--ppt-watermark); padding: 0.1rem 0.35rem; font-size: 0.65rem; transform: rotate(-8deg); background: var(--ppt-watermark-bg); }
-.ppt-layout-select { border: 1px solid var(--border); border-radius: 0.3rem; background: var(--panel); color: var(--text); padding: 0.18rem 0.35rem; font-size: 0.78rem; }
-.ppt-slide .draggable-ppt-box { outline: 1px dashed rgba(15,52,96,.45); cursor: move; }
-.ppt-slide .draggable-ppt-box.dragging { outline: 2px solid #1a6bc4; z-index: 6; }
-.ppt-slide .ppt-slot-edit { width: 100%; height: 100%; min-height: 0; resize: none; font-size: inherit; line-height: inherit; border: 1px solid var(--ppt-line-strong); background: var(--ppt-edit-bg); color: var(--ppt-ink); }
+/* ⚠ 2026-07-30 移除 .ppt-slide 系列 CSS（25 條）：那是用 HTML/CSS 模擬 PPT 版面，與批次 2 導入的真實 .pptx 渲染（.real-pptx-preview）並存必然分岔——模擬版還留著早已定案不印的浮水印即為證據。編輯模式改用 renderReportContentHtml 的內容視圖。 */
 /* 報表種類頁標題列橫排（2026-07-27 R7／R8）：標題｜檢視選單｜市場 PDF（收合）。
    原本 15 個勾選框＋固定展開的市場區塊佔滿整頁，看不到報表本身。 */
 .reports-header { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.8rem; }
@@ -461,18 +441,14 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .report-single-narrative { margin-top: 0.9rem; padding-top: 0.8rem; border-top: 1px solid var(--border); }
 .report-single-narrative .empty { color: var(--text-muted); font-size: 0.86rem; }
 /* 報表種類頁：產製完成後就地顯示完整報表（與匯出工作台共用卡片樣式）。 */
-.report-source-tabs, .ppt-slide .ppt-cluster-tabs { display: flex; gap: 0.45rem; flex-wrap: wrap; margin: 0 0 0.7rem; }
-.report-source-tab, .ppt-slide .ppt-cluster-tab {
+.report-source-tabs { display: flex; gap: 0.45rem; flex-wrap: wrap; margin: 0 0 0.7rem; }
+.report-source-tab {
   border: 1px solid var(--border); border-radius: 0.35rem; background: var(--panel-2);
   color: var(--text); padding: 0.28rem 0.65rem; cursor: pointer; font-size: 0.84rem;
 }
-.report-source-tab.active, .ppt-slide .ppt-cluster-tab.active {
+.report-source-tab.active {
   border-color: var(--accent); background: var(--accent); color: var(--panel);
 }
-.ppt-slide .ppt-cluster-tabs { margin-bottom: 0.22rem; gap: 0.18rem; }
-.ppt-slide .ppt-cluster-tab { padding: 0.08rem 0.28rem; font-size: 0.52rem; border-color: var(--ppt-line-soft); background: var(--ppt-panel-bg); color: var(--ppt-ink); }
-.ppt-slide .ppt-cluster-tab.active { border-color: var(--ppt-brand-dark); background: var(--ppt-brand-dark); color: var(--ppt-on-dark); }
-.ppt-slide .ppt-cluster-split table { font-size: 0.46rem; }
 .report-chart-frame { width: 100%; min-height: 420px; border: 1px solid var(--border); border-radius: 0.4rem; background: var(--panel); }
 .ppt-chart iframe { width: 100%; height: 100%; border: 0; background: var(--ppt-panel-bg); }
 #report-inline-view:not(:empty) { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.4rem 1.6rem; margin-top: 0.9rem; }
@@ -3819,7 +3795,6 @@ let pptxRendererModule = null;
 const exportPreview = {
   version: null,       // 目前預覽的報表版本（localStorage key 用）
   content: null,       // GET /report-latest/content 的原始回應
-  pptLayout: null,     // GET /reports/ppt-layout：PPT 頁面與 theme geometry 的唯一來源
   pptFiles: [],
   selectedPptFile: null,
   pptViewer: null,
@@ -3878,9 +3853,6 @@ async function loadExportPreview(version) {
     exportPreview.content = content;
     exportPreview.version = content.version;
     exportPreview.edits = loadExportEdits(content.version);
-    // 版面依版本的 report_data 展開，換版本必須重取——留舊快取＝頁碼對不上新版。
-    exportPreview.pptLayout = null;
-    await loadPptLayout();
     const versionSel = el('export-version-select');
     if (versionSel && exportPreview.version) versionSel.value = exportPreview.version;
     await loadExportPptFiles(content.version);
@@ -3968,22 +3940,17 @@ async function renderRealPptPreview(file) {
   }
 }
 
-async function loadPptLayout() {
-  // 前端不得自建版型清單；PPT 頁面、kind 與座標全由後端讀 theme.json/build_ppt.py 後提供。
-  if (exportPreview.pptLayout) return exportPreview.pptLayout;
-  // 帶版本：頁面展開依該版 report_data（build_ppt 同一份實作），不帶＝拿最新版
-  // 的頁面配當前版本的內容，頁碼與覆寫全部錯位。
-  const q = exportPreview.version ? '?version=' + encodeURIComponent(exportPreview.version) : '';
-  const resp = await fetch(API + '/reports/ppt-layout' + q);
-  if (!resp.ok) throw new Error('PPT 版型載入失敗 HTTP ' + resp.status);
-  exportPreview.pptLayout = await resp.json();
-  return exportPreview.pptLayout;
-}
 
 function toggleExportEditMode() {
   const box = el('export-edit-toggle');
   exportPreview.editMode = !!(box && box.checked);
-  renderExportPreview();
+  // 編輯模式＝可編輯的內容視圖（renderReportContentHtml）；關閉＝回到真實 .pptx 預覽。
+  // ⚠ 2026-07-30 起不再有 CSS 模擬投影片——編輯的是「內容」，PPT 長相看真實渲染。
+  if (exportPreview.editMode) {
+    renderExportPreview();
+  } else if (exportPreview.version) {
+    loadExportPptFiles(exportPreview.version);
+  }
 }
 
 // 唯讀 view：給不需編輯的呈現場合（報表種類頁內嵌顯示）用，與工作台共用同一組
@@ -4010,48 +3977,21 @@ function renderReportContentHtml(view) {
 }
 
 // 依 content + 人工編輯渲染整份報告；編輯模式開時三類欄位換成可編輯控件。
+// ⚠ 2026-07-30 起這裡**不再畫模擬投影片**：PPT 長什麼樣一律看 renderRealPptPreview()
+// 的真實 .pptx。本函式服務編輯模式的內容修改回顯與「匯出單頁 HTML」那條路，
+// 與報表種類頁共用 renderReportContentHtml，不各寫一套。
 function renderExportPreview() {
   const wrap = el('export-preview');
   if (!wrap || !exportPreview.content) return;
-  if (!exportPreview.pptLayout) {
-    wrap.innerHTML = '<div class="hint">PPT 版型尚未載入。</div>';
-    return;
-  }
-  wrap.innerHTML = renderPptPagePreviewHtml(exportPreview.content, exportPreview.pptLayout);
-  attachPptDragHandlers();
+  wrap.innerHTML = renderReportContentHtml(exportPreview);
 }
 
-function renderPptPagePreviewHtml(content, layout) {
-  const theme = layout.theme || {};
-  const pages = layout.pages || [];
-  const slide = theme.slide || { width_in: 13.333, height_in: 7.5 };
-  const geometry = theme.geometry || {};
-  return '<div class="ppt-preview-stack">'
-    + pages.map(function (page) {
-      const effectivePage = effectivePptPage(page);
-      const missing = pptMissingReportKeys(content, effectivePage);
-      return '<section class="ppt-slide-wrap" data-page="' + effectivePage.page
-        + '" data-layout-kind="' + escHtml(effectivePage.kind) + '">'
-        + '<div class="ppt-slide-meta"><strong>第 ' + page.page + ' 頁</strong>'
-        + '<span>' + escHtml(effectivePage.title || '') + '</span>'
-        + '<span class="badge-plan">' + escHtml(effectivePage.kind) + '</span>'
-        + pptLayoutSelectHtml(layout, page) + '</div>'
-        + '<div class="ppt-slide" style="' + pptSlideStyle(theme) + '">'
-        + pptSlideBodyHtml(content, theme, effectivePage)
-        + (missing.length ? '<div class="ppt-watermark">缺資料：'
-          + escHtml(missing.join('、')) + '</div>' : '')
-        + '</div></section>';
-    }).join('')
-    + '</div>';
-}
 
-function effectivePptPage(page) {
-  const overrides = exportPreview.edits && exportPreview.edits.layout_overrides
-    ? exportPreview.edits.layout_overrides : {};
-  const kind = overrides[String(page.page)];
-  return Object.assign({}, page, kind ? { kind: kind } : {});
-}
 
+// ⚠ 2026-07-30 移除模擬版面渲染 38 支（loadPptLayout、pptCoverSlideHtml、attachPptDragHandlers…）：
+// 那是在瀏覽器用 HTML/CSS「畫一份假投影片」，與真實 .pptx 渲染並存必然分岔。
+// 編輯模式改用 renderReportContentHtml 的內容視圖；方案見 ppt-visual-rework-spec.md 四之二節。
+// ⚠ 下面這支不是模擬版面：requestExportPpt() 送 approval_overrides 要用，故保留。
 function exportPptApprovalOverrides() {
   const edits = exportPreview.edits || exportEditsDefault();
   return {
@@ -4061,396 +4001,40 @@ function exportPptApprovalOverrides() {
   };
 }
 
-function pptLayoutSelectHtml(layout, page) {
-  if (!exportPreview.editMode) return '';
-  const kinds = layout.kinds || [];
-  const current = effectivePptPage(page).kind;
-  return '<select class="ppt-layout-select" onchange="savePptLayoutOverride(' + page.page + ', this.value)">'
-    + kinds.map(kind => '<option value="' + escHtml(kind) + '"'
-      + (kind === current ? ' selected' : '') + '>' + escHtml(kind) + '</option>').join('')
-    + '</select>';
-}
 
-function savePptLayoutOverride(pageNo, kind) {
-  exportPreview.edits.layout_overrides[String(pageNo)] = kind;
-  saveExportEdits();
-  renderExportPreview();
-}
 
-function pptSlideStyle(theme) {
-  const slide = (theme && theme.slide) || {};
-  const color = (theme && theme.color) || {};
-  const vars = {
-    '--ppt-brand-dark': pptColorValue(color.brand_dark),
-    '--ppt-brand-deep': pptColorValue(color.brand_deep),
-    '--ppt-accent-soft': pptColorValue(color.accent_soft),
-    '--ppt-ink': pptColorValue(color.ink),
-    '--ppt-on-dark': pptColorValue(color.on_dark),
-    '--ppt-footnote': pptColorValue(color.footnote),
-    '--ppt-surface': pptColorValue(color.surface),
-    '--ppt-watermark': pptColorValue(color.watermark || color.alert),
-    '--ppt-panel-bg': pptAlphaColor(color.surface, 0.94),
-    '--ppt-chart-bg': pptAlphaColor(color.surface, 0.9),
-    '--ppt-watermark-bg': pptAlphaColor(color.surface, 0.86),
-    '--ppt-line-soft': pptAlphaColor(color.brand_dark, 0.18),
-    '--ppt-line-strong': pptAlphaColor(color.brand_dark, 0.42),
-    '--ppt-edit-bg': pptAlphaColor(color.surface, 0.92),
-  };
-  return 'aspect-ratio:' + Number(slide.width_in || 13.333) + '/'
-    + Number(slide.height_in || 7.5) + ';' + Object.keys(vars).map(function (name) {
-      return name + ':' + vars[name];
-    }).join(';');
-}
 
-function pptColorValue(value) {
-  const raw = String(value || '').trim().replace(/^#/, '');
-  return raw ? '#' + raw : 'currentColor';
-}
 
-function pptAlphaColor(value, alpha) {
-  const raw = String(value || '').trim().replace(/^#/, '');
-  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return pptColorValue(raw);
-  const r = parseInt(raw.slice(0, 2), 16);
-  const g = parseInt(raw.slice(2, 4), 16);
-  const b = parseInt(raw.slice(4, 6), 16);
-  return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
-}
 
-function pptBoxStyle(theme, left, top, width, height) {
-  const slide = theme.slide || {};
-  const w = Number(slide.width_in || 13.333);
-  const h = Number(slide.height_in || 7.5);
-  return 'left:' + ((left / w) * 100).toFixed(3) + '%;top:' + ((top / h) * 100).toFixed(3)
-    + '%;width:' + ((width / w) * 100).toFixed(3) + '%;height:' + ((height / h) * 100).toFixed(3) + '%';
-}
 
-function pptComponentKey(pageNo, component) {
-  return String(pageNo) + '.' + component;
-}
 
-function pptPositionOverride(pageNo, component) {
-  const edits = exportPreview.edits || exportEditsDefault();
-  return (edits.position_overrides || {})[pptComponentKey(pageNo, component)] || null;
-}
 
-function pptBoxAttrs(theme, page, component, left, top, width, height, classes) {
-  const override = pptPositionOverride(page.page, component) || {};
-  const box = {
-    left_in: Number(override.left_in ?? left),
-    top_in: Number(override.top_in ?? top),
-    width_in: Number(override.width_in ?? width),
-    height_in: Number(override.height_in ?? height),
-  };
-  const draggable = exportPreview.editMode ? ' draggable-ppt-box' : '';
-  return 'class="ppt-box ' + escHtml(classes || '') + draggable + '"'
-    + ' data-page="' + page.page + '" data-component="' + escHtml(component) + '"'
-    + ' data-left-in="' + box.left_in + '" data-top-in="' + box.top_in + '"'
-    + ' data-width-in="' + box.width_in + '" data-height-in="' + box.height_in + '"'
-    + ' style="' + pptBoxStyle(theme, box.left_in, box.top_in, box.width_in, box.height_in) + '"';
-}
 
-function pptSlideBodyHtml(content, theme, page) {
-  const geometry = theme.geometry || {};
-  if (page.kind === 'cover') return pptCoverSlideHtml(content, theme, page);
-  const header = pptHeaderHtml(theme, page);
-  if (page.kind === 'direction') return header + pptDirectionSlideHtml(content, theme, page);
-  if (pptIsClusterPage(content, page)) return header + pptClusterSplitSlideHtml(content, theme, page);
-  if (page.kind === 'table') return header + pptTableSlideHtml(content, theme, page);
-  if (page.kind === 'table_with_narrative') return header + pptTableNarrativeSlideHtml(content, theme, page);
-  if (page.kind === 'narrative_only') return header + pptNarrativeOnlySlideHtml(content, theme, page);
-  return header + pptChartNarrativeSlideHtml(content, theme, page);
-}
 
-function pptHeaderHtml(theme, page) {
-  const geometry = theme.geometry || {};
-  const header = geometry.header || {};
-  const titleStyle = pptBoxStyle(theme, geometry.margin_in || 0.5, geometry.title_top_in || 0.28,
-    header.title_width_in || 11, header.title_height_in || 0.5);
-  const subtitleStyle = pptBoxStyle(theme, geometry.margin_in || 0.5, geometry.subtitle_top_in || 0.8,
-    header.subtitle_width_in || 12.4, header.subtitle_height_in || 0.35);
-  const noStyle = pptBoxStyle(theme, geometry.page_number_left_in || 12.5, geometry.title_top_in || 0.28,
-    header.page_number_width_in || 0.6, header.page_number_height_in || 0.4);
-  return '<div ' + pptBoxAttrs(theme, page, 'title', geometry.margin_in || 0.5, geometry.title_top_in || 0.28,
-      header.title_width_in || 11, header.title_height_in || 0.5, 'ppt-title') + '>'
-    + escHtml(page.title || '') + '</div>'
-    + '<div ' + pptBoxAttrs(theme, page, 'subtitle', geometry.margin_in || 0.5, geometry.subtitle_top_in || 0.8,
-      header.subtitle_width_in || 12.4, header.subtitle_height_in || 0.35, 'ppt-subtitle') + '>'
-    + escHtml(page.subtitle || '') + '</div>'
-    + '<div ' + pptBoxAttrs(theme, page, 'page_number', geometry.page_number_left_in || 12.5, geometry.title_top_in || 0.28,
-      header.page_number_width_in || 0.6, header.page_number_height_in || 0.4, 'ppt-page-no') + '>'
-    + page.page + '</div>';
-}
 
-function pptCoverSlideHtml(content, theme, page) {
-  const geometry = theme.geometry || {};
-  const cover = geometry.cover || {};
-  const title = (exportPreview.edits.cover && exportPreview.edits.cover.title) || '專利分析報告';
-  const scope = (exportPreview.edits.cover && exportPreview.edits.cover.scope_label) || content.scope || '（未填分析範圍）';
-  const count = content.patent_count === undefined || content.patent_count === null ? '（未填）' : content.patent_count;
-  const titleStyle = pptBoxStyle(theme, cover.title_left_in, cover.title_top_in, cover.title_width_in, cover.title_height_in);
-  const periodStyle = pptBoxStyle(theme, cover.period_left_in, cover.period_top_in, cover.period_width_in, cover.period_height_in);
-  const statStyle = pptBoxStyle(theme, cover.stat_left_in, cover.stat_top_in, cover.stat_width_in, cover.stat_height_in);
-  return '<div class="ppt-box ppt-cover" style="' + pptBoxStyle(theme, 0, 0, theme.slide.width_in, theme.slide.height_in) + '"></div>'
-    + '<div ' + pptBoxAttrs(theme, page, 'cover.title', cover.title_left_in, cover.title_top_in,
-      cover.title_width_in, cover.title_height_in, 'ppt-title') + '>'
-    + pptSlotContentHtml('cover.title', title) + '</div>'
-    + '<div ' + pptBoxAttrs(theme, page, 'cover.period', cover.period_left_in, cover.period_top_in,
-      cover.period_width_in, cover.period_height_in, '') + '>'
-    + escHtml(scope) + '</div>'
-    + '<div ' + pptBoxAttrs(theme, page, 'cover.stats', cover.stat_left_in, cover.stat_top_in,
-      cover.stat_width_in, cover.stat_height_in, 'ppt-panel') + '>'
-    + '<strong>' + escHtml(count) + '</strong><br>專利件數<br>' + escHtml(content.version || '') + '</div>';
-}
 
-function pptDirectionSlideHtml(content, theme, page) {
-  const geometry = theme.geometry || {};
-  const g = geometry.direction || {};
-  const text = pptSlotText(content, page, page.slots && page.slots[0]);
-  return '<div ' + pptBoxAttrs(theme, page, 'direction.body', g.body_text_left_in,
-    g.body_text_top_in, g.body_text_width_in, g.body_text_height_in, 'ppt-panel')
-    + '>' + pptSlotContentHtml(page.slots && page.slots[0], text) + '</div>';
-}
 
-function pptChartNarrativeSlideHtml(content, theme, page) {
-  const geometry = theme.geometry || {};
-  const g = geometry.chart_with_narrative || {};
-  const top = geometry.body_top_in || 1.35;
-  const chart = pptChartForPage(content, page);
-  const narrative = pptSlotText(content, page, page.slots && page.slots[0]);
-  const chartHtml = chart
-    ? '<img src="' + escHtml(chart) + '" alt="' + escHtml(page.title || '') + '">'
-    : '<span>圖表佔位</span>';
-  return '<div ' + pptBoxAttrs(theme, page, 'chart', g.image_left_in, top,
-    g.image_width_in, g.placeholder_band_height_in, 'ppt-chart') + '>' + chartHtml + '</div>'
-    + '<div ' + pptBoxAttrs(theme, page, 'narrative', g.text_left_in,
-      top + g.text_top_offset_in, g.text_width_in, g.text_height_in, 'ppt-panel') + '>'
-    + pptSlotContentHtml(page.slots && page.slots[0], narrative) + '</div>';
-}
 
-function pptTableSlideHtml(content, theme, page) {
-  const geometry = theme.geometry || {};
-  const g = geometry.table || {};
-  return '<div ' + pptBoxAttrs(theme, page, 'table', g.left_in, geometry.body_top_in || 1.35,
-    g.width_in, g.height_in, 'ppt-panel ppt-table') + '>' + pptTableHtml(pptFirstSection(content, page)) + '</div>';
-}
 
-function pptTableNarrativeSlideHtml(content, theme, page) {
-  const geometry = theme.geometry || {};
-  const g = geometry.table_with_narrative || {};
-  const top = geometry.body_top_in || 1.35;
-  return '<div ' + pptBoxAttrs(theme, page, 'table', geometry.margin_in || 0.5, top,
-    g.table_width_in, g.table_height_in, 'ppt-panel ppt-table') + '>' + pptTableHtml(pptFirstSection(content, page)) + '</div>'
-    + '<div ' + pptBoxAttrs(theme, page, 'narrative', g.text_left_in,
-      top + g.text_top_offset_in, g.text_width_in, g.text_height_in, 'ppt-panel') + '>'
-    + pptSlotContentHtml(page.slots && page.slots[0], pptSlotText(content, page, page.slots && page.slots[0])) + '</div>';
-}
 
-function pptIsClusterPage(content, page) {
-  return pptSectionsForPage(content, page).some(section => isClusterSection(section));
-}
 
-function pptClusterSplitSlideHtml(content, theme, page) {
-  const geometry = theme.geometry || {};
-  const g = geometry.chart_with_narrative || {};
-  const top = geometry.body_top_in || 1.35;
-  const sourceField = exportPreview.clusterSourceField || DEFAULT_TOPIC_SOURCE_FIELD;
-  const section = pptClusterSectionForSource(content, page, sourceField);
-  const variant = pptClusterVariantForSource(section, sourceField);
-  return '<div ' + pptBoxAttrs(theme, page, 'table', g.image_left_in, top,
-    g.image_width_in, g.placeholder_band_height_in, 'ppt-panel ppt-table ppt-cluster-split') + '>'
-    + pptClusterSourceTabsHtml(sourceField)
-    + pptTableHtml(section) + '</div>'
-    + '<div ' + pptBoxAttrs(theme, page, 'chart', g.text_left_in, top,
-      g.text_width_in, g.placeholder_band_height_in, 'ppt-chart') + '>'
-    + pptVariantChartHtml(variant, page) + '</div>';
-}
 
-function pptClusterSourceTabsHtml(activeSourceField) {
-  return '<div class="ppt-cluster-tabs">'
-    + SOURCE_FIELDS.map(([source_field, label]) =>
-      '<button type="button" class="ppt-cluster-tab' + (source_field === activeSourceField ? ' active' : '')
-      + '" onclick="switchPptClusterSource(\'' + escHtml(source_field) + '\')">' + escHtml(label) + '</button>'
-    ).join('')
-    + '</div>';
-}
 
-function switchPptClusterSource(sourceField) {
-  exportPreview.clusterSourceField = sourceField || DEFAULT_TOPIC_SOURCE_FIELD;
-  renderExportPreview();
-}
 
-function pptClusterSectionForSource(content, page, sourceField) {
-  const section = pptSectionsForPage(content, page).find(section => isClusterSection(section))
-    || ((content.sections || []).find(section => isClusterSection(section)));
-  if (!section) return null;
-  const rows = (section.rows || []).filter(row => row.source_field === sourceField);
-  return Object.assign({}, section, { rows: rows.length ? rows : (section.rows || []) });
-}
 
-function pptClusterVariantForSource(section, sourceField) {
-  if (!section) return null;
-  const slug = sourceField === 'effect_summary' ? 'effect' : 'tech';
-  return (section.variants || []).find(v => clusterVariantMatchesReport(v, 'opportunity_quadrant') && clusterVariantMatchesSource(v, sourceField))
-    || (section.variants || []).find(v => clusterVariantMatchesReport(v, 'pain_point_quadrant') && clusterVariantMatchesSource(v, sourceField))
-    || (section.variants || []).find(v => String(v.variant_key || '').includes(slug) || String(v.file || '').includes(slug))
-    || (section.variants || []).find(v => v.chart_url)
-    || null;
-}
 
-function pptVariantChartHtml(variant, page) {
-  // ⚠ 2026-07-28：這行原本是編碼壞掉的字串（含 U+E87F/U+E741 兩個 Private Use
-  // Area 字元，全檔唯一），使用者會直接看到亂碼。措辭沿用同檔既有的「無圖」空狀態。
-  if (!variant || !variant.chart_url) return '<span class="figure-empty">無圖</span>';
-  if (String(variant.chart_url).toLowerCase().endsWith('.html')) {
-    return '<iframe src="' + escHtml(variant.chart_url) + '" title="' + escHtml(page.title || '') + '"></iframe>';
-  }
-  return '<img src="' + escHtml(variant.chart_url) + '" alt="' + escHtml(page.title || '') + '">';
-}
 
-function pptNarrativeOnlySlideHtml(content, theme, page) {
-  const geometry = theme.geometry || {};
-  const g = geometry.narrative_only || {};
-  return (page.slots || []).map(function (slot, idx) {
-    const top = (geometry.body_top_in || 1.35) + (idx * g.block_step_in);
-    return '<div ' + pptBoxAttrs(theme, page, slot, g.band_left_in, top,
-      g.band_width_in, g.band_height_in, 'ppt-panel') + '><strong>' + escHtml(slot)
-      + '</strong><br>' + pptSlotContentHtml(slot, pptSlotText(content, page, slot)) + '</div>';
-  }).join('');
-}
 
-function pptSlotContentHtml(slot, text) {
-  if (!exportPreview.editMode || !slot) return escHtml(text);
-  return '<textarea class="export-narrative-edit ppt-slot-edit" data-ppt-slot="' + escHtml(slot)
-    + '" oninput="savePptSlotEdit(this)">' + escHtml(text) + '</textarea>';
-}
 
-function savePptSlotEdit(node) {
-  const slot = node.getAttribute('data-ppt-slot');
-  if (!slot) return;
-  exportPreview.edits.slots[slot] = node.value;
-  saveExportEdits();
-}
 
-function resetPptSlotEdit(slot) {
-  delete exportPreview.edits.slots[slot];
-  saveExportEdits();
-  renderExportPreview();
-}
 
-function attachPptDragHandlers() {
-  document.querySelectorAll('#export-preview .draggable-ppt-box').forEach(function (node) {
-    node.addEventListener('pointerdown', function (event) {
-      if (event.target && event.target.tagName === 'TEXTAREA') return;
-      const slide = node.closest('.ppt-slide');
-      if (!slide) return;
-      event.preventDefault();
-      node.classList.add('dragging');
-      node.setPointerCapture(event.pointerId);
-      const slideRect = slide.getBoundingClientRect();
-      const startRect = node.getBoundingClientRect();
-      const start = {
-        x: event.clientX,
-        y: event.clientY,
-        leftPct: ((startRect.left - slideRect.left) / slideRect.width) * 100,
-        topPct: ((startRect.top - slideRect.top) / slideRect.height) * 100,
-        widthPct: (startRect.width / slideRect.width) * 100,
-        heightPct: (startRect.height / slideRect.height) * 100,
-      };
-      function move(moveEvent) {
-        const dxPct = ((moveEvent.clientX - start.x) / slideRect.width) * 100;
-        const dyPct = ((moveEvent.clientY - start.y) / slideRect.height) * 100;
-        const nextLeft = Math.max(0, Math.min(100 - start.widthPct, start.leftPct + dxPct));
-        const nextTop = Math.max(0, Math.min(100 - start.heightPct, start.topPct + dyPct));
-        node.style.left = nextLeft.toFixed(3) + '%';
-        node.style.top = nextTop.toFixed(3) + '%';
-      }
-      function done(upEvent) {
-        node.classList.remove('dragging');
-        node.releasePointerCapture(upEvent.pointerId);
-        node.removeEventListener('pointermove', move);
-        node.removeEventListener('pointerup', done);
-        const slideDef = (exportPreview.pptLayout && exportPreview.pptLayout.theme
-          && exportPreview.pptLayout.theme.slide) || { width_in: 13.333, height_in: 7.5 };
-        const leftPct = parseFloat(node.style.left || '0');
-        const topPct = parseFloat(node.style.top || '0');
-        const pageNo = node.getAttribute('data-page');
-        const component = node.getAttribute('data-component');
-        savePptPositionOverride(pageNo, component, {
-          left_in: Number(((leftPct / 100) * Number(slideDef.width_in || 13.333)).toFixed(3)),
-          top_in: Number(((topPct / 100) * Number(slideDef.height_in || 7.5)).toFixed(3)),
-          width_in: Number(node.getAttribute('data-width-in') || 0),
-          height_in: Number(node.getAttribute('data-height-in') || 0),
-        });
-      }
-      node.addEventListener('pointermove', move);
-      node.addEventListener('pointerup', done);
-    });
-  });
-}
 
-function savePptPositionOverride(pageNo, component, box) {
-  if (!pageNo || !component) return;
-  exportPreview.edits.position_overrides[pptComponentKey(pageNo, component)] = box;
-  saveExportEdits();
-}
 
-function pptTableHtml(section) {
-  if (!section || !(section.rows || []).length) return '<span>表格佔位</span>';
-  const rows = section.rows.slice(0, 6);
-  const columns = Object.keys(rows[0]).slice(0, 5);
-  return '<table><thead><tr>' + columns.map(c => '<th>' + escHtml(c) + '</th>').join('')
-    + '</tr></thead><tbody>'
-    + rows.map(r => '<tr>' + columns.map(c => '<td>' + escHtml(fmtCell(r[c])) + '</td>').join('') + '</tr>').join('')
-    + '</tbody></table>';
-}
 
-function pptSlotText(content, page, slot) {
-  if (!slot) return '（待填文案）';
-  if (exportPreview.edits.slots && Object.prototype.hasOwnProperty.call(exportPreview.edits.slots, slot)) {
-    return exportPreview.edits.slots[slot];
-  }
-  if (slot === 'cover.title') return (exportPreview.edits.cover && exportPreview.edits.cover.title) || '專利分析報告';
-  const section = pptFirstSection(content, page);
-  if (section && (section.variants || []).length) {
-    const text = (section.variants || []).map(v => narrativeAiOriginal(v)).filter(Boolean)[0];
-    if (text) return text;
-  }
-  return '（' + slot + ' 待 AI 文案）';
-}
 
-function pptChartForPage(content, page) {
-  const sections = pptSectionsForPage(content, page);
-  for (const section of sections) {
-    for (const variant of (section.variants || [])) {
-      if (variant.chart_url) return variant.chart_url;
-    }
-  }
-  return '';
-}
 
-function pptFirstSection(content, page) {
-  return pptSectionsForPage(content, page)[0] || null;
-}
 
-function pptSectionsForPage(content, page) {
-  const keys = page.report_keys || [];
-  const exact = (content.sections || []).filter(section => keys.includes(section.report_key));
-  if (exact.length) return exact;
-  // ⚠ 2026-07-28：象限頁走不到分群版型的修正。
-  // 後端只產**一個** cluster section（report_key='cluster_topic_table'），
-  // opportunity_quadrant／pain_point_quadrant 的圖是該 section 底下的 variants；
-  // 但 _expand_ppt_pages_with_active_reports 會為它們各建一頁、report_keys=[name]。
-  // 精確比對因此回 [] → pptIsClusterPage 為 false → 退回無 section 的表格版型。
-  // 報表頁的 clusterReportViews 本來就從 variants 判斷，所以那邊三份都正常——
-  // 兩邊行為不一致的根源就在這裡。找不到同名 section 時改用 variants 認。
-  return (content.sections || []).filter(section =>
-    keys.some(key => hasClusterVariant(section, key)));
-}
 
-function pptMissingReportKeys(content, page) {
-  const sections = content.sections || [];
-  return (page.report_keys || []).filter(key => !sections.some(section => section.report_key === key));
-}
 
 // 封面：標題／分析範圍／日期／專利件數。後端缺的欄位留空由使用者填（不猜值）。
 function exportCoverHtml(content, view) {
