@@ -345,8 +345,8 @@ def run_narrative(
     # CLI 寫的是**本機檔案系統**，但 backend 從 DB 讀（report_artifact_store.read_file）——
     # 不傳回去就永遠讀不到，解讀區維持空白。upload_run_dir 會整包 upsert（同版本同名
     # 檔覆蓋），故也順帶把 refresh_index 重渲染的 index.html 一起更新。
-    # 失敗隔離：解讀已產出、token 已花，上傳失敗只記 log 不 raise——結果仍回得去，
-    # 使用者可重跑上傳，不必重跑整趟 AI。
+    # 上傳失敗不可吞：backend 讀的是 DB report_artifacts。若 narratives.json 沒進 DB，
+    # 使用者看到的是「job succeeded 但完全沒有解讀」，比 failed 更難判斷。
     uploader = upload_run_dir
     if uploader is None:
         from backend.app.db.report_artifact_store import upload_run_dir as _upload
@@ -354,11 +354,16 @@ def run_narrative(
     uploaded = 0
     try:
         uploaded = uploader(run_dir)
-    except Exception:  # noqa: BLE001 - 上傳失敗不得吃掉已完成的解讀
-        import logging
-
-        logging.getLogger(__name__).exception(
-            "narratives upload failed (version=%s)", version)
+    except Exception as exc:  # noqa: BLE001 - 對使用者必須 fail loud
+        raise NarrativeRunnerError(
+            f"narratives.json 已產生但上傳 report_artifacts 失敗："
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    if uploaded <= 0:
+        raise NarrativeRunnerError(
+            "narratives.json 已產生但沒有任何 report artifact 被上傳；"
+            "backend 將讀不到解讀。"
+        )
 
     return {
         "artifacts_uploaded": uploaded,

@@ -167,6 +167,32 @@ class UploadNarrativesBackTests(unittest.TestCase):
         self.assertIn("dir", uploaded, "跑完沒把 narratives.json 上傳回 DB——backend 讀不到")
         self.assertEqual(uploaded["dir"], run_dir)
 
+    def test_run_fails_when_narratives_upload_fails(self):
+        """narratives.json 沒回存 DB 時不可回 succeeded，否則前端永遠讀不到解讀。"""
+        from backend.app.worker import ai_narrative_runner as r
+
+        version = "report_trial_20260727_000000"
+        with TemporaryDirectory() as td:
+            run_dir = Path(td) / version
+            run_dir.mkdir()
+            (run_dir / "report_data.json").write_text(
+                json.dumps({"sections": []}), encoding="utf-8")
+
+            def _fake_cli(argv, timeout):
+                (run_dir / "narratives.json").write_text(
+                    json.dumps({"based_on_version": version, "reports": {}}),
+                    encoding="utf-8")
+                from backend.app.worker.ai_narrative_runner import CliResult
+                return CliResult(exit_code=0, stdout="{}", stderr="")
+
+            with self.assertRaises(r.NarrativeRunnerError):
+                r.run_narrative(
+                    version,
+                    cli_runner=_fake_cli,
+                    resolve_run_dir=lambda v, **k: run_dir,
+                    upload_run_dir=lambda _p: 0,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

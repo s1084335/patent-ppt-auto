@@ -994,6 +994,20 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("thresholds", section_body)
         self.assertIn("reportThresholdHtml", single_body)
 
+    def test_report_viewer_chart_only_and_narrative_refresh(self):
+        """公司×國家只留圖表；ai:narrative 成功後只重抓報表 content。"""
+        single_body = self.js_function("reportSingleHtml")
+        task_body = self.js_function("renderTaskList")
+        refresh_body = self.js_function("maybeRefreshReportNarratives")
+
+        self.assertIn("report-single-chart-only", self.html)
+        self.assertIn("reportChartOnlyLayout", single_body)
+        self.assertIn("chartOnly ? ''", single_body)
+        self.assertIn("chartShown", single_body)
+        self.assertIn("maybeRefreshReportNarratives", task_body)
+        self.assertIn("ai:narrative", refresh_body)
+        self.assertIn("reloadCurrentReportContentOnly", refresh_body)
+
     def test_export_ppt_edit_overrides_are_separated(self):
         """PPT 編輯覆寫必須分 slots/layout_overrides/position_overrides 三個 key。"""
         default_body = self.js_function("exportEditsDefault")

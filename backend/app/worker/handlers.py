@@ -957,6 +957,7 @@ def handle_ai_narrative(payload: dict[str, Any], context: JobContext) -> dict[st
         "cli_kind": summary.get("cli_kind"),
         "prompt_version": summary.get("prompt_version"),
         "narratives_path": summary.get("narratives_path"),
+        "artifacts_uploaded": summary.get("artifacts_uploaded"),
     }
     context.heartbeat("完成", 100)
     return _json_safe(result)

@@ -584,7 +584,10 @@ class TopicSegmentTests(unittest.TestCase):
         self.assertEqual(chart_rows, tech_variant["rows"])
         self.assertEqual(
             list(tech_variant["rows"][0]),
-            ["label", "patent_count", "applicant_count", "quadrant", "leading_applicant_count"],
+            [
+                "label", "patent_count", "applicant_count", "quadrant",
+                "leading_applicants", "leading_applicant_count",
+            ],
         )
         self.assertIn(tech_variant["rows"][0]["quadrant"], {"必守核心", "新興戰場", "待釐清", "單一玩家壟斷"})
         self.assertEqual(

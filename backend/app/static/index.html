@@ -456,6 +456,7 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .report-single-data-first { flex-direction: column; }
 .report-single-data-first .report-single-data,
 .report-single-data-first .report-single-chart { flex: 1 1 100%; width: 100%; }
+.report-single-chart-only .report-single-chart { flex: 1 1 100%; width: 100%; }
 .report-single-chart img, .report-single-chart svg { max-width: 100%; height: auto; }
 .report-single-narrative { margin-top: 0.9rem; padding-top: 0.8rem; border-top: 1px solid var(--border); }
 .report-single-narrative .empty { color: var(--text-muted); font-size: 0.86rem; }
@@ -4503,6 +4504,7 @@ function saveCoverEdit() {
 // 目前檢視中的 content（由 loadReportVersions 取最新版後填入）。
 let reportViewContent = null;
 let reportViewOptions = [];
+let lastNarrativeReloadJobId = 0;
 
 // 把選單填上目前版本的所有 section（R7）；預設選第一份。
 
@@ -4720,6 +4722,10 @@ function reportVariantChartHtml(section, variant) {
     + '</figure>';
 }
 
+function reportVariantHasChart(variant) {
+  return !!(variant && variant.chart_url);
+}
+
 // 欄名查表（R2）：後端 column_labels 有就用中文，沒有就顯示原 key。
 // 不在前端自己維護一份對照——那正是這次要消滅的「兩處落點」。
 function columnLabel(key, labels) {
@@ -4740,8 +4746,12 @@ function switchReportVariant(sectionIndex, variantIndex) {
 // 版面判斷（2026-07-29）：後端已把 layout 放進 section，前端直接讀。
 // 不自己維護報表清單——前端的 REPORT_TYPES 是寫死的且不含 layout，
 // 靠它判斷會變成同一資訊兩處落點。
-function reportLayoutClass(section) {
+function reportStackedLayout(section) {
   return section && section.layout === 'stacked';
+}
+
+function reportChartOnlyLayout(section) {
+  return section && section.layout === 'chart_only';
 }
 
 function reportVariantTabsHtml(section, sectionIndex) {
@@ -4810,8 +4820,9 @@ function reportSingleHtml(section, option) {
   // 原本全部 variant 一起畫，配合選單攤平；現在改為分頁切換。
   const pick = reportVariantPick[(option && option.sectionIndex) || 0] || 0;
   const shown = variants.length > 1 ? [variants[pick] || variants[0]] : variants;
-  const chartHtml = shown.length
-    ? shown.map(v => reportVariantChartHtml(viewSection, v)).join('')
+  const chartShown = shown.filter(reportVariantHasChart);
+  const chartHtml = chartShown.length
+    ? chartShown.map(v => reportVariantChartHtml(viewSection, v)).join('')
     : '<p class="hint">尚無圖表。</p>';
   const texts = shown
     .map(v => (v.narrative && v.narrative.text) ? v.narrative.text.trim() : '')
@@ -4839,6 +4850,7 @@ function reportSingleHtml(section, option) {
   const narrativeHtml = (texts.length
     ? texts.map(t => '<p>' + escHtml(t) + '</p>').join('')
     : '<p class="empty">AI 解讀尚未產生。</p>') + rerunHtml;
+  const chartOnly = reportChartOnlyLayout(viewSection);
   return '<article class="export-card">'
     + '<h3>' + escHtml(viewSection.title || '') + '</h3>'
     + (isClusterSection(section) ? reportSourceTabsHtml(sourceField) : '')
@@ -4848,12 +4860,13 @@ function reportSingleHtml(section, option) {
     // 欄位擠成多行難讀。⚠ 判斷用 shown.length 而非 chartHtml 字面——後者是佔位文字，
     // 比對字串會在文案改動時失效。
     + '<div class="report-single'
-    + (reportLayoutClass(viewSection) ? ' report-single-stacked' : '')
+    + (reportStackedLayout(viewSection) ? ' report-single-stacked' : '')
+    + (chartOnly ? ' report-single-chart-only' : '')
     + (reportDataFirstLayout(viewSection) ? ' report-single-data-first' : '')
     + (viewSection.report_key === 'annual_trend' ? ' report-single-compact-data' : '')
-    + (shown.length ? '' : ' report-single-nochart') + '">'
-    + '<div class="report-single-data">' + dataHtml + '</div>'
-    + (shown.length ? '<div class="report-single-chart">' + chartHtml + '</div>' : '')
+    + (chartShown.length ? '' : ' report-single-nochart') + '">'
+    + (chartOnly ? '' : '<div class="report-single-data">' + dataHtml + '</div>')
+    + (chartShown.length ? '<div class="report-single-chart">' + chartHtml + '</div>' : '')
     + '</div>'
     + '<div class="report-single-narrative"><strong>解讀</strong>' + narrativeHtml + '</div>'
     + (viewSection.note ? '<p class="hint" style="padding:0.5rem 0 0">'
@@ -5707,6 +5720,7 @@ function renderTaskList(tasks) {
   const c = el('task-container');
   if (!c) return;
   taskListCache = tasks || [];
+  maybeRefreshReportNarratives(taskListCache);
   // 進行中／失敗全留；succeeded 只留最近 RECENT_DONE_KEEP 筆（依 job_id 新→舊），
   // 讓使用者切頁回來仍看得到剛跑完的任務結果，而非整批消失（2026-07-27）。
   const all = tasks || [];
@@ -5719,6 +5733,40 @@ function renderTaskList(tasks) {
   all.forEach(t => { taskById[t.job_id] = t; });
   if (visible.length === 0) { c.innerHTML = '<div class="task-empty">尚無進行中或待處理任務</div>'; return; }
   c.innerHTML = visible.map(taskCardHtml).join('');
+}
+
+async function maybeRefreshReportNarratives(tasks) {
+  if (state.nav !== 'reports' || !reportViewContent || !reportViewContent.version) return;
+  const done = (tasks || [])
+    .filter(t => t.job_type === 'ai:narrative' && t.status === 'succeeded')
+    .filter(t => t.payload && t.payload.based_on_version === reportViewContent.version)
+    .sort((a, b) => (b.job_id || 0) - (a.job_id || 0));
+  if (!done.length) return;
+  const newestId = done[0].job_id || 0;
+  if (newestId <= lastNarrativeReloadJobId) return;
+  lastNarrativeReloadJobId = newestId;
+  await reloadCurrentReportContentOnly();
+}
+
+async function reloadCurrentReportContentOnly() {
+  const wrap = el('report-inline-view');
+  if (!wrap || !reportViewContent) return;
+  const selected = el('report-view-select');
+  const selectedValue = selected ? selected.value : null;
+  try {
+    const resp = await fetch(API + '/report-latest/content');
+    if (!resp.ok) return;
+    const content = await resp.json();
+    reportViewContent = content;
+    fillReportViewSelect(content);
+    const sel = el('report-view-select');
+    if (sel && selectedValue !== null && Array.from(sel.options).some(o => o.value === selectedValue)) {
+      sel.value = selectedValue;
+      renderReportViewer();
+    }
+  } catch (_) {
+    // 任務列表刷新不應打斷使用者操作；下一次手動切換或重整仍會重新取 content。
+  }
 }
 // SSE 進度事件即時更新對應卡片（progress/status/stage）；轉為 succeeded 時整卡移除。
 function updateTaskFromEvent(ev) {

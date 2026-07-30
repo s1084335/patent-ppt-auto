@@ -916,6 +916,7 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "source_field": "來源欄位",
     "top_applicants": "前三大申請人",
     "quadrant": "象限",
+    "leading_applicants": "龍頭公司",
     "top3_share": "前三大占比(%)",
     "max_share": "最大一家(%)",
     "acquired_count": "受讓取得",
@@ -1847,11 +1848,13 @@ def _opportunity_display_rows(matrix: dict[str, Any]) -> list[dict[str, Any]]:
     a_med = float(matrix.get("applicant_count_median", 0))
     rows = []
     for row in matrix.get("rows", []):
+        leading = row.get("leading_applicants_involved") or []
         rows.append({
             "label": row.get("label") or row.get("topic_code", ""),
             "patent_count": row.get("patent_count", 0),
             "applicant_count": row.get("applicant_count", 0),
             "quadrant": _opportunity_quadrant_name(row, p_med, a_med),
+            "leading_applicants": "；".join(str(name) for name in leading) if leading else "—",
             "leading_applicant_count": row.get("leading_applicant_count", 0),
         })
     return rows

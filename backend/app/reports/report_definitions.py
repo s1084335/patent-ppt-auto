@@ -39,6 +39,7 @@ class ReportDefinition:
     # 前端版面（2026-07-29 使用者定案「年度矩陣可以和其他種類報表的版面不同」）：
     #   side_by_side＝左數據右圖表 45/55（一般報表）
     #   stacked     ＝上下排列（年度矩陣：交叉表欄多列少，橫向需要空間）
+    #   chart_only ＝只顯示圖表（公司×國家熱圖已是矩陣，不再用原始列壓縮圖）
     layout: str = "side_by_side"
     # 需要市場資料才能產（2026-07-29 使用者定案）：痛點四象限的 Y 軸是痛點嚴重度，
     # 無市場資料時全部落 unknown，整張圖沒有判讀價值。前端據此禁用選項。
@@ -120,6 +121,7 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
     # filters {"applicant_display_name": {"values": [...]}} 圈定後出圖與報告。
     "applicant_country_distribution": ReportDefinition(
         name="applicant_country_distribution",
+        layout="chart_only",
         report_type="aggregate",
         label="Applicant × Jurisdiction Matrix",
         label_zh="公司×國家交叉表",

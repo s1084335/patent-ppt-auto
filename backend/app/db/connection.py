@@ -51,6 +51,9 @@ def get_connection_kwargs() -> dict[str, str | int]:
         return {
             "conninfo": database_url,
             "options": os.getenv("PGOPTIONS", _DEFAULT_PG_OPTIONS),
+            # Supabase pooler 會重用後端連線；psycopg 自動 prepared statement
+            # 可能撞到既有 _pg3_N 名稱，導致 DuplicatePreparedStatement。關閉自動 prepare。
+            "prepare_threshold": None,
         }
 
     kwargs: dict[str, str | int] = {
@@ -59,6 +62,7 @@ def get_connection_kwargs() -> dict[str, str | int]:
         "dbname": os.getenv("PGDATABASE", "patent_ppt"),
         "user": os.getenv("PGUSER", "postgres"),
         "options": os.getenv("PGOPTIONS", _DEFAULT_PG_OPTIONS),
+        "prepare_threshold": None,
     }
     password = os.getenv("PGPASSWORD")
     if password:

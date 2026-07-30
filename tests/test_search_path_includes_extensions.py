@@ -60,6 +60,13 @@ class SearchPathDefaultTests(unittest.TestCase):
         })
         self.assertEqual(opts, "-c search_path=only_this")
 
+    def test_disables_prepared_statements_for_pooler(self):
+        """Supabase pooler 下不得啟用 psycopg 自動 prepared statements。"""
+        from backend.app.db.connection import get_connection_kwargs
+
+        with mock.patch.dict(os.environ, {"DATABASE_URL": "postgresql://u@h:5432/db"}, clear=True):
+            self.assertIsNone(get_connection_kwargs().get("prepare_threshold"))
+
 
 if __name__ == "__main__":
     unittest.main()
