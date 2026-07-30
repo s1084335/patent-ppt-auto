@@ -1140,10 +1140,18 @@ async function addVariantToGroup() {
 // 這裡不畫按鈕只是避免使用者白按一次。
 function existingGroupHtml(g) {
   const codeJs = JSON.stringify(g.code);
+  // 待確認組（2026-07-30，規格 applicant-code-grouping-spec.md b4）：
+  // 匯入時「有 WIPS 代碼但未建組」會自動建組，代碼／英文正式名／別稱三欄由 WIPS
+  // 直接推導，⚠ 中文名一律留空（市場慣用名是判斷不是資料）。
+  // ⚠ 措辭不得出現 AI／建議／草稿——本路徑是確定性規則，無 AI 參與（使用者明示）。
+  const pending = g.review_status === 'review_required';
+  // 無中文名時顯示英文正式名＋「待補中文名」標記，不留空白（使用者定）。
+  const shownName = g.company_name || g.normalized_name || g.code;
   return '<details style="margin:.3rem 0 .3rem 1rem">'
     + '<summary>' + escHtml(g.code)
     + (g.is_temp ? ' <span class="hint">（尚無 WIPS 代碼）</span>' : '')
-    + ' — ' + escHtml(g.company_name)
+    + ' — ' + escHtml(shownName)
+    + (pending ? ' <span class="ver-badge ver-badge-ai">待補中文名</span>' : '')
     + '（' + g.variants.length + ' 個變體）</summary>'
     + '<div style="margin:.3rem 0 .3rem 1.6rem">'
     + '<div class="code-field"><label>公司中文名稱</label>'
@@ -1158,8 +1166,19 @@ function existingGroupHtml(g) {
           + ' style="max-width:14rem">'
           + '<button class="btn-mini" onclick=\'promoteCompanyCode(' + codeJs + ')\'>補上代碼</button>'
         : '')
+    // 待確認組多一顆「確認」：review_required → confirmed，一鍵進正式顯示。
+    // ⚠ 中文名可填可留空——留空時顯示自然退回英文正式名（與報表同一順位）。
+    + (pending
+        ? '<button class="btn-mini" style="background:var(--accent);color:#fff"'
+          + ' onclick=\'confirmPendingCodeGroup(' + codeJs + ')\'>確認這組</button>'
+        : '')
     + '<button class="btn-mini" onclick=\'deleteCompanyGroup(' + codeJs + ')\'>刪除整組</button>'
     + '</div>'
+    + (pending
+        ? '<p class="hint" style="padding:.2rem 0 0;font-size:.78rem">'
+          + '此組由匯入時依 WIPS 代碼自動建立，中文名待補。'
+          + '確認後才會進入專利表與報表顯示。</p>'
+        : '')
     + '<ul style="margin:.2rem 0 .2rem 0;font-size:.85rem;list-style:none;padding:0">'
     + g.variants.map(v =>
         '<li style="padding:.1rem 0">' + escHtml(v.alias)
@@ -1213,6 +1232,25 @@ function renameCompanyGroup(code) {
     { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ zh_name: zh.trim(), normalized_name: en.trim() }) },
     '已更新公司名，正在刷新收斂名。');
+}
+
+// 確認待確認組（2026-07-30，規格 b4）：review_required → confirmed。
+// ⚠ 複用既有 PATCH 端點——`apply_confirmed_display_names` 的 UPDATE 明文
+// 「review_status 一律轉 confirmed」，故改名即轉正，不另造第二條寫入路徑。
+// 中文名可留空：顯示會自然退回英文正式名（與報表同一順位）。
+function confirmPendingCodeGroup(code) {
+  const zh = ((el('rn-zh-' + code) || {}).value || '').trim();
+  const en = ((el('rn-en-' + code) || {}).value || '').trim();
+  if (!zh && !en) {
+    const msg = el('group-maint-msg');
+    if (msg) msg.innerHTML = '<div class="code-conflict">中文名與英文正式名至少要有一個。</div>';
+    return;
+  }
+  return callGroupMaintenance(
+    API + '/company-codes/' + encodeURIComponent(code),
+    { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ zh_name: zh, normalized_name: en }) },
+    '已確認這組，正在刷新收斂名。');
 }
 
 function deleteCompanyGroup(code) {
@@ -1586,6 +1624,7 @@ const PATENT_COLUMNS = [
   { label: '未審查的公開日', key: 'publication_date' },
   { label: '授權公告號', key: 'grant_number' },
   { label: '授權公告日', key: 'grant_date' },
+  { label: '授權公告年', key: 'grant_year' },
   { label: '發明人', key: 'inventor' },
   { label: '優先權號', key: 'priority_number' },
   { label: '優先權國家', key: 'priority_country' },
@@ -3051,7 +3090,7 @@ const CLUSTER_REPORT_NAMES = new Set([
 ]);
 const REPORT_TYPES = [
   ['application_trend', '專利申請趨勢'],
-  ['publication_trend', '專利公告趨勢'],
+  ['publication_trend', '專利核准公告趨勢'],
   ['country_distribution', '專利受理局分布'],
   ['applicant_country_distribution', '公司×國家交叉表'],
   ['ipc_main_distribution', 'IPC 主分類分布'],
@@ -5962,10 +6001,39 @@ function importResultHtml(j) {
     + '<span class="k">更新（updated）</span><span>' + (r.updated ?? 0) + '</span>'
     + '<span class="k">本批專利數（patent_ids）</span><span>' + patentCount + '</span>'
     + '</div>'
+    // 公司名歸戶統計（2026-07-30，規格 applicant-code-grouping-spec.md b5）：
+    // ⚠ summary.alias_variants 早就存在但前端**零顯示**——自動歸戶了幾筆、
+    // 建了幾組待確認組，使用者完全看不到（做了卻沒人知道的靜默成功）。
+    + aliasVariantsHtml(r.alias_variants)
     + '<div style="margin-top:0.5rem">已加入 workspace <strong>' + escHtml(wsName) + '</strong>。</div>'
     + shortcut
     + '</div>';
 }
+// 公司名歸戶統計（匯入結果卡的一段）。
+// ⚠ 措辭不提 AI／建議／草稿——本路徑依 WIPS 代碼推導，是確定性規則。
+// 待確認組要**明確提示去哪確認**，否則使用者不知道有事情待辦。
+function aliasVariantsHtml(av) {
+  if (!av || typeof av !== 'object') return '';
+  const inserted = av.inserted || 0;
+  const created = (av.created_groups || []).length;
+  const manual = (av.manual_review || []).length;
+  if (!inserted && !created && !manual) return '';
+  let html = '<div class="stat-grid" style="margin-top:0.6rem">'
+    + '<span class="k">公司名自動歸戶</span><span>' + inserted + ' 筆</span>';
+  if (created) {
+    html += '<span class="k">待確認代碼組</span><span>' + created
+      + ' 組（依 WIPS 代碼建立，中文名待補）</span>';
+  }
+  if (manual) html += '<span class="k">需人工複核</span><span>' + manual + ' 筆</span>';
+  html += '</div>';
+  if (created) {
+    html += '<p class="hint" style="padding:0.35rem 0 0">'
+      + '到「瀏覽專利 → 專利權人代碼與中文名 → 資料庫已有的代碼」補中文名並確認；'
+      + '未確認前不會進入專利表與報表顯示。</p>';
+  }
+  return html;
+}
+
 // 快捷：關閉對話框 → 切到該 workspace → 導覽到專利總覽。
 function gotoImportedWorkspace(workspaceId) {
   closeImportDialog();

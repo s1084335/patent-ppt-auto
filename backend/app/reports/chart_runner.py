@@ -240,7 +240,7 @@ def render_line_chart(
     publication_rows: list[dict[str, Any]],
 ) -> None:
     app = {int(row["application_year"]): int(row["patent_count"]) for row in application_rows}
-    pub = {int(row["publication_year"]): int(row["patent_count"]) for row in publication_rows if row.get("publication_year") is not None}
+    pub = {int(row["授權公告年"]): int(row["patent_count"]) for row in publication_rows if row.get("授權公告年") is not None}
     years = sorted(set(app) | set(pub))
     max_count = max([*app.values(), *pub.values(), 1])
     width, height = 980, 560
@@ -261,7 +261,7 @@ def render_line_chart(
         f'<rect width="100%" height="100%" fill="white"/>',
         f'<text x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         f'<text x="{left}" y="54" font-size="13" fill="#6B7280">'
-        f'{"Application year and publication year comparison" if pub else "Yearly count"}</text>',
+        f'{"Application year and grant announcement year comparison" if pub else "Yearly count"}</text>',
     ]
     for tick in y_ticks:
         y = scale(tick, 0, max_count, top + plot_h, top)
@@ -283,7 +283,7 @@ def render_line_chart(
             svg.append(f'<circle cx="{x:.1f}" cy="{scale(pub.get(year, 0), 0, max_count, top + plot_h, top):.1f}" r="3.5" fill="{COLOR_PUBLICATION}"/>')
     svg.append(f'<rect x="{left + 10}" y="{top + 8}" width="12" height="12" fill="{COLOR_APPLICATION}"/><text x="{left + 28}" y="{top + 19}" font-size="13" fill="{COLOR_TEXT}">Application Year</text>')
     if pub:
-        svg.append(f'<rect x="{left + 148}" y="{top + 8}" width="12" height="12" fill="{COLOR_PUBLICATION}"/><text x="{left + 166}" y="{top + 19}" font-size="13" fill="{COLOR_TEXT}">Publication Year</text>')
+        svg.append(f'<rect x="{left + 148}" y="{top + 8}" width="12" height="12" fill="{COLOR_PUBLICATION}"/><text x="{left + 166}" y="{top + 19}" font-size="13" fill="{COLOR_TEXT}">Grant Announcement Year</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -836,23 +836,23 @@ def merge_annual_trend_rows(
     application_rows: list[dict[str, Any]],
     publication_rows: list[dict[str, Any]],
 ) -> list[dict[str, int]]:
-    """將申請年與公告/公開年趨勢合併成前端表格可直接交叉對照的 rows。"""
+    """將申請年與核准公告年趨勢合併成前端表格可直接交叉對照的 rows。"""
     app = {
         int(row["application_year"]): int(row["patent_count"])
         for row in application_rows
         if row.get("application_year") is not None
     }
     pub = {
-        int(row["publication_year"]): int(row["patent_count"])
+        int(row["授權公告年"]): int(row["patent_count"])
         for row in publication_rows
-        if row.get("publication_year") is not None
+        if row.get("授權公告年") is not None
     }
     years = sorted(set(app) | set(pub))
     return [
         {
             "year": year,
             "application_count": app.get(year, 0),
-            "publication_count": pub.get(year, 0),
+            "授權公告件數": pub.get(year, 0),
         }
         for year in years
     ]
@@ -872,10 +872,10 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "patent_count": "專利件數",
     "year": "年份",
     "application_count": "申請件數",
-    "publication_count": "公告/公開件數",
+    "授權公告件數": "核准公告件數",
     "applicant_count": "申請人家數",
     "application_year": "申請年份",
-    "publication_year": "公開年份",
+    "授權公告年": "核准公告年份",
     "applicant_display_name": "申請人",
     "current_assignee_display_name": "專利權人",
     "recent_assignee_display_name": "最新受讓人",
@@ -1308,7 +1308,7 @@ PERSIST_TOP20_REPORTS = (
 # 年度序列報表：入庫只留最新 25 年（value＝該報表的年份欄位名）
 PERSIST_YEAR_KEYS = {
     "application_trend": "application_year",
-    "publication_trend": "publication_year",
+    "publication_trend": "授權公告年",
     "applicant_year_matrix": "application_year",
     "owner_year_matrix": "application_year",
 }
@@ -1412,7 +1412,7 @@ def _build_trend_section(ctx: ChartContext) -> None:
     trend_title = f'{application["label_zh"]}與{publication["label_zh"]}'
     render_line_chart(ctx.run_dir / "annual_trend.svg", trend_title, application["rows"], publication["rows"])
     ctx.chart_rows["annual_trend"] = merge_annual_trend_rows(application["rows"], publication["rows"])
-    # report_key 指向 chart_rows.annual_trend，讓表格可同列對照申請年與公告/公開年；
+    # report_key 指向 chart_rows.annual_trend，讓表格可同列對照申請年與核准公告年；
     # 圖檔仍由 application_trend + publication_trend 兩份報表共同產生。
     ctx.sections.append({
         "title": trend_title,

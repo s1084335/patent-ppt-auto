@@ -97,6 +97,12 @@ _ATTRIBUTE_FIELDS: dict[str, str] = {
     "pdf_url": "文圖像文件(PDF)連結",
 }
 
+_ATTRIBUTE_YEAR_FIELDS: dict[str, str] = {
+    # 授權公告年是授權公告日的衍生欄位，前端詳情與年度報表同一口徑：
+    # 只取「授權公告日」，不 fallback 到公開日或審查公告日。
+    "grant_year": "授權公告日",
+}
+
 
 def topic_label_key(source_field: str) -> str:
     """回傳某分群通道在 API 回應中的分類欄 key（如 topic_label_wips_independent_claims）。
@@ -126,13 +132,31 @@ def _attribute_pick(response_key: str, column: str, *, patents_alias: str = "p")
     )
 
 
+def _attribute_year_pick(response_key: str, column: str, *, patents_alias: str = "p") -> str:
+    """從 patent_attributes 日期文字欄位衍生西元年份，取值規則同 _attribute_pick。"""
+    quoted = f'pa."{column}"'
+    picked = (
+        f"SELECT NULLIF(BTRIM({quoted}), '') "
+        "FROM core_layer.patent_attributes pa "
+        f"WHERE pa.patent_id = {patents_alias}.id "
+        f"AND NULLIF(BTRIM({quoted}), '') IS NOT NULL "
+        "ORDER BY pa.raw_record_id DESC "
+        "LIMIT 1"
+    )
+    return (
+        "CASE WHEN BTRIM(COALESCE((" + picked + "), '')) ~ '^[0-9]{4}' "
+        "THEN SUBSTRING(BTRIM((" + picked + ")) FROM 1 FOR 4)::integer END "
+        f"AS {response_key}"
+    )
+
+
 def display_field_keys() -> tuple[str, ...]:
     """回傳全部顯示欄位的回應 key（欄位清單的唯一來源，供其他模組與測試取用）。
 
     專利總覽與分類區共用同一組欄位（使用者定案「不做兩套」），兩邊都由此推導，
     不各自維護一份欄名清單，也不寫死欄位數。
     """
-    return (*_PATENT_FIELDS, *_PEOPLE_FIELDS, *_REPORT_BASE_FIELDS, *_ATTRIBUTE_FIELDS)
+    return (*_PATENT_FIELDS, *_PEOPLE_FIELDS, *_REPORT_BASE_FIELDS, *_ATTRIBUTE_FIELDS, *_ATTRIBUTE_YEAR_FIELDS)
 
 
 def display_projection(
@@ -161,6 +185,10 @@ def display_projection(
     parts += [
         _attribute_pick(key, column, patents_alias=patents_alias)
         for key, column in _ATTRIBUTE_FIELDS.items()
+    ]
+    parts += [
+        _attribute_year_pick(key, column, patents_alias=patents_alias)
+        for key, column in _ATTRIBUTE_YEAR_FIELDS.items()
     ]
     return ",\n        ".join(parts)
 

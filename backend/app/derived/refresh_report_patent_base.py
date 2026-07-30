@@ -29,6 +29,10 @@ base AS (
         p.application_date,
         p.application_year,
         p.publication_year,
+        CASE
+            WHEN BTRIM(COALESCE(grant_date_source."授權公告日", '')) ~ '^[0-9]{4}'
+            THEN SUBSTRING(BTRIM(grant_date_source."授權公告日") FROM 1 FOR 4)::integer
+        END AS "授權公告年",
         p.title,
         -- abstract（2026-07-28 補搬）：文獻備註第三級來源。外觀設計沒有任何權利要求
         -- （實測 CN 11 筆四欄全空），只有摘要 11/11、最長 530 字——沒有它那批專利
@@ -76,6 +80,16 @@ base AS (
     -- 若各自取最新非空，到期件的清空會被舊值蓋回，直接算錯。
     LEFT JOIN core_layer.patent_attributes pa
         ON pa.patent_id = p.id AND pa.raw_record_id = so.raw_record_id
+    -- 授權公告年只取 WIPS「授權公告日」，不得 fallback 到未審查公開日或審查公告日。
+    -- 同一專利多 raw_record 時沿用詳情層口徑：取最新非空欄位，避免新列空白蓋掉舊值。
+    LEFT JOIN LATERAL (
+        SELECT pa2."授權公告日"
+        FROM core_layer.patent_attributes pa2
+        WHERE pa2.patent_id = p.id
+          AND NULLIF(BTRIM(pa2."授權公告日"), '') IS NOT NULL
+        ORDER BY pa2.raw_record_id DESC NULLS LAST
+        LIMIT 1
+    ) grant_date_source ON true
     -- 同族明細是家族層級常數（同家族每列相同），可安全取最新非空，
     -- 避免最新來源是精簡匯出（無此欄）時整欄變 NULL。
     LEFT JOIN LATERAL (
@@ -187,6 +201,7 @@ INSERT INTO legacy_0021.report_patent_base (
     application_date,
     application_year,
     publication_year,
+    "授權公告年",
     title,
     abstract,
     "Orig. IPC(Main)",
@@ -227,6 +242,7 @@ SELECT
     b.application_date,
     b.application_year,
     b.publication_year,
+    b."授權公告年",
     b.title,
     b.abstract,
     b."Orig. IPC(Main)",

@@ -460,7 +460,7 @@ class FrontendSkeletonTests(unittest.TestCase):
             "技術分類", "功效分類",
             "文獻備註", "申請人", "標題", "標題(原文)", "摘要", "摘要(原文)",
             "申請號", "申請日", "申請年", "未審查的公開號", "未審查的公開日",
-            "授權公告號", "授權公告日", "發明人", "優先權號", "優先權國家", "優先權日",
+            "授權公告號", "授權公告日", "授權公告年", "發明人", "優先權號", "優先權國家", "優先權日",
             "最近專利權人", "Orig. IPC", "詳細查看連結", "文圖像文件(PDF)連結",
         ]
         positions = []
@@ -477,7 +477,7 @@ class FrontendSkeletonTests(unittest.TestCase):
             "patent_type", "legal_status", "patent_note", "applicant",
             "title_original", "abstract_original", "application_number",
             "application_date", "application_year", "publication_number",
-            "publication_date", "grant_number", "grant_date", "inventor",
+            "publication_date", "grant_number", "grant_date", "grant_year", "inventor",
             "priority_number", "priority_country", "priority_date",
             "current_owner", "orig_ipc_main", "detail_url", "pdf_url",
         ):

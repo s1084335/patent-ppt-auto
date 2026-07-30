@@ -421,7 +421,7 @@ class PersistenceTruncationTests(unittest.TestCase):
             source = REPORT_DEFINITIONS[name].columns[0]
             rows = [{source: f"A{i:02d}B {i}/00", "patent_count": 30 - i} for i in range(25)]
         elif name in ("application_trend", "publication_trend"):
-            key = "application_year" if name == "application_trend" else "publication_year"
+            key = "application_year" if name == "application_trend" else "授權公告年"
             rows = [{key: 1990 + i, "patent_count": i + 1} for i in range(30)]  # 30 年
         elif name == "applicant_year_matrix":
             rows = [{"applicant_display_name": "Co", "application_year": 1990 + i, "patent_count": 1}
@@ -457,7 +457,7 @@ class PersistenceTruncationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             rd = self._render(tmp, report_names=["application_trend", "applicant_year_matrix"])
         for name, key in (("application_trend", "application_year"),
-                          ("publication_trend", "publication_year"),
+                          ("publication_trend", "授權公告年"),
                           ("applicant_year_matrix", "application_year")):
             years = {int(r[key]) for r in rd["reports"][name]["rows"]}
             self.assertLessEqual(len(years), 25, f"{name} 入庫年份數應 ≤25")
@@ -779,7 +779,7 @@ class SelectiveRenderTests(unittest.TestCase):
                     {"application_year": 2020, "patent_count": 6},
                 ],
                 "publication_trend": [
-                    {"publication_year": 2020, "patent_count": 4},
+                    {"授權公告年": 2020, "patent_count": 4},
                 ],
             }[name]
             return fake_report(name, rows)
@@ -814,13 +814,13 @@ class SelectiveRenderTests(unittest.TestCase):
             self.assertEqual(
                 annual_rows,
                 [
-                    {"year": 2019, "application_count": 3, "publication_count": 0},
-                    {"year": 2020, "application_count": 6, "publication_count": 4},
+                    {"year": 2019, "application_count": 3, "授權公告件數": 0},
+                    {"year": 2020, "application_count": 6, "授權公告件數": 4},
                 ],
             )
             self.assertEqual(
-                {key: chart_runner.DATA_COLUMN_LABELS[key] for key in ("year", "application_count", "publication_count")},
-                {"year": "年份", "application_count": "申請件數", "publication_count": "公告/公開件數"},
+                {key: chart_runner.DATA_COLUMN_LABELS[key] for key in ("year", "application_count", "授權公告件數")},
+                {"year": "年份", "application_count": "申請件數", "授權公告件數": "核准公告件數"},
             )
             # 未選的 section（如受理局地圖）不得落檔。
             self.assertFalse((run_dir / "country_bubble.svg").exists())
@@ -1129,7 +1129,7 @@ class SectionReportKeyTests(unittest.TestCase):
     # 四張卡各給一列夠用的假資料；欄位形狀依報表定義的 columns。
     _ROWS = {
         "application_trend": [{"application_year": 2020, "patent_count": 5}],
-        "publication_trend": [{"publication_year": 2021, "patent_count": 3}],
+        "publication_trend": [{"授權公告年": 2021, "patent_count": 3}],
         "country_distribution": [{"country_code": "TW", "patent_count": 7}],
         "family_country_layout": [{"country_code": "US", "patent_count": 2}],
         "family_quality_detail": [{
@@ -1162,7 +1162,7 @@ class SectionReportKeyTests(unittest.TestCase):
     def test_four_cards_declare_matching_report_key(self):
         """四張卡的 report_key 必須是報表引擎的鍵，不得退回檔名 fallback。"""
         expected = {
-            "專利申請趨勢與專利公告趨勢": "annual_trend",
+            "專利申請趨勢與專利核准公告趨勢": "annual_trend",
             "專利受理局分布": "country_distribution",
             "國家佈局（現有保護）": "family_country_layout",
             "公司×國家交叉表": "applicant_country_distribution",
@@ -1204,7 +1204,7 @@ class SectionReportKeyTests(unittest.TestCase):
         for block in blocks:
             title = re.search(r"<h2>(.*?)</h2>", block).group(1)
             by_title[title] = block
-        for title in ("專利申請趨勢與專利公告趨勢", "專利受理局分布",
+        for title in ("專利申請趨勢與專利核准公告趨勢", "專利受理局分布",
                       "國家佈局（現有保護）", "公司×國家交叉表"):
             self.assertIn(title, by_title, f"缺少卡片 {title}")
             self.assertNotIn(

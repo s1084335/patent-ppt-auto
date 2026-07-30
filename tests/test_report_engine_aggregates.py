@@ -47,6 +47,18 @@ class AggregateColumnsTests(unittest.TestCase):
         sql, _ = build_report_sql(REPORT_DEFINITIONS["lifecycle"], filters=None, limit=None)
         self.assertIn('COUNT(DISTINCT "applicant_display_name")::int AS "applicant_count"', sql)
 
+    def test_publication_trend_reads_announcement_year(self) -> None:
+        """核准公告趨勢要讀中文欄位「授權公告年」，不得沿用代表日期 publication_year。"""
+        definition = REPORT_DEFINITIONS["publication_trend"]
+        self.assertEqual(definition.label_zh, "專利核准公告趨勢")
+        self.assertEqual(definition.columns, ("授權公告年",))
+        self.assertEqual(definition.group_by, ("授權公告年",))
+        self.assertEqual(definition.default_order, (("授權公告年", "asc"),))
+        self.assertEqual(definition.exclude_blank_columns, ("授權公告年",))
+        sql, _ = build_report_sql(definition, filters=None, limit=None)
+        self.assertIn('GROUP BY "授權公告年"', sql)
+        self.assertNotIn('GROUP BY "publication_year"', sql)
+
     def test_applicant_country_matrix_groups_two_columns(self) -> None:
         """申請人 × 國家矩陣必須同時 group by 申請人與國家。"""
         sql, _ = build_report_sql(
