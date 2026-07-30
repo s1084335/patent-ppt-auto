@@ -123,6 +123,10 @@ class ReportPptPayloadFileTests(unittest.TestCase):
         self.assertIn("不得在 PPT 中提示缺漏", rules_blob)
         self.assertIn("競爭者是否已進場", rules_blob)
         self.assertIn("不等於產品核心度", rules_blob)
+        self.assertIn("象限名稱", rules_blob)
+        self.assertIn("象限判讀", rules_blob)
+        self.assertIn("後續檢視點", rules_blob)
+        self.assertIn("不得只寫成「可人工確認」", rules_blob)
 
     def test_cli_can_read_the_payload_file(self):
         """白名單必須放行 Read——資料在檔案裡，CLI 讀不到就什麼都做不了。"""

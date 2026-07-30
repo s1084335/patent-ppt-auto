@@ -212,8 +212,10 @@ def build_artifact_manifest(
     }
     artifacts: list[dict[str, Any]] = []
     for filename in files:
+        if not filename:
+            continue
         path = run_dir / filename
-        if not path.exists():
+        if not path.is_file():
             continue
         artifact_report_names = report_names_for_artifact(filename)
         artifacts.append({
@@ -233,14 +235,34 @@ def scale(value: float, old_min: float, old_max: float, new_min: float, new_max:
     return new_min + (value - old_min) * (new_max - new_min) / (old_max - old_min)
 
 
+def _int_or_none(value: Any) -> int | None:
+    """將年份／件數欄轉成 int；非數字資料視為缺值，不中斷報表產製。"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text.isdigit():
+        return None
+    return int(text)
+
+
 def render_line_chart(
     path: Path,
     title: str,
     application_rows: list[dict[str, Any]],
     publication_rows: list[dict[str, Any]],
 ) -> None:
-    app = {int(row["application_year"]): int(row["patent_count"]) for row in application_rows}
-    pub = {int(row["授權公告年"]): int(row["patent_count"]) for row in publication_rows if row.get("授權公告年") is not None}
+    app = {
+        year: count
+        for row in application_rows
+        if (year := _int_or_none(row.get("application_year"))) is not None
+        if (count := _int_or_none(row.get("patent_count"))) is not None
+    }
+    pub = {
+        year: count
+        for row in publication_rows
+        if (year := _int_or_none(row.get("授權公告年"))) is not None
+        if (count := _int_or_none(row.get("patent_count"))) is not None
+    }
     years = sorted(set(app) | set(pub))
     max_count = max([*app.values(), *pub.values(), 1])
     width, height = 980, 560
@@ -838,14 +860,16 @@ def merge_annual_trend_rows(
 ) -> list[dict[str, int]]:
     """將申請年與核准公告年趨勢合併成前端表格可直接交叉對照的 rows。"""
     app = {
-        int(row["application_year"]): int(row["patent_count"])
+        year: count
         for row in application_rows
-        if row.get("application_year") is not None
+        if (year := _int_or_none(row.get("application_year"))) is not None
+        if (count := _int_or_none(row.get("patent_count"))) is not None
     }
     pub = {
-        int(row["授權公告年"]): int(row["patent_count"])
+        year: count
         for row in publication_rows
-        if row.get("授權公告年") is not None
+        if (year := _int_or_none(row.get("授權公告年"))) is not None
+        if (count := _int_or_none(row.get("patent_count"))) is not None
     }
     years = sorted(set(app) | set(pub))
     return [
@@ -875,7 +899,7 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "授權公告件數": "核准公告件數",
     "applicant_count": "申請人家數",
     "application_year": "申請年份",
-    "授權公告年": "核准公告年份",
+    "授權公告年": "授權公告年",
     "applicant_display_name": "申請人",
     "current_assignee_display_name": "專利權人",
     "recent_assignee_display_name": "最新受讓人",
@@ -1318,9 +1342,15 @@ _CHART_ROWS_TOP20_PREFIXES = ("ipc_main_distribution_L", "cpc_main_distribution_
 
 def _latest_years_rows(rows: list[dict[str, Any]], year_key: str, span: int = PERSIST_YEAR_SPAN) -> list[dict[str, Any]]:
     """保留最新 span 個年份的 rows（年度序列入庫截取用；年份缺值列一併剔除）。"""
-    years = sorted({int(r[year_key]) for r in rows if r.get(year_key) is not None})
+    years = sorted(
+        {
+            year
+            for r in rows
+            if (year := _int_or_none(r.get(year_key))) is not None
+        }
+    )
     keep = set(years[-span:])
-    return [r for r in rows if r.get(year_key) is not None and int(r[year_key]) in keep]
+    return [r for r in rows if (year := _int_or_none(r.get(year_key))) is not None and year in keep]
 
 
 def truncate_rows_for_persistence(

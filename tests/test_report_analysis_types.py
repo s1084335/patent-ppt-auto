@@ -5,11 +5,11 @@ Red 階段：驗證當 cluster_data 提供時，report_data.json 的 sections �
 
 六大分析類型（2026-07-23 報表定案）：
   #1 申請人分析          → applicant_ranking report + section
-  #2 專利權人分析        → owner_ranking + recent_assignee_ranking reports + sections
+  #2 專利權人分析        → owner_ranking report + section
   #3 公司 × 國家分       → applicant_country_distribution report + section
-  #4 主題 × 公司交叉     → cluster_analytics → chart_rows["cluster_topic_table"] + HTML
+  #4 主題 × 公司交叉     → cluster_analytics → chart_rows["cluster_topic_table"] + table rows
   #5 專利佈局 × 競爭者結構 → cluster_analytics → chart_rows["opportunity_quadrant*"] + SVG
-  #6 多點 × 專利強度     → cluster_analytics → chart_rows["pain_point_quadrant*"] + SVG
+  #6 多點 × 專利強度     → 市場資料線尚未實作，痛點矩陣第一版停產
 """
 from __future__ import annotations
 
@@ -28,7 +28,6 @@ from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 STANDARD_ANALYSIS_REPORTS: dict[str, str] = {
     "申請人分析": "applicant_ranking",
     "專利權人分析:專利權人": "owner_ranking",
-    "專利權人分析:最新受讓人": "recent_assignee_ranking",
     "公司×國家分": "applicant_country_distribution",
 }
 
@@ -36,14 +35,12 @@ STANDARD_ANALYSIS_REPORTS: dict[str, str] = {
 CLUSTER_ANALYSIS_CHART_KEYS: dict[str, str] = {
     "主題×公司交叉": "cluster_topic_table",
     "專利佈局×競爭者結構": "opportunity_quadrant",
-    "多點×專利強度": "pain_point_quadrant",
 }
 
 # ── 分群分析變體檔案 ──
 CLUSTER_ANALYSIS_FILES: dict[str, tuple[str, ...]] = {
-    "主題×公司交叉 (HTML)": ("cluster_topic_table.html",),
+    "主題×公司交叉 (table rows)": ("report_data.json",),
     "專利佈局×競爭者結構 (SVG, 多來源)": ("opportunity_quadrant.svg", "opportunity_quadrant_tech.svg", "opportunity_quadrant_effect.svg"),
-    "多點×專利強度 (SVG, 多來源)": ("pain_point_quadrant.svg", "pain_point_quadrant_tech.svg", "pain_point_quadrant_effect.svg"),
 }
 
 
@@ -198,10 +195,14 @@ class ReportDataContractTests(unittest.TestCase):
                          "report_data.json.sections 必須包含一個 report_key=cluster_topic_table 的分群分析區塊")
         cs = cluster_sections[0]
         variant_files = [v["file"] for v in cs.get("variants", [])]
-        for required in ("cluster_topic_table.html", "opportunity_quadrant", "pain_point_quadrant"):
+        for required in ("opportunity_quadrant",):
             self.assertTrue(
                 any(required in f for f in variant_files),
                 f"分群分析 section variants 必須包含 {required}（現有：{variant_files}）")
+        self.assertIn("cluster_topic_table", rd.get("chart_rows", {}),
+                      "主題統計表 rows 應落在 chart_rows，由 content API 組成前端 section.rows")
+        self.assertTrue(rd["chart_rows"]["cluster_topic_table"],
+                        "主題統計表 chart_rows 不應為空")
 
     def test_no_cluster_data_skips_cluster_section(self):
         """cluster_data 未提供時，分群分析 sections 不應出現。"""
@@ -227,7 +228,7 @@ class SixAnalysisTypesContractTests(unittest.TestCase):
         for spec in chart_runner.SECTION_SPECS:
             spec_report_names.update(spec.reports)
 
-        # #1–#3 必須有 section spec 提供圖表渲染
+        # #1–#3 必須有 section spec 提供圖表渲染；最新受讓人報表已定案不使用。
         for label, key in STANDARD_ANALYSIS_REPORTS.items():
             self.assertIn(key, spec_report_names,
                           f"[{label}] 報表 {key} 在 SECTION_SPECS 中無對應條目")

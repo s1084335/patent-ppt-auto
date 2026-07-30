@@ -78,16 +78,12 @@ class SectionRegistryTests(unittest.TestCase):
         keys = [spec.key for spec in chart_runner.resolve_sections(["application_trend"])]
         self.assertEqual(keys, ["annual_trend", "application_growth"])
 
-    def test_recent_assignee_ranking_starts_company_analysis_block(self):
-        keys = [
-            spec.key
-            for spec in chart_runner.resolve_sections([
-                "applicant_ranking",
-                "owner_ranking",
-                "recent_assignee_ranking",
-            ])
-        ]
-        self.assertEqual(keys, ["recent_assignee_ranking", "applicant_ranking", "owner_ranking"])
+    def test_recent_assignee_ranking_is_not_used(self):
+        """最新受讓人報表已定案不使用；不得要求 section registry 支援它。"""
+        covered = {name for spec in chart_runner.SECTION_SPECS for name in spec.reports}
+        self.assertNotIn("recent_assignee_ranking", covered)
+        with self.assertRaises(ValueError):
+            chart_runner.resolve_sections(["recent_assignee_ranking"])
 
     def test_resolve_family_reports_share_one_section(self):
         keys = [spec.key for spec in chart_runner.resolve_sections(["family_quality_detail"])]
@@ -230,11 +226,10 @@ class DisplaySpecTests(unittest.TestCase):
                 # 見 TopicTableNarrativeTests——沒 variant 就掛不了 narrative。
                 ["", "opportunity_quadrant.svg"],
                 "⚠ 2026-07-29：統計表改走數據表、痛點板停產（市場線未實作），只剩機會板")
-            self.assertEqual(labels, ["機會矩陣"])
-        # 龍頭涉入欄改在數據列上驗（原本驗的是已移除的 HTML 檔）。
-        self.assertIn("leading_applicant_count", ctx.chart_rows["cluster_topic_table"][0],
-                      "統計列缺龍頭涉入欄")
-        self.assertEqual(ctx.chart_rows["cluster_topic_table"][0].get("leading_applicant_count"), 1)
+            self.assertEqual(labels, ["主題統計表", "機會矩陣"])
+        # 龍頭欄不顯示；統計表以主題標籤、專利件數、申請人家數、集中度與前三大申請人為主。
+        self.assertIn("top_applicants", ctx.chart_rows["cluster_topic_table"][0],
+                      "統計列應保留前三大申請人")
         self.assertTrue(ctx.sections[0].get("rows"),
                         "section 未帶 rows，前端技術／功效切換會沒有資料可切")
 
@@ -640,22 +635,22 @@ class DataTableHumanizeTests(unittest.TestCase):
         rows = [{"topic_code": "T1", "patent_count": 40,
                  "top_applicants": [{"name": "力山工業", "count": 39},
                                     {"name": "LOWE'S COMPANIES, INC.", "count": 1}]}]
-        html = chart_runner._data_table_html(rows, "cluster_topic_table")
+        html = chart_runner._data_table_html(rows, "custom_report")
         self.assertIn("力山工業 39；LOWE", html, "list[dict] 應為「名稱 數字」分號連接")
         self.assertNotIn("{&#x27;name&#x27;", html)
         self.assertNotIn("[{", html, "不得輸出 raw repr")
 
     def test_list_of_str_renders_dun_comma(self):
         rows = [{"topic_code": "T1", "patent_count": 3,
-                 "leading_applicants_involved": ["力山工業", "客戶A"]}]
-        html = chart_runner._data_table_html(rows, "cluster_topic_table")
+                 "sample_names": ["力山工業", "客戶A"]}]
+        html = chart_runner._data_table_html(rows, "custom_report")
         self.assertIn("力山工業、客戶A", html, "list[str] 應為頓號連接")
         self.assertNotIn("[&#x27;", html)
 
     def test_empty_list_and_none_render_dash(self):
         rows = [{"topic_code": "T1", "patent_count": 3,
                  "top_applicants": [], "leading_applicants_involved": None}]
-        html = chart_runner._data_table_html(rows, "cluster_topic_table")
+        html = chart_runner._data_table_html(rows, "custom_report")
         self.assertNotIn("[]", html, "空 list 應顯示 —")
         self.assertNotIn("None", html, "None 應顯示 —")
 
@@ -666,8 +661,8 @@ class DataTableHumanizeTests(unittest.TestCase):
             {"topic_code": "T2", "patent_count": 5, "applicant_count": 3,
              "leading_applicant_count": 1, "application_year": 2021},
         ]
-        html = chart_runner._data_table_html(rows, "cluster_topic_table")
-        totals = re.search(r"<tr><td class=\"totals-cell\">.*?</tr>", html, re.S).group(0)
+        html = chart_runner._data_table_html(rows, "custom_report")
+        totals = re.findall(r"<tr>.*?</tr>", html, re.S)[-1]
         cells = re.findall(r"<strong>(.*?)</strong>", totals)
         # 欄序：topic_code, patent_count, applicant_count, leading_applicant_count, application_year
         self.assertEqual(cells[1], "15", "patent_count 加總有意義，應出總計")

@@ -85,8 +85,8 @@ class R2ColumnLabelsTests(unittest.TestCase):
         """前端表頭要查表；查無對照才退回原 key。"""
         html = INDEX_HTML.read_text(encoding="utf-8")
         self.assertIn("columnLabel(", html, "前端沒有查表 helper")
-        body = _js_function(html, "reportSingleHtml")
-        self.assertIn("columnLabel(", body, "reportSingleHtml 的表頭沒查表")
+        body = _js_function(html, "reportRowsTableHtml")
+        self.assertIn("columnLabel(", body, "reportRowsTableHtml 的表頭沒查表")
 
 
 class R3ChartWidthTests(unittest.TestCase):
