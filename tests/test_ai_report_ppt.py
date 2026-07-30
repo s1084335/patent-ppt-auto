@@ -401,6 +401,27 @@ class CliWhitelistTests(unittest.TestCase):
 class DefaultBuildPptSubprocessTests(unittest.TestCase):
     """預設 build_ppt 子程序輸出解析要有防呆，不能因 stdout/stderr 為 None 蓋掉真因。"""
 
+    def test_skill_dir_can_be_overridden_by_environment(self):
+        """正式部署可用 PATENT_REPORT_PPT_SKILL_DIR 指到掛載／安裝後的 skill 目錄。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            skill_dir = Path(tmp) / "custom_skill"
+            (skill_dir / "scripts").mkdir(parents=True)
+            (skill_dir / "scripts" / "build_ppt.py").write_text("# ok", encoding="utf-8")
+            with mock.patch.dict("os.environ", {"PATENT_REPORT_PPT_SKILL_DIR": str(skill_dir)}):
+                self.assertEqual(runner_mod._resolve_skill_dir(), skill_dir.resolve())
+
+    def test_skill_dir_does_not_fallback_to_agents_directory(self):
+        """不能掃祖先 .agents；本機舊檔不得掩蓋正式部署缺 repo skill 的問題。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            agents_skill = root.parent / ".agents" / "skills" / "patent-report-ppt"
+            (agents_skill / "scripts").mkdir(parents=True)
+            (agents_skill / "scripts" / "build_ppt.py").write_text("# stale", encoding="utf-8")
+            expected = root / "skills" / "patent-report-ppt"
+            with mock.patch.object(runner_mod, "PROJECT_ROOT", root):
+                with mock.patch.dict("os.environ", {}, clear=True):
+                    self.assertEqual(runner_mod._resolve_skill_dir(), expected)
+
     def test_success_without_stdout_reports_missing_pptx_path(self):
         """實機回報 stdout=None 時，不得噴 AttributeError: splitlines。"""
         completed = subprocess.CompletedProcess(args=["uv"], returncode=0)

@@ -979,6 +979,21 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("reportViewOptions", render_body)
         self.assertIn("reportSingleHtml", render_body)
 
+    def test_report_viewer_uses_compact_annual_table_and_data_first_quadrants(self):
+        """年度趨勢表格需 compact；機會/痛點四象限需數據→圖表→解讀。"""
+        data_first_body = self.js_function("reportDataFirstLayout")
+        single_body = self.js_function("reportSingleHtml")
+        section_body = self.js_function("sectionForReportView")
+
+        self.assertIn("report-single-compact-data", self.html)
+        self.assertIn("viewSection.report_key === 'annual_trend'", single_body)
+        self.assertIn("'opportunity_quadrant'", data_first_body)
+        self.assertIn("'pain_point_quadrant'", data_first_body)
+        self.assertNotIn("key === 'annual_trend'", data_first_body)
+        self.assertIn("variant.rows", section_body)
+        self.assertIn("thresholds", section_body)
+        self.assertIn("reportThresholdHtml", single_body)
+
     def test_export_ppt_edit_overrides_are_separated(self):
         """PPT 編輯覆寫必須分 slots/layout_overrides/position_overrides 三個 key。"""
         default_body = self.js_function("exportEditsDefault")

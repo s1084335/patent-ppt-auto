@@ -4,8 +4,8 @@
   A/B/C（AI 產文案 slots）→ 寫 approvals.json → D（CLI 順手呼 deterministic 的
   build_ppt.py 組版）→ .pptx 進 report_artifacts（跨容器：本機檔案系統不通，必須進 DB）。
 
-規格唯一來源：`.agents/context/export-report-flow-spec.md`（架構、字體、分工、同列並排定案）
-與 `.agents/skills/patent-report-ppt/SKILL.md`（步驟 A-D）。
+規格唯一來源：專案 repo 內 `skills/patent-report-ppt/`（PPT 產製契約、runtime 文案規則、
+組版腳本與 theme）與 `.agents/context/export-report-flow-spec.md`（開發期規格）。
 
 ⚠ 接線非重寫（使用者定案）：
 - **組版沿用既有 build_ppt.py**（skill 目錄的 `scripts/build_ppt.py`），本 runner 不在
@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -55,7 +56,7 @@ from .ai_payload_file import extract_json_payload
 
 
 # 報告 PPT 流程版本；隨 prompt 契約／版型升版而變，寫進結果供追溯。
-PROMPT_VERSION = "report_ppt_v1"
+PROMPT_VERSION = "report_ppt_v2"
 
 # 🔴 最小權限（**舊路徑專用**）：報表數據內嵌 prompt 時 CLI 不需任何工具。
 # 主路徑自 2026-07-28 起改走資料檔，白名單由共用核心給 Read（見模組頂部說明）；
@@ -70,29 +71,21 @@ class ReportPptRunnerError(RuntimeError):
 def _resolve_skill_dir() -> Path:
     """定位 patent-report-ppt skill 目錄（含 scripts/build_ppt.py、theme.json）。
 
-    ⚠ 唯一來源＝**專案 repo 的 `skills/patent-report-ppt/`**（2026-07-29 使用者定案）。
-    原本只在中央 D:\\力山\\.agents\\skills\\——不在專案 repo、Dockerfile 也沒 COPY，
-    Lightning 容器裡本函式找不到檔案 → `_load_builder()` 必炸 → ppt-layout 503、
-    匯出頁預覽在正式部署起不來；本機開發時祖先掃描掃得到中央 .agents，
-    把問題完全掩蓋（部署才爆，與 9d 跨容器斷鏈同類）。搬進 repo 後
-    backend／worker 容器與 Companion（本機 repo checkout）走同一條路徑。
-
-    祖先 .agents 掃描保留為相容 fallback（舊部署或未 pull 的環境），
-    找不到就回專案內路徑（不存在），由讀取階段自然報錯，不在匯入期硬失敗。
+    預設來源＝專案 repo 的 `skills/patent-report-ppt/`。正式部署若把 skill 掛載到
+    其他位置，可用 `PATENT_REPORT_PPT_SKILL_DIR` 覆寫。不得 fallback 到 `D:\\力山\\.agents`
+    或祖先 `.agents`；本機舊檔會掩蓋 Docker／公司伺服器缺檔問題。
     """
+    configured = os.environ.get("PATENT_REPORT_PPT_SKILL_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
     repo_local = PROJECT_ROOT / "skills" / "patent-report-ppt"
-    if (repo_local / "scripts" / "build_ppt.py").exists():
-        return repo_local
-    for ancestor in PROJECT_ROOT.parents:
-        candidate = ancestor / ".agents" / "skills" / "patent-report-ppt"
-        if (candidate / "scripts" / "build_ppt.py").exists():
-            return candidate
     return repo_local
 
 
 SKILL_DIR = _resolve_skill_dir()
 BUILD_PPT_PATH = SKILL_DIR / "scripts" / "build_ppt.py"
 THEME_PATH = SKILL_DIR / "theme.json"
+CONTENT_RULES_PATH = SKILL_DIR / "report_ppt_content_rules.md"
 
 
 def _load_builder():
@@ -162,13 +155,8 @@ def build_prompt(report_data_text: str, slot_keys: list[str]) -> str:
     slots_block = "\n".join(f"- {key}" for key in slot_keys)
     return (
         "任務：為專利分析報告 PPT 產出各頁的敘述文案草稿（系統派工、非互動、一次性）。\n\n"
-        "── 分工鐵律（務必遵守）──\n"
-        "1. 你**只產文案**（各確認槽的敘述／解讀文字）。**不碰排版、不碰版型、不排版面**——"
-        "PPTX 由確定性程式（build_ppt.py）依固定版型組出，你的文案只是填進既有版型的內容。\n"
-        "2. **不捏造數字**：所有數字一律以下方 report_data 為準；report_data 沒有的數字不得"
-        "自行推算或編造，寧可寫質性描述。**不碰數字的正確性**＝不改寫、不四捨五入到失真、"
-        "不無中生有。\n"
-        "3. 一律繁體中文；每個槽一段精煉文案，附數字依據（若該槽有對應數據）。\n\n"
+        "── 文案規則（務必遵守）──\n"
+        f"{load_content_rules()}\n\n"
         "── 需產出的確認槽（slot key，槽名固定、不可更改）──\n"
         f"{slots_block}\n\n"
         "── 報表結構化數據（report_data 摘要，唯一數字來源）──\n"
@@ -220,20 +208,18 @@ def load_narratives(report_dir: Path) -> Any:
         return text
 
 
-# 分工鐵律與輸出契約（2026-07-28 由命令列 prompt 搬進資料檔）。
-# 內容與原 build_prompt 逐條等價，只是改成結構化欄位由 CLI 讀檔取得。
-_PPT_RULES = [
-    "你**只產文案**（各確認槽的敘述／解讀文字）。**不碰排版、不碰版型、不排版面**——"
-    "PPTX 由確定性程式（build_ppt.py）依固定版型組出，你的文案只是填進既有版型的內容。",
-    "**不捏造數字**：所有數字一律以 report_data 為準；report_data 沒有的數字不得"
-    "自行推算或編造，寧可寫質性描述。**不碰數字的正確性**＝不改寫、不四捨五入到失真、"
-    "不無中生有。",
-    "一律繁體中文；每個槽一段精煉文案，附數字依據（若該槽有對應數據）。",
-    "direction.body 必須綜合本次實際包含的全部報表與 narratives，不得只看單一分群或單一圖表。",
-    "各頁文案要有頁間脈絡，但不得編造因果關係，也不得為了串接故事而補不存在的關聯。",
-    "只能討論 report_data 裡實際存在的報表；未產出的報表不得提及，也不得用常識補資料。",
-    "若 narratives 與 report_data 有衝突，以 report_data 的數字為準，narratives 只作語意脈絡參考。",
-]
+def load_content_rules() -> str:
+    """讀取匯出報告 PPT 文案 runtime 規則。
+
+    規則來源放在 skill 目錄，讓產品規格、prompt 與部署檔案同版；runner 只負責載入，
+    不在程式內維護第二份逐 slot 文案規則，避免 SKILL.md／runtime prompt 分裂。
+    """
+    try:
+        return CONTENT_RULES_PATH.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ReportPptRunnerError(
+            f"找不到或無法讀取 PPT 文案規則檔：{CONTENT_RULES_PATH}"
+        ) from exc
 
 _PPT_OUTPUT_CONTRACT = {
     "shape": '{"slots": {"cover.title": "...", "trend.narrative": "...", ...}}',
@@ -274,7 +260,7 @@ def build_report_ppt_payload(report_data: Any, slot_keys: list[str],
             "依 report_data 為每一個 slot_keys 列出的確認槽產一段繁體中文文案；"
             "只產文案，不碰排版、不碰數字。"
         ),
-        "rules": list(_PPT_RULES),
+        "rules": [load_content_rules()],
         "slot_keys": list(slot_keys),
         "report_data": report_data,
         "narratives": narratives if narratives is not None else {"reports": {}},

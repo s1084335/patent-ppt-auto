@@ -429,6 +429,22 @@ table.data td.cell-wrap, table.data th.cell-wrap {
    兩欄各扣 0.5rem（gap 的一半），相加即為 100% - 1rem，正好容納 gap。 */
 .report-single-data { flex: 0 0 calc(45% - 0.5rem); min-width: 0; overflow-x: auto; }
 .report-single-chart { flex: 1 1 calc(55% - 0.5rem); min-width: 0; }
+.report-single-compact-data .report-single-data { flex-basis: calc(32% - 0.5rem); }
+.report-single-compact-data .report-single-chart { flex-basis: calc(68% - 0.5rem); }
+.report-single-compact-data table.data { width: auto; min-width: 15rem; font-size: 0.82rem; }
+.report-single-compact-data table.data th,
+.report-single-compact-data table.data td {
+  padding: 0.28rem 0.45rem;
+  min-width: 0;
+  max-width: none;
+  white-space: nowrap;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+.report-single-compact-data table.data th:not(:first-child),
+.report-single-compact-data table.data td:not(:first-child) { text-align: right; }
+.report-thresholds { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0 0 0.55rem; color: var(--text-muted); font-size: 0.82rem; }
+.report-thresholds span { border: 1px solid var(--border); border-radius: 999px; padding: 0.16rem 0.48rem; background: var(--panel); }
 /* 無圖表時表格用整寬（2026-07-30 使用者定案「這邊沒有圖表，那表格就可以用左右邊」）。
    主題統計表改純數據表後右半邊空著，表格被壓在 45% 欄位擠成多行。 */
 .report-single-nochart .report-single-data { flex: 1 1 100%; width: 100%; }
@@ -437,6 +453,9 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .report-single-stacked { flex-direction: column; }
 .report-single-stacked .report-single-data,
 .report-single-stacked .report-single-chart { flex: 1 1 100%; width: 100%; }
+.report-single-data-first { flex-direction: column; }
+.report-single-data-first .report-single-data,
+.report-single-data-first .report-single-chart { flex: 1 1 100%; width: 100%; }
 .report-single-chart img, .report-single-chart svg { max-width: 100%; height: auto; }
 .report-single-narrative { margin-top: 0.9rem; padding-top: 0.8rem; border-top: 1px solid var(--border); }
 .report-single-narrative .empty { color: var(--text-muted); font-size: 0.86rem; }
@@ -4560,10 +4579,14 @@ function sectionForReportView(section, option, sourceField) {
   const variants = (section.variants || []).filter(variant =>
     clusterVariantMatchesReport(variant, reportKey) && clusterVariantMatchesSource(variant, sourceField)
   );
+  const variant = variants[0] || null;
+  const variantRows = variant && Array.isArray(variant.rows) ? variant.rows : [];
   return Object.assign({}, section, {
     title: option.label || reportLabelForKey(reportKey),
     report_key: reportKey,
-    rows: rows.length ? rows : (section.rows || []),
+    rows: variantRows.length ? variant.rows : (rows.length ? rows : (section.rows || [])),
+    column_labels: variant && variant.column_labels ? variant.column_labels : section.column_labels,
+    thresholds: variant ? (variant.thresholds || {}) : {},
     variants: variants.length ? variants : (section.variants || []).filter(variant => clusterVariantMatchesReport(variant, reportKey)),
   });
 }
@@ -4627,6 +4650,28 @@ function reportVariantTabsHtml(section, sectionIndex) {
     + '</div>';
 }
 
+function reportDataFirstLayout(section) {
+  const key = section && section.report_key;
+  return key === 'opportunity_quadrant' || key === 'pain_point_quadrant';
+}
+
+function reportRowsTableHtml(rows, columns, labels) {
+  const head = columns.map(c => '<th>' + escHtml(columnLabel(c, labels)) + '</th>').join('');
+  const body = rows.map(r => '<tr>'
+    + columns.map(c => '<td>' + escHtml(fmtCell(r[c])) + '</td>').join('') + '</tr>').join('');
+  return '<table class="data">'
+    + '<thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>';
+}
+
+function reportThresholdHtml(section) {
+  const thresholds = (section && section.thresholds) || {};
+  const parts = [];
+  if (thresholds.patent_count_median !== undefined) parts.push('件數中位數 ' + fmtCell(thresholds.patent_count_median));
+  if (thresholds.applicant_count_median !== undefined) parts.push('家數中位數 ' + fmtCell(thresholds.applicant_count_median));
+  if (!parts.length) return '';
+  return '<div class="report-thresholds"><span>門檻：' + parts.map(escHtml).join('</span><span>') + '</span></div>';
+}
+
 function reportSingleHtml(section, option) {
   // 🔴 **使用者點選的通道優先**（2026-07-30 使用者實機回報「功效按不下去」）：
   // 原本 `(option && option.source_field) || exportPreview.clusterSourceField`，
@@ -4646,15 +4691,9 @@ function reportSingleHtml(section, option) {
     const hidden = new Set(viewSection.hidden_columns || ['source_field']);
     const columns = Object.keys(rows[0]).filter(c => !hidden.has(c));
     const labels = viewSection.column_labels || {};
-    // R2：表頭查後端給的中文對照（唯一來源＝chart_runner.DATA_COLUMN_LABELS）；
-    // 查無對照就顯示原 key，後端新增欄位不必同步改前端。
-    const head = columns.map(c => '<th>' + escHtml(columnLabel(c, labels)) + '</th>').join('');
-    const body = rows.map(r => '<tr>'
-      + columns.map(c => '<td>' + escHtml(fmtCell(r[c])) + '</td>').join('') + '</tr>').join('');
     // class="data"：套用既有 table.data 樣式（欄邊界、表頭底色、sticky）。
     // 原本產裸 <table> 套不到任何樣式，才會欄跟欄糊在一起。
-    dataHtml = '<table class="data">'
-      + '<thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>'
+    dataHtml = reportThresholdHtml(viewSection) + reportRowsTableHtml(rows, columns, labels)
       + (viewSection.row_count > rows.length
         ? '<p class="hint" style="padding:0.25rem 0">目前顯示 ' + rows.length
           + ' 筆，總計 ' + viewSection.row_count + ' 筆。</p>'
@@ -4704,6 +4743,8 @@ function reportSingleHtml(section, option) {
     // 比對字串會在文案改動時失效。
     + '<div class="report-single'
     + (reportLayoutClass(viewSection) ? ' report-single-stacked' : '')
+    + (reportDataFirstLayout(viewSection) ? ' report-single-data-first' : '')
+    + (viewSection.report_key === 'annual_trend' ? ' report-single-compact-data' : '')
     + (shown.length ? '' : ' report-single-nochart') + '">'
     + '<div class="report-single-data">' + dataHtml + '</div>'
     + (shown.length ? '<div class="report-single-chart">' + chartHtml + '</div>' : '')

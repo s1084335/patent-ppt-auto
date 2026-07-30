@@ -103,6 +103,27 @@ class ReportPptPayloadFileTests(unittest.TestCase):
         self.assertIn("output_contract", payload)
         self.assertTrue(payload.get("slot_keys"), "缺 slot_keys，CLI 不知要產哪些槽")
 
+    def test_payload_uses_runtime_content_rules_file(self):
+        """AI 文案 prompt 必須吃專案 runtime rules 檔，不能只靠 runner 內建舊規則。"""
+        captured: dict = {}
+        with TemporaryDirectory() as td:
+            self._run(Path(td), report_data={"sections": []}, captured=captured)
+            payload = read_payload_from_argv(captured["argv"])
+        rules_blob = "\n".join(payload.get("rules", []))
+        self.assertIn("cover.title", rules_blob)
+        self.assertIn("內容品質標準", rules_blob)
+        self.assertIn("申請量直接等同競爭力", rules_blob)
+        self.assertIn("有市場資料", rules_blob)
+        self.assertIn("無市場資料", rules_blob)
+        self.assertIn("融會貫通", rules_blob)
+        self.assertIn("各報表解讀重點", rules_blob)
+        self.assertIn("口徑守則", rules_blob)
+        self.assertIn("主題代碼不入文", rules_blob)
+        self.assertIn("缺資料報表不得入文", rules_blob)
+        self.assertIn("不得在 PPT 中提示缺漏", rules_blob)
+        self.assertIn("競爭者是否已進場", rules_blob)
+        self.assertIn("不等於產品核心度", rules_blob)
+
     def test_cli_can_read_the_payload_file(self):
         """白名單必須放行 Read——資料在檔案裡，CLI 讀不到就什麼都做不了。"""
         captured: dict = {}

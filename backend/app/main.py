@@ -374,6 +374,9 @@ def _report_content_payload(run_dir):
                 "file": file_name,
                 "chart_url": asset_base + file_name if run_dir.exists(file_name) else None,
                 "narrative": narrative,
+                "rows": variant.get("rows", []),
+                "column_labels": _column_labels(variant.get("rows", [])),
+                "thresholds": variant.get("thresholds", {}),
             })
         sections_out.append({
             "title": section.get("title", ""),

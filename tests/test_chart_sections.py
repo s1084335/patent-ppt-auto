@@ -565,6 +565,32 @@ class TopicSegmentTests(unittest.TestCase):
         self.assertIn("機會四象限分析——技術主題", tech_opp)
         self.assertIn("機會四象限分析——功效分類", effect_opp)
 
+    def test_opportunity_variant_rows_include_quadrant_and_thresholds(self):
+        """機會四象限檢視用專屬 rows；不回退主題統計表，也不改 SVG 輸入。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = self._fake_ctx(tmp)
+            ctx.cluster_data = self._TWO_SOURCE_DATA
+            chart_runner._build_cluster_analytics_section(ctx)
+            topic_rows = ctx.sections[0].get("rows") or []
+            tech_variant = next(
+                v for v in ctx.sections[0]["variants"]
+                if v["variant_key"] == "opportunity_tech"
+            )
+            chart_rows = ctx.chart_rows["opportunity_quadrant_tech"]["rows"]
+
+        self.assertTrue(topic_rows)
+        self.assertNotIn("quadrant", topic_rows[0], "主題統計表 rows 不應被四象限欄位污染")
+        self.assertEqual(chart_rows, tech_variant["rows"])
+        self.assertEqual(
+            list(tech_variant["rows"][0]),
+            ["label", "patent_count", "applicant_count", "quadrant", "leading_applicant_count"],
+        )
+        self.assertIn(tech_variant["rows"][0]["quadrant"], {"必守核心", "新興戰場", "待釐清", "單一玩家壟斷"})
+        self.assertEqual(
+            tech_variant["thresholds"],
+            {"patent_count_median": 1.0, "applicant_count_median": 1.0},
+        )
+
     def test_single_source_keeps_filenames_and_single_segment(self):
         data = {
             "topics": [{"topic_code": "T001", "label": "散熱防塵", "source_field": "wips_independent_claims"}],
@@ -783,6 +809,19 @@ class SelectiveRenderTests(unittest.TestCase):
             run_dir = Path(result["output_dir"])
             for filename in result["files"]:
                 self.assertTrue((run_dir / filename).is_file(), filename)
+            report_data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
+            annual_rows = report_data["chart_rows"]["annual_trend"]
+            self.assertEqual(
+                annual_rows,
+                [
+                    {"year": 2019, "application_count": 3, "publication_count": 0},
+                    {"year": 2020, "application_count": 6, "publication_count": 4},
+                ],
+            )
+            self.assertEqual(
+                {key: chart_runner.DATA_COLUMN_LABELS[key] for key in ("year", "application_count", "publication_count")},
+                {"year": "年份", "application_count": "申請件數", "publication_count": "公告/公開件數"},
+            )
             # 未選的 section（如受理局地圖）不得落檔。
             self.assertFalse((run_dir / "country_bubble.svg").exists())
 
@@ -1123,7 +1162,7 @@ class SectionReportKeyTests(unittest.TestCase):
     def test_four_cards_declare_matching_report_key(self):
         """四張卡的 report_key 必須是報表引擎的鍵，不得退回檔名 fallback。"""
         expected = {
-            "專利申請趨勢與專利公告趨勢": "application_trend",
+            "專利申請趨勢與專利公告趨勢": "annual_trend",
             "專利受理局分布": "country_distribution",
             "國家佈局（現有保護）": "family_country_layout",
             "公司×國家交叉表": "applicant_country_distribution",

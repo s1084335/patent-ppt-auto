@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -29,23 +30,16 @@ FULL_REPORT_LATEST = PROJECT_ROOT / "output" / "full_report_latest"
 
 
 def _resolve_skill_path() -> Path:
-    """解讀規格唯一來源（prompt 模板 v2、narratives.json 契約、based_on_version 規則）。
+    """解讀規格來源（prompt 模板、narratives.json 契約、based_on_version 規則）。
 
-    優先取專案內 .agents/skills；不存在時 fallback 到 workspace 根（力山工作區 .agents 集中在
-    D:\\力山\\.agents，非專案子目錄，對齊 run_narrative_task.ps1 的絕對路徑）。兩者皆無時
-    仍回專案內路徑（不存在），由 CLI 讀取階段自然報錯，不在匯入期硬失敗。
+    預設只取專案 repo 內 `skills/patent-report-ppt/report-narrative-flow.md`。正式部署若把
+    規格掛載到其他位置，可用 `REPORT_NARRATIVE_FLOW_PATH` 覆寫。不得 fallback 到本機
+    `.agents`；舊規格檔會掩蓋 Docker／公司伺服器缺檔問題。
     """
-    project_local = PROJECT_ROOT / ".agents" / "skills" / "report-narrative-flow.md"
-    if project_local.exists():
-        return project_local
-    # fallback 到 workspace 根（力山 .agents 集中在 D:\力山\.agents，非專案子目錄）。
-    # PROJECT_ROOT.parents 在容器 /app 下深度不足（index 越界會炸 import 期），故安全存取：
-    # 掃各層祖先找存在的 skill，找不到就回 project_local（不存在），由 CLI 階段自然報錯。
-    for ancestor in PROJECT_ROOT.parents:
-        candidate = ancestor / ".agents" / "skills" / "report-narrative-flow.md"
-        if candidate.exists():
-            return candidate
-    return project_local
+    configured = os.environ.get("REPORT_NARRATIVE_FLOW_PATH")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return PROJECT_ROOT / "skills" / "patent-report-ppt" / "report-narrative-flow.md"
 
 
 SKILL_PATH = _resolve_skill_path()

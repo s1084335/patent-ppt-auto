@@ -832,6 +832,32 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
     path.write_text("\n".join(svg), encoding="utf-8")
 
 
+def merge_annual_trend_rows(
+    application_rows: list[dict[str, Any]],
+    publication_rows: list[dict[str, Any]],
+) -> list[dict[str, int]]:
+    """將申請年與公告/公開年趨勢合併成前端表格可直接交叉對照的 rows。"""
+    app = {
+        int(row["application_year"]): int(row["patent_count"])
+        for row in application_rows
+        if row.get("application_year") is not None
+    }
+    pub = {
+        int(row["publication_year"]): int(row["patent_count"])
+        for row in publication_rows
+        if row.get("publication_year") is not None
+    }
+    years = sorted(set(app) | set(pub))
+    return [
+        {
+            "year": year,
+            "application_count": app.get(year, 0),
+            "publication_count": pub.get(year, 0),
+        }
+        for year in years
+    ]
+
+
 def render_chart_embed(file: str) -> str:
     """Generic embed: SVG/PNG as <img>, HTML as <iframe>."""
     lower = file.lower()
@@ -844,6 +870,9 @@ def render_chart_embed(file: str) -> str:
 
 DATA_COLUMN_LABELS: dict[str, str] = {
     "patent_count": "專利件數",
+    "year": "年份",
+    "application_count": "申請件數",
+    "publication_count": "公告/公開件數",
     "applicant_count": "申請人家數",
     "application_year": "申請年份",
     "publication_year": "公開年份",
@@ -862,6 +891,7 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "label": "主題標籤",
     "source_field": "來源欄位",
     "top_applicants": "前三大申請人",
+    "quadrant": "象限",
     "top3_share": "前三大占比(%)",
     "max_share": "最大一家(%)",
     "acquired_count": "受讓取得",
@@ -1381,13 +1411,12 @@ def _build_trend_section(ctx: ChartContext) -> None:
     publication = ctx.report("publication_trend")
     trend_title = f'{application["label_zh"]}與{publication["label_zh"]}'
     render_line_chart(ctx.run_dir / "annual_trend.svg", trend_title, application["rows"], publication["rows"])
-    ctx.chart_rows["annual_trend"] = application["rows"]
-    # report_key 顯式宣告：SVG 檔名（annual_trend）與報表鍵（application_trend）不同名，
-    # 不宣告就會退回檔名 fallback 查找而落空，數據表顯示「無資料」。
-    # 雙 key 卡的數據表以申請趨勢為主序列（公告趨勢在同圖以第二條線呈現）。
+    ctx.chart_rows["annual_trend"] = merge_annual_trend_rows(application["rows"], publication["rows"])
+    # report_key 指向 chart_rows.annual_trend，讓表格可同列對照申請年與公告/公開年；
+    # 圖檔仍由 application_trend + publication_trend 兩份報表共同產生。
     ctx.sections.append({
         "title": trend_title,
-        "report_key": "application_trend",
+        "report_key": "annual_trend",
         "variants": [{"label": "Trend", "file": "annual_trend.svg", "variant_key": "default"}],
     })
 
@@ -1767,6 +1796,43 @@ def _qlabel(px: float, py: float, p_med: float, a_med: float) -> tuple[str, str]
     if px < p_med and py < a_med:
         return "待釐清領域", "需使用者痛點調查"
     return "單一玩家壟斷型", "注意依賴風險"
+
+
+def _opportunity_quadrant_name(row: dict[str, Any], p_med: float, a_med: float) -> str:
+    """依既有四象限門檻回傳前端表格用象限名稱；不改 SVG 產製邏輯。"""
+    hi_patent = float(row["patent_count"]) >= p_med
+    hi_applicant = float(row["applicant_count"]) >= a_med
+    if hi_patent and hi_applicant:
+        return "必守核心"
+    if (not hi_patent) and hi_applicant:
+        return "新興戰場"
+    if hi_patent and (not hi_applicant):
+        return "單一玩家壟斷"
+    return "待釐清"
+
+
+def _opportunity_display_rows(matrix: dict[str, Any]) -> list[dict[str, Any]]:
+    """產生機會四象限前端數據表 rows；主題統計表 rows 與 SVG matrix 均不改。"""
+    p_med = float(matrix.get("patent_count_median", 0))
+    a_med = float(matrix.get("applicant_count_median", 0))
+    rows = []
+    for row in matrix.get("rows", []):
+        rows.append({
+            "label": row.get("label") or row.get("topic_code", ""),
+            "patent_count": row.get("patent_count", 0),
+            "applicant_count": row.get("applicant_count", 0),
+            "quadrant": _opportunity_quadrant_name(row, p_med, a_med),
+            "leading_applicant_count": row.get("leading_applicant_count", 0),
+        })
+    return rows
+
+
+def _opportunity_thresholds(matrix: dict[str, Any]) -> dict[str, float]:
+    """回傳機會四象限表格上方顯示的門檻值。"""
+    return {
+        "patent_count_median": float(matrix.get("patent_count_median", 0)),
+        "applicant_count_median": float(matrix.get("applicant_count_median", 0)),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2189,8 +2255,16 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
         opp_file = f"opportunity_quadrant{suffix}.svg"
         render_opportunity_quadrant_svg(
             ctx.run_dir / opp_file, f"機會四象限分析——{segment_label}", opp_matrix)
-        variants.append({"label": f"機會矩陣{tab_suffix}", "file": opp_file, "variant_key": f"opportunity{suffix}"})
-        ctx.chart_rows[f"opportunity_quadrant{suffix}"] = opp_matrix
+        opp_rows = _opportunity_display_rows(opp_matrix)
+        opp_thresholds = _opportunity_thresholds(opp_matrix)
+        variants.append({
+            "label": f"機會矩陣{tab_suffix}",
+            "file": opp_file,
+            "variant_key": f"opportunity{suffix}",
+            "rows": opp_rows,
+            "thresholds": opp_thresholds,
+        })
+        ctx.chart_rows[f"opportunity_quadrant{suffix}"] = {**opp_matrix, "rows": opp_rows}
         # 🔴 痛點矩陣**不產**（2026-07-29 使用者定案「整個藏起來，等市場線做好再放出來」）。
         #
         # ⚠ 5b4dbef 只把 pain_point_quadrant 從 DEFAULT_REPORT_NAMES 排除，那擋的是

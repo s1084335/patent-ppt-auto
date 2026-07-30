@@ -5,7 +5,8 @@
 # Companion 收到中央 AI 任務後，同樣組這段提示、以 headless `claude -p` 執行、
 # 驗收產物、再回呼確定性程式（--refresh-index）完成顯示層更新。
 #
-# 規格唯一來源：D:\力山\.agents\skills\report-narrative-flow.md
+# 規格來源：repo 內 skills\patent-report-ppt\report-narrative-flow.md；
+# 正式部署若掛載到其他位置，可用 REPORT_NARRATIVE_FLOW_PATH 覆寫。
 #（prompt 模板 v2、各報表解讀重點、口徑守則、痛點待調查固定文案、narratives.json v2 契約、
 #  based_on_version 規則）。本腳本不複製規格內文，只指示 CLI 讀取並遵守。
 #
@@ -23,7 +24,9 @@ $ErrorActionPreference = 'Stop'
 # ---------- 1. 解析目標目錄與版本名（based_on_version ＝ 目錄名） ----------
 $runDirAbs = (Resolve-Path $RunDir).Path
 $version = Split-Path $runDirAbs -Leaf
-$skillPath = 'D:\力山\.agents\skills\report-narrative-flow.md'
+$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$defaultSkillPath = Join-Path $projectRoot 'skills\patent-report-ppt\report-narrative-flow.md'
+$skillPath = if ($env:REPORT_NARRATIVE_FLOW_PATH) { $env:REPORT_NARRATIVE_FLOW_PATH } else { $defaultSkillPath }
 $narrativesPath = Join-Path $runDirAbs 'narratives.json'
 $reportDataPath = Join-Path $runDirAbs 'report_data.json'
 

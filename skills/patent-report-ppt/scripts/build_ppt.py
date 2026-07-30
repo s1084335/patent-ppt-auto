@@ -9,7 +9,7 @@
 
 獨立執行方式（不依賴主專案 import 路徑）：
     uv run --no-project --with python-pptx --python 3.12 \
-        python .agents/skills/patent-report-ppt/scripts/build_ppt.py \
+        python skills/patent-report-ppt/scripts/build_ppt.py \
         --report-dir <報表版本目錄> --approvals <確認槽 JSON> [--output-dir <輸出目錄>]
 """
 

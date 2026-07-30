@@ -133,6 +133,17 @@
 }
 ```
 
+#### 文案 runtime 規則
+
+逐 slot 文案規則與內容品質標準以 `report_ppt_content_rules.md` 為唯一 runtime 來源。`ai:report_ppt` payload 必須載入該檔內容，避免產品規格、skill 文件與 runner prompt 各自維護一份規則。
+
+本段只保留產品契約：
+
+- `SKILL.md` 定義匯出報告 PPT 的流程、產物、頁面與驗收。
+- `report_ppt_content_rules.md` 定義文案產製服務實際使用的逐 slot 寫法與品質標準。
+- `theme.json` 定義字體、顏色、座標與版面數值。
+- `build_ppt.py` 負責 deterministic 組版，不呼叫文案產製服務。
+
 `position_overrides` 只為相容舊資料保留清理路徑；v2.3 不做拖曳，不新增位置編輯。
 
 ### PPTX 組裝
