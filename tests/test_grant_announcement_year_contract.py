@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+import re
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +16,13 @@ MIGRATION = PROJECT_ROOT / "alembic" / "versions" / "0043_report_base_grant_anno
 
 
 class GrantAnnouncementYearContractTests(unittest.TestCase):
+    def test_migration_revision_fits_alembic_version_column(self) -> None:
+        """Alembic revision 必須符合既有 version_num varchar(32) 限制。"""
+        src = MIGRATION.read_text(encoding="utf-8")
+        match = re.search(r'^revision\s*=\s*"([^"]+)"', src, flags=re.MULTILINE)
+        self.assertIsNotNone(match)
+        self.assertLessEqual(len(match.group(1)), 32)
+
     def test_refresh_derives_year_from_grant_announcement_date(self) -> None:
         src = REFRESH.read_text(encoding="utf-8")
         self.assertIn('"授權公告年"', src)

@@ -307,6 +307,16 @@ class PromoteCodeRequest(BaseModel):
 
     new_code: str = Field(min_length=1, max_length=64)
 
+class NotGroupedRequest(BaseModel):
+    """標記某個名稱為「不歸戶」。
+
+    ⚠ 措辭用「不歸戶」不用「忽略」「個人」（2026-07-30 使用者定）：
+    那些名稱不只是自然人（實測含 `SKI-ROW INC DBA ENERGYFIT` 這類機構），
+    「不歸戶」描述的是**動作**不是身分。
+    """
+
+    name: str = Field(min_length=1, max_length=200)
+
 
 def group_aliases_by_code(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """把 company_aliases 列聚成「代碼 → 變體清單」，供既有代碼區兩層展開。
@@ -333,6 +343,9 @@ def group_aliases_by_code(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 # 顯示名：與報表同一順位（中文 → 英文正式名）。
                 # 第三段「原值」屬專利原始欄位，不在對照表這層。
                 "company_name": zh or en,
+                # 待確認組（review_required）供前端標「待補中文名」與確認鈕；
+                # 一組內各列狀態一致，取先出現者即可（規格 b3）。
+                "review_status": str(row.get("review_status") or "confirmed"),
                 "variants": [],
             },
         )
@@ -594,10 +607,16 @@ def list_existing_company_codes() -> dict[str, Any]:
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
         rows = conn.execute(
             # id 一併帶出：變體維護（移除單一變體）要能精確指到哪一列。
+            #
+            # ⚠ 2026-07-30 納入 `review_required`（規格 applicant-code-grouping-spec.md b3）：
+            # 匯入時對「有代碼但未建組」自動建待確認組，若這裡仍只查 confirmed，
+            # 那些組**建了卻沒有任何地方看得到**——資料在庫裡但使用者不知情，
+            # 比不建更糟。review_status 一併帶出供前端標記與確認鈕使用。
+            # ⚠ 其他消費端（待補清單、報表顯示）維持只吃 confirmed，不受影響。
             '''
-            SELECT id, "申請人代碼", "公司中文名稱", "正規化名稱", "別稱"
+            SELECT id, "申請人代碼", "公司中文名稱", "正規化名稱", "別稱", review_status
             FROM derived_layer.company_aliases
-            WHERE review_status = 'confirmed'
+            WHERE review_status IN ('confirmed', 'review_required')
               AND NULLIF(BTRIM("申請人代碼"), '') IS NOT NULL
             ORDER BY "申請人代碼", "別稱"
             '''
@@ -679,6 +698,94 @@ def _connect_dict_rows():
     return psycopg.connect(**get_connection_kwargs(), row_factory=dict_row)
 
 
+# ══════════ 不歸戶清單（2026-07-30，規格 applicant-code-grouping-spec.md 批次 c）══════════
+#
+# 問題：待補清單有些名稱**永遠歸不掉**——實測 11 項中 7 個自然人、1 個 DBA 機構，
+# 手動也歸不進任何公司組，於是永遠掛著，每次看到都要重新判斷。
+# L1/L2 對這 11 項實測全部無命中，自動化處理不了。
+#
+# ⚠ 落點採 B2、**零 migration**：
+#   - review_status='confirmed'  → 符合待補清單的排除條件，標記後自動離開清單
+#   - source_type='filter'       → 既有 CHECK 值，語意即「被篩掉的」
+#   - 申請人代碼=NULL            → 沒有代碼（符合「代碼欄只放 WIPS 真代碼」）
+#   - 正規化名稱=名稱本身        → ⚠ 見下方
+NOT_GROUPED_SOURCE_LABEL = "not_grouped:manual"
+
+
+@router.get("/company-codes/not-grouped")
+def list_not_grouped_names() -> dict[str, Any]:
+    """列出已標為不歸戶的名稱（供收合區塊顯示與還原）。"""
+    with _connect_dict_rows() as conn:
+        rows = conn.execute(
+            'SELECT id, "別稱" AS name, imported_at '
+            "FROM derived_layer.company_aliases "
+            "WHERE source_type = 'filter' AND source_file = %s "
+            'ORDER BY "別稱"',
+            (NOT_GROUPED_SOURCE_LABEL,),
+        ).fetchall()
+    items = [{"id": r["id"], "name": r["name"]} for r in rows]
+    return {"items": items, "count": len(items)}
+
+
+@router.post("/company-codes/not-grouped")
+def mark_name_not_grouped(body: NotGroupedRequest) -> dict[str, Any]:
+    """把一個名稱標為不歸戶——它會離開待補清單，但顯示維持不變。
+
+    🔴 **`正規化名稱` 必須填該名稱本身**（B2 方案的核心）：
+    報表以**別稱字面反查** confirmed 列，取
+    `display_name = COALESCE(公司中文名稱, 正規化名稱)`。
+    兩欄都留空的話 `Zeng Qing` 會被反查命中卻顯示**空白**——比不標記更糟。
+    填自身則顯示原名，與標記前**完全相同**，且不必改報表 SQL（4 處 LATERAL）。
+
+    ⚠ 標記不是刪除：DELETE 同路徑即可還原回待補清單。
+    """
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="名稱不得為空")
+
+    with _connect_dict_rows() as conn:
+        exists = conn.execute(
+            "SELECT id FROM derived_layer.company_aliases "
+            "WHERE source_type = 'filter' AND source_file = %s "
+            # ⚠ raw string：`\s` 在一般字串是無效跳脫（SyntaxWarning），
+            # 且要與 alias_lookup_key 的產生規則同一把（lower + 壓空白）。
+            r"  AND alias_lookup_key = lower(regexp_replace(btrim(%s), '\s+', ' ', 'g'))",
+            (NOT_GROUPED_SOURCE_LABEL, name),
+        ).fetchone()
+        if exists:
+            return {"marked": 0, "already": True, "id": exists["id"]}
+        row = conn.execute(
+            'INSERT INTO derived_layer.company_aliases '
+            '("申請人代碼", "公司中文名稱", "正規化名稱", "別稱", '
+            " source_file, source_type, review_status) "
+            # 代碼 NULL、中文名 NULL、正規化名稱＝名稱本身（見 docstring）。
+            "VALUES (NULL, NULL, %s, %s, %s, 'filter', 'confirmed') "
+            "RETURNING id",
+            (name, name, NOT_GROUPED_SOURCE_LABEL),
+        ).fetchone()
+        conn.commit()
+    return {"marked": 1, "already": False, "id": row["id"]}
+
+
+@router.delete("/company-codes/not-grouped/{alias_id}")
+def restore_not_grouped_name(alias_id: int) -> dict[str, Any]:
+    """還原：刪掉標記列，該名稱重新出現在待補清單。
+
+    ⚠ 只刪 source_type='filter' 且來源是本機制的列——不得誤刪正式對照列。
+    """
+    with _connect_dict_rows() as conn:
+        cur = conn.execute(
+            "DELETE FROM derived_layer.company_aliases "
+            "WHERE id = %s AND source_type = 'filter' AND source_file = %s",
+            (alias_id, NOT_GROUPED_SOURCE_LABEL),
+        )
+        deleted = cur.rowcount
+        conn.commit()
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"找不到不歸戶紀錄 {alias_id}")
+    return {"restored": int(deleted)}
+
+
 @router.delete("/company-codes/variants/{alias_id}")
 def remove_company_variant(alias_id: int) -> dict[str, Any]:
     """移除單一變體（該寫法退回待補清單、其專利回原始字面）。
@@ -735,10 +842,16 @@ def rename_company_group(code: str, body: RenameGroupRequest) -> dict[str, Any]:
     if not (zh or en):
         raise HTTPException(status_code=422, detail="中文名與英文正式名不得同時為空；要移除整組請刪除該代碼。")
 
+    # ⚠ 2026-07-30 納入 `review_required`（規格 applicant-code-grouping-spec.md b4）：
+    # 待確認組（匯入時依 WIPS 代碼自動建立）要能用同一支端點「確認」——
+    # 只讀 confirmed 的話那些組一律 404，前端的確認鈕按了必失敗。
+    # ⚠ apply_confirmed_display_names 會把讀到的列 re-canonicalize 成 confirmed，
+    # 故確認動作等同「改名並轉正」，不需另寫轉狀態的 SQL。
     with _connect_dict_rows() as conn:
         rows = conn.execute(
             'SELECT "別稱" FROM derived_layer.company_aliases '
-            "WHERE \"申請人代碼\" = %s AND review_status = 'confirmed'",
+            "WHERE \"申請人代碼\" = %s "
+            "  AND review_status IN ('confirmed', 'review_required')",
             (code,),
         ).fetchall()
     if not rows:

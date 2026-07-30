@@ -987,11 +987,14 @@ async function renderCompanyCodeRegistry() {
     + '<div id="company-code-body"><div class="hint">載入中…</div></div>'
     + '</details>';
   try {
-    const [pending, existing] = await Promise.all([
+    const [pending, existing, notGrouped] = await Promise.all([
       getJson(API + '/company-codes/pending?limit=200'),
       getJson(API + '/company-codes/existing'),
+      // 不歸戶清單（規格批次 c）：與另兩支併發取，不多一輪往返。
+      getJson(API + '/company-codes/not-grouped'),
     ]);
     pendingCodeNames = pending.items || [];
+    notGroupedNames = notGrouped.items || [];
     renderCompanyCodeBody(existing.items || []);
   } catch (e) {
     const body = el('company-code-body');
@@ -1021,6 +1024,62 @@ function unsavedCodeGroupCount() {
       || (g.variants || []).some(v => (v || '').trim());
     return !!filled;
   }).length;
+}
+
+// ══════════ 不歸戶清單（2026-07-30，規格 applicant-code-grouping-spec.md 批次 c）══════════
+//
+// 問題：待補清單有些名稱**永遠歸不掉**（實測 11 項中 7 個自然人、1 個 DBA 機構），
+// 手動也歸不進任何組，於是永遠掛著，每次看到都要重新判斷一次。
+//
+// ⚠ 標記**不是刪除**：後端只寫一列 source_type='filter'，隨時可還原。
+// ⚠ 顯示**完全不變**：後端把「正規化名稱」填成該名稱本身，報表反查照樣顯示原名。
+let notGroupedNames = [];
+
+function renderNotGroupedNames() {
+  if (!notGroupedNames.length) return '';
+  return '<details style="margin-top:.5rem">'
+    + '<summary>不歸戶的名稱（' + notGroupedNames.length + ' 個）</summary>'
+    + '<p class="hint" style="padding:.3rem 0 .3rem 1rem">'
+    + '這些名稱不併入任何代碼組，已從待補清單移除；專利表與報表的顯示維持原樣。</p>'
+    + '<ul style="margin:.2rem 0 .2rem 1.6rem;font-size:.85rem;list-style:none;padding:0">'
+    + notGroupedNames.map(it =>
+        '<li style="padding:.12rem 0">' + escHtml(it.name)
+        + ' <button class="btn-mini" onclick="restoreNotGroupedName(' + it.id + ')">還原</button>'
+        + '</li>').join('')
+    + '</ul></details>';
+}
+
+// 把待補清單的某個名稱標為不歸戶（第三個入口，✕）。
+async function markNameNotGrouped(i) {
+  const item = pendingCodeNames[i];
+  if (!item) return;
+  if (!confirm('把「' + item.name + '」標為不歸戶？\n\n'
+      + '它會從待補清單移除，但專利表與報表的顯示不變。之後可在「不歸戶的名稱」還原。')) return;
+  try {
+    const resp = await fetch(API + '/company-codes/not-grouped', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: item.name }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('標記失敗：' + (err.detail || resp.status));
+      return;
+    }
+    await renderCompanyCodeRegistry();   // 重載：該名稱會離開待補清單
+  } catch (e) {
+    alert('連線錯誤：' + e.message);
+  }
+}
+
+// 還原：刪掉標記列，該名稱重新出現在待補清單。
+async function restoreNotGroupedName(aliasId) {
+  try {
+    const resp = await fetch(API + '/company-codes/not-grouped/' + aliasId, { method: 'DELETE' });
+    if (!resp.ok) { alert('還原失敗：' + resp.status); return; }
+    await renderCompanyCodeRegistry();
+  } catch (e) {
+    alert('連線錯誤：' + e.message);
+  }
 }
 
 // 有未寫入的組就在 AI 鈕旁警示，並指出補救動作（按「確定寫入資料庫」）。
@@ -1056,6 +1115,12 @@ function renderCompanyCodeBody(existingGroups) {
             + escHtml(it.name) + '<span class="n">' + escHtml(it.patent_count) + '</span>'
             + '<span class="chip-find" title="看看是哪些專利"'
             + ' onclick="event.stopPropagation();showPendingNamePatents(' + i + ')">🔍</span>'
+            // 第三個入口（2026-07-30，規格批次 c）：標為不歸戶。
+            // ⚠ 前兩個入口（點擊填入變體、🔍 篩專利）維持不變。
+            // 措辭用「不歸戶」不用「忽略」「個人」——那些名稱不只是自然人（含機構），
+            // 描述的是動作不是身分。
+            + '<span class="chip-find" title="這個名稱歸不了任何組，標為不歸戶"'
+            + ' onclick="event.stopPropagation();markNameNotGrouped(' + i + ')">✕</span>'
             + '</span>').join('')
         : '<span class="hint">（無待補項目）</span>')
     + '</div></details>'
@@ -1077,6 +1142,8 @@ function renderCompanyCodeBody(existingGroups) {
         ? existingGroups.map(existingGroupHtml).join('')
         : '<p class="hint" style="padding:.3rem 0 0 1rem">（尚無已確認的代碼）</p>')
     + '</details>'
+    // 不歸戶清單（2026-07-30，規格批次 c）：⚠ 不新增大區塊，掛在既有代碼區之後。
+    + renderNotGroupedNames()
     // 新增變體集中入口（2026-07-29 使用者定「做成集中入口」「一個區塊下拉選組」）：
     // 原本要把新寫法歸進既有組，只能繞路用上方「新增一組」表單填既有代碼，
     // 且中文名與正規化名稱必須完全一致否則 409。這裡選了組就自動帶入那三個值，
@@ -6017,19 +6084,28 @@ function aliasVariantsHtml(av) {
   const inserted = av.inserted || 0;
   const created = (av.created_groups || []).length;
   const manual = (av.manual_review || []).length;
-  if (!inserted && !created && !manual) return '';
+  // L2 疑似（規格批次 a）：只提示不寫入——忽略後綴後不同法人可能同 key，
+  // 誤歸戶比漏歸戶難修，故一律由使用者確認。
+  const suspected = (av.suspected || []).length;
+  if (!inserted && !created && !manual && !suspected) return '';
   let html = '<div class="stat-grid" style="margin-top:0.6rem">'
     + '<span class="k">公司名自動歸戶</span><span>' + inserted + ' 筆</span>';
   if (created) {
     html += '<span class="k">待確認代碼組</span><span>' + created
       + ' 組（依 WIPS 代碼建立，中文名待補）</span>';
   }
+  if (suspected) {
+    html += '<span class="k">疑似同一家</span><span>' + suspected
+      + ' 筆（僅標示，未歸戶）</span>';
+  }
   if (manual) html += '<span class="k">需人工複核</span><span>' + manual + ' 筆</span>';
   html += '</div>';
-  if (created) {
+  if (created || suspected) {
     html += '<p class="hint" style="padding:0.35rem 0 0">'
-      + '到「瀏覽專利 → 專利權人代碼與中文名 → 資料庫已有的代碼」補中文名並確認；'
-      + '未確認前不會進入專利表與報表顯示。</p>';
+      + '到「瀏覽專利 → 專利權人代碼與中文名」處理'
+      + (created ? '：在「資料庫已有的代碼」補中文名後按確認' : '')
+      + (suspected ? '；疑似項在待補清單標出，確認後才歸戶' : '')
+      + '。未確認前不會進入專利表與報表顯示。</p>';
   }
   return html;
 }

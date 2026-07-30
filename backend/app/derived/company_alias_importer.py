@@ -28,6 +28,52 @@ def normalize_lookup(value: str | None) -> str | None:
     return " ".join(text.casefold().split())
 
 
+# L2 疑似比對用的公司後綴（規格 applicant-code-grouping-spec.md 3-2）。
+# 只剝**結尾**——中間出現的同字（如 "CO OP MACHINERY"）不動。
+_LOOSE_SUFFIXES = (
+    "co ltd", "co", "ltd", "limited", "inc", "incorporated", "llc", "lp",
+    "corp", "corporation", "gmbh", "ag", "ab", "bv", "nv", "sa", "srl",
+    "plc", "pte", "pty", "kk", "有限公司", "股份有限公司", "株式会社", "株式會社",
+)
+# 標點一律轉空白（不是刪除）——刪除會把 "A.B" 併成 "ab"，與 "AB" 撞在一起。
+_LOOSE_PUNCT_RE = re.compile(r"[.,()\[\]{}'\"`;:/\\&+]")
+# "doing business as"：⚠ **切斷**不是剝除，見 normalize_loose docstring。
+_DBA_RE = re.compile(r"\bd\s*/?\s*b\s*/?\s*a\b|\bdba\b")
+
+
+def normalize_loose(value: str | None) -> str | None:
+    """L2 疑似比對鍵：在 `normalize_lookup` 之上去標點、剝結尾後綴、DBA 切斷。
+
+    ⚠ **只供「疑似」提示，不得用於自動歸戶**（規格 3-3）：忽略後綴後
+    「A CO., LTD.」與「A INC.」會得到同一個 key，但那可能是兩家不同法人。
+    誤歸戶比漏歸戶難修——要人工找出來再拆開。
+
+    ⚠ **DBA 是切斷不是剝除**（2026-07-30 實測資料驅動）：
+    `SKI-ROW INC DBA ENERGYFIT` 的 DBA 在**中間**。當後綴剝掉會得到
+    `SKI-ROW INC ENERGYFIT`——**不存在的名稱**，比不處理更糟。
+    切斷後取前段 `SKI-ROW INC`（法人本名），再照常剝 INC。
+    """
+    text = normalize_lookup(value)
+    if not text:
+        return None
+    # ① DBA 切斷：只取前段（法人本名）。
+    cut = _DBA_RE.split(text, maxsplit=1)[0]
+    # ② 標點轉空白後重新收斂。
+    cleaned = " ".join(_LOOSE_PUNCT_RE.sub(" ", cut).split())
+    # ③ 反覆剝結尾後綴（"X Co., Ltd." 去標點後是 "x co ltd"，要剝兩層）。
+    changed = True
+    while changed and cleaned:
+        changed = False
+        for suffix in _LOOSE_SUFFIXES:
+            if cleaned == suffix:
+                break
+            if cleaned.endswith(" " + suffix):
+                cleaned = cleaned[: -(len(suffix) + 1)].strip()
+                changed = True
+                break
+    return cleaned or text
+
+
 def load_alias_rows(path: Path, with_dropped: bool = False):
     """載入來源檔並正規化；with_dropped=True 時回傳 (rows, dropped)。"""
     suffix = path.suffix.lower()
@@ -176,10 +222,71 @@ def import_company_aliases(
 CURATION_SOURCE_PREFIX = "display_name_curation"
 
 
+# 名稱欄 → 對應代碼欄（2026-07-30 規格 applicant-code-grouping-spec.md 2-6）。
+#
+# ⚠ 原本自動歸戶只掃「申請人／標準化申請人」兩欄，而待補清單掃五欄——
+# 專利權人／受讓人欄的名稱**看得見卻不會自動歸戶**（使用者：「範圍納入到
+# 各種專利權人欄位都要」）。此表把兩者口徑統一。
+#
+# ⚠ `最近受讓人` 的代碼欄為 None：WIPS 匯出**沒有**受讓人代碼欄
+# （mappings/wips.py 只有 `申請人代表碼` 與 `標準當前專利權人代碼` 兩個代碼欄）。
+# 不得誤掛申請人代碼——那是不同欄位的代碼，掛了會把受讓人歸到申請人的組。
+PEOPLE_NAME_CODE_COLUMNS: tuple[tuple[str, str | None], ...] = (
+    ("申請人", "申請人代表碼"),
+    ("標準化申請人", "申請人代表碼"),
+    ("最近專利權人[US,JP,KR,CN,CA,AU]", "標準當前專利權人代碼[US,JP,KR,CN,CA,AU]"),
+    ("標準當前專利權人[US,JP,KR,CN,CA,AU]", "標準當前專利權人代碼[US,JP,KR,CN,CA,AU]"),
+    ("最近受讓人[US,KR,CN]", None),
+)
+
+
+def build_people_pairs(people: dict[str, Any]) -> list[tuple[str | None, str]]:
+    """從一列 patent_people 抽出 (代碼, 名稱) 配對，供名稱治理管線消費。
+
+    匯入（wips_importer）與全量重掃（alias_variant_sweep）共用本函式，
+    不各自維護一份掃描邏輯。
+
+    ⚠ `A公司 | B公司` 多值要拆：WIPS 以 ` | ` 分隔同欄多個人／公司，
+    不拆會把整串當成一家（實測庫內申請人 14 筆、專利權人 10 筆含此分隔符）。
+
+    🔴 **只有每欄第一個名稱帶代碼，其餘一律 None**（2026-07-30 使用者定案）：
+    WIPS 的代碼欄是**整列一個**，拆名稱時無從得知哪個名稱對應那個代碼。
+    若每筆都掛同一代碼，第二個名稱（常是自然人，如 `A公司 | Zeng Qing` 的
+    `Zeng Qing`）會被**自動併進公司組**——那跨過「系統不預先分組」的紅線，
+    即使結果可能正確也該由使用者按一下。
+    依據：WIPS 慣例第一個是主申請人（`refresh_report_patent_base` 的
+    `split_part(..., '|', 1)` 同一假設）。其餘名稱走無代碼路徑進待補清單。
+
+    ⚠ 個人名（自然人）不在此過濾——它們照常進待補清單，由使用者決定歸入或忽略。
+    """
+    pairs: list[tuple[str | None, str]] = []
+    seen: set[tuple[str | None, str]] = set()
+    for name_col, code_col in PEOPLE_NAME_CODE_COLUMNS:
+        raw_name = clean_text(people.get(name_col))
+        if not raw_name:
+            continue
+        col_code = clean_text(people.get(code_col)) if code_col else None
+        # 每欄各自算「第一個」——專利權人欄的第一個要帶它自己的代碼欄。
+        is_first = True
+        for part in raw_name.split("|"):
+            name = clean_text(part)
+            if not name:
+                continue
+            code = col_code if is_first else None
+            is_first = False
+            key = (code, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            pairs.append(key)
+    return pairs
+
+
 def govern_company_names(
     pairs: list[tuple[str | None, str | None]],
     source_label: str = "variant_intake",
     connect_kwargs: dict[str, Any] | None = None,
+    standardized_names: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """名稱治理管線核心：變體註冊＋待中文化偵測，匯入與 sweep 共用同一套邏輯。
 
@@ -187,8 +294,17 @@ def govern_company_names(
     - code 在 company_aliases 對到唯一名稱組（中文名＋英文正式名）→ 新變體補一列別稱，
       兩個名稱欄沿用既有值；
       既有別稱（normalize 後相同）跳過。
-    - code 不在表中（unknown_code）或對到多組名稱（conflicting_code）→ 進 manual_review，
-      不自行合併、不寫表。
+    - code 不在表中 → **自動建待確認組**（2026-07-30 規格 applicant-code-grouping-spec.md
+      批次 b）：WIPS 同時給代碼與 `標準化申請人`，四欄中三欄可直接推導，只有中文名
+      （市場慣用名＝判斷不是資料）留空。標 `review_status='review_required'`，
+      既有消費端（待補清單、報表顯示）都只吃 `confirmed`，故不污染正式資料，
+      且該名稱**仍留在待補清單**直到使用者確認。
+      ⚠ 不用 `ai_suggested`——本路徑是確定性規則，無 AI 參與（使用者明示）。
+    - code 對到多組名稱（conflicting_code）→ 進 manual_review，不自行合併、不寫表。
+      ⚠ 衝突代碼**不自動建組**：資料本身有問題，猜哪一組都可能錯。
+
+    standardized_names＝{代碼: WIPS 標準化申請人}，供建組時填英文正式名；
+    未提供或該代碼缺值時退回該筆的原始名稱（不因缺一欄就整組不建）。
     - needs_zh_name：本批涉及且已在對照表的 code 中，canonical 顯示名不含 CJK 字元
       （尚無市場慣用中文名）且未經 curation 裁決者——該代碼不存在
       source_file LIKE 'display_name_curation%' 的列；「保留原文」也是正式裁決，不重複浮現。
@@ -205,6 +321,10 @@ def govern_company_names(
     skipped = 0
     manual: list[dict[str, str]] = []
     needs_zh: list[dict[str, str]] = []
+    # 本批自動建立的待確認組（規格批次 b）；供匯入 summary 顯示「待確認代碼組 N 組」。
+    created_groups: list[dict[str, str]] = []
+    # L2 疑似同一家（規格批次 a）：只回報供使用者確認，**不寫入對照表**。
+    suspected: list[dict[str, str]] = []
     with psycopg.connect(**(connect_kwargs or get_connection_kwargs())) as conn:
         # 2026-07-28 四欄定案：只讀 `公司中文名稱`／`正規化名稱`
         # （拆欄前的單一名稱欄已於 0041 移除，不再有 fallback）。
@@ -231,16 +351,94 @@ def govern_company_names(
             if norm:
                 aliases_by_code.setdefault(code, set()).add(norm)
 
+        # 無代碼時的名稱索引（規格批次 a）：L1 精確鍵與 L2 寬鬆鍵各一份。
+        # ⚠ L2 只用於「疑似」提示，不自動寫入（見 normalize_loose docstring）。
+        code_by_exact: dict[str, str] = {}
+        code_by_loose: dict[str, str] = {}
+        for code_key, alias_set in aliases_by_code.items():
+            for norm in alias_set:
+                code_by_exact.setdefault(norm, code_key)
+        for code_key, name_set in names_by_code.items():
+            for zh, en in name_set:
+                for official in (zh, en):
+                    norm = normalize_lookup(official)
+                    if norm:
+                        code_by_exact.setdefault(norm, code_key)
+        for norm, code_key in code_by_exact.items():
+            loose = normalize_loose(norm)
+            if loose:
+                code_by_loose.setdefault(loose, code_key)
+
         batch_codes: set[str] = set()
         for raw_code, raw_variant in pairs:
             code = clean_text(raw_code)
             variant = clean_text(raw_variant)
-            if not code or not variant:
+            if not variant:
+                continue
+            if not code:
+                # 🆕 無代碼 → 名稱兩級比對（規格批次 a，2026-07-30）。
+                # 實測 60 筆專利中 57 筆（95%）無代碼，使用者手建的 20 組 TEMP
+                # 原本對新資料**完全沒有作用**——只認代碼的話那些組形同虛設。
+                norm_variant = normalize_lookup(variant)
+                if not norm_variant:
+                    continue
+                hit = code_by_exact.get(norm_variant)
+                if hit:
+                    # L1 完全命中 → 歸入該組。已有這個別稱就跳過，否則補一列。
+                    if norm_variant in aliases_by_code.get(hit, set()):
+                        skipped += 1
+                        continue
+                    names = names_by_code.get(hit) or set()
+                    canonical_zh, canonical_en = next(iter(names)) if len(names) == 1 else ("", "")
+                    conn.execute(
+                        'INSERT INTO derived_layer.company_aliases '
+                        '("申請人代碼", "公司中文名稱", "正規化名稱", "別稱", source_file) '
+                        "VALUES (%s, %s, %s, %s, %s) "
+                        'ON CONFLICT ("申請人代碼", alias_lookup_key) '
+                        "WHERE review_status = 'confirmed' DO NOTHING",
+                        (hit, canonical_zh or None, canonical_en or None, variant, source_label),
+                    )
+                    aliases_by_code.setdefault(hit, set()).add(norm_variant)
+                    code_by_exact.setdefault(norm_variant, hit)
+                    inserted += 1
+                    continue
+                loose_variant = normalize_loose(variant)
+                loose_hit = code_by_loose.get(loose_variant) if loose_variant else None
+                if loose_hit:
+                    # ⚠ L2 疑似**只提示不寫入**：忽略後綴後「A CO., LTD.」與
+                    # 「A INC.」同 key，可能是兩家不同法人。誤歸戶比漏歸戶難修。
+                    suspected.append({
+                        "company_code": loose_hit,
+                        "alias_name": variant,
+                        "reason": "suspected_same_company",
+                    })
+                # L3 都不命中：不寫入、不回報——維持既有行為（進待補清單）。
                 continue
             batch_codes.add(code)
             names = names_by_code.get(code)
             if names is None:
-                manual.append({"company_code": code, "alias_name": variant, "reason": "unknown_code"})
+                # 🆕 未建組的真代碼 → 自動建待確認組（規格批次 b）。
+                # 英文正式名優先取 WIPS 標準化申請人；缺就退回原始寫法
+                # （⚠ 不因缺一欄就整組不建，那等於回到「只丟 manual」的現況）。
+                canonical_en = clean_text((standardized_names or {}).get(code)) or variant
+                conn.execute(
+                    'INSERT INTO derived_layer.company_aliases '
+                    '("申請人代碼", "公司中文名稱", "正規化名稱", "別稱", '
+                    " source_file, source_type, review_status) "
+                    "VALUES (%s, %s, %s, %s, %s, 'import', 'review_required') "
+                    'ON CONFLICT ("申請人代碼", alias_lookup_key) '
+                    "WHERE review_status = 'confirmed' DO NOTHING",
+                    # ⚠ 中文名一律 None：市場慣用名是判斷不是資料，不得自動填。
+                    (code, None, canonical_en, variant, f"auto:{source_label}"),
+                )
+                # 同批同代碼的第二個名稱要能續掛，故就地登記為已知組。
+                names_by_code[code] = {("", canonical_en)}
+                aliases_by_code.setdefault(code, set()).add(normalize_lookup(variant))
+                created_groups.append({
+                    "company_code": code,
+                    "normalized_name": canonical_en,
+                    "alias_name": variant,
+                })
                 continue
             if len(names) > 1:
                 manual.append({"company_code": code, "alias_name": variant, "reason": "conflicting_code"})
@@ -303,6 +501,8 @@ def govern_company_names(
         "skipped_existing": skipped,
         "manual_review": manual,
         "needs_zh_name": needs_zh,
+        "created_groups": created_groups,
+        "suspected": suspected,
     }
 
 
@@ -310,13 +510,23 @@ def register_known_code_variants(
     pairs: list[tuple[str | None, str | None]],
     source_label: str = "variant_intake",
     connect_kwargs: dict[str, Any] | None = None,
+    standardized_names: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """已知 WIPS code 的新名稱變體補入唯一對照表（薄包裝，委派名稱治理管線）。
+    """WIPS code 的名稱變體補入唯一對照表（薄包裝，委派名稱治理管線）。
 
-    保留原簽章供 wips_importer 匯入時呼叫（importers 不需改）；實際邏輯統一在
-    govern_company_names，匯入摘要因此自動帶出 needs_zh_name（新公司進庫即浮現待中文化）。
+    保留原簽章供 wips_importer 匯入時呼叫；實際邏輯統一在 govern_company_names，
+    匯入摘要因此自動帶出 needs_zh_name（新公司進庫即浮現待中文化）。
+
+    ⚠ 新增參數**必須逐層轉傳**：本專案已兩次踩「中間層漏接參數」的靜默失敗
+    （前端送 `aliases` 後端欄位是 `variants`、`report_keys` 被 Pydantic 丟棄），
+    兩次都是頭尾對、中間斷，測試照樣全綠。
     """
-    return govern_company_names(pairs, source_label=source_label, connect_kwargs=connect_kwargs)
+    return govern_company_names(
+        pairs,
+        source_label=source_label,
+        connect_kwargs=connect_kwargs,
+        standardized_names=standardized_names,
+    )
 
 
 def resolve_group_names(spec: dict[str, Any]) -> tuple[str | None, str | None]:

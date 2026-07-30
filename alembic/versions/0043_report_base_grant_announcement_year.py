@@ -1,6 +1,6 @@
 """report_patent_base 補「授權公告年」供核准公告趨勢使用。
 
-Revision ID: 0043_report_base_grant_announcement_year
+Revision ID: 0043_grant_announcement_year
 Revises: 0042_applicant_expanded_view
 Create Date: 2026-07-30
 
@@ -14,7 +14,7 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "0043_report_base_grant_announcement_year"
+revision = "0043_grant_announcement_year"
 down_revision = "0042_applicant_expanded_view"
 branch_labels = None
 depends_on = None

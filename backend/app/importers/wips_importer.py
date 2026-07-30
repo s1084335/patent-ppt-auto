@@ -24,7 +24,10 @@ from backend.app.mappings.wips import (
     SOURCE_SYSTEM,
     canonical_field_name,
 )
-from backend.app.derived.company_alias_importer import register_known_code_variants
+from backend.app.derived.company_alias_importer import (
+    build_people_pairs,
+    register_known_code_variants,
+)
 from backend.app.transforms.dates import parse_date, year_from_date
 from backend.app.transforms.text import clean_long_text, clean_text, value_to_text
 from backend.app.transforms.patent_numbers import (
@@ -717,6 +720,8 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
     stats = {"inserted": 0, "matched_existing": 0, "updated": 0}
     # 匯入列的 (申請人代表碼, 名稱) 供已知 code 變體即時補入；於 commit 後統一註冊（該函式自管連線）
     variant_pairs: list[tuple[str | None, str | None]] = []
+    # 代碼 → WIPS 標準化申請人，供未建組時填英文正式名（規格批次 b）。
+    standardized_by_code: dict[str, str] = {}
     # 本次涉及的 patent_ids（新建＋命中既有），保序去重，供匯入圈 workspace（2026-07-22 定案）。
     touched_patent_ids: list[int] = []
     seen_patent_ids: set[int] = set()
@@ -753,8 +758,15 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
                 replace_people(cur, patent_id, raw_record_id, item["people"])
                 replace_attributes(cur, patent_id, raw_record_id, item["attributes"])
                 people = item["people"]
-                variant_pairs.append((people.get("申请人代表码"), people.get("申请人")))
-                variant_pairs.append((people.get("申请人代表码"), people.get("标准化申请人")))
+                # 五欄配對（2026-07-30 規格 2-6）：原本只取申請人兩欄，
+                # 專利權人／受讓人欄的名稱看得見卻不會自動歸戶。改走共用函式，
+                # 與待補清單同一套欄位口徑，且 `A | B` 多值會拆開。
+                variant_pairs.extend(build_people_pairs(people))
+                # 建組時要用的英文正式名：WIPS 標準化申請人（現成資料）。
+                _std = clean_text(people.get("标准化申请人"))
+                _code = clean_text(people.get("申请人代表码"))
+                if _code and _std:
+                    standardized_by_code.setdefault(_code, _std)
                 # 同列多圖（load_xlsx_rows 偵測）警告；規格明文要求不得靜默丟棄。
                 row_warning = raw.get(FIGURE_WARNINGS_KEY)
                 if row_warning:
@@ -822,7 +834,8 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
     summary["figure_warnings"] = figure_warnings
     # 報表定案 #3 接線：已知 WIPS code 的新名稱變體即時補入唯一對照表（unknown/conflicting 進 manual）。
     summary["alias_variants"] = register_known_code_variants(
-        variant_pairs, source_label=f"import:{path.name}")
+        variant_pairs, source_label=f"import:{path.name}",
+        standardized_names=standardized_by_code)
     return summary
 
 
