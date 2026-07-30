@@ -48,9 +48,9 @@ class AggregateColumnsTests(unittest.TestCase):
         self.assertIn('COUNT(DISTINCT "applicant_display_name")::int AS "applicant_count"', sql)
 
     def test_publication_trend_reads_announcement_year(self) -> None:
-        """核准公告趨勢要讀中文欄位「授權公告年」，不得沿用代表日期 publication_year。"""
+        """授權公告趨勢要讀中文欄位「授權公告年」，不得沿用代表日期 publication_year。"""
         definition = REPORT_DEFINITIONS["publication_trend"]
-        self.assertEqual(definition.label_zh, "專利核准公告趨勢")
+        self.assertEqual(definition.label_zh, "專利授權公告趨勢")
         self.assertEqual(definition.columns, ("授權公告年",))
         self.assertEqual(definition.group_by, ("授權公告年",))
         self.assertEqual(definition.default_order, (("授權公告年", "asc"),))

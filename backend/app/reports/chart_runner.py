@@ -858,7 +858,7 @@ def merge_annual_trend_rows(
     application_rows: list[dict[str, Any]],
     publication_rows: list[dict[str, Any]],
 ) -> list[dict[str, int]]:
-    """將申請年與核准公告年趨勢合併成前端表格可直接交叉對照的 rows。"""
+    """將申請年與授權公告年趨勢合併成前端表格可直接交叉對照的 rows。"""
     app = {
         year: count
         for row in application_rows
@@ -896,7 +896,7 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "patent_count": "專利件數",
     "year": "年份",
     "application_count": "申請件數",
-    "授權公告件數": "核准公告件數",
+    "授權公告件數": "授權公告件數",
     "applicant_count": "申請人家數",
     "application_year": "申請年份",
     "授權公告年": "授權公告年",
@@ -1415,6 +1415,12 @@ class ChartContext:
     # 分群分析資料（由呼叫端注入，不含 DB SQL）。
     # 結構：{topics, assignments, normalized_applicants, pain_data?, top_applicants_ws?}
     cluster_data: dict[str, Any] | None = None
+    # 分群報表的 report 形狀（cluster_topic_table／opportunity_quadrant），由
+    # _build_cluster_analytics_section 填入、組檔時顯式併進 report_data["reports"]。
+    # ⚠ 2026-07-30 實機：這兩份不是 SQL 報表、進不了 fetched → reports bucket 一直
+    # 缺它們 → build_ppt 判無資料跳頁（PPT 只剩 11 頁）。SVG 有產、資料卻不在，
+    # 消費端無從發現。
+    cluster_reports: dict[str, dict[str, Any]] = field(default_factory=dict)
     _report_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def report(self, name: str) -> dict[str, Any]:
@@ -1443,7 +1449,7 @@ def _build_trend_section(ctx: ChartContext) -> None:
     trend_title = f'{application["label_zh"]}與{publication["label_zh"]}'
     render_line_chart(ctx.run_dir / "annual_trend.svg", trend_title, application["rows"], publication["rows"])
     ctx.chart_rows["annual_trend"] = merge_annual_trend_rows(application["rows"], publication["rows"])
-    # report_key 指向 chart_rows.annual_trend，讓表格可同列對照申請年與核准公告年；
+    # report_key 指向 chart_rows.annual_trend，讓表格可同列對照申請年與授權公告年；
     # 圖檔仍由 application_trend + publication_trend 兩份報表共同產生。
     ctx.sections.append({
         "title": trend_title,
@@ -2260,6 +2266,34 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
         row["leading_applicant_count"] = opp_row.get("leading_applicant_count", 0)
         row["leading_applicants_involved"] = opp_row.get("leading_applicants_involved", [])
 
+    # 兩份分群報表登記成 report 形狀（label_zh 取自 REPORT_DEFINITIONS 唯一來源），
+    # 組檔時併進 report_data["reports"]——PPT 端 _page_should_render 只查該 bucket。
+    # ⚠ 機會矩陣列補 source_field（成對報表在 PPT 可分頁／同頁比較，靠它切分）；
+    #   thresholds 逐通道保存中位數門檻（象限判讀可重現，不每次重算）。
+    opportunity_rows: list[dict[str, Any]] = []
+    opportunity_thresholds: dict[str, dict[str, float]] = {}
+    for sf, _segment_label, opp_matrix, _pain in segment_matrices:
+        opportunity_rows.extend({**row, "source_field": sf} for row in opp_matrix["rows"])
+        opportunity_thresholds[sf] = {
+            "patent_count_median": opp_matrix["patent_count_median"],
+            "applicant_count_median": opp_matrix["applicant_count_median"],
+        }
+    ctx.cluster_reports["cluster_topic_table"] = {
+        "label": REPORT_DEFINITIONS["cluster_topic_table"].label,
+        "label_zh": REPORT_DEFINITIONS["cluster_topic_table"].label_zh,
+        "report_type": "cluster",
+        "rows": topic_rows,
+        "row_count": len(topic_rows),
+    }
+    ctx.cluster_reports["opportunity_quadrant"] = {
+        "label": REPORT_DEFINITIONS["opportunity_quadrant"].label,
+        "label_zh": REPORT_DEFINITIONS["opportunity_quadrant"].label_zh,
+        "report_type": "cluster",
+        "rows": opportunity_rows,
+        "row_count": len(opportunity_rows),
+        "thresholds": opportunity_thresholds,
+    }
+
     # 主題統計表**只渲染一次**（2026-07-29 使用者實機回報，兩張截圖）：
     #
     # 原本同一份資料畫兩次並排——上方是 cluster_topic_table_<slug>.html 變體（圖表區）、
@@ -2488,7 +2522,13 @@ def run_chart_trial(
         {
             "parameters": parameters,
             "reports": {
-                name: report for name, report in persist_reports.items() if REPORT_DEFINITIONS[name].supports_patent_ids
+                **{
+                    name: report for name, report in persist_reports.items() if REPORT_DEFINITIONS[name].supports_patent_ids
+                },
+                # 分群兩份顯式併入（⚠ 不走 supports_patent_ids 分流：它們該欄是
+                # False，照條件會被丟進 family_reports——語意是家族報表，不對）。
+                # 只在有 cluster_data 時非空；沒跑分群不出現空殼（PPT 會出空頁）。
+                **ctx.cluster_reports,
             },
             "family_reports": {
                 name: report for name, report in persist_reports.items() if not REPORT_DEFINITIONS[name].supports_patent_ids

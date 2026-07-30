@@ -187,7 +187,7 @@ class DisplaySpecTests(unittest.TestCase):
 
         return SimpleNamespace(
             run_dir=Path(tmp), chart_rows={}, sections=[], report=report,
-            cluster_data=None, ipc_levels=ipc_levels, cpc_levels=ipc_levels)
+            cluster_data=None, cluster_reports={}, ipc_levels=ipc_levels, cpc_levels=ipc_levels)
 
     def test_data_table_max_20_rows_no_full_expand(self):
         """數據區最多 20 筆＋總計列；不提供全量展開（2026-07-21 使用者補充），只註記共幾列。
@@ -499,7 +499,7 @@ class TopicSegmentTests(unittest.TestCase):
 
         return SimpleNamespace(
             run_dir=Path(tmp), chart_rows={}, sections=[], report=None,
-            cluster_data=None, ipc_levels=(4, 5), cpc_levels=(4, 5))
+            cluster_data=None, cluster_reports={}, ipc_levels=(4, 5), cpc_levels=(4, 5))
 
     _TWO_SOURCE_DATA = {
         "topics": [
@@ -824,7 +824,7 @@ class SelectiveRenderTests(unittest.TestCase):
             )
             self.assertEqual(
                 {key: chart_runner.DATA_COLUMN_LABELS[key] for key in ("year", "application_count", "授權公告件數")},
-                {"year": "年份", "application_count": "申請件數", "授權公告件數": "核准公告件數"},
+                {"year": "年份", "application_count": "申請件數", "授權公告件數": "授權公告件數"},
             )
             # 未選的 section（如受理局地圖）不得落檔。
             self.assertFalse((run_dir / "country_bubble.svg").exists())
@@ -1166,7 +1166,7 @@ class SectionReportKeyTests(unittest.TestCase):
     def test_four_cards_declare_matching_report_key(self):
         """四張卡的 report_key 必須是報表引擎的鍵，不得退回檔名 fallback。"""
         expected = {
-            "專利申請趨勢與專利核准公告趨勢": "annual_trend",
+            "專利申請趨勢與專利授權公告趨勢": "annual_trend",
             "專利受理局分布": "country_distribution",
             "國家佈局（現有保護）": "family_country_layout",
             "公司×國家交叉表": "applicant_country_distribution",
@@ -1208,7 +1208,7 @@ class SectionReportKeyTests(unittest.TestCase):
         for block in blocks:
             title = re.search(r"<h2>(.*?)</h2>", block).group(1)
             by_title[title] = block
-        for title in ("專利申請趨勢與專利核准公告趨勢", "專利受理局分布",
+        for title in ("專利申請趨勢與專利授權公告趨勢", "專利受理局分布",
                       "國家佈局（現有保護）", "公司×國家交叉表"):
             self.assertIn(title, by_title, f"缺少卡片 {title}")
             self.assertNotIn(
