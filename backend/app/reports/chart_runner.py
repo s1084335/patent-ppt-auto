@@ -2247,6 +2247,22 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     # 而是 section 沒把 rows 帶給前端（見下方 sections.append）。
     ctx.chart_rows["cluster_topic_table"] = topic_rows
 
+    # 🔴 主題統計表的**解讀掛點**（2026-07-30 使用者實機回報「其他都有，就這個沒有」）。
+    #
+    # main.py 把 narrative 掛在 **variant** 上（`entry["variants"].get(variant_key)`），
+    # 而本輪移除 HTML 變體後這張表沒有任何 variant → AI 產的解讀無處可掛，
+    # 前端 `v.narrative.text` 永遠讀不到（實測 narratives.json 的
+    # cluster_topic_table 底下只有 opportunity_tech／effect）。
+    #
+    # ⚠ 這個 variant **沒有圖檔**（file 為空字串）：它只是解讀的落點，
+    # 不得指向 .svg／.html——指了會在畫面顯示「圖檔待產出」佔位。
+    # ⚠ 放在最前面：檢視選單以第一個變體為預設，主題統計表本來就是這張卡的主體。
+    variants.insert(0, {
+        "label": "主題統計表",
+        "file": "",
+        "variant_key": "topic_table",
+    })
+
     for sf, segment_label, opp_matrix, pain_matrix in segment_matrices:
         # 檔名後綴：多來源時帶 slug（tech/effect），單一來源維持原檔名（相容既有契約）
         slug = SOURCE_SEGMENT_SLUGS.get(sf, "other")

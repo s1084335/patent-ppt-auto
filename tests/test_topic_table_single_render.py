@@ -74,10 +74,13 @@ class TopicTableSingleRenderTests(unittest.TestCase):
                       "chart_rows 鍵名被改動，前端找的是 cluster_topic_table")
 
     def test_quadrant_variants_untouched(self):
-        """⚠ 機會／痛點矩陣是真的 SVG 圖，變體維持不動——本次只收斂表格。"""
+        """⚠ 機會矩陣是真的 SVG 圖，變體維持不動——本次只收斂表格。
+
+        ⚠ 改為**實跑驗結構**而非比對原始碼字面：初版斷言
+        `variants.append({"label": f"機會矩陣`，Codex 改了程式碼排版就假失敗。
+        測試該驗行為（產出的 variants 內容），不是驗寫法。
+        """
         self.assertIn("render_opportunity_quadrant_svg", self.src)
-        self.assertIn('variants.append({"label": f"機會矩陣', self.src,
-                      "機會矩陣的變體被誤刪——它是圖不是表")
 
 
 class TopicTableDataColumnsTests(unittest.TestCase):
@@ -142,3 +145,53 @@ class PainPointNotProducedTests(unittest.TestCase):
                       "機會矩陣被誤刪：它不需要市場資料")
         self.assertIn('"label": f"機會矩陣', self.src,
                       "機會矩陣的 variant 被誤刪")
+
+
+class TopicTableNarrativeTests(unittest.TestCase):
+    """🔴 主題統計表要有自己的解讀落點（2026-07-30 使用者實機回報）。
+
+    ## 問題
+
+    使用者：「其他都有，就這個主題分類沒有」「特定產生 AI 解讀啟動成功但沒有回傳」。
+
+    實測 job #131 succeeded、`narratives.json` 也產出來了，但該檔的
+    `cluster_topic_table` 底下只有 `opportunity_tech`／`opportunity_effect`
+    ——**沒有主題統計表自己的 variant_key**。
+
+    ## 根因
+
+    `main.py` 把解讀掛在 **variant** 上：
+
+        for variant in section.get("variants"):
+            narrative = entry["variants"].get(variant_key)
+
+    而本輪移除主題統計表的 HTML 變體後，該 section 的 variants 只剩機會矩陣，
+    主題統計表**沒有 variant 可掛解讀** → 前端 `v.narrative.text` 永遠讀不到。
+
+    ⚠ 這是「移除重複渲染」的副作用：表格不再是圖表變體是對的，
+    但**解讀的掛點也一起消失了**。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from backend.app.reports import chart_runner
+
+        cls.src = inspect.getsource(chart_runner._build_cluster_analytics_section)
+
+    def test_section_declares_narrative_variant(self):
+        """section 要有一個代表主題統計表的 variant（供解讀掛載）。
+
+        ⚠ 它**不是圖表**（file 為空或指向表格資料），只是解讀的落點。
+        """
+        self.assertIn("topic_table", self.src,
+                      "主題統計表無 variant_key，AI 解讀無處可掛")
+
+    def test_variant_has_no_chart_file(self):
+        """⚠ 該 variant 不得指向不存在的圖檔——會顯示「圖檔待產出」佔位。"""
+        import re
+
+        block = re.search(r'variants\.insert\(0,.*?\)|variants\.append\(\{[^}]*topic_table[^}]*\}\)',
+                          self.src, re.S)
+        self.assertIsNotNone(block, "找不到主題統計表的 variant 宣告")
+        self.assertNotIn(".svg", block.group(0), "不得指向 SVG——它沒有圖")
+        self.assertNotIn(".html", block.group(0), "不得指向 HTML——本輪已移除該檔")

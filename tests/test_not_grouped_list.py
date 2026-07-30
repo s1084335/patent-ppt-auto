@@ -68,12 +68,26 @@ class NotGroupedApiTests(unittest.TestCase):
                 self.assertIn(expected, spec, f"{expected} 未註冊")
                 self.assertIn(method, spec[expected], f"{method.upper()} {expected} 未註冊")
 
-    def test_mark_uses_filter_source_type(self):
-        """⚠ 用既有 `source_type='filter'`，不新增 CHECK 值（零 migration）。"""
+    def test_source_type_in_db_whitelist(self):
+        """🔴 寫入的 source_type 必須在 DB CHECK 白名單內。
+
+        ⚠ 2026-07-30 實機 500：原本寫 `'filter'`，但實際白名單是
+        excel_seed／wips_lookup／manual／ai_suggested——**沒有 filter**。
+        我先前查到的 filter 是**別張表**的約束，未核對表名就用了。
+
+        ⚠ 本測試初版只斷言「原始碼含 'filter' 字串」，那**驗不到能不能寫入**——
+        字串在、CHECK 擋掉，測試照樣綠。改為比對實際白名單。
+        """
         from backend.app.api import company_aliases as api
 
-        src = inspect.getsource(api)
-        self.assertIn("'filter'", src, "未使用既有 source_type='filter'")
+        # DB CHECK 白名單（migration 0021 起）
+        allowed = {"excel_seed", "wips_lookup", "manual", "ai_suggested"}
+        src = inspect.getsource(api.mark_name_not_grouped)
+        used = set(re.findall(r"'(\w+)', 'confirmed'\)", src))
+        self.assertTrue(used, "找不到寫入的 source_type")
+        self.assertTrue(
+            used <= allowed,
+            f"source_type {used - allowed} 不在 CHECK 白名單 {allowed}——寫入會 500")
 
     def test_normalized_name_filled_with_self(self):
         """🔴 B2 核心：正規化名稱填該名稱本身。

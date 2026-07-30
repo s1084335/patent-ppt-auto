@@ -235,11 +235,21 @@ def parse_cli_result(result: CliResult) -> dict[str, Any]:
     退出碼非 0 直接 raise（附 stderr）；stdout 應為單一 JSON 物件，解析失敗亦 raise
     並保留原始輸出，避免無聲吞錯。
     """
+    # 🔴 stdout／stderr 可能是 None（2026-07-30 實機 job #132 failed）：
+    # 子程序輸出未被捕捉時 subprocess 會給 None，直接 `.strip()` 會拋
+    # `AttributeError: 'NoneType' object has no attribute 'strip'`——
+    # ⚠ 那個例外**逃出 NarrativeRunnerError**，畫面只顯示裸的 AttributeError，
+    # 完全看不出是哪個環節、哪個變數，比明確的錯誤更難查。
+    # ⚠ `_default_build_ppt` 已於 6f50611 加過同樣防護，但這裡漏了——
+    # 同一個坑在相鄰模組各補各的，故兩處都要有。
+    stdout = result.stdout or ""
+    stderr = result.stderr or ""
     if result.exit_code != 0:
+        detail = stderr.strip() or stdout.strip() or "stdout/stderr 皆為空"
         raise NarrativeRunnerError(
-            f"headless CLI 失敗（exit={result.exit_code}）：{result.stderr.strip() or result.stdout.strip()}"
+            f"headless CLI 失敗（exit={result.exit_code}）：{detail}"
         )
-    text = result.stdout.strip()
+    text = stdout.strip()
     if not text:
         raise NarrativeRunnerError("headless CLI 正常結束但無 JSON 輸出")
     try:

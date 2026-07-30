@@ -706,7 +706,10 @@ def _connect_dict_rows():
 #
 # ⚠ 落點採 B2、**零 migration**：
 #   - review_status='confirmed'  → 符合待補清單的排除條件，標記後自動離開清單
-#   - source_type='filter'       → 既有 CHECK 值，語意即「被篩掉的」
+#   - source_type='manual'       → ⚠ 2026-07-30 實機 500 後更正：白名單只有
+#       excel_seed/wips_lookup/manual/ai_suggested，**沒有 filter**（我先前查到
+#       的 filter 是別張表的約束，未核對表名就用了）。改用 manual（人工裁決，
+#       語意正確），由 source_file 區分是不是本機制寫的。
 #   - 申請人代碼=NULL            → 沒有代碼（符合「代碼欄只放 WIPS 真代碼」）
 #   - 正規化名稱=名稱本身        → ⚠ 見下方
 NOT_GROUPED_SOURCE_LABEL = "not_grouped:manual"
@@ -719,7 +722,7 @@ def list_not_grouped_names() -> dict[str, Any]:
         rows = conn.execute(
             'SELECT id, "別稱" AS name, imported_at '
             "FROM derived_layer.company_aliases "
-            "WHERE source_type = 'filter' AND source_file = %s "
+            "WHERE source_type = 'manual' AND source_file = %s "
             'ORDER BY "別稱"',
             (NOT_GROUPED_SOURCE_LABEL,),
         ).fetchall()
@@ -746,7 +749,7 @@ def mark_name_not_grouped(body: NotGroupedRequest) -> dict[str, Any]:
     with _connect_dict_rows() as conn:
         exists = conn.execute(
             "SELECT id FROM derived_layer.company_aliases "
-            "WHERE source_type = 'filter' AND source_file = %s "
+            "WHERE source_type = 'manual' AND source_file = %s "
             # ⚠ raw string：`\s` 在一般字串是無效跳脫（SyntaxWarning），
             # 且要與 alias_lookup_key 的產生規則同一把（lower + 壓空白）。
             r"  AND alias_lookup_key = lower(regexp_replace(btrim(%s), '\s+', ' ', 'g'))",
@@ -759,7 +762,7 @@ def mark_name_not_grouped(body: NotGroupedRequest) -> dict[str, Any]:
             '("申請人代碼", "公司中文名稱", "正規化名稱", "別稱", '
             " source_file, source_type, review_status) "
             # 代碼 NULL、中文名 NULL、正規化名稱＝名稱本身（見 docstring）。
-            "VALUES (NULL, NULL, %s, %s, %s, 'filter', 'confirmed') "
+            "VALUES (NULL, NULL, %s, %s, %s, 'manual', 'confirmed') "
             "RETURNING id",
             (name, name, NOT_GROUPED_SOURCE_LABEL),
         ).fetchone()
@@ -771,12 +774,12 @@ def mark_name_not_grouped(body: NotGroupedRequest) -> dict[str, Any]:
 def restore_not_grouped_name(alias_id: int) -> dict[str, Any]:
     """還原：刪掉標記列，該名稱重新出現在待補清單。
 
-    ⚠ 只刪 source_type='filter' 且來源是本機制的列——不得誤刪正式對照列。
+    ⚠ 只刪 source_file 為本機制標記的列——不得誤刪正式對照列。
     """
     with _connect_dict_rows() as conn:
         cur = conn.execute(
             "DELETE FROM derived_layer.company_aliases "
-            "WHERE id = %s AND source_type = 'filter' AND source_file = %s",
+            "WHERE id = %s AND source_type = 'manual' AND source_file = %s",
             (alias_id, NOT_GROUPED_SOURCE_LABEL),
         )
         deleted = cur.rowcount

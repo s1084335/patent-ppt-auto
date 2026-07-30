@@ -281,3 +281,71 @@ class OnclickQuotingTests(unittest.TestCase):
         self.assertIn("runNarrative(", expr)
         self.assertTrue(expr.rstrip().endswith(")") or "'" in expr,
                         f"onclick 表達式不完整：{expr!r}")
+
+
+class CliResultNoneSafetyTests(unittest.TestCase):
+    """🔴 `parse_cli_result` 對 stdout/stderr 為 None 要有防護（2026-07-30 實機 failed）。
+
+    ## 問題
+
+    使用者按「產生 PPT」→ job #132 failed，訊息：
+
+        AttributeError: 'NoneType' object has no attribute 'splitlines'
+
+    ⚠ 那個 AttributeError **逃出了 NarrativeRunnerError**，訊息完全看不出
+    是哪個環節、哪個變數——比明確的錯誤更難查。
+
+    ## 根因
+
+    `parse_cli_result` 三處直接 `.strip()`：
+
+        result.stderr.strip() or result.stdout.strip()   # exit != 0 分支
+        text = result.stdout.strip()
+
+    ⚠ `_default_build_ppt` 已於 6f50611 加了 `completed.stdout or ""` 防護，
+    但 **`parse_cli_result` 沒有**——同一個坑在相鄰模組漏一處。
+
+    實測重現：注入 stdout=None 的 fake runner，錯誤指向
+    ai_narrative_runner.py:242。
+    """
+
+    @staticmethod
+    def _result(exit_code=0, stdout=None, stderr=None):
+        from backend.app.worker.ai_narrative_runner import CliResult
+
+        return CliResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
+
+    def test_none_stdout_raises_runner_error(self):
+        """stdout=None 要拋 NarrativeRunnerError，不得是 AttributeError。"""
+        from backend.app.worker.ai_narrative_runner import (
+            NarrativeRunnerError,
+            parse_cli_result,
+        )
+
+        with self.assertRaises(NarrativeRunnerError):
+            parse_cli_result(self._result(stdout=None))
+
+    def test_none_on_failure_path(self):
+        """⚠ exit != 0 且兩者皆 None——原本會在組錯誤訊息時就 AttributeError。"""
+        from backend.app.worker.ai_narrative_runner import (
+            NarrativeRunnerError,
+            parse_cli_result,
+        )
+
+        with self.assertRaises(NarrativeRunnerError) as ctx:
+            parse_cli_result(self._result(exit_code=1, stdout=None, stderr=None))
+        self.assertIn("exit=1", str(ctx.exception), "錯誤訊息要保留退出碼")
+
+    def test_message_is_actionable(self):
+        """錯誤訊息要看得出是「CLI 沒有輸出」，不是一個裸的 AttributeError。"""
+        from backend.app.worker.ai_narrative_runner import (
+            NarrativeRunnerError,
+            parse_cli_result,
+        )
+
+        with self.assertRaises(NarrativeRunnerError) as ctx:
+            parse_cli_result(self._result(stdout=None))
+        msg = str(ctx.exception)
+        self.assertTrue(
+            "無" in msg or "空" in msg,
+            f"訊息看不出是無輸出：{msg}")

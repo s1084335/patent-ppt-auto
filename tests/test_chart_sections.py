@@ -226,7 +226,9 @@ class DisplaySpecTests(unittest.TestCase):
             # 變體只剩真正的圖（機會板／痛點板）；統計表改由 section 的 rows 走數據表。
             self.assertEqual(
                 files,
-                ["opportunity_quadrant.svg"],
+                # ⚠ 2026-07-30：variants[0]＝主題統計表的解讀掛點（無圖檔），
+                # 見 TopicTableNarrativeTests——沒 variant 就掛不了 narrative。
+                ["", "opportunity_quadrant.svg"],
                 "⚠ 2026-07-29：統計表改走數據表、痛點板停產（市場線未實作），只剩機會板")
             self.assertEqual(labels, ["機會矩陣"])
         # 龍頭涉入欄改在數據列上驗（原本驗的是已移除的 HTML 檔）。
@@ -558,8 +560,12 @@ class TopicSegmentTests(unittest.TestCase):
                              "痛點板應已停產")
             self.assertFalse((Path(tmp) / "pain_point_quadrant_effect.svg").exists(),
                              "痛點板應已停產")
-        # ⚠ 2026-07-29 統計表不再是變體，變體只剩真正的圖（每來源機會／痛點各一）。
-        self.assertEqual(len(files), 2, "兩來源＝每來源機會板各一，共 2 tabs（痛點已停產）")
+        # ⚠ 2026-07-30：variants[0] 是主題統計表的**解讀掛點**（無圖檔），
+        # 其後才是每來源的機會板。共 1 + 2 = 3 個。
+        # 掛點的存在理由見 test_topic_table_single_render.TopicTableNarrativeTests：
+        # main.py 把 narrative 掛在 variant 上，沒 variant 就讀不到解讀。
+        self.assertEqual(len(files), 3, "統計表解讀掛點 1 + 每來源機會板 2")
+        self.assertEqual(files[0], "", "第一個應為主題統計表掛點（無圖檔）")
         for f in ("opportunity_quadrant_tech.svg", "opportunity_quadrant_effect.svg"):
             self.assertIn(f, files)
         self.assertIn("機會四象限分析——技術主題", tech_opp)
@@ -606,7 +612,7 @@ class TopicSegmentTests(unittest.TestCase):
             rows = ctx.sections[0].get("rows") or []
             opp = (Path(tmp) / "opportunity_quadrant.svg").read_text(encoding="utf-8")
         # ⚠ 2026-07-29 統計表不再是變體；單一來源維持原檔名的契約只剩兩張圖。
-        self.assertEqual(files, ["opportunity_quadrant.svg"],
+        self.assertEqual(files, ["", "opportunity_quadrant.svg"],
                          "單一來源維持原檔名（統計表改走數據表、痛點板已停產）")
         self.assertEqual({r.get("source_field") for r in rows}, {"wips_independent_claims"},
                          "只有一種來源時只出現該段的列")
