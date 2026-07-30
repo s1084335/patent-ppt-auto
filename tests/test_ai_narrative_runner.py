@@ -250,13 +250,21 @@ class RunNarrativeOrchestrationTests(unittest.TestCase):
                 "pending": ["x:default"],
                 "narratives_expired": False,
             }
+            # ⚠ uploader 必須注入 fake：513927c 把 upload_run_dir 加進 run_narrative
+            # （跨容器需求）後本測試沒跟著注入，一直在連**真實 DB**。
+            # 先前之所以「通過」，是 conninfo 壞掉導致連線瞬間失敗；18ec129 修好池的
+            # 參數傳遞後它變成真的嘗試連線，卡 30 秒 PoolTimeout 才失敗。
+            # 單元測試不得依賴外部連線——記下上傳呼叫即可。
+            uploaded: list[Path] = []
             summary = runner.run_narrative(
                 version,
                 cli_runner=self._fake_cli_runner(run_dir, version),
                 refresh_index=fake_refresh,
                 progress=lambda s, p: stages.append((s, p)),
                 root=base,
+                upload_run_dir=lambda rd: (uploaded.append(rd), 3)[1],
             )
+            self.assertEqual(uploaded, [run_dir], "run_dir 未被上傳（跨容器會讀不到）")
             self.assertEqual(summary["based_on_version"], version)
             self.assertEqual(summary["narrated"], 12)
             self.assertEqual(summary["variants_total"], 14)

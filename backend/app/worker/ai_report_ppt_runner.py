@@ -360,6 +360,20 @@ def _build_approvals(version: str, ai_slots: dict[str, str],
     }, sorted(set(invalid))
 
 
+def _subprocess_text_env() -> dict[str, str]:
+    """回傳跑子行程用的環境變數，強制其輸出為 UTF-8。
+
+    ⚠ 不設這個，子行程 stdout 會走系統 codepage；父行程用 UTF-8 解碼含中文路徑
+    （`D:\\力山\\專案\\專利_ppt自動\\...`）的輸出時失敗，`completed.stdout` 直接
+    回 **None**——真正的失敗原因整包消失。
+
+    ⚠ 為何 2026-07-30 前一直沒發現：Companion 由 `Start-Process -WindowStyle Hidden`
+    啟動，繼承不到 PYTHONIOENCODING；而手動重現時指令前都帶了 `PYTHONIOENCODING=utf-8`
+    ——測試方法本身掩蓋了 bug。實測：有該變數 stdout_len=318，沒有則 stdout is None。
+    """
+    return {**os.environ, "PYTHONIOENCODING": "utf-8"}
+
+
 def _default_build_ppt(*, report_dir, approvals_path, output_dir, theme_path=None):
     """預設組版：以獨立子行程呼 skill 的 build_ppt.py（uv run --no-project，可攜）。
 
@@ -374,8 +388,11 @@ def _default_build_ppt(*, report_dir, approvals_path, output_dir, theme_path=Non
         "--approvals", str(approvals_path),
         "--output-dir", str(output_dir),
     ]
+    # ⚠ errors="replace" 是保底：PYTHONIOENCODING 萬一沒生效，也要拿到帶替代字元的
+    #   字串（看得出發生什麼事），不要 None（線索全失，錯誤訊息會指向不相干的地方）。
     completed = subprocess.run(  # noqa: S603 argv 由固定值組成，非使用者字串
-        argv, capture_output=True, text=True, encoding="utf-8")
+        argv, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", env=_subprocess_text_env())
     # 實機曾回 stdout=None（通常代表子程序輸出未被捕捉或外層 runtime 行為異常）。
     # runner 不能讓 None.splitlines()/None.strip() 蓋掉真正問題，先正規化成字串。
     stdout = completed.stdout or ""

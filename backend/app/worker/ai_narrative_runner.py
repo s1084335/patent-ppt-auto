@@ -269,11 +269,16 @@ def _subprocess_cli_runner(argv: Sequence[str], timeout: float) -> CliResult:
             f"找不到 CLI 二進位 {binary!r}（headless 解讀需已安裝並登入該 CLI）"
         )
     try:
+        # ⚠ env 強制 UTF-8＋errors="replace"：不設的話 CLI 輸出走系統 codepage，
+        #   父行程 UTF-8 解碼失敗會讓 stdout 回 None（2026-07-30 實機 job #132／
+        #   #135／#137 的共同根因，表徵是 splitlines AttributeError／「stdout 為空」）。
         completed = subprocess.run(  # noqa: S603 argv 由固定對照表組成，非使用者字串
             list(argv),
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             timeout=timeout,
         )
     except OSError as exc:
