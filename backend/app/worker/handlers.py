@@ -324,6 +324,27 @@ def _merge_cluster_channels(
     return merged
 
 
+def _resolve_workspace_name(workspace_id: Any) -> str | None:
+    """依 workspace_id 查顯示名稱（封面主標用，P3-2）。
+
+    ⚠ 查掛（不存在／DB 失敗）回 None 走封面通用標題 fallback——
+    標題缺名字是小事，報表產不出來是大事，不得因此讓 job 失敗。
+    """
+    if workspace_id is None:
+        return None
+    try:
+        from backend.app.db.connection import get_pool
+
+        with get_pool().connection() as conn:
+            row = conn.execute(
+                "SELECT workspace_name FROM app_layer.workspaces WHERE workspace_id = %s",
+                (int(workspace_id),),
+            ).fetchone()
+        return str(row[0]) if row and row[0] else None
+    except Exception:  # noqa: BLE001 - 名稱是加值資訊，任何失敗都不阻斷報表
+        return None
+
+
 def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
     """產製完整報表：跑報表引擎、渲染圖表，並把整包產物落 DB 供 backend 容器讀取。
 
@@ -362,6 +383,7 @@ def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict
         "filters": payload.get("filters"),
         "patent_ids": payload.get("patent_ids"),
         "cluster_data": cluster_data,
+        "workspace_name": _resolve_workspace_name(payload.get("workspace_id")),
     }
     if limit is not None:
         # payload.limit＝報表列數上限；引擎內唯一吃 limit 的是排名類報表的 ranking_limit。

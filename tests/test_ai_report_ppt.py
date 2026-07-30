@@ -41,8 +41,8 @@ class RecordingCli:
     def __init__(self, slots=None):
         """保存要回吐的 slots；準備記錄 argv。"""
         self.calls: list[list[str]] = []
+        # cover.title 已退場（P1-8）：封面主標由 workspace 名確定性組成，AI 只產 direction.body。
         self.slots = slots if slots is not None else {
-            "cover.title": "自走式割草機專利情報整合分析",
             "trend.narrative": "近三年申請量穩定成長。",
             "direction.body": "建議聚焦電池平台生態。",
         }
@@ -206,9 +206,10 @@ class RunnerWorkSeparationTests(unittest.TestCase):
             build_calls, uploaded, slots_written = [], [], {}
             result = self._run(cli=cli, resolve_dir=run_dir, build_calls=build_calls,
                                uploaded=uploaded, slots_written=slots_written)
-            # slots 進 approvals.json 的 slots 區。
-            self.assertEqual(slots_written["slots"]["cover.title"],
-                             "自走式割草機專利情報整合分析")
+            # slots 進 approvals.json 的 slots 區（v4 只剩 direction.body；
+            # trend.narrative 屬無效槽會被過濾）。
+            self.assertEqual(slots_written["slots"]["direction.body"],
+                             "建議聚焦電池平台生態。")
             self.assertEqual(slots_written["report_version"], run_dir.name)
             self.assertEqual(result["cli_kind"], "claude")
 
@@ -216,10 +217,11 @@ class RunnerWorkSeparationTests(unittest.TestCase):
         """使用者在預覽頁改文案、版型、座標時，覆寫資料要寫入 approvals.json。"""
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = _make_report_dir(tmp)
-            cli = RecordingCli(slots={"trend.narrative": "AI trend"})
+            cli = RecordingCli(slots={"direction.body": "AI direction"})
             build_calls, uploaded, slots_written = [], [], {}
             overrides = {
-                "slots": {"cover.title": "人工標題"},
+                # 人工 override 只能用合法槽——cover.title 已退場，改覆寫 direction.body。
+                "slots": {"direction.body": "人工方向定稿"},
                 "layout_overrides": {"3": "table"},
                 "position_overrides": {
                     "3.chart": {
@@ -238,8 +240,8 @@ class RunnerWorkSeparationTests(unittest.TestCase):
                 slots_written=slots_written,
                 approval_overrides=overrides,
             )
-            self.assertEqual(slots_written["slots"]["cover.title"], "人工標題")
-            self.assertEqual(slots_written["slots"]["trend.narrative"], "AI trend")
+            # ⚠ 人工 override 優先於 AI 產出（使用者定稿蓋 AI 草稿）。
+            self.assertEqual(slots_written["slots"]["direction.body"], "人工方向定稿")
             self.assertEqual(slots_written["layout_overrides"], overrides["layout_overrides"])
             self.assertEqual(slots_written["position_overrides"], overrides["position_overrides"])
 
@@ -311,9 +313,13 @@ class RunnerWorkSeparationTests(unittest.TestCase):
         """
         expected = runner_mod.report_slot_keys()
         # 至少包含 spec 第二節列的代表性槽（來自 build_ppt PAGE_LAYOUT）。
-        for slot in ("cover.title", "trend.narrative", "direction.body", "key_players.summary"):
-            self.assertIn(slot, expected)
-        for removed in ("pain_point.narrative", "key_players.market", "market.scope", "market.size"):
+        # v4（2026-07-31 P1-8）：cover.title 退場，PPT 階段 AI 只產 direction.body。
+        self.assertEqual(sorted(expected), ["direction.body"])
+        for removed in (
+            "pain_point.narrative", "key_players.market", "market.scope", "market.size",
+            "trend.narrative", "tech.narrative", "competitor.narrative",
+            "opportunity.narrative", "key_players.summary", "cover.title",
+        ):
             self.assertNotIn(removed, expected)
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = _make_report_dir(tmp)
@@ -329,7 +335,7 @@ class RunnerWorkSeparationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = _make_report_dir(tmp)
             cli = RecordingCli(slots={
-                "cover.title": "valid",
+                "direction.body": "valid",
                 "market.scope": "legacy invalid",
                 "ai.made_up": "invalid",
             })
@@ -343,7 +349,7 @@ class RunnerWorkSeparationTests(unittest.TestCase):
                 approval_overrides={"slots": {"market.size": "manual invalid"}},
             )
 
-        self.assertEqual(slots_written["slots"], {"cover.title": "valid"})
+        self.assertEqual(slots_written["slots"], {"direction.body": "valid"})
         self.assertEqual(
             sorted(result["invalid_slots"]),
             ["ai.made_up", "market.scope", "market.size"],

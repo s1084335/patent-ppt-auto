@@ -1,265 +1,228 @@
-# 專利報告 PPT 產製流程
+# 專利分析報告 PPT 組版
 
-> 同步來源：`D:\力山\.agents\context\export-report-flow-spec.md` v2.3（2026-07-30）。
-> 本 skill 是「報告 → 匯出報告」工作台的 PPT 產製契約；若本檔與該規格衝突，以規格檔為準並先回報衝突。
+把已產出的專利報表版本（數據＋圖表＋解讀）組成一份可直接對外簡報的 `.pptx`。
+數字全部來自報表引擎，組版由程式 deterministic 完成，AI 只負責一段文案（研發方向建議）。
+
+---
 
 ## 執行 Runbook
-
-### Runbook 就緒度
-
-- 組版工具：`scripts/build_ppt.py` 已隨本 skill 目錄提供。
-- 樣式來源：`theme.json` 為單一風格來源；第一版不做多模板／多風格。
-- 第一版目標：讓 PPT 能穩定產出、可預覽、可下載、內容可用。
-- 市場線狀態：**第一版暫停**。痛點交叉驗證與市場規模頁已從 PPT 大綱移除，不得再執行舊版 WebSearch 市場研究流程。
-
-### 執行原則
-
-- 引擎數字不可改寫；AI 只產敘事與 PPT 文案草稿。
-- PPT 組版由 deterministic 程式執行，`build_ppt.py` 不呼叫 AI。
-- 版型由使用者從固定清單挑；AI 不生成版型。
-- 匯出報告工作台必須先預覽，再由使用者決定是否輸出；不得跳過預覽閘門。
-- 缺漏不印在 PPT 內；第一版只在平台任務進度顯示。
-- 沒有被選到、或 `report_data` 沒有資料的報表，不產生對應頁。
-- 分群版本不一致、缺漏資料、無效 slot 名稱都只提醒，不阻擋第一版輸出。
 
 ### 觸發時機
 
 - 使用者在「匯出報告」工作台要求產生或更新專利分析報告 PPT。
-- 使用者選擇既有報表版本並要求預覽、產生或下載 PPT。
-- 使用者要求重產單頁 PPT 文案與版型。
+- 使用者選定既有報表版本，要求預覽、產生或下載 PPT。
+- 使用者要求換某一頁的版型後重產。
 
 ### 前置條件
 
-1. 報表資料已由 Web 平台產出，可取得該版本的 `report_data.json`、圖表 artifact 與 `narratives.json`。
-2. 若 `narratives.json` 尚未存在或不完整，平台需自動先跑 `ai:narrative`，完成後才接續 `ai:report_ppt`。
-3. 讀資料時必須使用 `report_data.json` 與對應圖表 artifact；禁止只看圖寫結論，禁止繞過報表定義自行取數。
-4. 若報表版本內有 `topic_run_id`／`topic_state_version`，匯出前可與目前 active 分群比對；不一致時提示，但不阻擋。
+1. 報表版本目錄已存在，且含 `report_data.json`、`artifact_manifest.json` 與圖表檔。
+2. `narratives.json` 已產出（逐報表解讀）。若尚未產出或不完整，先跑 `ai:narrative`，
+   完成後才接續本流程。
+3. 需要 `uv`，且能取用 `python-pptx` 與 `pymupdf` 套件（下方指令會自動取得）。
 
-### 資料來源與產物
+### 輸入契約
 
-| 類型 | 檔案／來源 | 說明 |
+全部位於 `--report-dir` 指定的報表版本目錄內：
+
+| 檔案 | 內容 | 角色 |
 |---|---|---|
-| 報表資料 | `report_data.json` | 數字與章節資料唯一來源 |
-| 解讀文案 | `narratives.json` | `ai:narrative` 逐報表、逐變體產生 |
-| PPT 文案 | `approvals.json` slots | `ai:report_ppt` 綜合全量資料與 narratives 後產生 |
-| 樣式 | `theme.json` | 字體、字級、顏色、座標的單一來源 |
-| PPT | `<report_version>.pptx` / `<report_version>_rN.pptx` | 產出檔，不以市場線頁面為必要條件 |
-| manifest | `<report_version>.manifest.json` | 檔案 hash、來源版本、缺漏資訊、追溯 metadata |
+| `report_data.json` | `reports`／`family_reports` 兩個 bucket，每個報表含 `label_zh`、`rows`、`row_count`、`report_type`；`parameters` 含版本與選取的報表清單 | **數字唯一來源** |
+| `artifact_manifest.json` | 每個 artifact 的 `file`、`report_name`／`report_names[]`、`artifact_type` | **圖檔對照唯一來源** |
+| `narratives.json` | `reports.{key}.variants.{variant}` = `{headline, points[], text}` | 每頁標題與判讀要點的來源 |
+| `approvals.json` | `{report_version, slots, layout_overrides}` | 使用者定稿文案與版型選擇 |
 
-### PPT 流程 v2.3
-
-```
-① 使用者在報表種類選擇並產製報表
-   → report_data.json／圖表 artifact
-② narrative 產出
-   → narratives.json
-③ PPT slots 產出
-   → AI 同時讀全部 report_data 與 narratives，產 approvals.json slots
-④ deterministic 組版
-   → build_ppt.py 依 theme.json 與 approvals.json 產 .pptx
-⑤ 匯出報告頁預覽真實 .pptx
-   → 使用者確認後下載或進一步重產單頁
-```
-
-### 章節組成：基礎 8 頁
-
-| 頁 | kind | 標題 | report_keys | slots |
-|---|---|---|---|---|
-| 1 | `cover` | 專利情報整合分析 | `country_distribution`／`application_trend`／`lifecycle` | `cover.title` |
-| 2 | `direction` | 研發方向建議 | 綜合本次實際包含的全部報表 | `direction.body` |
-| 3 | `chart_with_narrative` | 申請趨勢 | `application_trend`／`publication_trend` | `trend.narrative` |
-| 4 | `chart_with_narrative` | 技術分布 | `cluster_topic_table` | `tech.narrative` |
-| 5 | `chart_with_narrative` | 競爭者佈局 | `applicant_country_distribution`／`applicant_ranking` | `competitor.narrative` |
-| 6 | `chart_with_narrative` | 機會評估四象限 | `opportunity_quadrant` | `opportunity.narrative` |
-| 7 | `table` | 附錄1：全分類技術指標總表 | `cluster_topic_table` | 無 |
-| 8 | `table_with_narrative` | 附錄2：主要專利權人與申請人 | `applicant_ranking`／`owner_ranking` | `key_players.summary` |
-
-已移除：
-
-- 原 P7 痛點交叉驗證：`pain_point_quadrant`
-- 原 P10 市場規模：`market.scope`／`market.size`
-- 舊槽位：`pain_point.narrative`、`key_players.market`、`market.scope`、`market.size`
-
-### 出頁規則
-
-- `cover` 與 `direction` 恆出。
-- 其他頁面：`spec.report_keys` 至少一個在 `report_data` 有資料才出頁。
-- 多個 `report_keys` 的頁面只呈現實際有資料的 key；不得留空框、不得擺錯資料。
-- 動態插頁同樣受 `report_data` 驅動；未選或無資料的報表不得出頁。
-- 附錄插入點不得使用頁碼魔術數字；用 `PageSpec.is_appendix` 或等價顯式旗標表達。
-
-### 封面統計卡
-
-| 格 | 內容 | 來源 | 第一版規則 |
-|---|---|---|---|
-| 1 | 專利總數 | `application_trend` 加總 | 顯示 |
-| 2 | 地域分布前 2 | `country_distribution` | 顯示 |
-| 3 | 年份區間 | `application_trend` 年份 min–max | 顯示 |
-| 4 | 未定 | 無 | 第一版不顯示／保留，不硬湊低價值指標 |
-
-### 文案生成：兩階段
-
-#### 階段 1：narrative
-
-- 使用既有 `ai:narrative` 流程，逐報表、逐變體產生解讀，落 `narratives.json`。
-- 解讀口徑仍遵守同目錄 `report-narrative-flow.md`。
-- 解讀線維持「prompt 給路徑，CLI 自己讀目錄」；不改成資料檔路線。
-
-#### 階段 2：PPT slots
-
-- `ai:report_ppt` payload 必須包含 `report_data` 與 `narratives`。
-- AI 產生扁平 slots，交給 runner 寫入 `approvals.json`。
-- `direction.body` 必須綜合本次實際包含的全部報表，不得只看分群。
-- 各頁文案要有頁間脈絡，但不得為製造脈絡而編造因果。
-- 只能談 `report_data` 裡實際存在的報表；沒產的報表不得提及或憑常識補充。
-- AI 回傳不存在於合法槽位清單的 slot 名稱時，自動過濾，並在平台任務進度提示；不直接 fail job。
-
-合法槽位第一版為：
+`approvals.json` 的 `slots` 只有一個合法鍵（v4：封面主標改由 `parameters.workspace_name`
+確定性組成，`cover.title` 退場）：
 
 ```json
 {
   "report_version": "<報表版本，須與報表目錄一致>",
   "slots": {
-    "cover.title": "封面標題（頁1）",
-    "direction.body": "研發方向建議全文（頁2）",
-    "trend.narrative": "申請趨勢解讀（頁3）",
-    "tech.narrative": "技術分布解讀（頁4）",
-    "competitor.narrative": "競爭者佈局解讀（頁5）",
-    "opportunity.narrative": "機會四象限解讀（頁6）",
-    "key_players.summary": "主要專利權人與申請人摘要（頁8）"
+    "direction.body": "{\"situation\":[..],\"opportunity\":[..],\"direction\":[..],\"topics\":[..],\"conclusion\":\"..\"}"
   },
-  "layout_overrides": {},
-  "position_overrides": {}
+  "layout_overrides": { "5": "chart_with_points" }
 }
 ```
 
-#### 文案 runtime 規則
+`direction.body` 是結構化 JSON 字串（形狀見 `report_ppt_content_rules.md`）；
+舊純文字仍可組版（條列過渡版面）但會記 `direction_unstructured` 警告。
 
-逐 slot 文案規則與內容品質標準以 `report_ppt_content_rules.md` 為唯一 runtime 來源。`ai:report_ppt` payload 必須載入該檔內容，避免產品規格、skill 文件與 runner prompt 各自維護一份規則。
+其餘頁面的文字一律取自 `narratives.json`，不再另外請 AI 產一份；附錄頁沒有文案槽，
+只渲染表格。`layout_overrides` 的鍵是頁碼字串，值是下方版型庫的 kind 名稱；
+不認得的 kind 會被忽略，不會讓產檔失敗。
 
-本段只保留產品契約：
+### 步驟
 
-- `SKILL.md` 定義匯出報告 PPT 的流程、產物、頁面與驗收。
-- `report_ppt_content_rules.md` 定義文案產製服務實際使用的逐 slot 寫法與品質標準。
-- `theme.json` 定義字體、顏色、座標與版面數值。
-- `build_ppt.py` 負責 deterministic 組版，不呼叫文案產製服務。
+#### 1. 產生確認槽範本（首次或需要重填時）
 
-`position_overrides` 只為相容舊資料保留清理路徑；v2.3 不做拖曳，不新增位置編輯。
-
-### PPTX 組裝
-
-本步驟由本目錄內建產生器執行，不呼叫 AI。
-
-#### 產生確認槽範本
-
-```
-uv run --no-project --with python-pptx --with pymupdf --python 3.12 \
-  python <skill 目錄>/scripts/build_ppt.py --init-approvals approvals.json
+```bash
+uv run --no-project --with python-pptx --with pymupdf --python 3.12 python <skill 目錄>/scripts/build_ppt.py --init-approvals approvals.json
 ```
 
-#### 產生 PPTX
+#### 2. 產生兩段 PPT 文案
+
+由文案產製服務讀 `report_data.json` 與 `narratives.json`，只產 `direction.body`
+一個 slot（結構化 JSON），寫進 `approvals.json` 的 `slots`。逐 slot 寫法與品質標準
+以同目錄 `report_ppt_content_rules.md` 為唯一 runtime 來源，payload 必須載入該檔內容。
+
+AI 回傳不在合法槽位清單內的 slot 名稱時自動過濾，並在任務進度提示；不直接讓工作失敗。
+
+#### 3. 組版
+
+```bash
+uv run --no-project --with python-pptx --with pymupdf --python 3.12 python <skill 目錄>/scripts/build_ppt.py --report-dir <報表版本目錄> --approvals <approvals.json 路徑> --output-dir <輸出目錄>
+```
+
+完成時 stdout 逐行輸出：
 
 ```
-uv run --no-project --with python-pptx --with pymupdf --python 3.12 \
-  python <skill 目錄>/scripts/build_ppt.py \
-    --report-dir <報表版本目錄> \
-    --approvals approvals.json \
-    --output-dir data/report_artifacts/ppt
+pptx: <輸出的 .pptx 路徑>
+manifest: <輸出的 .manifest.json 路徑>
+sha256: <pptx 的 sha256>
+pages: <頁數>
+warnings: <警告則數>
 ```
 
-行為契約：
+之後逐則列出警告。呼叫端請解析前三行取得產物路徑與雜湊。
 
-- 輸入＝`report_data.json`／`narratives.json`／圖表 artifact／`approvals.json`／`theme.json`。
-- `build_ppt.py` 只組版，不呼叫 AI，不改寫數字。
-- 缺解讀、缺圖表、缺資料不印浮水印；寫入 manifest，平台任務進度顯示。
-- 輸出 `.pptx` 與 manifest，manifest 需包含來源報表版本、來源目錄、hash、逐頁 `missing_slots`／`missing_reports`。
-- 同版本重跑可以產 `<report_version>_r2.pptx`、`_r3.pptx`；歷史 PPT 檔案由平台列表呈現。
+#### 4. 預覽閘門
 
-### 匯出報告工作台行為
+工作台必須以真實 `.pptx` 渲染預覽，由使用者確認後才下載或重產；不得跳過預覽，
+也不得改用 CSS 模擬投影片當正式預覽。若該版本已有 PPT，列出歷史檔案供選擇；
+若沒有，顯示「產生 PPT」按鈕，按下時若 narrative 未產就自動先跑 narrative 再接續。
 
-- 工作台必須以真實 `.pptx` 渲染預覽；不要再用 CSS 模擬投影片作為正式預覽。
-- 若版本已有 PPT，載入 `/reports/versions/{version}/ppt-files` 取得檔案列表，使用者可選檔預覽與下載。
-- 若版本沒有 PPT，顯示「請先產生 PPT」並附「產生 PPT」按鈕。
-- 按「產生 PPT」時，若 narrative 未產，系統自動先跑 narrative，再接續跑 PPT。
-- 匯出報告下方要顯示歷史 PPT 檔案列表。
-- 單頁 HTML 匯出若保留，樣式要跟 `theme.json` 對齊，不維持第三套寫死 CSS。
+### 輸出契約
 
-### 單頁重產
+| 產物 | 說明 |
+|---|---|
+| `<report_version>.pptx` | 報告本體；同版本重跑不覆蓋，改產 `_r2`、`_r3` |
+| `<report_version>.manifest.json` | 來源版本、來源目錄、`sha256`、逐頁資訊、`warnings`、`missing_slots`、`missing_reports` |
 
-第一版等整份 PPT 可穩定產出後再做。
+manifest 的 `pages[]` 每筆含 `page`、`kind`、`title`、`topic`、`report_keys`、`charts`、
+`is_appendix`、`degraded_from`、`filled_slots`、`missing_slots`、`missing_reports`。
 
-- 從目前預覽頁啟動「重產這頁」。
-- 只傳該頁需要的 `slot_keys`，不得整份重跑 AI 文案。
-- 可同時換版型。
-- 候選版本名稱含頁面名稱＋時間，例如 `{page_slug}_{YYYYMMDD_HHMMSS}`。
-- 使用者確認前只顯示候選結果，不覆蓋正式輸出。
-- 確認時提供入口讓使用者選要覆蓋的目標檔案／版本。
-- 第一版確認後直接覆蓋，不保留被覆蓋前版本。
+### 版型庫
 
-### 五批實作與分批驗收
+使用者從這份清單挑版型（寫進 `layout_overrides`）；AI 不生成版型。
 
-批次 0 測試路徑修復已完成，不算剩餘五批。剩餘工作必須五批做完，且每批完成後停止讓使用者驗收。
+| kind | 用途 |
+|---|---|
+| `cover` | 封面：主標＋統計期間＋統計卡＋分析框架條＋幾何裝飾 |
+| `section_divider` | 章節隔頁（深色塊大字） |
+| `chart_hero` | 大圖約 68% 寬＋右側完整要點面板＋底部核心結論條——內容頁預設 |
+| `chart_with_points` | 單圖約 60% 寬＋右側要點框（＋必要時判讀限制框）——可切換 |
+| `comparison` | 同頁左右並排兩張圖，各配子標、圖例編碼與要點——成對報表用 |
+| `stat_callout` | 大數字焦點頁；也是圖檔缺失時的降級版型 |
+| `percentage_bars` | 佔比條列（如受理國分布） |
+| `table` | 全寬表格（附錄） |
+| `table_with_points` | 表格＋右側要點 |
+| `direction` | 研發方向建議：左為綜合文案，右為本次納入的報表依據欄 |
 
-#### 批次 1：章節與結論
+成對報表在任何情況下都不會被合成同一張圖。預設呈現：IPC／CPC 的 L4 與 L5
+**同頁左右並排**；機會矩陣技術面／功效面與主題分布技術／功效**預設分頁**
+（象限圖與主題表資訊密度高，並排太小）；年度矩陣只上前 10 名主表圖，
+`_more` 長尾圖不上 PPT。使用者可經 `layout_overrides` 換版型。
 
-- 移除痛點頁與市場頁，PPT 基礎大綱改為 8 頁。
-- P9 改名為「附錄2：主要專利權人與申請人」，並成為新第 8 頁。
-- 選擇驅動出頁，只呈現有資料的 key。
-- 封面補年份區間，第 4 格不硬湊。
-- 結論頁可放圖表，且綜合本次實際包含的報表。
-- payload 加 narratives，`_PPT_RULES` 補綜合、脈絡、護欄與只談真有的報表。
-- manifest 接通 `missing_slots`／`missing_reports`，平台可取得缺漏。
-- 本 skill 與 `build_ppt.py` 的槽位契約同步。
+### 出頁規則
 
-驗收：
+- `cover` 與 `direction` 恆出。
+- 其他頁面必須至少有一個 `report_key` 在 `report_data` 真的有資料才出頁；
+  未選或無資料的報表不出頁，頁數由使用者勾選的報表自然決定，不設上限。
+- 基礎大綱沒列到、但本次有資料的報表，自動插在第一個附錄頁之前。
+- 圖檔一律以 `artifact_manifest.json` 反查（`report_name` → 檔名），不依報表代號猜檔名。
+- 找不到可用圖檔的頁面降級為 `stat_callout`，改用該報表的關鍵數字呈現；
+  PPT 內不會出現「圖檔待產出」這類佔位文字，每頁都有視覺元素。
 
-- PPT 為 8 頁；痛點與市場頁不出現。
-- 沒資料的報表不出頁。
-- 缺漏只進平台提示，不印浮水印。
-- 無效 slot 會被過濾並提示。
+### 缺漏處理
 
-#### 批次 2：真實 PPT 預覽與產生入口
+缺文案、缺報表、缺圖、解讀格式較舊，一律**不印在 PPT 上**，只寫進 manifest 的
+`warnings`／`missing_slots`／`missing_reports`，由平台任務進度呈現。分群版本不一致
+只提醒，不阻擋輸出。
 
-- 接入真實 `.pptx` 預覽。
-- 沒 PPT 時顯示「產生 PPT」按鈕。
-- 產生 PPT 會自動串 narrative → PPT。
-- 實機驗收中文字型、表格、圖表、色塊。
+manifest `warnings[]` 的 `type` 值：
 
-#### 批次 3：歷史 PPT 與狀態提示收斂
+| type | 意義 | 處理 |
+|---|---|---|
+| `narrative_missing` | 該頁找不到對應解讀，要點改用引擎數字 | 補跑該報表的解讀 |
+| `narrative_fallback` | 解讀只有長文、缺 `headline`／`points`，已切段落並依版面截斷 | 升級解讀產出格式 |
+| `headline_derived` | 解讀未給標題，標題取自要點首句 | 同上 |
+| `chart_missing_degraded` | 找不到圖檔，該頁已降級 | 確認圖表是否產出 |
+| `artifact_manifest_missing` | 整份圖檔對照表不存在 | 重新產製報表版本 |
+| `out_of_bounds`／`margin_violation`／`text_overlap`／`text_overflow_estimated` | 版面自檢發現超界、邊距不足、文字重疊或文字裝不下 | 視為組版缺陷，需回報 |
 
-- 匯出報告下方新增歷史 PPT 檔案列表。
-- 接 `/reports/versions/{version}/ppt-files`。
-- 任務進度列逐頁缺漏、無效 slot、分群版本不一致。
-- 報表版本補 `topic_run_id`／`topic_state_version` 追溯；不一致只提醒、不阻擋。
-
-#### 批次 4：編輯稿與 HTML 匯出收斂
-
-- 編輯稿存 DB；能整合現有表／API 就整合，不行才新增。
-- 跨裝置／跨瀏覽器可還原使用者編輯稿。
-- 單頁 HTML 匯出樣式對齊 `theme.json`。
-
-#### 批次 5：單頁重產
-
-- 單頁重產只跑該頁 slots。
-- 候選版本命名含頁面名稱＋時間。
-- 使用者確認前不覆蓋。
-- 使用者可選目標檔案／版本後確認覆蓋。
-- 第一版不保留被覆蓋前版本；第一版不做多風格。
+前五種屬資料面提醒，後四種屬版面缺陷；正常情況下後四種應為零。
 
 ### 完成判準
 
-- 引擎數字未被改寫；AI 只產敘事與 slots。
-- 報告中每個數字可回溯到 `report_data.json` 或正式報表工具回傳。
-- PPT 章節只來自本次使用者選擇且實際有資料的報表。
-- `approvals.json` 只含合法 slot；無效 slot 有平台提示。
-- manifest 含來源版本、hash、逐頁缺漏與追溯 metadata。
+- 引擎數字未被改寫；AI 只產 `cover.title` 與 `direction.body`。
+- PPT 章節只來自本次實際有資料的報表。
+- manifest 含來源版本、`sha256`、逐頁缺漏與追溯 metadata。
+- 版面自檢沒有超界、邊距不足或文字重疊。
 - 使用者可在匯出報告頁預覽真實 `.pptx` 並下載。
-- 每批完成後回報「修改摘要／影響範圍／驗證方式／下一步」，等使用者確認後再進下一批。
+
+---
 
 ## 開發備註
 
-- 版本：v2.3，2026-07-30；上一版 skill 仍含 10 頁、市場線與浮水印流程，已被本版取代。
-- 本 skill 目錄含 `SKILL.md`、`scripts/build_ppt.py`、`theme.json`，必須隨 repo／Docker image 一起提供。
-- `theme.json` 是第一版單一風格來源；第二套 token 與模板檔延後。
-- `python-pptx` 不吃 SVG，現有產生器用 `pymupdf` 把 SVG 轉點陣。真實預覽以 `.pptx` viewer 為準，不再用 CSS 模擬投影片判斷成品。
-- 每次產製或修改需記工作紀錄，並遵守專案 TDD 規則。
+### 版本
+
+v3（2026-07-30 重建）。v2.3 功能可跑但實機驗收不合格：每頁 400–500 字單段字牆、
+圖檔對不上而顯示佔位、圖片溢出版面 3.5 吋、封面標題壓字、主題色 accent 完全沒用到。
+v3 針對這五項逐一重做，並補上產後自檢把版面缺陷變成可觀測的 warning。
+
+### 檔案分工
+
+| 檔案 | 責任 |
+|---|---|
+| `SKILL.md` | 流程、產物、出頁規則與驗收（本檔） |
+| `scripts/build_ppt.py` | deterministic 組版與產後自檢，不呼叫 AI |
+| `theme.json` | 配色、字級、**全部版面座標**、裝飾參數的唯一來源 |
+| `report_ppt_content_rules.md` | 文案產製服務的 runtime 規則 |
+| `report-narrative-flow.md` | 上游逐報表解讀（`ai:narrative`）的口徑 |
+
+四份檔案必須隨 repo／Docker image 一起提供；缺 `build_ppt.py` 或 `theme.json` 時
+版型 API 會回 503（部署環境沒帶到 skill 檔案的明確徵狀）。
+
+### 設計決策
+
+- **座標唯一來源**：renderer 內不得出現座標數字字面值，由 AST 契約測試
+  `tests/test_ppt_geometry_single_source.py` 把關。前端投影片縮圖預覽讀同一份
+  `theme.json` geometry，座標分岔是本專案反覆出現的問題，故硬性隔離。
+- **圖檔反查**：實際檔名與報表代號不同名（受理國分布的圖叫
+  `jurisdiction_distribution.svg`、趨勢圖叫 `annual_trend.svg`），且同一報表可能對應
+  多張圖（IPC 的 L4/L5、機會矩陣的技術面/功效面）——多圖正是成對呈現的來源。
+- **拆頁時收窄 report_keys**：多圖頁拆成單圖頁時，`report_keys` 一併收窄到該圖真正
+  對應的報表，否則兩頁會抓到同一段解讀、印出一模一樣的標題與註腳。
+- **要點按條數分配行數**：依序填到滿會讓第一條吃光版面、後面的「意涵」「後續」整條
+  消失，等於只給讀者半個判讀。改成每條至少一行、各自截斷。
+- **圖片先插入再依框縮放**：只給 `width=` 讓高度自由伸展，遇到高瘦圖就會往下溢出。
+- **字體要寫三處**：只設 `run.font.name` 只會寫 `a:latin`，中文會被 PowerPoint 退回
+  新細明體；`_set_font` 同時寫 `a:latin`／`a:ea`／`a:cs`。
+- **表格內距壓到 0.02 in**：python-pptx 預設 0.05 in，而 PowerPoint 列高只增不減，
+  預設內距會讓整張表往下撐爆版面；同時依欄寬截字避免自動換行撐高列。
+- **文字容量估算加 epsilon**：`1.5 / (40/72*1.35)` 在浮點下是 1.9999999998，直接 `int()`
+  會少算一行，讓剛好兩行的標題被誤判成裝不下而截字。
+
+### 已知限制（皆為上游契約，非本 skill 缺陷）
+
+- 上游解讀契約已升級三件套（`headline`／`points`／`text`，report_narrative_v4）；
+  舊格式資料仍可組版（切段落 fallback＋警告），重跑解讀後警告自然消失。
+- `cluster_topic_table` 與 `opportunity_quadrant` 已由引擎寫進 `report_data.reports`
+  （c62e680）；舊報表版本仍缺這兩鍵，重產報表即補齊。
+- `position_overrides`（拖曳座標）已於 v3 移除：座標唯一來源是 `theme.json`，
+  再開一條「每頁各自存一份座標」的路等於把座標分岔重新引回來。上游仍可送這個 key，
+  組版程式直接忽略，不會壞。
+
+### 驗收方式
+
+1. 契約測試：
+   - `tests/test_ppt_layout_contract.py`（版型庫、成對呈現、圖檔反查、缺圖降級、
+     解讀容錯、產後自檢、字體字級、accent 使用、封面統計卡、manifest 完整性）
+   - `tests/test_ppt_builder.py`（選擇驅動出頁、不浮水印、不覆蓋重跑、SVG 轉檔快取）
+   - `tests/test_ppt_builder_dynamic_pages.py`（動態插頁錨點、版型覆寫）
+   - `tests/test_ppt_geometry_single_source.py`（座標唯一來源 AST 檢查）
+2. 實機轉圖目視：對真實報表版本目錄跑組版，再用 `ppt-tools` 的 `pptx_to_png.py`
+   （走本機 PowerPoint COM，輸出即使用者開檔會看到的樣子）逐頁檢查無溢出、無壓字、
+   無佔位文字、accent 有實際使用、每頁有視覺元素、標題為判讀式。
+3. 每次產製或修改需記工作紀錄，並遵守專案 TDD 規則（Red 先真跑並記錄失敗原因 →
+   最小 Green → 必要才 Refactor）。

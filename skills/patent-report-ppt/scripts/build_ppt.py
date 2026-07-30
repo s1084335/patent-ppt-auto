@@ -1,16 +1,26 @@
-"""專利分析報告 PPTX 產生器（deterministic，不呼叫 AI）。
+"""專利分析報告 PPTX 產生器 v3（deterministic，不呼叫 AI）。
 
-設計原則：
-- 引擎產可信結構化資料，本程式只組版；任何數字一律取自 `report_data.json`，不推算、不捏造。
-- 版型由 `PAGE_LAYOUT` 對照表驅動（report_key → 第幾頁哪個位置）；報表增減改對照表，不改組版邏輯。
-- 缺確認槽的頁標「待確認」浮水印，但不擋整檔產出。
-- 輸出檔名帶 report_version 且版本不覆蓋；同版本重跑產生帶序號新檔。
-- 外觀（配色、字體、版面）讀 `theme.json`，抽自範例 PPT。
+設計原則
+--------
+- **AI 只產文案，不碰數字、不碰排版**：所有數字取自 `report_data.json`，本程式不推算、
+  不四捨五入、不捏造；版型由使用者經 `layout_overrides` 挑，AI 不生成版型。
+- **`theme.json` 是版面座標、字級、配色的唯一來源**：renderer 內不得出現座標數字字面值
+  （`tests/test_ppt_geometry_single_source.py` 以 AST 契約測試把關）。前端投影片縮圖
+  預覽也讀同一份 geometry，避免座標分岔。
+- **圖檔一律走 `artifact_manifest.json` 反查**：實際檔名（`ipc_main_distribution_L4.svg`、
+  `jurisdiction_distribution.svg`、`annual_trend.svg`）與 report_key 不同名，用
+  `{report_key}.svg` 猜必錯，故禁止猜檔名。
+- **每頁必有視覺元素**：找不到圖就降級 `stat_callout`（用該報表 rows 取關鍵數字），
+  不印「（圖檔待產出）」這類佔位文字。
+- **成對報表不合成同一張圖**：IPC/CPC 的 L4 與 L5、機會矩陣的技術面與功效面，
+  預設同頁左右並排（`comparison`），使用者可改成分頁。
+- **產後自檢**：組完逐 shape 檢查超界、邊距不足、文字疊文字與文字裝不下，
+  結果寫入 manifest `warnings[]`，不靜默。
 
-獨立執行方式（不依賴主專案 import 路徑）：
-    uv run --no-project --with python-pptx --python 3.12 \
-        python skills/patent-report-ppt/scripts/build_ppt.py \
-        --report-dir <報表版本目錄> --approvals <確認槽 JSON> [--output-dir <輸出目錄>]
+可攜獨立執行（不 import 主專案任何模組）：
+    uv run --no-project --with python-pptx --with pymupdf --python 3.12 \
+        python build_ppt.py --report-dir <報表版本目錄> \
+        --approvals <approvals.json> --output-dir <輸出目錄>
 """
 
 from __future__ import annotations
@@ -18,314 +28,231 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN
-from pptx.util import Inches, Pt
+from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
+from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+from pptx.oxml.ns import qn
+from pptx.util import Emu, Inches, Pt
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 THEME_PATH = SKILL_ROOT / "theme.json"
 
-WATERMARK_TEXT = "待確認"
+# 圖檔副檔名白名單：artifact_manifest 內混有 report_data／report_html，只取得出圖的。
+IMAGE_SUFFIXES = (".svg", ".png", ".jpg", ".jpeg")
 
 
 # --------------------------------------------------------------------------
-# 版型對照表：頁面 → 資料來源 report_key、圖檔、AI 文案槽
-# 唯一來源＝.agents/context/report-requirements.md「範例 PPT 逐頁盤點」表。
-# 報表增減時只改本表，不動組版函式。
+# 內容設定表（非座標；座標一律在 theme.json）
+# 報表增減、成對呈現、圖例編碼、警語只改本區的表，不動 renderer。
 # --------------------------------------------------------------------------
 @dataclass(frozen=True)
 class PageSpec:
     """單頁版型定義。
 
-    page：頁碼（1-based）。
-    kind：組版樣式（決定用哪個 render 函式）。
-    title／subtitle：標題與副標（可含 {slot} 由確認槽填入）。
-    report_keys：本頁引用的 report_data.json report_key，依序取用。
-    charts：本頁配圖候選檔名（依序取第一個存在者）。
-    slots：本頁需經使用者確認的文案槽；缺漏只寫 manifest，不印進 PPT。
+    page：頁碼（1-based，展開後重新連號）。
+    kind：組版樣式，決定用哪個 renderer。
+    title：實際印出的標題（判讀式，＝「{報表主題}：{headline}」）。
+    topic：報表主題（標題前半，供缺 headline 時單獨使用）。
+    report_keys：本頁引用的 report_data report_key，依序取用。
+    charts：本頁配圖檔名，**只能來自 artifact_manifest 反查**，不得猜檔名。
+    slots：本頁需 AI 產的文案槽；v3 只有 cover.title 與 direction.body。
     is_appendix：附錄段顯式旗標，動態插頁靠它找錨點，不用頁碼魔術數字。
+    degraded_from：若因缺圖降級，記錄原本的 kind，寫進 manifest 供追溯。
     """
 
     page: int
     kind: str
     title: str
+    topic: str = ""
     report_keys: tuple[str, ...] = ()
     charts: tuple[str, ...] = ()
     slots: tuple[str, ...] = ()
     subtitle: str = ""
     is_appendix: bool = False
+    degraded_from: str = ""
+    # 列過濾（P1-3）：成對報表以「rows 的欄位值」拆頁時（主題分布依 source_field
+    # 分技術／功效兩張表），該頁只取匹配的列。空 dict＝不過濾。
+    # ⚠ 用 tuple of pairs 保持 frozen dataclass 可雜湊；讀取端用 dict(spec.row_filter)。
+    row_filter: tuple[tuple[str, str], ...] = ()
 
 
+def _spec_with(spec: PageSpec, **changes: Any) -> PageSpec:
+    """PageSpec 是 frozen，改欄位一律走這裡建新物件。"""
+    fields = {
+        "page": spec.page,
+        "kind": spec.kind,
+        "title": spec.title,
+        "topic": spec.topic,
+        "report_keys": spec.report_keys,
+        "charts": spec.charts,
+        "slots": spec.slots,
+        "subtitle": spec.subtitle,
+        "is_appendix": spec.is_appendix,
+        "degraded_from": spec.degraded_from,
+        "row_filter": spec.row_filter,
+    }
+    fields.update(changes)
+    return PageSpec(**fields)
+
+
+# 基礎大綱：報告敘事主線。其餘有資料的報表由 `_expand_page_layout` 自動插在附錄前。
+# ⚠ 頁序即論證鏈（P1-6，2026-07-31 使用者定案）：範圍 → 證據（時間→空間→技術→競爭→
+# 機會）→ **結論（研發方向建議）壓軸** → 附錄。研發方向是吸收全部證據後的收尾，
+# 不是開場白；動態插頁也算證據，一律插在它之前。
 PAGE_LAYOUT: tuple[PageSpec, ...] = (
-    PageSpec(
-        page=1,
-        kind="cover",
-        title="專利情報整合分析",
-        report_keys=("country_distribution", "application_trend", "lifecycle"),
-        slots=("cover.title",),
-        subtitle="統計時間段",
-    ),
-    PageSpec(
-        page=2,
-        kind="direction",
-        title="研發方向建議",
-        report_keys=(),
-        charts=("opportunity_quadrant.svg", "cluster_topic_table.svg"),
-        slots=("direction.body",),
-        subtitle="綜合本次實際包含的報表產出建議",
-    ),
-    PageSpec(
-        page=3,
-        kind="chart_with_narrative",
-        title="申請趨勢",
-        report_keys=("application_trend", "publication_trend"),
-        charts=("annual_trend.svg", "application_growth.svg"),
-        slots=("trend.narrative",),
-    ),
-    PageSpec(
-        page=4,
-        kind="chart_with_narrative",
-        title="技術分布",
-        report_keys=("cluster_topic_table",),
-        charts=("cluster_topic_table.svg", "ipc_main_distribution_L4.svg"),
-        slots=("tech.narrative",),
-    ),
-    PageSpec(
-        page=5,
-        kind="chart_with_narrative",
-        title="競爭者佈局",
-        report_keys=("applicant_country_distribution", "applicant_ranking"),
-        charts=("applicant_country_matrix.svg", "applicant_year_matrix.svg"),
-        slots=("competitor.narrative",),
-    ),
-    PageSpec(
-        page=6,
-        kind="chart_with_narrative",
-        title="機會評估四象限",
-        report_keys=("opportunity_quadrant",),
-        charts=("opportunity_quadrant.svg",),
-        slots=("opportunity.narrative",),
-    ),
-    PageSpec(
-        page=7,
-        kind="table",
-        title="附錄1：全分類技術指標總表",
-        report_keys=("cluster_topic_table",),
-        slots=(),
-        is_appendix=True,
-    ),
-    PageSpec(
-        page=8,
-        kind="table_with_narrative",
-        title="附錄2：主要專利權人與申請人",
-        report_keys=("applicant_ranking", "owner_ranking"),
-        slots=("key_players.summary",),
-        is_appendix=True,
-    ),
+    PageSpec(page=1, kind="cover", title="專利情報整合分析", topic="專利情報整合分析",
+             report_keys=("application_trend", "country_distribution")),
+    PageSpec(page=2, kind="chart_hero", title="申請趨勢", topic="申請趨勢",
+             report_keys=("application_trend", "publication_trend")),
+    PageSpec(page=3, kind="percentage_bars", title="保護地域分布", topic="保護地域分布",
+             report_keys=("country_distribution",)),
+    PageSpec(page=4, kind="comparison", title="技術分類布局", topic="技術分類布局",
+             report_keys=("ipc_main_distribution",)),
+    # 主題分布：rows 帶 source_field 兩通道，展開時依通道拆成兩張表格頁（P1-3）。
+    PageSpec(page=5, kind="table_with_points", title="技術主題分布", topic="技術主題分布",
+             report_keys=("cluster_topic_table",)),
+    PageSpec(page=6, kind="chart_hero", title="競爭者佈局", topic="競爭者佈局",
+             report_keys=("applicant_ranking", "owner_ranking")),
+    PageSpec(page=7, kind="comparison", title="機會評估", topic="機會評估",
+             report_keys=("opportunity_quadrant",)),
+    PageSpec(page=8, kind="direction", title="研發方向建議", topic="研發方向建議",
+             slots=("direction.body",)),
+    PageSpec(page=9, kind="table", title="附錄1：全分類技術指標總表", topic="全分類技術指標總表",
+             report_keys=("cluster_topic_table",), is_appendix=True),
+    PageSpec(page=10, kind="table", title="附錄2：主要專利權人與申請人", topic="主要專利權人與申請人",
+             report_keys=("applicant_ranking", "owner_ranking"), is_appendix=True),
 )
 
+# 依通道拆頁的報表（P1-3）：rows 的哪個欄位分通道、各通道的顯示名。
+# ⚠ 主題分布不走「多圖拆頁」（它根本沒圖）——是**依列值**拆成兩張表格頁。
+CHANNEL_SPLIT_REPORTS: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
+    "cluster_topic_table": ("source_field", (
+        ("wips_independent_claims", "技術主題分布"),
+        ("effect_summary", "功效主題分布"),
+    )),
+}
 
-def _copy_page_spec(spec: PageSpec, *, page: int | None = None, kind: str | None = None) -> PageSpec:
-    """建立覆寫後的頁面規格；PageSpec 是 frozen，不能原地修改。"""
-    return PageSpec(
-        page=spec.page if page is None else page,
-        kind=spec.kind if kind is None else kind,
-        title=spec.title,
-        report_keys=spec.report_keys,
-        charts=spec.charts,
-        slots=spec.slots,
-        subtitle=spec.subtitle,
-        is_appendix=spec.is_appendix,
-    )
+# 表格欄位的顯示對照（P1-5）：中文欄名、排除欄、欄值轉譯。
+# ⚠ 既有定案：topic_code 供機制識別不入畫面；source_field 原始欄名／欄值不得
+#   出現在使用者介面（前端由 DATA_TABLE_EXCLUDED_COLUMNS 擋，PPT 這裡自己要擋）。
+TABLE_COLUMN_LABELS: dict[str, str] = {
+    "label": "主題",
+    "source_field": "通道",
+    "patent_count": "專利件數",
+    "applicant_count": "申請人家數",
+    "top3_share": "前三大集中度(%)",
+    "max_share": "最大占比(%)",
+    "top_applicants": "前三大申請人",
+    "year_span": "年份跨度",
+    "applicant_display_name": "申請人",
+    "owner_display_name": "專利權人",
+    "application_year": "申請年",
+    "授權公告年": "授權公告年",
+    "leading_applicant_count": "龍頭涉入數",
+    "leading_applicants_involved": "龍頭涉入名單",
+    "quadrant": "象限",
+}
+TABLE_EXCLUDED_COLUMNS = frozenset({"topic_code"})
+TABLE_VALUE_LABELS: dict[str, dict[str, str]] = {
+    "source_field": {"wips_independent_claims": "技術", "effect_summary": "功效"},
+}
 
+# narrative 別名（P1-2）：解讀掛點與 report_key 不同名時的對照。
+# 機會矩陣的解讀由 ai:narrative 掛在 cluster section 的 opportunity_* 變體
+# （sections 結構），而 PPT 端用 report bucket 的 opportunity_quadrant——兩個
+# key 空間的歷史不一致，這裡以「report:variant」語法橋接。
+NARRATIVE_ALIASES: dict[str, tuple[str, ...]] = {
+    "opportunity_quadrant": ("cluster_topic_table:opportunity_tech",
+                             "cluster_topic_table:opportunity_effect"),
+    "opportunity_quadrant_tech": ("cluster_topic_table:opportunity_tech",),
+    "opportunity_quadrant_effect": ("cluster_topic_table:opportunity_effect",),
+}
 
-def _iter_report_entries(report_data: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
-    """依 report_data 的順序列出所有報表，供 PPT 動態補頁使用。"""
-    entries: list[tuple[str, dict[str, Any]]] = []
-    for bucket in ("reports", "family_reports"):
-        section = report_data.get(bucket) or {}
-        if not isinstance(section, dict):
-            continue
-        for key, value in section.items():
-            if isinstance(value, dict):
-                entries.append((key, value))
-    return entries
+# 成對報表預設呈現：預設同頁左右並排；列在這裡的改成分頁。
+# - cluster_topic_table：表格內容多、並排讀不動（依通道列值拆）。
+# - opportunity_quadrant：2026-07-31 使用者二輪回饋「同頁比較圖太小」——象限圖
+#   資訊密度高，一圖一頁（chart_hero 大圖）才看得清。IPC/CPC 維持同頁比較。
+SPLIT_PAIR_REPORTS = frozenset({"cluster_topic_table", "opportunity_quadrant"})
 
-
-def _chart_candidates_for(report_key: str) -> tuple[str, ...]:
-    """用 report_key 推定圖檔候選；沒有圖檔時 renderer 會顯示佔位。"""
-    return (f"{report_key}.svg", f"{report_key}.png", f"{report_key}.jpg")
-
-
-def _kind_for_report(report: dict[str, Any]) -> str:
-    """依報表型態挑預設版型；矩陣與明細偏表格，其餘用圖文版。"""
-    report_type = str(report.get("report_type") or "").lower()
-    if report_type in {"matrix", "detail", "table"}:
-        return "table"
-    return "chart_with_narrative"
-
-
-def _report_key_has_data(report_data: dict[str, Any], report_key: str) -> bool:
-    """判斷 report_key 是否在本次報表版本中真的有資料。"""
-    for bucket in ("reports", "family_reports"):
-        entry = (report_data.get(bucket) or {}).get(report_key)
-        if not isinstance(entry, dict):
-            continue
-        rows = entry.get("rows")
-        if isinstance(rows, list) and rows:
-            return True
-        try:
-            if int(entry.get("row_count") or 0) > 0:
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
+# 只上主圖的報表（2026-07-31 使用者定案）：年度矩陣只用前 10 名主表那張，
+# 「更多」長尾圖不上 PPT（報表頁仍看得到，PPT 給決策者看主要玩家就夠）。
+MAIN_CHART_ONLY_REPORTS = frozenset({"applicant_year_matrix", "owner_year_matrix"})
 
 
-def _actual_report_keys(report_data: dict[str, Any], keys: tuple[str, ...]) -> tuple[str, ...]:
-    """多 key 頁面只保留本次有資料的 key，避免空框與錯資料。"""
-    return tuple(key for key in keys if _report_key_has_data(report_data, key))
+def _filter_report_charts(report_keys: tuple[str, ...], files: tuple[str, ...]) -> tuple[str, ...]:
+    """套用「只上主圖」規則：MAIN_CHART_ONLY_REPORTS 的 `_more` 變體圖不上 PPT。"""
+    if not any(key in MAIN_CHART_ONLY_REPORTS for key in report_keys):
+        return files
+    return tuple(name for name in files if "_more" not in name)
 
+# 成對圖的左右順序偏好：L4 在 L5 前、技術面在功效面前；其餘照檔名排序保持 deterministic。
+CHART_ORDER_HINTS = ("_L4", "_L5", "_tech", "_effect", "_more")
 
-def _page_should_render(report_data: dict[str, Any], spec: PageSpec) -> bool:
-    """cover/direction 恆出；其他頁面至少需有一個實際 report_key。"""
-    if spec.kind in {"cover", "direction"}:
-        return True
-    return bool(_actual_report_keys(report_data, spec.report_keys))
+# 成對圖的子標，讓使用者一眼知道左右差在哪（禁止合成一張圖的配套說明）。
+CHART_VARIANT_LABELS = {
+    "_L4": "4 階細分類（L4）",
+    "_L5": "5 階細分類（L5）",
+    "_tech": "技術面",
+    "_effect": "功效面",
+    "_more": "（續）",
+}
 
+# 圖例編碼說明：放圖表右上一行小字，說明視覺編碼怎麼讀。
+ENCODING_NOTES = {
+    "application_trend": "條長＝當年申請件數｜橫軸＝申請年",
+    "publication_trend": "條長＝當年公告件數｜橫軸＝公告年",
+    "country_distribution": "條長＝件數佔比｜數值＝實際件數",
+    "ipc_main_distribution": "條長＝件數｜左右為不同階層，非同圖合成",
+    "cpc_main_distribution": "條長＝件數｜左右為不同階層，非同圖合成",
+    "opportunity_quadrant": "橫軸＝申請人家數｜縱軸＝專利件數｜點＝技術主題",
+    "cluster_topic_table": "條長＝主題件數｜家數＝投入該主題的申請人數",
+    "applicant_ranking": "條長＝件數｜排序＝件數由高至低",
+    "owner_ranking": "條長＝件數｜排序＝件數由高至低",
+    "applicant_country_distribution": "格值＝件數｜列＝申請人、欄＝受理國",
+    "applicant_year_matrix": "格值＝件數｜列＝申請人、欄＝申請年",
+    "owner_year_matrix": "格值＝件數｜列＝專利權人、欄＝申請年",
+    "lifecycle": "面積／條長＝當年件數｜橫軸＝申請年",
+    "family_country_layout": "條長＝家族成員件數｜分組＝受理國",
+}
+DEFAULT_ENCODING_NOTE = "條長＝件數｜數值取自報表引擎"
 
-def _filter_spec_report_keys(report_data: dict[str, Any], spec: PageSpec) -> PageSpec:
-    """套用選擇驅動規則：只把實際存在的 report_key 交給 renderer。"""
-    if spec.kind in {"cover", "direction"}:
-        return spec
-    actual = _actual_report_keys(report_data, spec.report_keys)
-    if actual == spec.report_keys:
-        return spec
-    return PageSpec(
-        page=spec.page,
-        kind=spec.kind,
-        title=spec.title,
-        report_keys=actual,
-        charts=spec.charts,
-        slots=spec.slots,
-        subtitle=spec.subtitle,
-        is_appendix=spec.is_appendix,
-    )
+# 方法論警語：只寫判讀限制，不寫系統狀態；沒有列在這裡的頁面不硬生警語框。
+CAVEATS = {
+    "application_trend": "最近 1–2 個申請年件數偏低多為新案審查中的資料截止效應，非活動衰退。",
+    "opportunity_quadrant": "象限以件數與申請人家數的相對門檻切分，屬相對位置判讀，不代表技術優劣；低密度區需人工覆核代表專利相關性。",
+    "cluster_topic_table": "分群標籤僅供辨識，技術優劣與可商品化程度未經驗證，需人工覆核代表專利。",
+    "applicant_ranking": "申請人家數只反映競爭者是否已進場，不等於市占、營收或產品核心度。",
+    "owner_ranking": "名單反映權利持有結構，不代表合作、授權或併購關係。",
+    "country_distribution": "受理國分布反映保護範圍，不能推論銷售市場或需求大小。",
+}
 
+# narrative fallback：舊格式只有長文 text，依這些段落標記切成可讀條列。
+NARRATIVE_MARKERS = (
+    "觀察", "現況", "意涵", "後續檢視點", "決策提醒", "後續", "結論邊界", "限制", "建議",
+)
 
-def _expand_page_layout(report_data: dict[str, Any]) -> list[PageSpec]:
-    """把未列在基礎大綱的報表插到附錄／結論前，頁碼重新連號。"""
-    base_layout = [
-        _filter_spec_report_keys(report_data, spec)
-        for spec in PAGE_LAYOUT
-        if _page_should_render(report_data, spec)
-    ]
-    covered = {key for spec in PAGE_LAYOUT for key in spec.report_keys}
-    extra_pages: list[PageSpec] = []
-    for report_key, report in _iter_report_entries(report_data):
-        if report_key in covered:
-            continue
-        if not _report_key_has_data(report_data, report_key):
-            continue
-        title = str(report.get("label_zh") or report.get("label") or report_key)
-        subtitle = str(report.get("label") or "")
-        extra_pages.append(
-            PageSpec(
-                page=0,
-                kind=_kind_for_report(report),
-                title=title,
-                report_keys=(report_key,),
-                charts=_chart_candidates_for(report_key),
-                subtitle=subtitle,
-            )
-        )
+# 關鍵數字粗體：把數字（含常見量詞）從敘述中切出來單獨加粗。
+NUMBER_PATTERN = re.compile(r"(\d[\d,]*(?:\.\d+)?\s*(?:%|件|家|年|項|個)?)")
 
-    if not extra_pages:
-        return [_copy_page_spec(spec, page=index) for index, spec in enumerate(base_layout, start=1)]
-
-    # 附錄錨點由顯式旗標決定，不使用 spec.page >= N 這類魔術數字。
-    appendix_index = next(
-        (index for index, spec in enumerate(base_layout) if spec.is_appendix),
-        len(base_layout),
-    )
-    expanded = list(base_layout[:appendix_index]) + extra_pages + list(base_layout[appendix_index:])
-    return [_copy_page_spec(spec, page=index) for index, spec in enumerate(expanded, start=1)]
-
-
-def _clean_layout_overrides(value: Any) -> dict[str, str]:
-    """只接受 renderer 支援的版型名稱，避免無效覆寫讓產檔失敗。"""
-    if not isinstance(value, dict):
-        return {}
-    allowed = set(RENDERERS)
-    cleaned: dict[str, str] = {}
-    for page, kind in value.items():
-        kind_text = str(kind)
-        if kind_text in allowed:
-            cleaned[str(page)] = kind_text
-    return cleaned
-
-
-def _apply_layout_overrides(layout: list[PageSpec], overrides: dict[str, str]) -> list[PageSpec]:
-    """依頁碼套用使用者選的版型，不改動 report_key 與文案槽。"""
-    return [
-        _copy_page_spec(spec, kind=overrides[str(spec.page)])
-        if str(spec.page) in overrides
-        else spec
-        for spec in layout
-    ]
-
-
-POSITION_FIELDS = ("left_in", "top_in", "width_in", "height_in")
-
-
-def _clean_position_overrides(value: Any) -> dict[str, dict[str, float]]:
-    """清理前端拖曳產生的英吋座標，保留可被 renderer 使用的數值欄位。"""
-    if not isinstance(value, dict):
-        return {}
-    cleaned: dict[str, dict[str, float]] = {}
-    for key, raw_box in value.items():
-        if not isinstance(raw_box, dict):
-            continue
-        box: dict[str, float] = {}
-        for field_name in POSITION_FIELDS:
-            if field_name not in raw_box:
-                continue
-            try:
-                box[field_name] = float(raw_box[field_name])
-            except (TypeError, ValueError):
-                continue
-        if box:
-            cleaned[str(key)] = box
-    return cleaned
-
-
-def _component_box(ctx: dict[str, Any], spec: PageSpec, component: str, defaults: dict[str, float]) -> dict[str, float]:
-    """取得元件座標；先看 position_overrides，沒有才用 theme.json 預設。"""
-    box = dict(defaults)
-    override = (ctx.get("position_overrides") or {}).get(f"{spec.page}.{component}") or {}
-    for field_name in POSITION_FIELDS:
-        if field_name in override:
-            box[field_name] = override[field_name]
-    return box
-
-
-def _position_overrides_for_page(ctx: dict[str, Any], spec: PageSpec) -> list[str]:
-    """列出實際套到該頁的座標覆寫 key，寫入 manifest 供驗收追蹤。"""
-    prefix = f"{spec.page}."
-    return sorted(
-        key for key in (ctx.get("position_overrides") or {}) if key.startswith(prefix)
-    )
+# P1-10（2026-07-31 使用者定案）：來源註**只留可追溯資訊**（來源／期間／版本）。
+# 舊版逐頁蓋「不保證」式免責章——數字是引擎確定性統計、預覽閘門本身就是人工定稿，
+# 再蓋章等於否定定稿流程；不確定性提醒收斂到判讀限制框（該頁需要才出現）。
 
 
 def all_slot_keys() -> list[str]:
-    """回傳全部確認槽鍵，供產生過稿範本或檢查覆蓋率。"""
+    """回傳 PPT 階段 AI 需要產的全部文案槽（唯一來源＝PAGE_LAYOUT）。
+
+    v3 只剩 `cover.title` 與 `direction.body`：其餘頁面文字一律來自 narratives，
+    不再讓 AI 為每頁另產一份，避免同一段判讀在兩處各寫一次而互相矛盾。
+    """
     keys: list[str] = []
     for spec in PAGE_LAYOUT:
         keys.extend(spec.slots)
@@ -337,42 +264,163 @@ def all_slot_keys() -> list[str]:
 # --------------------------------------------------------------------------
 @dataclass
 class Theme:
-    """外觀樣式，抽自範例 PPT；改樣式只改 theme.json。"""
+    """外觀樣式；改配色、字級、座標只改 theme.json，不動本程式。"""
 
     font: dict[str, Any]
     color: dict[str, str]
     geometry: dict[str, Any]
     slide: dict[str, float]
+    qa: dict[str, Any]
 
     @classmethod
-    def load(cls, path: Path = THEME_PATH) -> "Theme":
-        data = json.loads(path.read_text(encoding="utf-8"))
+    def load(cls, path: Path | str = THEME_PATH) -> Theme:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls(
             font=data["font"],
             color=data["color"],
             geometry=data["geometry"],
             slide=data["slide"],
+            qa=data["qa"],
         )
 
     def rgb(self, name: str) -> RGBColor:
         return RGBColor.from_string(self.color[name])
 
+    def size(self, name: str) -> float:
+        """取字級並套用 12pt 下限；下限在 theme 內宣告，程式只負責遵守。"""
+        return max(float(self.font[name]), float(self.font["min_pt"]))
+
 
 # --------------------------------------------------------------------------
-# SVG 轉點陣：python-pptx 不吃 SVG，需先轉 PNG；轉換結果做快取只轉一次
+# 文字量估算：文字框裝不裝得下要能事前判斷（fallback 截斷）與事後自檢（QA）
 # --------------------------------------------------------------------------
-def rasterize_svg(svg_path: Path, cache_dir: Path) -> Path | None:
-    """把 SVG 轉成 PNG 供 python-pptx 插入，結果落快取避免重複轉換。
+def _text_capacity(theme: Theme, *, width_in: float, height_in: float, size_pt: float) -> tuple[int, int]:
+    """回傳（每行字數, 可用行數）。中文字寬約等於字級，故以 pt/72 估字寬。"""
+    char_in = size_pt / 72.0 * float(theme.qa["cjk_char_width_ratio"])
+    line_in = size_pt / 72.0 * float(theme.qa["line_height_ratio"])
+    # ⚠ 加 epsilon：1.5 / (40/72*1.35) 在浮點下是 1.9999999998，直接 int() 會少算一行，
+    # 讓剛好兩行的標題被誤判成裝不下而截字（封面標題被切成「…」就是這樣來的）。
+    epsilon = 1e-6
+    per_line = max(1, int(width_in / char_in + epsilon))
+    lines = max(1, int(height_in / line_in + epsilon))
+    return per_line, lines
 
-    優先用 PyMuPDF（主專案既有依賴，不需額外安裝）；不可用時回傳 None，
-    由呼叫端以「圖檔缺漏」佔位處理，不擋整檔產出。
+
+def _fit_text(theme: Theme, text: str, *, width_in: float, height_in: float, size_pt: float) -> tuple[str, bool]:
+    """把文字截到框內裝得下，超出加「…」。回傳（文字, 是否截斷）。"""
+    per_line, lines = _text_capacity(theme, width_in=width_in, height_in=height_in, size_pt=size_pt)
+    budget = per_line * lines
+    if len(text) <= budget:
+        return text, False
+    return text[: max(1, budget - 1)].rstrip("，、。；：") + "…", True
+
+
+def _display_width(text: str) -> float:
+    """字串的顯示寬度（em）。中文、全形符號約 1 em，半形英數約 0.55 em。
+
+    表格欄位混排 `applicant_display_name` 與中文公司名，一律當全形算會把英文
+    表頭砍成一半；一律當半形算又會讓中文撐爆欄寬。
     """
+    return sum(0.55 if ord(ch) < 0x2E80 else 1.0 for ch in text)
+
+
+def _truncate_to_width(text: str, width_in: float, size_pt: float) -> str:
+    """把字串截到指定英吋寬度內（超出加「…」），用於表格儲存格避免自動換行撐高列。"""
+    budget = width_in / (size_pt / 72.0)
+    if _display_width(text) <= budget:
+        return text
+    used, kept = 0.0, []
+    for ch in text:
+        step = 0.55 if ord(ch) < 0x2E80 else 1.0
+        if used + step > budget - 1:
+            break
+        used += step
+        kept.append(ch)
+    return "".join(kept) + "…"
+
+
+def _lines_needed(text: str, per_line: int) -> int:
+    """多段文字所需行數：每段至少佔一行，不足一行不合併。"""
+    return sum(max(1, math.ceil(len(line) / per_line)) for line in text.split("\n"))
+
+
+# --------------------------------------------------------------------------
+# 圖檔對照：唯一來源＝artifact_manifest.json（禁止用 report_key 猜檔名）
+# --------------------------------------------------------------------------
+class ChartIndex:
+    """report_name → 圖檔清單的反查表，並負責 SVG 轉點陣與快取。
+
+    實際檔名與 report_key 不同名（`country_distribution` 的圖叫
+    `jurisdiction_distribution.svg`），且同一 report_name 可能對應多張圖
+    （IPC 的 L4/L5、機會矩陣的技術面/功效面）——這正是成對呈現的來源。
+    """
+
+    def __init__(self, report_dir: Path, cache_dir: Path, manifest: dict[str, Any] | None = None) -> None:
+        self.report_dir = report_dir
+        self.cache_dir = cache_dir
+        self._by_report: dict[str, list[str]] = {}
+        self._raster_cache: dict[str, Path | None] = {}
+        self.manifest_found = bool(manifest)
+        for artifact in (manifest or {}).get("artifacts", []) or []:
+            if not isinstance(artifact, dict):
+                continue
+            # 上游欄位曾用 file／filename、sha256／hash 兩種寫法，兩種都吃。
+            name = str(artifact.get("file") or artifact.get("filename") or "")
+            if not name or not name.lower().endswith(IMAGE_SUFFIXES):
+                continue
+            if not (self.report_dir / name).exists():
+                continue
+            targets = list(artifact.get("report_names") or [])
+            if artifact.get("report_name"):
+                targets.append(str(artifact["report_name"]))
+            for target in {str(t) for t in targets if t}:
+                bucket = self._by_report.setdefault(target, [])
+                if name not in bucket:
+                    bucket.append(name)
+
+    @staticmethod
+    def _order_key(name: str) -> tuple[int, str]:
+        for index, hint in enumerate(CHART_ORDER_HINTS):
+            if hint in name:
+                return index, name
+        return len(CHART_ORDER_HINTS), name
+
+    def files_for(self, report_keys: tuple[str, ...]) -> tuple[str, ...]:
+        """依 report_key 順序取圖檔；同一 report_key 多張圖時保持穩定排序。"""
+        found: list[str] = []
+        for key in report_keys:
+            for name in sorted(self._by_report.get(key, []), key=self._order_key):
+                if name not in found:
+                    found.append(name)
+        return tuple(found)
+
+    def owners_of(self, chart_name: str, keys: tuple[str, ...]) -> tuple[str, ...]:
+        """某張圖對應到候選 report_key 中的哪幾個；拆頁時用來把 report_key 一起收窄。"""
+        return tuple(key for key in keys if chart_name in self._by_report.get(key, []))
+
+    def resolve(self, name: str) -> Path | None:
+        """把圖檔轉成 python-pptx 吃得下的點陣檔；SVG 轉 PNG 只轉一次。"""
+        if name in self._raster_cache:
+            return self._raster_cache[name]
+        source = self.report_dir / name
+        if not source.exists():
+            self._raster_cache[name] = None
+            return None
+        if source.suffix.lower() == ".svg":
+            resolved = globals()["rasterize_svg"](source, self.cache_dir)
+        else:
+            resolved = source
+        self._raster_cache[name] = resolved
+        return resolved
+
+
+def rasterize_svg(svg_path: Path, cache_dir: Path) -> Path | None:
+    """SVG → PNG（python-pptx 不吃 SVG）。轉不動時回 None，由呼叫端降級處理。"""
     cache_dir.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(svg_path.read_bytes()).hexdigest()[:16]
     png_path = cache_dir / f"{svg_path.stem}_{digest}.png"
     if png_path.exists():
         return png_path
-
     try:
         import pymupdf  # type: ignore
     except ImportError:
@@ -380,51 +428,247 @@ def rasterize_svg(svg_path: Path, cache_dir: Path) -> Path | None:
             import fitz as pymupdf  # type: ignore
         except ImportError:
             return None
-
     try:
         doc = pymupdf.open(str(svg_path))
-        pix = doc[0].get_pixmap(dpi=150)
-        pix.save(str(png_path))
+        doc[0].get_pixmap(dpi=150).save(str(png_path))
         doc.close()
     except Exception:
-        # 轉換失敗（SVG 語法過於進階等）不中斷產出。
         return None
     return png_path
 
 
-class ImageResolver:
-    """解析頁面配圖，並快取轉換結果（同一張圖只轉一次）。"""
+# --------------------------------------------------------------------------
+# report_data 取值
+# --------------------------------------------------------------------------
+def _iter_report_entries(report_data: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    entries: list[tuple[str, dict[str, Any]]] = []
+    for bucket in ("reports", "family_reports"):
+        section = report_data.get(bucket) or {}
+        if isinstance(section, dict):
+            entries.extend((k, v) for k, v in section.items() if isinstance(v, dict))
+    return entries
 
-    def __init__(self, report_dir: Path, cache_dir: Path) -> None:
-        self.report_dir = report_dir
-        self.cache_dir = cache_dir
-        self._cache: dict[str, Path | None] = {}
 
-    def resolve(self, candidates: tuple[str, ...]) -> Path | None:
-        """依序取第一個存在的圖檔；SVG 轉 PNG，PNG／JPG 直接用。"""
-        for name in candidates:
-            if name in self._cache:
-                if self._cache[name] is not None:
-                    return self._cache[name]
-                continue
-            source = self.report_dir / name
-            if not source.exists():
-                self._cache[name] = None
-                continue
-            if source.suffix.lower() == ".svg":
-                # 透過模組層名稱呼叫，讓測試可觀察轉換次數。
-                resolved = globals()["rasterize_svg"](source, self.cache_dir)
-            else:
-                resolved = source
-            self._cache[name] = resolved
-            if resolved is not None:
-                return resolved
-        return None
+def _entry_of(report_data: dict[str, Any], report_key: str) -> dict[str, Any]:
+    for bucket in ("reports", "family_reports"):
+        entry = (report_data.get(bucket) or {}).get(report_key)
+        if isinstance(entry, dict):
+            return entry
+    return {}
+
+
+def _rows_of(report_data: dict[str, Any], report_key: str) -> list[dict[str, Any]]:
+    rows = _entry_of(report_data, report_key).get("rows")
+    return rows if isinstance(rows, list) else []
+
+
+def _label_of(report_data: dict[str, Any], report_key: str, fallback: str = "") -> str:
+    entry = _entry_of(report_data, report_key)
+    return str(entry.get("label_zh") or entry.get("label") or fallback or report_key)
+
+
+def _report_key_has_data(report_data: dict[str, Any], report_key: str) -> bool:
+    entry = _entry_of(report_data, report_key)
+    rows = entry.get("rows")
+    if isinstance(rows, list) and rows:
+        return True
+    try:
+        return int(entry.get("row_count") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _actual_report_keys(report_data: dict[str, Any], keys: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(key for key in keys if _report_key_has_data(report_data, key))
+
+
+def _numeric_column(rows: list[dict[str, Any]]) -> str:
+    """挑出 rows 內代表件數的數值欄；優先 patent_count，其次第一個純數字欄。"""
+    if not rows:
+        return ""
+    if "patent_count" in rows[0]:
+        return "patent_count"
+    for name, value in rows[0].items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(name)
+    return ""
+
+
+def _label_column(rows: list[dict[str, Any]], numeric: str) -> str:
+    """挑出 rows 內代表項目名稱的欄。
+
+    ⚠ 優先 `label`／顯示名欄，並跳過排除欄——舊版取「第一個非數值欄」，
+    分群 rows 第一欄是 topic_code，降級要點就印出「T001 15 件」（代碼入文，
+    2026-07-31 實機驗收抓到）。
+    """
+    if not rows:
+        return ""
+    for preferred in ("label", "applicant_display_name", "owner_display_name"):
+        if preferred in rows[0]:
+            return preferred
+    for name in rows[0]:
+        if str(name) != numeric and str(name) not in TABLE_EXCLUDED_COLUMNS:
+            return str(name)
+    return str(next(iter(rows[0])))
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _statistics_period(report_data: dict[str, Any]) -> str:
+    """統計期間：先讀 parameters 明示值，沒有才由趨勢報表的年份區間推得。"""
+    params = report_data.get("parameters") or {}
+    for key in ("period", "date_range", "statistics_period"):
+        if params.get(key):
+            return str(params[key])
+    years: list[int] = []
+    for report_key in ("application_trend", "publication_trend", "lifecycle"):
+        for row in _rows_of(report_data, report_key):
+            for field in ("year", "application_year", "publication_year"):
+                if field in row:
+                    value = _as_int(row[field])
+                    if value:
+                        years.append(value)
+    if not years:
+        return ""
+    low, high = min(years), max(years)
+    return str(low) if low == high else f"{low}–{high}"
+
+
+# --------------------------------------------------------------------------
+# narrative：headline／points 三件套，缺就 fallback 並記 warning
+# --------------------------------------------------------------------------
+def _narrative_entry(narratives: dict[str, Any], candidates: tuple[str, ...]) -> tuple[str, dict[str, Any]]:
+    """依候選鍵找 narrative；回傳（命中的鍵, variant 內容）。
+
+    narratives 的鍵混用 report_key 與圖檔名（申請趨勢的解讀掛在 `annual_trend`），
+    故候選鍵同時含 report_key、圖檔主檔名與去掉 _L4/_tech 等變體後綴的主檔名。
+    """
+    reports = narratives.get("reports") or {}
+    for key in candidates:
+        # 「report:variant」語法（P1-2 alias）：直接指定變體，不掃整個 entry。
+        if ":" in key:
+            report_key, _, variant_key = key.partition(":")
+            variant = ((reports.get(report_key) or {}).get("variants") or {}).get(variant_key)
+            if isinstance(variant, dict) and (variant.get("points") or variant.get("text") or variant.get("headline")):
+                return key, variant
+            continue
+        entry = reports.get(key)
+        if not isinstance(entry, dict):
+            continue
+        variants = entry.get("variants") or {}
+        for variant_key in ("default", *variants):
+            variant = variants.get(variant_key)
+            if isinstance(variant, dict) and (variant.get("points") or variant.get("text") or variant.get("headline")):
+                return key, variant
+    return "", {}
+
+
+def _split_legacy_text(text: str) -> list[dict[str, Any]]:
+    """把舊格式長文依「觀察／意涵／決策提醒」等段落標記切成條列。
+
+    這是 fallback 的可讀性補救：上游還沒升級 headline/points 契約前，
+    直接把 400–500 字整段塞進版面就是字牆（實機驗收不合格的主因之一）。
+    切分只依 AI 自己寫的段落標記，不新增、不改寫任何內容。
+    """
+    pattern = "|".join(NARRATIVE_MARKERS)
+    chunks = [c.strip() for c in re.split(rf"(?=(?:{pattern})\s*[：:])", text) if c.strip()]
+    points: list[dict[str, Any]] = []
+    for chunk in chunks:
+        match = re.match(rf"^({pattern})\s*[：:]\s*(.+)$", chunk, flags=re.DOTALL)
+        if match:
+            points.append({"label": match.group(1), "text": match.group(2).strip()})
+        else:
+            points.append({"label": "", "text": chunk})
+    if len(points) > 1:
+        return points
+    # 找不到段落標記：依句號切成最多三條，仍好過單段字牆。
+    sentences = [s.strip() for s in re.split(r"(?<=[。！？])", text) if s.strip()]
+    if len(sentences) <= 1:
+        return [{"label": "", "text": text.strip()}]
+    size = math.ceil(len(sentences) / 3)
+    return [
+        {"label": "", "text": "".join(sentences[i : i + size])}
+        for i in range(0, len(sentences), size)
+    ]
+
+
+HEADLINE_MAX_CHARS = 26
+
+
+def _derive_headline(points: list[dict[str, Any]]) -> str:
+    """缺 headline 時，從第一條要點取一個短句當判讀式標題。
+
+    這是**選取**而不是生成：句子完全是 narrative 自己寫的，程式只切第一個句讀
+    並檢查長度，切不出夠短的就不硬湊（標題退回報表主題）。裸名詞標題讀者看不出
+    這頁在講什麼，但捏造判讀更糟——所以只在有現成句子可用時才升級標題，
+    且一律寫 warning 讓人追得到這個標題是推導來的。
+    """
+    if not points:
+        return ""
+    text = str(points[0].get("text") or "").strip()
+    for separator in ("。", "；", "，", "、"):
+        head = text.split(separator)[0].strip()
+        if head and len(head) <= HEADLINE_MAX_CHARS:
+            return head
+    return ""
+
+
+def _normalize_narrative(variant: dict[str, Any]) -> tuple[str, list[dict[str, Any]], bool]:
+    """回傳（headline, points, 是否走 fallback）。缺 headline 不自行編造。"""
+    headline = str(variant.get("headline") or "").strip()
+    raw_points = variant.get("points")
+    if isinstance(raw_points, list) and raw_points:
+        points = [
+            {
+                "label": str(p.get("label") or "").strip(),
+                "text": str(p.get("text") or "").strip(),
+                "emphasis": bool(p.get("emphasis")),
+            }
+            for p in raw_points
+            if isinstance(p, dict) and str(p.get("text") or "").strip()
+        ]
+        if points:
+            return headline, points, False
+    text = str(variant.get("text") or "").strip()
+    if not text:
+        return headline, [], True
+    return headline, [{**p, "emphasis": False} for p in _split_legacy_text(text)], True
 
 
 # --------------------------------------------------------------------------
 # 組版輔助
 # --------------------------------------------------------------------------
+def _set_font(run, theme: Theme, *, size: float, color: str, bold: bool) -> None:
+    """套字體與字級。
+
+    ⚠ 只設 `run.font.name` 只會寫 `a:latin`，中文會被 PowerPoint 退回新細明體；
+    要全字元都是微軟正黑體必須同時寫 `a:ea`（東亞）與 `a:cs`（複雜文字）。
+    """
+    run.font.size = Pt(max(size, float(theme.font["min_pt"])))
+    run.font.bold = bold
+    run.font.color.rgb = theme.rgb(color)
+    run.font.name = theme.font["family"]
+    rpr = run._r.get_or_add_rPr()
+    for tag in ("a:ea", "a:cs"):
+        element = rpr.find(qn(tag))
+        if element is None:
+            element = rpr.makeelement(qn(tag), {})
+            rpr.append(element)
+        element.set("typeface", theme.font["family"])
+
+
+def _new_textbox(slide, *, left: float, top: float, width: float, height: float):
+    box = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(width), Inches(height))
+    frame = box.text_frame
+    frame.word_wrap = True
+    return box, frame
+
+
 def _add_text(
     slide,
     theme: Theme,
@@ -438,357 +682,1231 @@ def _add_text(
     color: str = "ink",
     bold: bool = False,
     align=PP_ALIGN.LEFT,
+    anchor=MSO_ANCHOR.TOP,
 ) -> None:
-    """加入一個文字框，套用主題字體與顏色。"""
-    box = slide.shapes.add_textbox(
-        Inches(left), Inches(top), Inches(width), Inches(height)
-    )
-    frame = box.text_frame
-    frame.word_wrap = True
-    para = frame.paragraphs[0]
-    para.alignment = align
-    run = para.add_run()
-    run.text = text
-    run.font.name = theme.font["family"]
-    run.font.size = Pt(size)
-    run.font.bold = bold
-    run.font.color.rgb = theme.rgb(color)
+    """加入純文字框；換行字元切成獨立段落，維持行距一致。"""
+    _, frame = _new_textbox(slide, left=left, top=top, width=width, height=height)
+    frame.vertical_anchor = anchor
+    for index, line in enumerate(str(text).split("\n")):
+        para = frame.paragraphs[0] if index == 0 else frame.add_paragraph()
+        para.alignment = align
+        run = para.add_run()
+        run.text = line
+        _set_font(run, theme, size=size, color=color, bold=bold)
 
 
-def _add_band(slide, theme: Theme, left, top, width, height, color: str) -> None:
-    """加入色帶／底板（範例採實心矩形分區）。"""
-    from pptx.enum.shapes import MSO_SHAPE
+def _add_number_bold_text(
+    slide,
+    theme: Theme,
+    blocks: list[tuple[str, str, str, bool]],
+    *,
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    size: float,
+) -> None:
+    """逐條 bullet；每條由（標籤, 內文, 內文色, 標籤是否強調）構成。
 
+    關鍵數字以粗體切出來，讓決策者掃讀時先看到量級——這是割草機範例的要點框寫法。
+    """
+    _, frame = _new_textbox(slide, left=left, top=top, width=width, height=height)
+    for index, (label, text, color, emphasized) in enumerate(blocks):
+        para = frame.paragraphs[0] if index == 0 else frame.add_paragraph()
+        if label:
+            chip = para.add_run()
+            chip.text = f"{label}｜"
+            _set_font(chip, theme, size=size, color="alert" if emphasized else "royal", bold=True)
+        for piece in NUMBER_PATTERN.split(text):
+            if not piece:
+                continue
+            run = para.add_run()
+            run.text = piece
+            _set_font(run, theme, size=size, color=color, bold=bool(NUMBER_PATTERN.fullmatch(piece)))
+
+
+def _add_band(slide, theme: Theme, left, top, width, height, color: str, *, rounded: bool = False, line: str = "") -> None:
+    """加入色塊／底板。rounded 用於 Slidesgo 風格的圓角色塊。"""
     shape = slide.shapes.add_shape(
-        MSO_SHAPE.RECTANGLE, Inches(left), Inches(top), Inches(width), Inches(height)
+        MSO_SHAPE.ROUNDED_RECTANGLE if rounded else MSO_SHAPE.RECTANGLE,
+        Inches(left), Inches(top), Inches(width), Inches(height),
     )
     shape.fill.solid()
     shape.fill.fore_color.rgb = theme.rgb(color)
-    shape.line.fill.background()
+    if line:
+        shape.line.color.rgb = theme.rgb(line)
+    else:
+        shape.line.fill.background()
+    if rounded:
+        shape.adjustments[0] = 0.08
+    shape.shadow.inherit = False
     shape.text_frame.text = ""
 
 
-def _rows_of(report_data: dict, report_key: str) -> list[dict]:
-    """取某報表的 rows；缺報表回空清單，讓頁面優雅降級不 crash。"""
-    for bucket in ("reports", "family_reports"):
-        section = report_data.get(bucket) or {}
-        entry = section.get(report_key)
-        if isinstance(entry, dict) and isinstance(entry.get("rows"), list):
-            return entry["rows"]
+def _add_oval(slide, theme: Theme, left, top, width, height, color: str) -> None:
+    """圓點裝飾（封面角落圓格網）。"""
+    shape = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(left), Inches(top), Inches(width), Inches(height))
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = theme.rgb(color)
+    shape.line.fill.background()
+    shape.shadow.inherit = False
+    shape.text_frame.text = ""
+
+
+def _add_picture_fitted(slide, image_path: Path, *, left: float, top: float, width: float, height: float) -> None:
+    """等比縮放塞進框內並置中。
+
+    ⚠ 舊版只給 `width=` 讓高度自由伸展，遇到高瘦圖就往下溢出 3.5 吋衝出版面。
+    這裡先用原生尺寸插入再依框的長寬比縮放，圖再怪也不會出框。
+    """
+    picture = slide.shapes.add_picture(str(image_path), Inches(left), Inches(top))
+    box_w, box_h = Inches(width), Inches(height)
+    if picture.width <= 0 or picture.height <= 0:
+        picture.width, picture.height = box_w, box_h
+        return
+    scale = min(box_w / picture.width, box_h / picture.height)
+    picture.width = Emu(int(picture.width * scale))
+    picture.height = Emu(int(picture.height * scale))
+    picture.left = Emu(int(box_w - picture.width) // 2 + int(Inches(left)))
+    picture.top = Emu(int(box_h - picture.height) // 2 + int(Inches(top)))
+
+
+def _variant_label(chart_name: str) -> str:
+    for suffix, label in CHART_VARIANT_LABELS.items():
+        if suffix in chart_name:
+            return label
+    return Path(chart_name).stem
+
+
+def _encoding_note(spec: PageSpec) -> str:
+    for key in spec.report_keys:
+        if key in ENCODING_NOTES:
+            return ENCODING_NOTES[key]
+    return DEFAULT_ENCODING_NOTE
+
+
+def _caveat_of(spec: PageSpec) -> str:
+    for key in spec.report_keys:
+        if key in CAVEATS:
+            return CAVEATS[key]
+    return ""
+
+
+def _points_for(spec: PageSpec, ctx: dict[str, Any]) -> list[tuple[str, str, str, bool]]:
+    """取本頁要點；缺 narrative 時退回引擎 rows 的關鍵數字，仍不留空框。"""
+    _, points, _ = ctx["narratives_by_page"].get(spec.page, ("", [], False))
+    if points:
+        return [
+            (
+                str(p.get("label") or ""),
+                str(p.get("text") or ""),
+                "alert" if p.get("emphasis") else "ink",
+                bool(p.get("emphasis")),
+            )
+            for p in points
+        ]
+    return [(label, text, "ink", False) for label, text in _row_highlights(spec, ctx)]
+
+
+def _row_highlights(spec: PageSpec, ctx: dict[str, Any]) -> list[tuple[str, str]]:
+    """從引擎 rows 取前幾名做要點，供缺 narrative 的頁面使用（只列數字，不下判讀）。"""
+    for key in spec.report_keys:
+        rows = _rows_of(ctx["report_data"], key)
+        if not rows:
+            continue
+        numeric = _numeric_column(rows)
+        if not numeric:
+            continue
+        label_col = _label_column(rows, numeric)
+        ranked = sorted(rows, key=lambda r: _as_int(r.get(numeric)), reverse=True)[:4]
+        return [(str(r.get(label_col, "")), f"{_as_int(r.get(numeric))} 件") for r in ranked]
     return []
 
 
-def _label_of(report_data: dict, report_key: str, fallback: str) -> str:
-    for bucket in ("reports", "family_reports"):
-        entry = (report_data.get(bucket) or {}).get(report_key)
-        if isinstance(entry, dict):
-            return entry.get("label_zh") or entry.get("label") or fallback
-    return fallback
-
-
-def _narrative_of(narratives: dict, report_key: str) -> str:
-    """取解讀文字（AI 草稿）；僅在無定稿槽時作為顯示備援。"""
-    entry = (narratives.get("reports") or {}).get(report_key) or {}
-    variants = entry.get("variants") or {}
-    for key in ("default", *variants):
-        if key in variants and variants[key].get("text"):
-            return variants[key]["text"]
-    return ""
-
-
-def _year_value(row: dict[str, Any]) -> int | None:
-    """從趨勢 row 取年份，支援既有 year 與 application_year 欄位。"""
-    raw = row.get("year", row.get("application_year"))
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
-
-
 # --------------------------------------------------------------------------
-# 頁面組版：依 PageSpec.kind 分派
+# 共用頁面區塊
 # --------------------------------------------------------------------------
-def _render_cover(slide, theme, spec, ctx) -> None:
-    """封面：品牌色底＋標題＋統計時間段＋關鍵統計卡。"""
-    geo = theme.geometry["cover"]
-    _add_band(slide, theme, geo["background_left_in"], geo["background_top_in"],
-              theme.slide["width_in"], theme.slide["height_in"], "brand_dark")
-    title = ctx["slots"].get("cover.title") or spec.title
-    _add_text(
-        slide, theme, title,
-        left=geo["title_left_in"], top=geo["title_top_in"],
-        width=geo["title_width_in"], height=geo["title_height_in"],
-        size=theme.font["cover_title_pt"], color="on_dark", bold=True,
-    )
-    params = ctx["report_data"].get("parameters") or {}
-    _add_text(
-        slide, theme,
-        f"統計時間段　報表版本 {params.get('version', ctx['version'])}",
-        left=geo["period_left_in"], top=geo["period_top_in"],
-        width=geo["period_width_in"], height=geo["period_height_in"],
-        size=theme.font["stat_label_pt"], color="on_dark_soft",
-    )
-
-    # 統計卡：件數取自引擎 rows 的合計，不自行推算。
-    stats: list[tuple[str, str, str]] = []
-    trend_rows = _rows_of(ctx["report_data"], "application_trend")
-    if trend_rows:
-        total = sum(int(r.get("patent_count") or 0) for r in trend_rows)
-        stats.append((str(total), "件", "專利總數"))
-    country_rows = _rows_of(ctx["report_data"], "country_distribution")
-    if country_rows:
-        top = country_rows[:2]
-        stats.append((
-            " ｜ ".join(str(r.get("patent_count") or 0) for r in top),
-            " ｜ ".join(str(r.get("country") or "-") for r in top),
-            "地域分布(件數)",
-        ))
-    if trend_rows:
-        years = sorted(y for row in trend_rows if (y := _year_value(row)) is not None)
-        if years:
-            year_range = str(years[0]) if years[0] == years[-1] else f"{years[0]}–{years[-1]}"
-            stats.append((year_range, "年", "年份區間"))
-    if not stats:
-        stats.append(("—", "件", "資料待補"))
-
-    for idx, (value, unit, label) in enumerate(stats[:4]):
-        left = geo["stat_left_in"] + idx * geo["stat_gap_in"]
-        _add_band(slide, theme, left, geo["stat_top_in"], geo["stat_width_in"], geo["stat_height_in"], "surface")
-        _add_text(slide, theme, value, left=left, top=geo["stat_value_top_in"],
-                  width=geo["stat_width_in"], height=geo["stat_value_height_in"],
-                  size=theme.font["stat_value_pt"] if len(value) <= 4 else 24.0,
-                  color="brand_dark", bold=True, align=PP_ALIGN.CENTER)
-        _add_text(slide, theme, unit, left=left, top=geo["stat_unit_top_in"],
-                  width=geo["stat_width_in"], height=geo["stat_unit_height_in"],
-                  size=theme.font["stat_label_pt"], color="accent", bold=True, align=PP_ALIGN.CENTER)
-        _add_text(slide, theme, label, left=left + geo["stat_label_inset_in"], top=geo["stat_label_top_in"],
-                  width=geo["stat_width_in"] - geo["stat_label_inset_in"] * 2, height=geo["stat_label_height_in"],
-                  size=theme.font["stat_label_pt"], color="ink", align=PP_ALIGN.CENTER)
-
-
-def _render_header(slide, theme, spec, ctx) -> None:
-    """內頁共用頁首：標題、副標、右上頁碼。"""
-    geo = theme.geometry
-    hdr = geo["header"]
+def _render_header(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """內頁頁首：判讀式標題、accent 底線、右上頁碼。"""
+    g = theme.geometry["header"]
     _add_text(slide, theme, spec.title,
-              left=geo["margin_in"], top=geo["title_top_in"],
-              width=hdr["title_width_in"], height=hdr["title_height_in"],
-              size=theme.font["title_pt"], color="ink", bold=True)
+              left=g["title_left_in"], top=g["title_top_in"],
+              width=g["title_width_in"], height=g["title_height_in"],
+              size=theme.size("title_pt"), color="navy", bold=True)
+    _add_band(slide, theme, g["rule_left_in"], g["rule_top_in"],
+              g["rule_width_in"], g["rule_height_in"], "accent")
+    _add_text(slide, theme, f"{spec.page:02d}",
+              left=g["page_number_left_in"], top=g["page_number_top_in"],
+              width=g["page_number_width_in"], height=g["page_number_height_in"],
+              size=theme.size("page_number_pt"), color="royal", bold=True, align=PP_ALIGN.RIGHT)
+
+
+def _render_footnote(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any], extra: str = "") -> None:
+    """頁底資料來源註：資料來源、統計期間、判讀限制聲明。"""
+    g = theme.geometry["footnote"]
+    sources = "、".join(_label_of(ctx["report_data"], key) for key in spec.report_keys) or "本次報表版本"
+    period = ctx["period"] or "未標示"
+    # 報表版本納入註腳（可追溯性）；_fit_text 會在過長時縮字，不會截壞。
+    text = f"資料來源：{sources}｜統計期間：{period}｜報表版本 {ctx['version']}"
+    if extra:
+        text = f"{text}｜{extra}"
+    text, _ = _fit_text(theme, text, width_in=g["width_in"], height_in=g["height_in"],
+                        size_pt=theme.size("footnote_pt"))
+    _add_text(slide, theme, text,
+              left=g["left_in"], top=g["top_in"], width=g["width_in"], height=g["height_in"],
+              size=theme.size("footnote_pt"), color="muted")
+
+
+def _render_points_panel(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """右側要點框（＋必要時的方法論警語框）。"""
+    g = theme.geometry["points_panel"]
+    caveat = _caveat_of(spec)
+    panel_height = g["height_with_caveat_in"] if caveat else g["height_in"]
+    _add_band(slide, theme, g["left_in"], g["top_in"], g["width_in"], panel_height, "panel", rounded=True)
+    _add_text(slide, theme, "判讀要點",
+              left=g["left_in"] + g["header_inset_left_in"], top=g["top_in"] + g["header_top_offset_in"],
+              width=g["width_in"] - g["text_inset_right_in"], height=g["header_height_in"],
+              size=theme.size("panel_header_pt"), color="royal", bold=True)
+
+    text_width = g["width_in"] - g["text_inset_right_in"]
+    text_height = panel_height - g["text_top_offset_in"] - g["text_bottom_pad_in"]
+    size = theme.size("point_text_pt")
+    blocks = _trim_blocks(theme, _points_for(spec, ctx), width_in=text_width, height_in=text_height, size_pt=size)
+    _add_number_bold_text(slide, theme, blocks,
+                          left=g["left_in"] + g["text_inset_left_in"], top=g["top_in"] + g["text_top_offset_in"],
+                          width=text_width, height=text_height, size=size)
+
+    if caveat:
+        c = theme.geometry["caveat_panel"]
+        _add_band(slide, theme, c["left_in"], c["top_in"], c["width_in"], c["height_in"], "navy", rounded=True)
+        _add_text(slide, theme, "判讀限制",
+                  left=c["left_in"] + c["title_inset_left_in"], top=c["top_in"] + c["title_top_offset_in"],
+                  width=c["width_in"] - c["text_inset_right_in"], height=c["title_height_in"],
+                  size=theme.size("caveat_title_pt"), color="accent", bold=True)
+        body_width = c["width_in"] - c["text_inset_right_in"]
+        body_height = c["height_in"] - c["text_top_offset_in"] - c["text_bottom_pad_in"]
+        body, _ = _fit_text(theme, caveat, width_in=body_width, height_in=body_height,
+                            size_pt=theme.size("caveat_text_pt"))
+        _add_text(slide, theme, body,
+                  left=c["left_in"] + c["text_inset_left_in"], top=c["top_in"] + c["text_top_offset_in"],
+                  width=body_width, height=body_height,
+                  size=theme.size("caveat_text_pt"), color="on_dark_soft")
+
+
+def _trim_blocks(
+    theme: Theme,
+    blocks: list[tuple[str, str, str, bool]],
+    *,
+    width_in: float,
+    height_in: float,
+    size_pt: float,
+) -> list[tuple[str, str, str, bool]]:
+    """把要點條列裁到框內裝得下。
+
+    ⚠ 依序填到滿為止會讓第一條吃光版面、後面的「意涵」「決策提醒」整條消失——
+    等於只給讀者半個判讀。故改成**按條數分配行數**：每條至少一行，各自截斷，
+    寧可每條短一點，也要讓完整的判讀結構（現況→意涵→後續）都露出來。
+    """
+    if not blocks:
+        return blocks
+    per_line, lines = _text_capacity(theme, width_in=width_in, height_in=height_in, size_pt=size_pt)
+    needs = [
+        max(1, math.ceil(((len(label) + 1 if label else 0) + len(text)) / per_line))
+        for label, text, _, _ in blocks
+    ]
+    if sum(needs) <= lines:
+        return blocks
+
+    keep = min(len(blocks), lines)
+    share, extra = divmod(lines, keep)
+    trimmed: list[tuple[str, str, str, bool]] = []
+    for index, (label, text, color, emphasized) in enumerate(blocks[:keep]):
+        allowance = share + (1 if index < extra else 0)
+        budget = allowance * per_line - (len(label) + 1 if label else 0)
+        if len(text) > budget:
+            text = text[: max(1, budget - 1)].rstrip("，、。；：") + "…"
+        trimmed.append((label, text, color, emphasized))
+    return trimmed
+
+
+# --------------------------------------------------------------------------
+# 版型 renderer
+# --------------------------------------------------------------------------
+def _render_cover(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """封面：主標＋統計期間副標＋統計卡＋分析框架條＋幾何裝飾（淺底深字）。"""
+    g = theme.geometry["cover"]
+    _add_band(slide, theme, g["background_left_in"], g["background_top_in"],
+              theme.slide["width_in"], theme.slide["height_in"], "paper")
+    _add_band(slide, theme, g["accent_block_left_in"], g["accent_block_top_in"],
+              g["accent_block_width_in"], g["accent_block_height_in"], "royal")
+
+    # 角落圓格網與斜線紋：Slidesgo 的幾何裝飾語彙，純視覺、不承載資訊。
+    for row in range(int(g["dots_rows"])):
+        for col in range(int(g["dots_cols"])):
+            _add_oval(slide, theme,
+                      g["dots_left_in"] + col * g["dots_step_in"],
+                      g["dots_top_in"] + row * g["dots_step_in"],
+                      g["dots_size_in"], g["dots_size_in"], "accent")
+    for index in range(int(g["stripe_count"])):
+        stripe = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE,
+            Inches(g["stripe_left_in"] + index * g["stripe_step_in"]), Inches(g["stripe_top_in"]),
+            Inches(g["stripe_width_in"]), Inches(g["stripe_height_in"]),
+        )
+        stripe.fill.solid()
+        stripe.fill.fore_color.rgb = theme.rgb("royal")
+        stripe.line.fill.background()
+        stripe.shadow.inherit = False
+        stripe.rotation = g["stripe_rotation_deg"]
+        stripe.text_frame.text = ""
+
+    _add_text(slide, theme, "專利情報整合分析",
+              left=g["eyebrow_left_in"], top=g["eyebrow_top_in"],
+              width=g["eyebrow_width_in"], height=g["eyebrow_height_in"],
+              size=theme.size("cover_subtitle_pt"), color="royal", bold=True)
+
+    title = _cover_title(ctx["report_data"], ctx["slots"])
+    title, _ = _fit_text(theme, title, width_in=g["title_width_in"], height_in=g["title_height_in"],
+                         size_pt=theme.size("cover_title_pt"))
+    _add_text(slide, theme, title,
+              left=g["title_left_in"], top=g["title_top_in"],
+              width=g["title_width_in"], height=g["title_height_in"],
+              size=theme.size("cover_title_pt"), color="navy", bold=True)
+    _add_band(slide, theme, g["rule_left_in"], g["rule_top_in"], g["rule_width_in"], g["rule_height_in"], "accent")
+
+    period = ctx["period"]
+    _add_text(slide, theme,
+              f"統計期間 {period}　｜　報表版本 {ctx['version']}" if period else f"報表版本 {ctx['version']}",
+              left=g["period_left_in"], top=g["period_top_in"],
+              width=g["period_width_in"], height=g["period_height_in"],
+              size=theme.size("cover_subtitle_pt"), color="muted")
+
+    for index, (value, unit, label) in enumerate(ctx["cover_stats"]):
+        left = g["stat_left_in"] + index * g["stat_gap_in"]
+        _add_band(slide, theme, left, g["stat_top_in"], g["stat_width_in"], g["stat_height_in"],
+                  "panel", rounded=True)
+        _add_band(slide, theme, left, g["stat_top_in"], g["stat_width_in"], g["stat_accent_height_in"], "accent")
+        # 大數字分級：卡片寬度固定，值太長就降級字級，避免撐出卡片外（封面壓字的舊病）。
+        if len(value) <= 4:
+            value_size = theme.size("stat_value_pt")
+        elif len(value) <= 8:
+            value_size = theme.size("stat_value_medium_pt")
+        else:
+            value_size = theme.size("stat_value_small_pt")
+        _add_text(slide, theme, value,
+                  left=left, top=g["stat_value_top_in"],
+                  width=g["stat_width_in"], height=g["stat_value_height_in"],
+                  size=value_size, color="navy", bold=True, align=PP_ALIGN.CENTER)
+        _add_text(slide, theme, unit,
+                  left=left, top=g["stat_unit_top_in"],
+                  width=g["stat_width_in"], height=g["stat_unit_height_in"],
+                  size=theme.size("stat_unit_pt"), color="blue", bold=True, align=PP_ALIGN.CENTER)
+        _add_text(slide, theme, label,
+                  left=left + g["stat_label_inset_in"], top=g["stat_label_top_in"],
+                  width=g["stat_width_in"] - g["stat_label_inset_in"] * 2, height=g["stat_label_height_in"],
+                  size=theme.size("stat_label_pt"), color="ink", align=PP_ALIGN.CENTER)
+
+    _add_band(slide, theme, g["banner_left_in"], g["banner_top_in"],
+              g["banner_width_in"], g["banner_height_in"], "navy", rounded=True)
+    banner, _ = _fit_text(theme, ctx["framework_text"],
+                          width_in=g["banner_text_width_in"], height_in=g["banner_text_height_in"],
+                          size_pt=theme.size("cover_banner_pt"))
+    _add_text(slide, theme, banner,
+              left=g["banner_left_in"] + g["banner_text_inset_left_in"],
+              top=g["banner_top_in"] + g["banner_text_top_offset_in"],
+              width=g["banner_text_width_in"], height=g["banner_text_height_in"],
+              size=theme.size("cover_banner_pt"), color="on_dark_soft")
+
+
+def _render_section_divider(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """章節隔頁：深色塊大字，只做段落分隔。"""
+    g = theme.geometry["section_divider"]
+    _add_band(slide, theme, g["background_left_in"], g["background_top_in"],
+              theme.slide["width_in"], theme.slide["height_in"], "navy")
+    _add_band(slide, theme, g["accent_left_in"], g["accent_top_in"],
+              g["accent_width_in"], g["accent_height_in"], "accent")
+    _add_text(slide, theme, spec.title,
+              left=g["title_left_in"], top=g["title_top_in"],
+              width=g["title_width_in"], height=g["title_height_in"],
+              size=theme.size("section_title_pt"), color="on_dark", bold=True)
     if spec.subtitle:
         _add_text(slide, theme, spec.subtitle,
-                  left=geo["margin_in"], top=geo["subtitle_top_in"],
-                  width=hdr["subtitle_width_in"], height=hdr["subtitle_height_in"],
-                  size=theme.font["subtitle_pt"], color="ink")
-    _add_text(slide, theme, f"{spec.page:02d}",
-              left=geo["page_number_left_in"], top=geo["title_top_in"],
-              width=hdr["page_number_width_in"], height=hdr["page_number_height_in"],
-              size=theme.font["page_number_pt"], color="accent", bold=True)
+                  left=g["subtitle_left_in"], top=g["subtitle_top_in"],
+                  width=g["subtitle_width_in"], height=g["subtitle_height_in"],
+                  size=theme.size("section_subtitle_pt"), color="on_dark_soft")
 
 
-def _render_chart_with_narrative(slide, theme, spec, ctx) -> None:
-    """圖＋解讀：左圖右文；圖缺漏時以佔位文字說明，不 crash。"""
-    _render_header(slide, theme, spec, ctx)
-    image = ctx["images"].resolve(spec.charts)
-    top = theme.geometry["body_top_in"]
-    g = theme.geometry["chart_with_narrative"]
-    if image is not None:
-        slide.shapes.add_picture(str(image), Inches(g["image_left_in"]), Inches(top),
-                                 width=Inches(g["image_width_in"]))
-    else:
-        _add_band(slide, theme, g["placeholder_band_left_in"], top,
-                  g["placeholder_band_width_in"], g["placeholder_band_height_in"], "accent_soft")
-        _add_text(slide, theme, "（圖檔待產出）",
-                  left=g["placeholder_text_left_in"], top=top + g["placeholder_text_top_offset_in"],
-                  width=g["placeholder_text_width_in"], height=g["placeholder_text_height_in"],
-                  size=theme.font["body_pt"], color="ink", align=PP_ALIGN.CENTER)
+def _conclusion_text(headline: str, points: list[dict[str, Any]]) -> str:
+    """核心結論條的文字：emphasis 那條 → 「意涵」那條 → headline。
 
-    text = _first_slot_text(spec, ctx) or _narrative_of(ctx["narratives"], spec.report_keys[0] if spec.report_keys else "")
-    _add_band(slide, theme, g["text_band_left_in"], top,
-              g["text_band_width_in"], g["text_band_height_in"], "accent_soft")
-    _add_text(slide, theme, text or "（解讀尚未產生）",
-              left=g["text_left_in"], top=top + g["text_top_offset_in"],
-              width=g["text_width_in"], height=g["text_height_in"],
-              size=theme.font["body_pt"], color="ink")
-
-
-def _render_direction(slide, theme, spec, ctx) -> None:
-    """研發方向建議：三欄表頭＋定稿建議內容（全文由使用者確認）。"""
-    _render_header(slide, theme, spec, ctx)
-    g = theme.geometry["direction"]
-    top = g["header_band_top_in"]
-    _add_band(slide, theme, g["header_band_left_in"], top,
-              g["header_band_width_in"], g["header_band_height_in"], "brand_deep")
-    for column in g["columns"]:
-        _add_text(slide, theme, column["label"],
-                  left=column["left_in"], top=top + g["header_label_top_offset_in"],
-                  width=column["width_in"], height=g["header_label_height_in"],
-                  size=theme.font["table_header_pt"], color="on_dark", bold=True)
-    body = ctx["slots"].get("direction.body") or "（研發方向建議尚未產生）"
-    _add_band(slide, theme, g["body_band_left_in"], g["body_band_top_in"],
-              g["body_band_width_in"], g["body_band_height_in"], "accent_soft")
-    _add_text(slide, theme, body,
-              left=g["body_text_left_in"], top=g["body_text_top_in"],
-              width=g["body_text_width_in"], height=g["body_text_height_in"],
-              size=theme.font["body_pt"], color="ink")
-
-
-def _render_table(slide, theme, spec, ctx) -> None:
-    """純表格頁：直接列引擎 rows，不加解讀。"""
-    _render_header(slide, theme, spec, ctx)
-    rows = []
-    for key in spec.report_keys:
-        rows = _rows_of(ctx["report_data"], key)
-        if rows:
-            break
-    g = theme.geometry["table"]
-    box = _component_box(
-        ctx,
-        spec,
-        "table",
-        {
-            "left_in": g["left_in"],
-            "top_in": theme.geometry["body_top_in"],
-            "width_in": g["width_in"],
-            "height_in": g["height_in"],
-        },
-    )
-    _add_table(
-        slide,
-        theme,
-        rows,
-        left=box["left_in"],
-        top=box["top_in"],
-        height=box["height_in"],
-        width=box["width_in"],
-    )
-
-
-def _render_table_with_narrative(slide, theme, spec, ctx) -> None:
-    """左表（專利側，引擎數據）＋右文（主要權人／申請人摘要）。"""
-    _render_header(slide, theme, spec, ctx)
-    top = theme.geometry["body_top_in"]
-    rows = []
-    for key in spec.report_keys:
-        rows = _rows_of(ctx["report_data"], key)
-        if rows:
-            break
-    g = theme.geometry["table_with_narrative"]
-    _add_table(slide, theme, rows, top=top, height=g["table_height_in"], width=g["table_width_in"])
-    _add_band(slide, theme, g["text_band_left_in"], top,
-              g["text_band_width_in"], g["text_band_height_in"], "accent_soft")
-    _add_text(slide, theme, _first_slot_text(spec, ctx) or "（主要權人與申請人摘要尚未產生）",
-              left=g["text_left_in"], top=top + g["text_top_offset_in"],
-              width=g["text_width_in"], height=g["text_height_in"],
-              size=theme.font["body_pt"], color="ink")
-
-
-def _render_narrative_only(slide, theme, spec, ctx) -> None:
-    """純敘述頁：逐槽分區呈現定稿文案；目前保留供相容動態頁使用。"""
-    _render_header(slide, theme, spec, ctx)
-    top = theme.geometry["body_top_in"]
-    g = theme.geometry["narrative_only"]
-    for slot in spec.slots:
-        _add_band(slide, theme, g["band_left_in"], top, g["band_width_in"], g["band_height_in"], "accent_soft")
-        _add_text(slide, theme, slot,
-                  left=g["slot_title_left_in"], top=top + g["slot_title_top_offset_in"],
-                  width=g["slot_title_width_in"], height=g["slot_title_height_in"],
-                  size=theme.font["table_header_pt"], color="brand_dark", bold=True)
-        _add_text(slide, theme, ctx["slots"].get(slot) or "（內容尚未產生）",
-                  left=g["slot_text_left_in"], top=top + g["slot_text_top_offset_in"],
-                  width=g["slot_text_width_in"], height=g["slot_text_height_in"],
-                  size=theme.font["body_pt"], color="ink")
-        top += g["block_step_in"]
-
-
-def _add_table(slide, theme, rows: list[dict], *, top: float, height: float, width: float | None = None, left: float | None = None) -> None:
-    """把引擎 rows 畫成表格；無資料時顯示佔位，不 crash。
-
-    `width` 未指定時取 theme.geometry.table.width_in（整頁寬表格的預設值）。
+    NotebookLM 範例的手法：每頁底部一句話收束。優先取 narrative 自己標記
+    最重要的（emphasis），其次判讀性最強的「意涵」，都沒有才退回標題句。
     """
-    g = theme.geometry["table"]
-    if width is None:
-        width = g["width_in"]
-    if left is None:
-        left = g["left_in"]
-    if not rows:
-        _add_band(slide, theme, g["left_in"], top, width, height, "accent_soft")
-        _add_text(slide, theme, "（本頁資料待產出）",
-                  left=g["placeholder_text_left_in"],
-                  top=top + height / 2 - g["placeholder_text_top_shift_in"],
-                  width=width - g["placeholder_text_inset_in"],
-                  height=g["placeholder_text_height_in"], size=theme.font["body_pt"],
-                  color="ink", align=PP_ALIGN.CENTER)
-        return
+    for point in points:
+        if point.get("emphasis"):
+            return str(point.get("text") or "")
+    for point in points:
+        if "意涵" in str(point.get("label") or ""):
+            return str(point.get("text") or "")
+    return headline
 
-    columns = list(rows[0].keys())[:6]
-    display = rows[:12]
+
+def _render_chart_hero(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """大圖版型（P1-1，內容頁新預設）：圖佔主幅＋右側精簡註解卡＋底部核心結論條。
+
+    「圖表為主、文字為輔」的落實：文字不是消失，而是（a）判讀進標題、
+    （b）要點成右側小卡、（c）最重要一句進底部結論條。
+    ⚠ 註解卡放固定區，不精準指向圖內資料點——不動 SVG 內部就拿不到錨點座標。
+    """
+    _render_header(slide, theme, spec, ctx)
+    g = theme.geometry["chart_hero"]
+    _add_text(slide, theme, _encoding_note(spec),
+              left=g["encoding_left_in"], top=g["encoding_top_in"],
+              width=g["encoding_width_in"], height=g["encoding_height_in"],
+              size=theme.size("encoding_note_pt"), color="muted", align=PP_ALIGN.RIGHT)
+    image = ctx["charts"].resolve(spec.charts[0]) if spec.charts else None
+    if image is not None:
+        _add_picture_fitted(slide, image,
+                            left=g["image_left_in"], top=g["image_top_in"],
+                            width=g["image_width_in"], height=g["image_height_in"])
+
+    headline, points, _ = ctx["narratives_by_page"].get(spec.page, ("", [], False))
+    conclusion = _conclusion_text(headline, points)
+    # 右欄＝完整要點面板（2026-07-31 二輪回饋「字太省」：原本固定 3 張小卡
+    # 塞不下 4–6 條判讀）。結論那條不重複（已在底部條）；判讀限制作尾條。
+    listed = [p for p in points if str(p.get("text") or "") != conclusion]
+    if not listed and not points:
+        listed = [{"label": label, "text": text, "emphasis": False}
+                  for label, text in _row_highlights(spec, ctx)]
+    blocks = [(str(p.get("label") or ""), str(p.get("text") or ""),
+               "alert" if p.get("emphasis") else "ink", bool(p.get("emphasis")))
+              for p in listed]
+    caveat = _caveat_of(spec)
+    if caveat:
+        blocks = blocks + [("判讀限制", caveat, "muted", False)]
+    _add_band(slide, theme, g["panel_left_in"], g["panel_top_in"],
+              g["panel_width_in"], g["panel_height_in"], "panel", rounded=True)
+    _add_text(slide, theme, "判讀要點",
+              left=g["panel_left_in"] + g["panel_inset_in"],
+              top=g["panel_top_in"] + g["panel_header_top_offset_in"],
+              width=g["panel_width_in"] - g["panel_inset_in"] * 2,
+              height=g["panel_header_height_in"],
+              size=theme.size("panel_header_pt"), color="royal", bold=True)
+    text_width = g["panel_width_in"] - g["panel_inset_in"] * 2
+    text_height = g["panel_height_in"] - g["panel_text_top_offset_in"] - g["panel_inset_in"]
+    size = theme.size("point_text_pt")
+    _add_number_bold_text(slide, theme,
+                          _trim_blocks(theme, blocks, width_in=text_width,
+                                       height_in=text_height, size_pt=size),
+                          left=g["panel_left_in"] + g["panel_inset_in"],
+                          top=g["panel_top_in"] + g["panel_text_top_offset_in"],
+                          width=text_width, height=text_height, size=size)
+
+    if conclusion:
+        _add_band(slide, theme, g["conclusion_left_in"], g["conclusion_top_in"],
+                  g["conclusion_width_in"], g["conclusion_height_in"], "navy", rounded=True)
+        text_width = g["conclusion_width_in"] - g["conclusion_inset_left_in"] * 2
+        body, _ = _fit_text(theme, f"核心結論：{conclusion}", width_in=text_width,
+                            height_in=g["conclusion_height_in"] - g["conclusion_text_top_offset_in"] * 2,
+                            size_pt=theme.size("conclusion_pt"))
+        _add_text(slide, theme, body,
+                  left=g["conclusion_left_in"] + g["conclusion_inset_left_in"],
+                  top=g["conclusion_top_in"] + g["conclusion_text_top_offset_in"],
+                  width=text_width,
+                  height=g["conclusion_height_in"] - g["conclusion_text_top_offset_in"] * 2,
+                  size=theme.size("conclusion_pt"), color="on_dark", bold=True)
+    _render_footnote(slide, theme, spec, ctx)
+
+
+def _render_chart_with_points(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """內容頁預設版型：左圖約 60% 寬，右側要點框（＋必要時警語框）。"""
+    _render_header(slide, theme, spec, ctx)
+    g = theme.geometry["chart_with_points"]
+    _add_text(slide, theme, _encoding_note(spec),
+              left=g["encoding_left_in"], top=g["encoding_top_in"],
+              width=g["encoding_width_in"], height=g["encoding_height_in"],
+              size=theme.size("encoding_note_pt"), color="muted", align=PP_ALIGN.RIGHT)
+    image = ctx["charts"].resolve(spec.charts[0]) if spec.charts else None
+    if image is not None:
+        _add_picture_fitted(slide, image,
+                            left=g["image_left_in"], top=g["image_top_in"],
+                            width=g["image_width_in"], height=g["image_height_in"])
+    _render_points_panel(slide, theme, spec, ctx)
+    _render_footnote(slide, theme, spec, ctx)
+
+
+def _render_comparison(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """成對報表同頁左右並排：兩張圖各配子標、圖例編碼與要點。
+
+    ⚠ 成對報表（IPC/CPC 的 L4 與 L5、機會矩陣的技術面與功效面）**禁止合成同一張圖**；
+    合成會讓兩個不同母體的數字被讀成同一組，這裡只做並排比較。
+    """
+    _render_header(slide, theme, spec, ctx)
+    g = theme.geometry["comparison"]
+    note = _encoding_note(spec)
+    blocks = _points_for(spec, ctx)
+    for index, chart_name in enumerate(spec.charts[: len(g["column_left_in"])]):
+        left = g["column_left_in"][index]
+        width = g["column_width_in"]
+        _add_text(slide, theme, _variant_label(chart_name),
+                  left=left, top=g["caption_top_in"], width=width, height=g["caption_height_in"],
+                  size=theme.size("chart_caption_pt"), color="royal", bold=True)
+        _add_text(slide, theme, note,
+                  left=left, top=g["encoding_top_in"], width=width, height=g["encoding_height_in"],
+                  size=theme.size("encoding_note_pt"), color="muted")
+        image = ctx["charts"].resolve(chart_name)
+        if image is not None:
+            _add_picture_fitted(slide, image,
+                                left=left, top=g["image_top_in"], width=width, height=g["image_height_in"])
+        _add_band(slide, theme, left, g["points_top_in"], width, g["points_height_in"], "panel", rounded=True)
+        text_width = width - g["points_inset_right_in"]
+        text_height = g["points_height_in"] - g["points_top_offset_in"] - g["points_bottom_pad_in"]
+        size = theme.size("point_text_pt")
+        half = blocks[index::2] or blocks[:1]
+        _add_number_bold_text(slide, theme,
+                              _trim_blocks(theme, half, width_in=text_width, height_in=text_height, size_pt=size),
+                              left=left + g["points_inset_left_in"], top=g["points_top_in"] + g["points_top_offset_in"],
+                              width=text_width, height=text_height, size=size)
+    _render_footnote(slide, theme, spec, ctx)
+
+
+def _render_stat_callout(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """大數字焦點頁；同時是「圖檔缺失時的降級版型」——確保每頁都有視覺元素。"""
+    _render_header(slide, theme, spec, ctx)
+    g = theme.geometry["stat_callout"]
+    _add_band(slide, theme, g["block_left_in"], g["block_top_in"],
+              g["block_width_in"], g["block_height_in"], "navy", rounded=True)
+
+    rows: list[dict[str, Any]] = []
+    report_key = ""
+    for key in spec.report_keys:
+        rows = _rows_of(ctx["report_data"], key)
+        if rows:
+            report_key = key
+            break
+    numeric = _numeric_column(rows)
+    label_col = _label_column(rows, numeric) if numeric else ""
+    total = sum(_as_int(row.get(numeric)) for row in rows) if numeric else 0
+
+    _add_text(slide, theme, f"{total:,}" if total else str(len(rows)),
+              left=g["value_left_in"], top=g["value_top_in"],
+              width=g["value_width_in"], height=g["value_height_in"],
+              size=theme.size("callout_value_pt"), color="on_dark", bold=True)
+    _add_text(slide, theme, "件" if total else "筆",
+              left=g["unit_left_in"], top=g["unit_top_in"],
+              width=g["unit_width_in"], height=g["unit_height_in"],
+              size=theme.size("callout_unit_pt"), color="accent", bold=True)
+    _add_text(slide, theme, _label_of(ctx["report_data"], report_key, spec.topic) if report_key else spec.topic,
+              left=g["label_left_in"], top=g["label_top_in"],
+              width=g["label_width_in"], height=g["label_height_in"],
+              size=theme.size("callout_label_pt"), color="on_dark_soft")
+    _add_band(slide, theme, g["rule_left_in"], g["rule_top_in"], g["rule_width_in"], g["rule_height_in"], "accent")
+
+    ranked = sorted(rows, key=lambda r: _as_int(r.get(numeric)), reverse=True) if numeric else []
+    for index, row in enumerate(ranked[: int(g["row_max"])]):
+        _add_text(slide, theme,
+                  f"{row.get(label_col, '')}　{_as_int(row.get(numeric)):,} 件",
+                  left=g["row_left_in"], top=g["row_top_in"] + index * g["row_step_in"],
+                  width=g["row_width_in"], height=g["row_height_in"],
+                  size=theme.size("callout_row_pt"), color="on_dark_soft")
+
+    panel = theme.geometry["points_panel"]
+    caveat = _caveat_of(spec)
+    _add_band(slide, theme, g["points_left_in"], g["points_top_in"],
+              g["points_width_in"], g["points_height_in"], "panel", rounded=True)
+    _add_text(slide, theme, "判讀要點",
+              left=g["points_left_in"] + panel["header_inset_left_in"],
+              top=g["points_top_in"] + panel["header_top_offset_in"],
+              width=g["points_width_in"] - panel["text_inset_right_in"], height=panel["header_height_in"],
+              size=theme.size("panel_header_pt"), color="royal", bold=True)
+    text_width = g["points_width_in"] - panel["text_inset_right_in"]
+    text_height = g["points_height_in"] - panel["text_top_offset_in"] - panel["text_bottom_pad_in"]
+    size = theme.size("point_text_pt")
+    blocks = _points_for(spec, ctx)
+    if caveat:
+        blocks = blocks + [("判讀限制", caveat, "muted", False)]
+    _add_number_bold_text(slide, theme,
+                          _trim_blocks(theme, blocks, width_in=text_width, height_in=text_height, size_pt=size),
+                          left=g["points_left_in"] + panel["text_inset_left_in"],
+                          top=g["points_top_in"] + panel["text_top_offset_in"],
+                          width=text_width, height=text_height, size=size)
+    _render_footnote(slide, theme, spec, ctx)
+
+
+def _render_percentage_bars(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """佔比條列（如受理國分布）：條長＝佔比，右側數值為實際件數。"""
+    _render_header(slide, theme, spec, ctx)
+    g = theme.geometry["percentage_bars"]
+    rows: list[dict[str, Any]] = []
+    for key in spec.report_keys:
+        rows = _rows_of(ctx["report_data"], key)
+        if rows:
+            break
+    numeric = _numeric_column(rows)
+    label_col = _label_column(rows, numeric) if numeric else ""
+    ranked = sorted(rows, key=lambda r: _as_int(r.get(numeric)), reverse=True) if numeric else []
+    ranked = ranked[: int(g["row_max"])]
+    top_value = max((_as_int(r.get(numeric)) for r in ranked), default=0)
+    total = sum(_as_int(r.get(numeric)) for r in ranked) or 1
+
+    # 條數少時整組垂直置中，避免條列擠在上方、下半頁一片空白。
+    body = theme.geometry
+    span = len(ranked) * g["row_step_in"]
+    room = body["body_top_in"] + body["body_height_in"] - g["row_top_in"]
+    first_top = g["row_top_in"] + max(0.0, (room - span) / 2)
+
+    for index, row in enumerate(ranked):
+        top = first_top + index * g["row_step_in"]
+        value = _as_int(row.get(numeric))
+        _add_text(slide, theme, str(row.get(label_col, "")),
+                  left=g["row_left_in"], top=top, width=g["label_width_in"], height=g["label_height_in"],
+                  size=theme.size("percent_label_pt"), color="ink", bold=True)
+        _add_band(slide, theme, g["track_left_in"], top + g["track_top_offset_in"],
+                  g["track_width_in"], g["track_height_in"], "bar_track", rounded=True)
+        ratio = (value / top_value) if top_value else 0.0
+        fill_width = max(g["track_height_in"], g["track_width_in"] * ratio)
+        _add_band(slide, theme, g["track_left_in"], top + g["track_top_offset_in"],
+                  fill_width, g["track_height_in"], "royal" if index == 0 else "blue", rounded=True)
+        _add_text(slide, theme, f"{value:,} 件　{value / total:.0%}",
+                  left=g["value_left_in"], top=top, width=g["value_width_in"], height=g["value_height_in"],
+                  size=theme.size("percent_value_pt"), color="navy", bold=True)
+    _render_points_panel(slide, theme, spec, ctx)
+    _render_footnote(slide, theme, spec, ctx)
+
+
+def _render_table(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """全寬表格（附錄）：直接列引擎 rows，不加解讀。"""
+    _render_header(slide, theme, spec, ctx)
+    g = theme.geometry["table"]
+    rows = _first_rows(spec, ctx)
+    shown = _add_table(slide, theme, rows,
+                       left=g["left_in"], top=g["top_in"], width=g["width_in"], height=g["height_in"],
+                       row_height=g["row_height_in"], max_columns=int(g["max_columns"]),
+                       cell_margin_in=g["cell_margin_in"], cell_inset_in=g["cell_inset_in"])
+    _render_footnote(slide, theme, spec, ctx, _rows_note(shown, rows, int(g["max_columns"])))
+
+
+def _render_table_with_points(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """表格＋右側要點：明細與判讀同頁。"""
+    _render_header(slide, theme, spec, ctx)
+    g = theme.geometry["table_with_points"]
+    rows = _first_rows(spec, ctx)
+    shown = _add_table(slide, theme, rows,
+                       left=g["left_in"], top=g["top_in"], width=g["width_in"], height=g["height_in"],
+                       row_height=g["row_height_in"], max_columns=int(g["max_columns"]),
+                       cell_margin_in=g["cell_margin_in"], cell_inset_in=g["cell_inset_in"])
+    _render_points_panel(slide, theme, spec, ctx)
+    _render_footnote(slide, theme, spec, ctx, _rows_note(shown, rows, int(g["max_columns"])))
+
+
+def _parse_direction_body(body: str) -> dict[str, Any] | None:
+    """解析結構化 direction.body（P1-7 合併版契約）；不是合法 JSON 就回 None。
+
+    契約形狀（content_rules 同步定義；AI 產 JSON 字串塞進 slot）：
+        {"situation": [..], "opportunity": [..], "direction": [..],
+         "topics": [{"name","basis","action"}, ..], "conclusion": ".."}
+    ⚠ 舊純文字要能過渡：回 None 讓 renderer 走舊的條列版面，不炸、不硬轉。
+    """
+    text = str(body or "").strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return {
+        "situation": [str(x) for x in parsed.get("situation") or []],
+        "opportunity": [str(x) for x in parsed.get("opportunity") or []],
+        "direction": [str(x) for x in parsed.get("direction") or []],
+        "topics": [t for t in parsed.get("topics") or [] if isinstance(t, dict)],
+        "conclusion": str(parsed.get("conclusion") or ""),
+    }
+
+
+def _render_direction_flow(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any],
+                           parsed: dict[str, Any]) -> None:
+    """合併版（2026-07-31 使用者經表單選定）：
+    上半「態勢→機會→方向」三步色塊流程、下半研發題目卡片、底部核心結論條。
+    python-pptx 畫不了原生 SmartArt——色塊＋箭頭是同等效果的確定性圖形。
+    """
+    g = theme.geometry["direction_flow"]
+    steps = (("態勢", parsed["situation"], "royal"),
+             ("機會", parsed["opportunity"], "blue"),
+             ("方向", parsed["direction"], "navy"))
+    for index, (label, lines, color) in enumerate(steps):
+        left = g["step_left_in"] + index * g["step_gap_in"]
+        _add_band(slide, theme, left, g["step_top_in"], g["step_width_in"], g["step_height_in"],
+                  color, rounded=True)
+        _add_text(slide, theme, label,
+                  left=left + g["step_inset_in"], top=g["step_top_in"] + g["step_label_top_offset_in"],
+                  width=g["step_width_in"] - g["step_inset_in"] * 2, height=g["step_label_height_in"],
+                  size=theme.size("flow_label_pt"), color="accent", bold=True)
+        body_width = g["step_width_in"] - g["step_inset_in"] * 2
+        body_height = g["step_height_in"] - g["step_text_top_offset_in"] - g["step_inset_in"]
+        body, _ = _fit_text(theme, "\n".join(lines), width_in=body_width, height_in=body_height,
+                            size_pt=theme.size("flow_text_pt"))
+        _add_text(slide, theme, body,
+                  left=left + g["step_inset_in"], top=g["step_top_in"] + g["step_text_top_offset_in"],
+                  width=body_width, height=body_height,
+                  size=theme.size("flow_text_pt"), color="on_dark_soft")
+        if index < len(steps) - 1:
+            _add_text(slide, theme, "→",
+                      left=left + g["step_width_in"] + g["arrow_left_offset_in"],
+                      top=g["arrow_top_in"], width=g["arrow_width_in"], height=g["arrow_height_in"],
+                      size=theme.size("flow_arrow_pt"), color="royal", bold=True,
+                      align=PP_ALIGN.CENTER)
+
+    topics = parsed["topics"][: int(g["topic_max"])]
+    for index, topic in enumerate(topics):
+        left = g["topic_left_in"] + index * g["topic_gap_in"]
+        _add_band(slide, theme, left, g["topic_top_in"], g["topic_width_in"], g["topic_height_in"],
+                  "panel", rounded=True)
+        _add_band(slide, theme, left, g["topic_top_in"], g["topic_width_in"],
+                  g["topic_accent_height_in"], "accent")
+        _add_text(slide, theme, str(topic.get("name") or ""),
+                  left=left + g["topic_inset_in"], top=g["topic_top_in"] + g["topic_name_top_offset_in"],
+                  width=g["topic_width_in"] - g["topic_inset_in"] * 2, height=g["topic_name_height_in"],
+                  size=theme.size("topic_name_pt"), color="navy", bold=True)
+        detail_lines = []
+        if topic.get("basis"):
+            detail_lines.append(f"依據｜{topic['basis']}")
+        if topic.get("action"):
+            detail_lines.append(f"行動｜{topic['action']}")
+        body_width = g["topic_width_in"] - g["topic_inset_in"] * 2
+        body_height = g["topic_height_in"] - g["topic_text_top_offset_in"] - g["topic_inset_in"]
+        body, _ = _fit_text(theme, "\n".join(detail_lines), width_in=body_width,
+                            height_in=body_height, size_pt=theme.size("topic_text_pt"))
+        _add_text(slide, theme, body,
+                  left=left + g["topic_inset_in"], top=g["topic_top_in"] + g["topic_text_top_offset_in"],
+                  width=body_width, height=body_height,
+                  size=theme.size("topic_text_pt"), color="ink")
+
+    if parsed["conclusion"]:
+        _add_band(slide, theme, g["conclusion_left_in"], g["conclusion_top_in"],
+                  g["conclusion_width_in"], g["conclusion_height_in"], "navy", rounded=True)
+        text_width = g["conclusion_width_in"] - g["conclusion_inset_in"] * 2
+        body, _ = _fit_text(theme, f"核心結論：{parsed['conclusion']}", width_in=text_width,
+                            height_in=g["conclusion_height_in"] - g["conclusion_text_top_offset_in"] * 2,
+                            size_pt=theme.size("conclusion_pt"))
+        _add_text(slide, theme, body,
+                  left=g["conclusion_left_in"] + g["conclusion_inset_in"],
+                  top=g["conclusion_top_in"] + g["conclusion_text_top_offset_in"],
+                  width=text_width,
+                  height=g["conclusion_height_in"] - g["conclusion_text_top_offset_in"] * 2,
+                  size=theme.size("conclusion_pt"), color="on_dark", bold=True)
+
+
+def _render_direction(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """研發方向建議（結論頁，壓軸）。
+
+    結構化 direction.body → 合併版（色塊流程＋題目卡＋結論條）；
+    舊純文字 → 走原條列版面過渡，並由 build_ppt 記 warning（不靜默）。
+    """
+    _render_header(slide, theme, spec, ctx)
+    parsed = _parse_direction_body(ctx["slots"].get("direction.body") or "")
+    if parsed is not None:
+        _render_direction_flow(slide, theme, spec, ctx, parsed)
+        _render_footnote(slide, theme, spec, ctx)
+        return
+    g = theme.geometry["direction"]
+    _add_band(slide, theme, g["body_left_in"], g["body_top_in"],
+              g["body_width_in"], g["body_height_in"], "panel", rounded=True)
+    _add_text(slide, theme, "研發方向與具體題目",
+              left=g["body_left_in"] + g["body_header_inset_left_in"],
+              top=g["body_top_in"] + g["body_header_top_offset_in"],
+              width=g["body_width_in"] - g["body_text_inset_right_in"], height=g["body_header_height_in"],
+              size=theme.size("panel_header_pt"), color="royal", bold=True)
+    text_width = g["body_width_in"] - g["body_text_inset_right_in"]
+    text_height = g["body_height_in"] - g["body_text_top_offset_in"] - g["body_text_bottom_pad_in"]
+    size = theme.size("body_pt")
+    body = ctx["slots"].get("direction.body") or ""
+    blocks = [("", line.strip(), "ink", False) for line in body.split("\n") if line.strip()]
+    if not blocks:
+        blocks = [(label, text, "ink", False) for label, text in _row_highlights(spec, ctx)]
+    _add_number_bold_text(slide, theme,
+                          _trim_blocks(theme, blocks, width_in=text_width, height_in=text_height, size_pt=size),
+                          left=g["body_left_in"] + g["body_text_inset_left_in"],
+                          top=g["body_top_in"] + g["body_text_top_offset_in"],
+                          width=text_width, height=text_height, size=size)
+
+    _add_band(slide, theme, g["basis_left_in"], g["basis_top_in"],
+              g["basis_width_in"], g["basis_height_in"], "navy", rounded=True)
+    _add_text(slide, theme, "專利地圖依據",
+              left=g["basis_left_in"] + g["basis_header_inset_left_in"],
+              top=g["basis_top_in"] + g["basis_header_top_offset_in"],
+              width=g["basis_item_width_in"], height=g["basis_header_height_in"],
+              size=theme.size("panel_header_pt"), color="accent", bold=True)
+    for index, label in enumerate(ctx["included_report_labels"][: int(g["basis_item_max"])]):
+        text, _ = _fit_text(theme, f"・{label}", width_in=g["basis_item_width_in"],
+                            height_in=g["basis_item_height_in"], size_pt=theme.size("point_label_pt"))
+        _add_text(slide, theme, text,
+                  left=g["basis_left_in"] + g["basis_item_inset_left_in"],
+                  top=g["basis_item_top_in"] + index * g["basis_item_step_in"],
+                  width=g["basis_item_width_in"], height=g["basis_item_height_in"],
+                  size=theme.size("point_label_pt"), color="on_dark_soft")
+    _render_footnote(slide, theme, spec, ctx)
+
+
+def _rows_note(shown: int, rows: list[dict[str, Any]], max_columns: int) -> str:
+    """表格截列／截欄時據實說明，避免讀者把前 N 筆當成全部。"""
+    notes = []
+    if rows and shown < len(rows):
+        notes.append(f"顯示前 {shown}/{len(rows)} 筆")
+    if rows and len(rows[0]) > max_columns:
+        notes.append(f"前 {max_columns}/{len(rows[0])} 欄")
+    return "、".join(notes)
+
+
+def _first_rows(spec: PageSpec, ctx: dict[str, Any]) -> list[dict[str, Any]]:
+    """取本頁 rows；帶 row_filter 的頁（依通道拆頁）只留匹配的列。"""
+    filters = dict(spec.row_filter)
+    for key in spec.report_keys:
+        rows = _rows_of(ctx["report_data"], key)
+        if filters:
+            rows = [r for r in rows
+                    if all(str(r.get(col)) == value for col, value in filters.items())]
+        if rows:
+            return rows
+    return []
+
+
+def _add_table(
+    slide,
+    theme: Theme,
+    rows: list[dict[str, Any]],
+    *,
+    left: float,
+    top: float,
+    width: float,
+    height: float,
+    row_height: float,
+    max_columns: int,
+    cell_margin_in: float,
+    cell_inset_in: float,
+) -> int:
+    """把引擎 rows 畫成表格。
+
+    列數依框高與列高換算後截斷（PowerPoint 的表格列高只增不減，塞太多必溢出），
+    儲存格字數也依欄寬截斷，避免自動換行把列撐高。
+    """
+    if not rows:
+        g = theme.geometry["table"]
+        _add_band(slide, theme, left, top, width, height, "panel", rounded=True)
+        _add_text(slide, theme, "本頁報表無資料列",
+                  left=g["empty_text_left_in"], top=g["empty_text_top_in"],
+                  width=g["empty_text_width_in"], height=g["empty_text_height_in"],
+                  size=theme.size("table_body_pt"), color="muted", align=PP_ALIGN.CENTER)
+        return 0
+
+    # 欄位顯示規則（P1-5）：排除機制欄（topic_code）、中文欄名、欄值轉譯
+    # （source_field 的原始欄值不得入畫面，轉「技術／功效」）。
+    columns = [name for name in rows[0] if str(name) not in TABLE_EXCLUDED_COLUMNS][:max_columns]
+    max_rows = max(1, int(height / row_height) - 1)
+    display = rows[:max_rows]
     table = slide.shapes.add_table(
         len(display) + 1, len(columns), Inches(left), Inches(top), Inches(width), Inches(height)
     ).table
-    for c, name in enumerate(columns):
-        cell = table.cell(0, c)
-        cell.text = str(name)
-        _style_cell(cell, theme, size=theme.font["table_header_pt"], color="on_dark", bold=True, fill="brand_deep")
+    for row in table.rows:
+        row.height = Inches(row_height)
+
+    # 扣掉左右內距後才是真正可用的文字寬度；截字到這個寬度內，儲存格就不會自動換行把列撐高。
+    text_width = width / len(columns) - cell_inset_in * 2
+    for index, name in enumerate(columns):
+        cell = table.cell(0, index)
+        shown = TABLE_COLUMN_LABELS.get(str(name), str(name))
+        cell.text = _truncate_to_width(shown, text_width, theme.size("table_header_pt"))
+        _style_cell(cell, theme, size=theme.size("table_header_pt"), color="on_dark", bold=True,
+                    fill="navy", margin_in=cell_margin_in, inset_in=cell_inset_in)
     for r, row in enumerate(display, start=1):
         for c, name in enumerate(columns):
+            value = row.get(name)
+            mapped = TABLE_VALUE_LABELS.get(str(name), {})
+            if isinstance(value, list):
+                value = "、".join(str(v) for v in value)
+            value = mapped.get(str(value), value) if mapped else value
             cell = table.cell(r, c)
-            cell.text = "" if row.get(name) is None else str(row.get(name))
-            _style_cell(cell, theme, size=theme.font["body_pt"] - 2, color="ink",
-                        fill="surface" if r % 2 else "accent_soft")
+            cell.text = "" if value is None else _truncate_to_width(
+                str(value), text_width, theme.size("table_body_pt")
+            )
+            _style_cell(cell, theme, size=theme.size("table_body_pt"), color="ink",
+                        fill="paper" if r % 2 else "panel_alt",
+                        margin_in=cell_margin_in, inset_in=cell_inset_in)
+    return len(display)
 
 
-def _style_cell(cell, theme: Theme, *, size: float, color: str, bold: bool = False, fill: str = "surface") -> None:
+def _style_cell(
+    cell, theme: Theme, *, size: float, color: str, bold: bool = False, fill: str = "paper",
+    margin_in: float = 0.0, inset_in: float = 0.0,
+) -> None:
+    """套儲存格底色與字體。
+
+    ⚠ python-pptx 的儲存格預設上下內距 0.05 in，PowerPoint 的列高只增不減——
+    預設內距會讓實際列高遠大於宣告值，整張表往下溢出版面。故一律壓縮內距。
+    """
     cell.fill.solid()
     cell.fill.fore_color.rgb = theme.rgb(fill)
+    cell.margin_top = Inches(margin_in)
+    cell.margin_bottom = Inches(margin_in)
+    cell.margin_left = Inches(inset_in)
+    cell.margin_right = Inches(inset_in)
     for para in cell.text_frame.paragraphs:
         for run in para.runs:
-            run.font.name = theme.font["family"]
-            run.font.size = Pt(size)
-            run.font.bold = bold
-            run.font.color.rgb = theme.rgb(color)
-
-
-def _first_slot_text(spec: PageSpec, ctx: dict) -> str:
-    for slot in spec.slots:
-        if ctx["slots"].get(slot):
-            return ctx["slots"][slot]
-    return ""
-
-
-def _add_watermark(slide, theme: Theme) -> None:
-    """舊版相容函式；v2.3 起缺漏不印進 PPT，呼叫端不再使用。"""
-    geo = theme.geometry["watermark"]
-    _add_text(
-        slide, theme, WATERMARK_TEXT,
-        left=geo["left_in"], top=geo["top_in"], width=geo["width_in"], height=geo["height_in"],
-        size=theme.font["watermark_pt"], color="watermark", bold=True, align=PP_ALIGN.RIGHT,
-    )
+            _set_font(run, theme, size=size, color=color, bold=bold)
 
 
 RENDERERS = {
     "cover": _render_cover,
-    "direction": _render_direction,
-    "chart_with_narrative": _render_chart_with_narrative,
+    "section_divider": _render_section_divider,
+    "chart_hero": _render_chart_hero,
+    "chart_with_points": _render_chart_with_points,
+    "comparison": _render_comparison,
+    "stat_callout": _render_stat_callout,
+    "percentage_bars": _render_percentage_bars,
     "table": _render_table,
-    "table_with_narrative": _render_table_with_narrative,
-    "narrative_only": _render_narrative_only,
+    "table_with_points": _render_table_with_points,
+    "direction": _render_direction,
 }
 
+# 需要圖才成立的版型：解析不到圖就降級 stat_callout，不留佔位文字。
+CHART_DEPENDENT_KINDS = frozenset({"chart_hero", "chart_with_points", "comparison"})
+# 單圖版型：被指定給多圖頁面時要拆成多頁（成對報表的「分頁」呈現）。
+SINGLE_CHART_KINDS = frozenset({"chart_hero", "chart_with_points", "stat_callout"})
+
 
 # --------------------------------------------------------------------------
-# 版本不覆蓋：同版本重跑產生帶序號新檔
+# 頁面展開
+# --------------------------------------------------------------------------
+def _kind_for_report(report: dict[str, Any], chart_count: int) -> str:
+    """動態頁的預設版型：明細／矩陣走表格，多圖走並排，單圖走大圖，沒圖走大數字。
+
+    單圖預設 `chart_hero`（P1-1）：大圖＋底部核心結論條——「圖表為主、文字為輔」
+    的預設呈現；要點框版（chart_with_points）保留給版型下拉切換。
+    """
+    if str(report.get("report_type") or "").lower() in {"detail", "table"}:
+        return "table"
+    if chart_count >= 2:
+        return "comparison"
+    if chart_count == 1:
+        return "chart_hero"
+    return "stat_callout"
+
+
+def _page_should_render(report_data: dict[str, Any], spec: PageSpec) -> bool:
+    """cover／direction 恆出；其餘頁面必須至少有一個實際有資料的 report_key。"""
+    if spec.kind in {"cover", "direction", "section_divider"}:
+        return True
+    return bool(_actual_report_keys(report_data, spec.report_keys))
+
+
+def _expand_page_layout(report_data: dict[str, Any], charts: ChartIndex | None = None) -> list[PageSpec]:
+    """選擇驅動出頁：把有資料的報表展開成頁面清單，頁碼重新連號。
+
+    `charts` 省略時（前端縮圖預覽只拿得到 report_data）僅回頁面骨架，
+    圖檔欄位留空——留空是誠實的，猜檔名才是錯的。
+    """
+    base: list[PageSpec] = []
+    for spec in PAGE_LAYOUT:
+        if not _page_should_render(report_data, spec):
+            continue
+        keys = spec.report_keys if spec.kind in {"cover", "direction"} else _actual_report_keys(report_data, spec.report_keys)
+        # 封面／隔頁／方向頁不擺報表圖，charts 留空才不會讓 manifest 反查出誤導的對照。
+        files = _filter_report_charts(keys, charts.files_for(keys)) if charts and spec.kind not in {"cover", "direction", "section_divider"} else ()
+        kind = spec.kind
+        if kind == "comparison" and len(files) < 2:
+            kind = "chart_hero"
+        resolved = _spec_with(spec, report_keys=keys, charts=files, kind=kind)
+        # 依通道拆頁（P1-3）：主題分布 rows 帶兩通道，各自成一張表格頁；
+        # 單一通道時維持一頁、不加通道字樣。
+        base.extend(_split_by_channel(resolved, report_data))
+
+    covered = {key for spec in PAGE_LAYOUT for key in spec.report_keys}
+    extra: list[PageSpec] = []
+    for report_key, report in _iter_report_entries(report_data):
+        if report_key in covered or not _report_key_has_data(report_data, report_key):
+            continue
+        files = _filter_report_charts((report_key,), charts.files_for((report_key,))) if charts else ()
+        topic = _label_of(report_data, report_key)
+        extra.append(
+            PageSpec(page=0, kind=_kind_for_report(report, len(files)), title=topic, topic=topic,
+                     report_keys=(report_key,), charts=files)
+        )
+
+    # ⚠ 錨點＝direction 或第一個附錄，取先出現者：動態插頁也是證據，
+    #   必須排在結論（研發方向建議）之前——結論永遠壓軸（P1-6）。
+    anchor = next((i for i, spec in enumerate(base)
+                   if spec.is_appendix or spec.kind == "direction"), len(base))
+    merged = base[:anchor] + extra + base[anchor:]
+    merged = _split_pairs_by_policy(merged, charts)
+    return [_spec_with(spec, page=index) for index, spec in enumerate(merged, start=1)]
+
+
+def _split_by_channel(spec: PageSpec, report_data: dict[str, Any]) -> list[PageSpec]:
+    """rows 含多通道的報表依通道拆頁（每通道一張表；附錄總表不拆）。"""
+    if spec.is_appendix or not spec.report_keys:
+        return [spec]
+    config = CHANNEL_SPLIT_REPORTS.get(spec.report_keys[0])
+    if config is None:
+        return [spec]
+    column, channels = config
+    rows = _rows_of(report_data, spec.report_keys[0])
+    present = [(value, topic) for value, topic in channels
+               if any(str(r.get(column)) == value for r in rows)]
+    if len(present) <= 1:
+        return [spec]
+    return [
+        _spec_with(spec, topic=topic, title=topic, row_filter=((column, value),))
+        for value, topic in present
+    ]
+
+
+def _split_pairs_by_policy(layout: list[PageSpec], charts: ChartIndex | None = None) -> list[PageSpec]:
+    """列在 SPLIT_PAIR_REPORTS 的成對報表改成分頁（表格內容多，並排讀不動）。"""
+    result: list[PageSpec] = []
+    for spec in layout:
+        if spec.kind == "comparison" and any(key in SPLIT_PAIR_REPORTS for key in spec.report_keys):
+            # 拆頁後用大圖版型（chart_hero）——分頁的動機就是圖要大。
+            result.extend(_split_multi_chart_page(_spec_with(spec, kind="chart_hero"), charts))
+        else:
+            result.append(spec)
+    return result
+
+
+def _split_multi_chart_page(spec: PageSpec, charts: ChartIndex | None = None) -> list[PageSpec]:
+    """單圖版型碰到多圖頁面：一圖一頁。
+
+    拆頁時把 `report_keys` 一併收窄到該圖真正對應的報表——否則兩頁都掛著全部
+    report_key，會抓到同一段 narrative、印出兩張一模一樣的標題與註腳。
+    """
+    if len(spec.charts) <= 1:
+        return [spec]
+    pages: list[PageSpec] = []
+    for name in spec.charts:
+        owners = charts.owners_of(name, spec.report_keys) if charts else ()
+        pages.append(_spec_with(spec, charts=(name,), report_keys=owners or spec.report_keys))
+    return pages
+
+
+def _clean_layout_overrides(value: Any) -> dict[str, str]:
+    """只接受 renderer 支援的版型名稱，無效覆寫忽略而非讓產檔失敗。"""
+    if not isinstance(value, dict):
+        return {}
+    return {str(page): str(kind) for page, kind in value.items() if str(kind) in RENDERERS}
+
+
+def _apply_layout_overrides(
+    layout: list[PageSpec], overrides: dict[str, str], charts: ChartIndex | None = None
+) -> list[PageSpec]:
+    """套用使用者挑的版型；單圖版型碰到多圖頁面會自動拆頁，頁碼重新連號。"""
+    result: list[PageSpec] = []
+    for spec in layout:
+        kind = overrides.get(str(spec.page), spec.kind)
+        target = _spec_with(spec, kind=kind)
+        if kind in SINGLE_CHART_KINDS and len(spec.charts) > 1:
+            result.extend(_split_multi_chart_page(target, charts))
+        elif kind == "comparison" and len(spec.charts) < 2:
+            result.append(_spec_with(target, kind="chart_with_points"))
+        else:
+            result.append(target)
+    return [_spec_with(spec, page=index) for index, spec in enumerate(result, start=1)]
+
+
+def _apply_chart_degradation(layout: list[PageSpec], charts: ChartIndex) -> list[PageSpec]:
+    """圖檔缺失／轉檔失敗 → 降級 stat_callout，確保每頁都有視覺元素。"""
+    result: list[PageSpec] = []
+    for spec in layout:
+        if spec.kind not in CHART_DEPENDENT_KINDS:
+            result.append(spec)
+            continue
+        usable = tuple(name for name in spec.charts if charts.resolve(name) is not None)
+        if usable:
+            result.append(_spec_with(spec, charts=usable))
+        else:
+            result.append(_spec_with(spec, kind="stat_callout", charts=(), degraded_from=spec.kind))
+    return result
+
+
+# --------------------------------------------------------------------------
+# 封面統計卡與分析框架
+# --------------------------------------------------------------------------
+def _cover_title(report_data: dict[str, Any], slots: dict[str, str]) -> str:
+    """封面主標＝workspace 顯示名稱（P1-8，確定性組成；cover.title AI slot 已退場）。
+
+    ⚠ slots 參數保留：使用者若日後經 approvals 明確給了標題仍尊重（人工定稿
+    優先於推導），但**不再請 AI 產**——AI 只剩 direction.body 一個 slot。
+    parameters 缺 workspace 名稱時退回通用標題，不硬湊。
+    """
+    manual = str(slots.get("cover.title") or "").strip()
+    if manual:
+        return manual
+    params = report_data.get("parameters") or {}
+    for key in ("workspace_name", "workspace_display_name", "workspace"):
+        value = str(params.get(key) or "").strip()
+        if value:
+            return value
+    return "專利情報整合分析"
+
+
+def _cover_stats(report_data: dict[str, Any]) -> list[tuple[str, str, str]]:
+    """封面統計卡；資料不足就少一格，不硬湊低價值指標。"""
+    stats: list[tuple[str, str, str]] = []
+    trend_rows = _rows_of(report_data, "application_trend")
+    if trend_rows:
+        total = sum(_as_int(row.get("patent_count")) for row in trend_rows)
+        stats.append((f"{total:,}", "件", "專利總數"))
+    country_rows = _rows_of(report_data, "country_distribution")
+    if country_rows:
+        numeric = _numeric_column(country_rows)
+        label_col = _label_column(country_rows, numeric)
+        top = sorted(country_rows, key=lambda r: _as_int(r.get(numeric)), reverse=True)[:2]
+        stats.append((
+            " ｜ ".join(str(_as_int(r.get(numeric))) for r in top),
+            " ｜ ".join(str(r.get(label_col, "-")) for r in top),
+            "地域分布（件數）",
+        ))
+    period = _statistics_period(report_data)
+    if period:
+        stats.append((period, "年", "年份區間"))
+    # 第 4 格由資料現有欄位組成；都沒有就只出 3 格。
+    for report_key, unit, label in (
+        ("applicant_ranking", "家", "申請人家數"),
+        ("ipc_main_distribution", "類", "IPC 主分類數"),
+        ("cluster_topic_table", "群", "技術主題數"),
+    ):
+        rows = _rows_of(report_data, report_key)
+        if rows:
+            stats.append((str(len(rows)), unit, label))
+            break
+    return stats[:4]
+
+
+FRAMEWORK_TOPIC_LIMIT = 5
+
+
+def _framework_text(layout: list[PageSpec]) -> str:
+    """分析框架條：用本次實際出頁的內容頁主題串成閱讀動線。
+
+    只列前幾個主題再收「等 N 項」——列滿十幾個會被單行版面截成「…」，
+    反而看不出動線。
+    """
+    topics = list(dict.fromkeys(
+        spec.topic or spec.title
+        for spec in layout
+        if spec.kind not in {"cover", "direction", "section_divider"} and not spec.is_appendix
+    ))
+    if not topics:
+        return "分析框架：本次僅含封面與研發方向建議"
+    head = " → ".join(topics[:FRAMEWORK_TOPIC_LIMIT])
+    rest = len(topics) - FRAMEWORK_TOPIC_LIMIT
+    return f"分析框架：{head}" + (f" → 等共 {len(topics)} 項分析" if rest > 0 else "")
+
+
+# --------------------------------------------------------------------------
+# 產後自檢（QA）：溢出、邊距、重疊、文字裝不下
+# --------------------------------------------------------------------------
+def _shape_font_pt(shape) -> float:
+    sizes = [
+        run.font.size.pt
+        for para in shape.text_frame.paragraphs
+        for run in para.runs
+        if run.font.size is not None
+    ]
+    return max(sizes) if sizes else 0.0
+
+
+def audit_layout(prs: Presentation, theme: Theme) -> list[dict[str, Any]]:
+    """逐頁逐 shape 檢查版面問題，回傳 warnings（不修改簡報，只回報）。
+
+    檢四項：超出版面邊界、邊距不足、文字疊文字、文字估算裝不下。
+    最後一項用字級與框大小估算——PowerPoint 的文字溢出不會改變 shape 尺寸，
+    只看座標抓不到「字太多」，而字牆正是這次重建要解決的問題。
+    """
+    warnings: list[dict[str, Any]] = []
+    slide_w = float(theme.slide["width_in"])
+    slide_h = float(theme.slide["height_in"])
+    margin = float(theme.qa["min_margin_in"])
+    bounds_tol = float(theme.qa["bounds_tolerance_in"])
+    overlap_tol = float(theme.qa["overlap_tolerance_in"])
+    slack = float(theme.qa["capacity_slack"])
+
+    for page, slide in enumerate(prs.slides, start=1):
+        boxes: list[tuple[str, float, float, float, float]] = []
+        for shape in slide.shapes:
+            if shape.left is None or shape.top is None:
+                continue
+            left = shape.left / 914400
+            top = shape.top / 914400
+            right = left + (shape.width or 0) / 914400
+            bottom = top + (shape.height or 0) / 914400
+            text = shape.text_frame.text.strip() if shape.has_text_frame else ""
+            name = f"{shape.shape_type}｜{text[:18]}" if text else str(shape.shape_type)
+
+            # 全出血底板（封面／隔頁背景）本來就貼齊版面，不算違規。
+            full_bleed = left <= bounds_tol and top <= bounds_tol and right >= slide_w - bounds_tol
+            # 邊距規則保護的是「內容不要貼邊」；色塊、圓點、斜線這類裝飾出血是設計語彙，
+            # 只受版面邊界（out_of_bounds）約束，不受安全區約束。
+            is_content = bool(text) or shape.has_table or shape.shape_type == MSO_SHAPE_TYPE.PICTURE
+
+            if not full_bleed and (
+                left < -bounds_tol or top < -bounds_tol
+                or right > slide_w + bounds_tol or bottom > slide_h + bounds_tol
+            ):
+                warnings.append({
+                    "type": "out_of_bounds", "page": page, "shape": name,
+                    "overflow_in": round(max(-left, -top, right - slide_w, bottom - slide_h), 3),
+                })
+            elif is_content and not full_bleed and (
+                left < margin - bounds_tol or top < margin - bounds_tol
+                or right > slide_w - margin + bounds_tol or bottom > slide_h - margin + bounds_tol
+            ):
+                warnings.append({
+                    "type": "margin_violation", "page": page, "shape": name,
+                    "margin_in": round(min(left, top, slide_w - right, slide_h - bottom), 3),
+                })
+
+            if not text:
+                continue
+            boxes.append((name, left, top, right, bottom))
+
+            size_pt = _shape_font_pt(shape)
+            if size_pt:
+                per_line, lines = _text_capacity(
+                    theme, width_in=right - left, height_in=bottom - top, size_pt=size_pt
+                )
+                needed = _lines_needed(text, per_line)
+                if needed > lines * slack:
+                    warnings.append({
+                        "type": "text_overflow_estimated", "page": page, "shape": name,
+                        "lines_needed": needed, "lines_available": lines,
+                    })
+
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                a, b = boxes[i], boxes[j]
+                overlap_w = min(a[3], b[3]) - max(a[1], b[1])
+                overlap_h = min(a[4], b[4]) - max(a[2], b[2])
+                if overlap_w > overlap_tol and overlap_h > overlap_tol:
+                    warnings.append({
+                        "type": "text_overlap", "page": page,
+                        "shapes": [a[0], b[0]],
+                        "overlap_in": [round(overlap_w, 3), round(overlap_h, 3)],
+                    })
+    return warnings
+
+
+# --------------------------------------------------------------------------
+# 產出
 # --------------------------------------------------------------------------
 def _next_available_path(output_dir: Path, version: str) -> Path:
-    """回傳未被占用的輸出路徑；既有版本一律保留不覆蓋。"""
+    """同版本重跑不覆蓋舊檔，改產 `_r2`、`_r3`。"""
     base = output_dir / f"{version}.pptx"
     if not base.exists():
         return base
     index = 2
-    while True:
-        candidate = output_dir / f"{version}_r{index}.pptx"
-        if not candidate.exists():
-            return candidate
+    while (output_dir / f"{version}_r{index}.pptx").exists():
         index += 1
+    return output_dir / f"{version}_r{index}.pptx"
 
 
 def _sha256_of(path: Path) -> str:
@@ -808,6 +1926,31 @@ def _load_json(path: Path, default: dict) -> dict:
         return default
 
 
+def _narrative_candidates(spec: PageSpec) -> tuple[str, ...]:
+    """narrative 查找鍵：report_key → 圖檔主檔名 → 去後綴主檔名 → alias。
+
+    ⚠ alias（NARRATIVE_ALIASES）解「兩個 key 空間不同名」：機會矩陣的解讀
+    掛在 `cluster_topic_table:opportunity_*`（sections 結構），report bucket
+    卻叫 `opportunity_quadrant`——沒有 alias 這頁永遠 narrative_missing
+    （2026-07-31 實機 P10）。
+    """
+    keys: list[str] = list(spec.report_keys)
+    for name in spec.charts:
+        stem = Path(name).stem
+        if stem not in keys:
+            keys.append(stem)
+        for suffix in CHART_ORDER_HINTS:
+            if stem.endswith(suffix):
+                base = stem[: -len(suffix)]
+                if base not in keys:
+                    keys.append(base)
+    for key in list(keys):
+        for alias in NARRATIVE_ALIASES.get(key, ()):
+            if alias not in keys:
+                keys.append(alias)
+    return tuple(keys)
+
+
 def build_ppt(
     *,
     report_dir: Path | str,
@@ -815,17 +1958,13 @@ def build_ppt(
     output_dir: Path | str | None = None,
     theme_path: Path | str = THEME_PATH,
 ) -> dict[str, Any]:
-    """依版型對照表組出報告 PPTX，回傳輸出路徑與 manifest 路徑。
-
-    缺確認槽或缺報表只寫入 manifest；輸出不覆蓋既有版本。
-    """
+    """依版型表組出報告 PPTX，回傳輸出路徑、manifest 路徑與 manifest 內容。"""
     report_dir = Path(report_dir)
     report_data = _load_json(report_dir / "report_data.json", {})
     narratives = _load_json(report_dir / "narratives.json", {})
+    artifact_manifest = _load_json(report_dir / "artifact_manifest.json", {})
     approvals = _load_json(Path(approvals_path), {}) if approvals_path else {}
     slots: dict[str, str] = approvals.get("slots") or {}
-    layout_overrides = _clean_layout_overrides(approvals.get("layout_overrides"))
-    position_overrides = _clean_position_overrides(approvals.get("position_overrides"))
 
     version = (
         (report_data.get("parameters") or {}).get("version")
@@ -835,14 +1974,85 @@ def build_ppt(
     output_dir = Path(output_dir) if output_dir else Path("data/report_artifacts/ppt")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    theme = Theme.load(Path(theme_path))
-    ctx = {
+    theme = Theme.load(theme_path)
+    charts = ChartIndex(report_dir, output_dir / ".cache", artifact_manifest)
+
+    warnings: list[dict[str, Any]] = []
+    if not charts.manifest_found:
+        warnings.append({
+            "type": "artifact_manifest_missing",
+            "detail": "找不到 artifact_manifest.json；本次無法對照圖檔，含圖頁面一律降級為 stat_callout。",
+        })
+
+    direction_body = str(slots.get("direction.body") or "").strip()
+    if direction_body and _parse_direction_body(direction_body) is None:
+        warnings.append({
+            "type": "direction_unstructured",
+            "detail": "direction.body 非結構化 JSON（舊契約純文字），已用條列版面過渡；"
+                      "重跑 ai:report_ppt 產新契約後將呈現色塊流程＋題目卡。",
+        })
+
+    layout = _expand_page_layout(report_data, charts)
+    layout = _apply_layout_overrides(layout, _clean_layout_overrides(approvals.get("layout_overrides")), charts)
+    layout = _apply_chart_degradation(layout, charts)
+
+    # 逐頁備妥 narrative（判讀式標題＋要點），fallback 一律寫 warning，不靜默。
+    narratives_by_page: dict[int, tuple[str, list[dict[str, Any]], bool]] = {}
+    titled: list[PageSpec] = []
+    for spec in layout:
+        if spec.kind in {"cover", "direction", "section_divider"} or spec.is_appendix:
+            # 附錄頁沒有文案 slot、只渲染表格，標題保留「附錄N：…」的定位不套判讀式標題。
+            titled.append(spec)
+            continue
+        if spec.kind == "table":
+            # 純表格頁（明細類，如家族完整性明細）本來就不配解讀——查了也是空，
+            # 誤報 narrative_missing 會讓人白跑一趟「補解讀」（P1-4，實機 P17）。
+            titled.append(spec)
+            continue
+        matched, variant = _narrative_entry(narratives, _narrative_candidates(spec))
+        headline, points, fell_back = _normalize_narrative(variant) if variant else ("", [], False)
+        narratives_by_page[spec.page] = (headline, points, fell_back)
+        if not variant:
+            warnings.append({
+                "type": "narrative_missing", "page": spec.page,
+                "report_key": ",".join(spec.report_keys),
+                "detail": "找不到對應 narrative；本頁要點改用引擎 rows 的關鍵數字。",
+            })
+        elif fell_back:
+            warnings.append({
+                "type": "narrative_fallback", "page": spec.page,
+                "report_key": matched or ",".join(spec.report_keys),
+                "detail": "narrative 缺 headline／points（舊格式只有 text），已切段落並依版面截斷。",
+            })
+        if not headline and points:
+            headline = _derive_headline(points)
+            if headline:
+                warnings.append({
+                    "type": "headline_derived", "page": spec.page,
+                    "report_key": matched or ",".join(spec.report_keys),
+                    "detail": f"narrative 未提供 headline，標題取自要點首句：「{headline}」。",
+                })
+        titled.append(_spec_with(spec, title=f"{spec.topic}：{headline}" if headline else spec.topic))
+    layout = titled
+
+    included_labels = [
+        _label_of(report_data, key)
+        for spec in layout
+        for key in spec.report_keys
+        if _report_key_has_data(report_data, key)
+    ]
+    cover_stats = _cover_stats(report_data)
+    ctx: dict[str, Any] = {
         "report_data": report_data,
         "narratives": narratives,
+        "narratives_by_page": narratives_by_page,
         "slots": slots,
-        "position_overrides": position_overrides,
         "version": version,
-        "images": ImageResolver(report_dir, output_dir / ".cache"),
+        "charts": charts,
+        "period": _statistics_period(report_data),
+        "cover_stats": cover_stats,
+        "framework_text": _framework_text(layout),
+        "included_report_labels": list(dict.fromkeys(included_labels)),
     }
 
     prs = Presentation()
@@ -850,106 +2060,103 @@ def build_ppt(
     prs.slide_height = Inches(theme.slide["height_in"])
     blank = prs.slide_layouts[6]
 
-    layout = _apply_layout_overrides(_expand_page_layout(report_data), layout_overrides)
-
     pages: list[dict[str, Any]] = []
     for spec in layout:
-        slide = prs.slides.add_slide(blank)
-        RENDERERS[spec.kind](slide, theme, spec, ctx)
-
-        filled = [s for s in spec.slots if slots.get(s)]
-        missing = [s for s in spec.slots if not slots.get(s)]
-        missing_reports = [
-            key for key in spec.report_keys if not _report_key_has_data(report_data, key)
-        ]
-        pages.append({
+        RENDERERS[spec.kind](prs.slides.add_slide(blank), theme, spec, ctx)
+        page_info: dict[str, Any] = {
             "page": spec.page,
             "kind": spec.kind,
             "title": spec.title,
+            "topic": spec.topic,
             "report_keys": list(spec.report_keys),
+            "charts": list(spec.charts),
             "is_appendix": spec.is_appendix,
-            "filled_slots": filled,
-            "missing_slots": missing,
-            "missing_reports": missing_reports,
-            "position_overrides_applied": _position_overrides_for_page(ctx, spec),
-            "watermarked": False,
-        })
+            "degraded_from": spec.degraded_from,
+            "filled_slots": [s for s in spec.slots if slots.get(s)],
+            "missing_slots": [s for s in spec.slots if not slots.get(s)],
+            "missing_reports": [k for k in spec.report_keys if not _report_key_has_data(report_data, k)],
+        }
+        if spec.kind == "cover":
+            page_info["stat_cards"] = len(cover_stats)
+        if spec.degraded_from:
+            warnings.append({
+                "type": "chart_missing_degraded", "page": spec.page,
+                "report_key": ",".join(spec.report_keys),
+                "detail": f"artifact_manifest 內找不到可用圖檔，{spec.degraded_from} 已降級為 stat_callout。",
+            })
+        pages.append(page_info)
+
+    warnings.extend(audit_layout(prs, theme))
 
     pptx_path = _next_available_path(output_dir, version)
     prs.save(str(pptx_path))
 
+    selected = (report_data.get("parameters") or {}).get("reports_selected") or []
+    rendered_keys = {key for page in pages for key in page["report_keys"]}
     manifest = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "builder_version": "v3",
         "source_report_version": version,
         "source_report_dir": str(report_dir),
         "pptx_file": pptx_path.name,
         "sha256": _sha256_of(pptx_path),
         "slot_total": len(all_slot_keys()),
         "slot_filled": sum(len(p["filled_slots"]) for p in pages),
-        "missing_slot_total": sum(len(p["missing_slots"]) for p in pages),
-        "missing_report_total": sum(len(p["missing_reports"]) for p in pages),
+        "missing_slots": sorted({s for p in pages for s in p["missing_slots"]}),
+        "missing_reports": sorted(
+            {str(key) for key in selected if not _report_key_has_data(report_data, str(key))}
+            | {key for p in pages for key in p["missing_reports"]}
+            | {str(key) for key in selected if str(key) not in rendered_keys and _report_key_has_data(report_data, str(key))}
+        ),
         "metadata": {
             key: (report_data.get("parameters") or {}).get(key)
             for key in ("topic_run_id", "topic_state_version")
             if (report_data.get("parameters") or {}).get(key) is not None
         },
-        "layout_overrides": layout_overrides,
-        "position_override_total": len(position_overrides),
+        "warnings": warnings,
         "pages": pages,
     }
     manifest_path = pptx_path.with_suffix(".manifest.json")
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-    return {
-        "pptx_path": str(pptx_path),
-        "manifest_path": str(manifest_path),
-        "manifest": manifest,
-    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"pptx_path": str(pptx_path), "manifest_path": str(manifest_path), "manifest": manifest}
 
 
 def write_approval_template(path: Path) -> Path:
-    """產出確認槽範本，供使用者填入定稿文案。"""
+    """產出確認槽範本供填入定稿文案；v3 只有兩個槽。"""
     payload = {
         "report_version": "<報表版本>",
         "slots": {slot: "" for slot in all_slot_keys()},
         "layout_overrides": {},
-        "position_overrides": {},
     }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return path
+    Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return Path(path)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="專利分析報告 PPTX 產生器（deterministic）")
-    parser.add_argument("--report-dir", required=False, help="報表版本目錄（含 report_data.json）")
+    parser = argparse.ArgumentParser(description="專利分析報告 PPTX 產生器 v3（deterministic）")
+    parser.add_argument("--report-dir", help="報表版本目錄（含 report_data.json、artifact_manifest.json）")
     parser.add_argument("--approvals", help="確認槽定稿文案 JSON")
     parser.add_argument("--output-dir", default="data/report_artifacts/ppt", help="輸出目錄")
     parser.add_argument("--init-approvals", help="產出確認槽範本到指定路徑後結束")
     args = parser.parse_args()
 
     if args.init_approvals:
-        path = write_approval_template(Path(args.init_approvals))
-        print(f"approval template: {path}")
+        print(f"approval template: {write_approval_template(Path(args.init_approvals))}")
         return
-
     if not args.report_dir:
         parser.error("--report-dir is required unless --init-approvals is used")
 
     result = build_ppt(
-        report_dir=args.report_dir,
-        approvals_path=args.approvals,
-        output_dir=args.output_dir,
+        report_dir=args.report_dir, approvals_path=args.approvals, output_dir=args.output_dir
     )
     manifest = result["manifest"]
     print(f"pptx: {result['pptx_path']}")
     print(f"manifest: {result['manifest_path']}")
     print(f"sha256: {manifest['sha256']}")
-    print(f"slots filled: {manifest['slot_filled']}/{manifest['slot_total']}")
-    pending = [str(p["page"]) for p in manifest["pages"] if p["watermarked"]]
-    if pending:
-        print(f"待確認頁: {', '.join(pending)}")
+    print(f"pages: {len(manifest['pages'])}")
+    print(f"warnings: {len(manifest['warnings'])}")
+    for warning in manifest["warnings"]:
+        print(f"  - [{warning['type']}] {warning.get('page', '-')} {warning.get('detail', '')}".rstrip())
 
 
 if __name__ == "__main__":

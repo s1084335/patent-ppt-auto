@@ -104,13 +104,19 @@ def record_exports(
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output"
 
-COLOR_APPLICATION = "#2563EB"
-COLOR_PUBLICATION = "#DC2626"
-COLOR_BAR = "#0F766E"
-COLOR_BAR_ALT = "#64748B"
+# F-lite（2026-07-31 使用者核准）：SVG 只換配色與字體、圖型邏輯不動。
+# 色票對齊 skill 的 theme.json（Slidesgo 系）——⚠ 值以常數對齊、不做 runtime
+# 依賴（引擎不 import skill）；兩邊一致由 tests/test_chart_svg_flite.py 釘住。
+COLOR_APPLICATION = "#006DF5"   # theme blue：申請線／長條主色
+COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
+COLOR_BAR = "#006DF5"
+COLOR_BAR_ALT = "#869FB2"       # theme muted：次要長條
 COLOR_MAP = "#F8FAFC"
-COLOR_GRID = "#CBD5E1"
-COLOR_TEXT = "#111827"
+COLOR_GRID = "#DCE3F2"          # theme bar_track：格線
+COLOR_TEXT = "#00094A"          # theme navy：標題與主文字
+COLOR_TEXT_SOFT = "#869FB2"     # 次要文字（刻度、副標）
+# SVG 內建字體宣告：不宣告時瀏覽器與 PowerPoint 轉圖都退回襯線字（舊版視覺斷裂主因）。
+SVG_FONT_STYLE = "<style>text{font-family:'Microsoft JhengHei','Segoe UI',sans-serif}</style>"
 
 
 def xml_text(value: Any) -> str:
@@ -279,21 +285,21 @@ def render_line_chart(
     y_ticks = [round(max_count * i / 4) for i in range(5)]
     x_labels = years if len(years) <= 12 else years[:: max(1, math.ceil(len(years) / 10))]
     svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         f'<rect width="100%" height="100%" fill="white"/>',
         f'<text x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="{left}" y="54" font-size="13" fill="#6B7280">'
+        f'<text x="{left}" y="54" font-size="13" fill="{COLOR_TEXT_SOFT}">'
         f'{"Application year and grant announcement year comparison" if pub else "Yearly count"}</text>',
     ]
     for tick in y_ticks:
         y = scale(tick, 0, max_count, top + plot_h, top)
         svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="12" fill="#6B7280">{tick}</text>')
-    svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="#111827"/>')
-    svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="#111827"/>')
+        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="12" fill="{COLOR_TEXT_SOFT}">{tick}</text>')
+    svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
+    svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
     for year in x_labels:
         x = scale(year, years[0], years[-1], left, left + plot_w)
-        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="12" fill="#6B7280">{year}</text>')
+        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="12" fill="{COLOR_TEXT_SOFT}">{year}</text>')
     svg.append(f'<polyline points="{points(app)}" fill="none" stroke="{COLOR_APPLICATION}" stroke-width="3"/>')
     if pub:
         # 只有真的有公告序列才畫第二條線，避免單序列時出現一條 0 的假線。
@@ -322,7 +328,7 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
     plot_w = width - left - right
     max_value = max([int(row[value_key]) for row in data] + [1])
     svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text x="28" y="36" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
     ]
@@ -361,7 +367,7 @@ def render_segmented_bar_chart(
     plot_w = width - left - right
     max_value = max([int(row.get(total_key) or 0) for row in data] + [1])
     svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text x="28" y="36" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         f'<rect x="28" y="56" width="12" height="12" fill="#CBD5E1"/><text x="46" y="67" font-size="13" fill="{COLOR_TEXT}">全部專利</text>',
@@ -390,7 +396,7 @@ def render_segmented_bar_chart(
         svg.append(f'<rect class="bar-segment" x="{segment_x:.1f}" y="{y + 5}" width="{segment_w:.1f}" height="20" rx="2" fill="{COLOR_APPLICATION}"/>')
         svg.append(f'<text x="{left + total_w + 8:.1f}" y="{y + 20}" font-size="13" fill="{COLOR_TEXT}">{segment} / {total}</text>')
         if assignee_note:
-            svg.append(f'<text x="{left}" y="{y + 41}" font-size="12" fill="#6B7280">{xml_text(assignee_note[:90])}</text>')
+            svg.append(f'<text x="{left}" y="{y + 41}" font-size="12" fill="{COLOR_TEXT_SOFT}">{xml_text(assignee_note[:90])}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -460,7 +466,7 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
     map_w, map_h = 880, 390
     max_value = max([int(row["patent_count"]) for row in rows] + [1])
     svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text x="50" y="36" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         f'<rect x="{left}" y="{top}" width="{map_w}" height="{map_h}" fill="{COLOR_MAP}" stroke="#94A3B8"/>',
@@ -497,7 +503,7 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
     footnote = "Bubble view: circle area is proportional to patent count. 橘色＝區域專利局（標轄區位置）。"
     if no_geo_notes:
         footnote += " 無地域代碼：" + "、".join(no_geo_notes)
-    svg.append(f'<text x="50" y="505" font-size="12" fill="#6B7280">{xml_text(footnote)}</text>')
+    svg.append(f'<text x="50" y="505" font-size="12" fill="{COLOR_TEXT_SOFT}">{xml_text(footnote)}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -529,22 +535,22 @@ def render_growth_chart(path: Path, title: str, growth_rows: list[dict[str, Any]
     pad = max((v_max - v_min) * 0.1, 5.0)
     v_min, v_max = v_min - pad, v_max + pad
     svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="{left}" y="54" font-size="13" fill="#6B7280">YoY growth (%), consecutive years only</text>',
+        f'<text x="{left}" y="54" font-size="13" fill="{COLOR_TEXT_SOFT}">YoY growth (%), consecutive years only</text>',
     ]
     for i in range(5):
         tick = v_min + (v_max - v_min) * i / 4
         y = scale(tick, v_min, v_max, top + plot_h, top)
         svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="12" fill="#6B7280">{tick:.0f}%</text>')
+        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="12" fill="{COLOR_TEXT_SOFT}">{tick:.0f}%</text>')
     zero_y = scale(0, v_min, v_max, top + plot_h, top)
-    svg.append(f'<line x1="{left}" y1="{zero_y:.1f}" x2="{left + plot_w}" y2="{zero_y:.1f}" stroke="#111827" stroke-width="1.5"/>')
+    svg.append(f'<line x1="{left}" y1="{zero_y:.1f}" x2="{left + plot_w}" y2="{zero_y:.1f}" stroke="{COLOR_TEXT}" stroke-width="1.5"/>')
     x_labels = years if len(years) <= 12 else years[:: max(1, math.ceil(len(years) / 10))]
     for year in x_labels:
         x = scale(year, years[0], years[-1], left, left + plot_w)
-        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="12" fill="#6B7280">{year}</text>')
+        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="12" fill="{COLOR_TEXT_SOFT}">{year}</text>')
     points = " ".join(
         f"{scale(y, years[0], years[-1], left, left + plot_w):.1f},{scale(v, v_min, v_max, top + plot_h, top):.1f}"
         for y, v in zip(years, values)
@@ -574,21 +580,21 @@ def render_bubble_chart(
     sizes = [float(r[size_key]) for r in rows] or [1.0]
     x_max, y_max, s_max = max(xs + [1.0]) * 1.1, max(ys + [1.0]) * 1.15, max(sizes + [1.0])
     svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="{left}" y="54" font-size="13" fill="#6B7280">X = total forward citations, Y = patents, bubble = inventors</text>',
+        f'<text x="{left}" y="54" font-size="13" fill="{COLOR_TEXT_SOFT}">X = total forward citations, Y = patents, bubble = inventors</text>',
     ]
     for i in range(5):
         y_tick = y_max * i / 4
         y = scale(y_tick, 0, y_max, top + plot_h, top)
         svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="12" fill="#6B7280">{y_tick:.0f}</text>')
+        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="12" fill="{COLOR_TEXT_SOFT}">{y_tick:.0f}</text>')
         x_tick = x_max * i / 4
         x = scale(x_tick, 0, x_max, left, left + plot_w)
-        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="12" fill="#6B7280">{x_tick:.0f}</text>')
-    svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="#111827"/>')
-    svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="#111827"/>')
+        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="12" fill="{COLOR_TEXT_SOFT}">{x_tick:.0f}</text>')
+    svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
+    svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
     svg.append(f'<text x="{left + plot_w / 2:.0f}" y="{height - 20}" text-anchor="middle" font-size="13" fill="{COLOR_TEXT}">被引用總數（下載時點快照）</text>')
     # 泡泡由大到小畫，避免大泡蓋掉小泡的標籤。
     ordered = sorted(rows, key=lambda r: -float(r[size_key]))
@@ -772,7 +778,7 @@ def render_year_bubble_matrix_chart(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text x="16" y="28" font-size="18" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="16" y="50" font-size="12" fill="#6B7280">X = {xml_text(year_key_label)}, bubble = patent_count</text>',
+        f'<text x="16" y="50" font-size="12" fill="{COLOR_TEXT_SOFT}">X = {xml_text(year_key_label)}, bubble = patent_count</text>',
         '<text x="16" y="90" font-size="12" font-weight="600" fill="#374151">件數色階</text>',
     ]
     legend_x = 82
@@ -822,21 +828,21 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
     x_max = max([d[1] for d in data] + [1]) * 1.15
     y_max = max([d[2] for d in data] + [1]) * 1.15
     svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="{left}" y="54" font-size="13" fill="#6B7280">X = applicant count, Y = patent count, connected by year</text>',
+        f'<text x="{left}" y="54" font-size="13" fill="{COLOR_TEXT_SOFT}">X = applicant count, Y = patent count, connected by year</text>',
     ]
     for i in range(5):
         y_tick = y_max * i / 4
         y = scale(y_tick, 0, y_max, top + plot_h, top)
         svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="12" fill="#6B7280">{y_tick:.0f}</text>')
+        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="12" fill="{COLOR_TEXT_SOFT}">{y_tick:.0f}</text>')
         x_tick = x_max * i / 4
         x = scale(x_tick, 0, x_max, left, left + plot_w)
-        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="12" fill="#6B7280">{x_tick:.0f}</text>')
-    svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="#111827"/>')
-    svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="#111827"/>')
+        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="12" fill="{COLOR_TEXT_SOFT}">{x_tick:.0f}</text>')
+    svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
+    svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
     svg.append(f'<text x="{left + plot_w / 2:.0f}" y="{height - 20}" text-anchor="middle" font-size="13" fill="{COLOR_TEXT}">申請人家數</text>')
     points = " ".join(
         f"{scale(a, 0, x_max, left, left + plot_w):.1f},{scale(c, 0, y_max, top + plot_h, top):.1f}"
@@ -849,7 +855,7 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
         y = scale(count, 0, y_max, top + plot_h, top)
         svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{COLOR_APPLICATION}"/>')
         if index % label_step == 0 or index == len(data) - 1:
-            svg.append(f'<text x="{x + 6:.1f}" y="{y - 6:.1f}" font-size="11" fill="#6B7280">{year}</text>')
+            svg.append(f'<text x="{x + 6:.1f}" y="{y - 6:.1f}" font-size="11" fill="{COLOR_TEXT_SOFT}">{year}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -2050,7 +2056,7 @@ def render_opportunity_quadrant_svg(
             f'<rect x="{cx:.1f}" y="{cy:.1f}" width="{cell_w:.1f}" height="{ch:.1f}" rx="10" '
             f'fill="{qcolors[q]}" fill-opacity="0.07" stroke="#E5E7EB"/>')
         parts.append(
-            f'<text x="{cx + inner_pad:.1f}" y="{cy + 18:.1f}" font-size="11" fill="#6B7280">{xml_text(density_tags[q])}</text>')
+            f'<text x="{cx + inner_pad:.1f}" y="{cy + 18:.1f}" font-size="11" fill="{COLOR_TEXT_SOFT}">{xml_text(density_tags[q])}</text>')
         parts.append(
             f'<text x="{cx + inner_pad:.1f}" y="{cy + 37:.1f}" font-size="13" font-weight="600" '
             f'fill="{qcolors[q]}">{xml_text(f"{battle} → {action}")}</text>')
@@ -2168,7 +2174,7 @@ def render_pain_point_quadrant_svg(
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text x="{margin_l}" y="34" font-size="20" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         # 副標銜接句（沿用散點版文案）
-        f'<text x="{margin_l}" y="54" font-size="13" fill="#6B7280">把機會矩陣「待釐清領域」一軸用公開痛點初步補上（數字＝專利件數）</text>',
+        f'<text x="{margin_l}" y="54" font-size="13" fill="{COLOR_TEXT_SOFT}">把機會矩陣「待釐清領域」一軸用公開痛點初步補上（數字＝專利件數）</text>',
     ]
     # 圖例：嚴重度四級色（沿用 severity 色；unknown 顯示為待調查灰）
     legend_x = margin_l
@@ -2179,8 +2185,8 @@ def render_pain_point_quadrant_svg(
         legend_x += 84
     # 欄 header：密度 低/高
     col_x = {"lo": board_x, "hi": board_x + col_w + col_gap}
-    parts.append(f'<text x="{col_x["lo"] + col_w / 2:.0f}" y="{grid_top - 8:.0f}" text-anchor="middle" font-size="12" fill="#6B7280">低密度</text>')
-    parts.append(f'<text x="{col_x["hi"] + col_w / 2:.0f}" y="{grid_top - 8:.0f}" text-anchor="middle" font-size="12" fill="#6B7280">高密度</text>')
+    parts.append(f'<text x="{col_x["lo"] + col_w / 2:.0f}" y="{grid_top - 8:.0f}" text-anchor="middle" font-size="12" fill="{COLOR_TEXT_SOFT}">低密度</text>')
+    parts.append(f'<text x="{col_x["hi"] + col_w / 2:.0f}" y="{grid_top - 8:.0f}" text-anchor="middle" font-size="12" fill="{COLOR_TEXT_SOFT}">高密度</text>')
 
     for band in band_order:
         by = band_tops[band]
@@ -2202,7 +2208,7 @@ def render_pain_point_quadrant_svg(
             if (band, col) in corner_names:
                 parts.append(
                     f'<text x="{cx + inner_pad:.1f}" y="{by + 17:.1f}" font-size="12" '
-                    f'font-weight="600" fill="#6B7280">{xml_text(corner_names[(band, col)])}</text>')
+                    f'font-weight="600" fill="{COLOR_TEXT_SOFT}">{xml_text(corner_names[(band, col)])}</text>')
             for chip in placed[(band, col)][0]:
                 parts.extend(_chip_svg(
                     chip, cx + inner_pad + chip["x"], by + head + chip["y"],
@@ -2459,6 +2465,7 @@ def run_chart_trial(
     filters: dict[str, Any] | None = None,
     cluster_data: dict[str, Any] | None = None,
     patent_ids: list[int] | None = None,
+    workspace_name: str | None = None,
 ) -> dict[str, Any]:
     """渲染報表圖組（MCP reporting tools 與 CLI 共用的出圖入口）。
 
@@ -2509,6 +2516,9 @@ def run_chart_trial(
         "version": version,
         "analysis_id": analysis_id,
         "has_cluster_analytics": cluster_data is not None,
+        # workspace 顯示名稱（P3-2）：封面主標的資料源（P1-8 cover.title 退場後由此組成）。
+        # ⚠ 不給就不落鍵——封面端以「鍵不存在」走通用標題 fallback，落 null 反而混淆。
+        **({"workspace_name": workspace_name} if workspace_name else {}),
         **patent_snapshot_metadata(patent_ids),
     }
 

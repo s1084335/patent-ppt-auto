@@ -53,9 +53,9 @@ class ContractConstantsTests(unittest.TestCase):
 
     def test_limits_single_source(self):
         self.assertEqual(runner.NARRATIVE_HEADLINE_MAX, 20)
-        self.assertEqual(runner.NARRATIVE_POINT_TEXT_MAX, 40)
+        self.assertEqual(runner.NARRATIVE_POINT_TEXT_MAX, 50)
         self.assertEqual(runner.NARRATIVE_POINTS_MIN, 3)
-        self.assertEqual(runner.NARRATIVE_POINTS_MAX, 5)
+        self.assertEqual(runner.NARRATIVE_POINTS_MAX, 6)
 
     def test_prompt_version_bumped(self):
         self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v4")
@@ -75,7 +75,7 @@ class SkillRulesTests(unittest.TestCase):
 
     def test_limits_written_in_rules(self):
         """規則要明定數字——沒有數字的「精簡」是無效指令。"""
-        for token in ("20", "40", "3", "5"):
+        for token in ("20", "50", "3", "6"):
             with self.subTest(token=token):
                 self.assertIn(token, self.md)
         self.assertIn("report_narrative_v4", self.md, "prompt_version 未升版")
@@ -116,17 +116,17 @@ class ValidateContractTests(unittest.TestCase):
         self.assertIn("rk", w[0], "warning 要指出是哪張報表")
 
     def test_points_count_out_of_range(self):
-        for n in (2, 6):
+        for n in (2, 7):
             with self.subTest(n=n):
                 pts = [{"label": "l", "text": "t"} for _ in range(n)]
                 w = runner.validate_narrative_contract(_narratives(_entry(points=pts)))
                 self.assertTrue(any("points" in x for x in w), f"{n} 條未被警告")
 
     def test_point_text_too_long(self):
-        pts = [{"label": "l", "text": "字" * 41}] + \
+        pts = [{"label": "l", "text": "字" * 51}] + \
               [{"label": "l", "text": "ok"} for _ in range(2)]
         w = runner.validate_narrative_contract(_narratives(_entry(points=pts)))
-        self.assertTrue(any("40" in x for x in w))
+        self.assertTrue(any("50" in x for x in w))
 
     def test_old_format_warns_not_raises(self):
         """⚠ 舊格式（只有 text）：警告但不炸——過渡期舊資料要能跑。"""

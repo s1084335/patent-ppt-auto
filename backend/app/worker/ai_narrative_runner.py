@@ -54,9 +54,9 @@ PROMPT_VERSION = "report_narrative_v4"
 # ⚠ 暫定值：理想上由 theme.json v2 的要點框尺寸換算，v2（skill creator 重建中）
 #   落地後對框尺寸驗算；要調整只改這裡。
 NARRATIVE_HEADLINE_MAX = 20   # 一句判讀結論（PPT 標題「{主題}：{headline}」）
-NARRATIVE_POINT_TEXT_MAX = 40  # 每條要點的字數
+NARRATIVE_POINT_TEXT_MAX = 50  # 每條要點的字數（2026-07-31 40→50：實機「字太少」）
 NARRATIVE_POINTS_MIN = 3
-NARRATIVE_POINTS_MAX = 5
+NARRATIVE_POINTS_MAX = 6  # 2026-07-31 5→6：同上
 
 
 def validate_narrative_contract(narratives: dict[str, Any]) -> list[str]:
