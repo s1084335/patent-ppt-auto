@@ -104,8 +104,12 @@ class PreservedEntriesTests(unittest.TestCase):
                 self.assertIn(kw, self.html, f"真實渲染路徑 {kw} 被誤刪")
 
     def test_single_page_html_export_kept(self):
-        """⚠ 單頁 HTML 匯出是另一條路，不是 PPT 模擬——不得連坐移除。"""
-        for func in ("exportCoverHtml", "reviewExportOutput", "confirmExportOutput"):
+        """⚠ 單頁 HTML 匯出是另一條路，不是 PPT 模擬——不得連坐移除。
+
+        ⚠ 2026-07-31 起清單不含 confirmExportOutput：使用者定案改分頁預覽後
+        它「刻意」退場（見 test_export_html_preview_tab.py），不是誤刪。
+        """
+        for func in ("exportCoverHtml", "reviewExportOutput", "buildExportHtml"):
             with self.subTest(func=func):
                 self.assertIn(func, self.html, f"單頁 HTML 匯出的 {func} 被誤刪")
 

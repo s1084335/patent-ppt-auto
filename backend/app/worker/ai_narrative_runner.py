@@ -45,7 +45,55 @@ def _resolve_skill_path() -> Path:
 SKILL_PATH = _resolve_skill_path()
 # 解讀規格版本；隨 report-narrative-flow.md 模板升版而變。
 # v3（2026-07-27）：prompt 納入使用者 instruction（原本 payload 有存但零消費）。
-PROMPT_VERSION = "report_narrative_v3"
+# v4（2026-07-31）：三件套契約——variant 加 headline／points（PPT 用要點，text 留給
+# 報表頁長文）。動因：實機 PPT 每頁 1 段 400–500 字字牆，⚠ AI 沒有違規，是舊規則
+# 教它寫散文（「標準寫法是：先點出數據現象…」）。
+PROMPT_VERSION = "report_narrative_v4"
+
+# ── 三件套契約上限（v4；單一來源，skill 條文與驗證都以此為準）──
+# ⚠ 暫定值：理想上由 theme.json v2 的要點框尺寸換算，v2（skill creator 重建中）
+#   落地後對框尺寸驗算；要調整只改這裡。
+NARRATIVE_HEADLINE_MAX = 20   # 一句判讀結論（PPT 標題「{主題}：{headline}」）
+NARRATIVE_POINT_TEXT_MAX = 40  # 每條要點的字數
+NARRATIVE_POINTS_MIN = 3
+NARRATIVE_POINTS_MAX = 5
+
+
+def validate_narrative_contract(narratives: dict[str, Any]) -> list[str]:
+    """驗三件套契約，回傳警告清單（合規＝空）。
+
+    ⚠ 只警告、不 raise、不截斷：narrative 是報表頁與 PPT 的共同資料來源，
+    截了就毀；截斷是 PPT 消費端 fallback 的職責。舊格式（只有 text）要能
+    過渡期照跑，故缺 headline／points 也只標記。警告進 summary 的
+    contract_warnings，前端任務進度看得到——違規不得靜默。
+    """
+    warnings: list[str] = []
+    for report_key, report in (narratives.get("reports") or {}).items():
+        for variant_key, entry in (report.get("variants") or {}).items():
+            where = f"{report_key}:{variant_key}"
+            headline = entry.get("headline")
+            points = entry.get("points")
+            if not headline or not isinstance(points, list) or not points:
+                warnings.append(
+                    f"{where} 缺 headline/points（舊格式，PPT 端將以長文截斷 fallback）")
+                continue
+            if len(str(headline)) > NARRATIVE_HEADLINE_MAX:
+                warnings.append(
+                    f"{where} headline 超限（{len(str(headline))} 字 > "
+                    f"{NARRATIVE_HEADLINE_MAX}）")
+            if not (NARRATIVE_POINTS_MIN <= len(points) <= NARRATIVE_POINTS_MAX):
+                warnings.append(
+                    f"{where} points 條數 {len(points)} 不在 "
+                    f"{NARRATIVE_POINTS_MIN}–{NARRATIVE_POINTS_MAX}")
+            for i, point in enumerate(points):
+                text = str((point or {}).get("text") or "")
+                if len(text) > NARRATIVE_POINT_TEXT_MAX:
+                    warnings.append(
+                        f"{where} points[{i}] 超限（{len(text)} 字 > "
+                        f"{NARRATIVE_POINT_TEXT_MAX}）")
+    return warnings
+
+
 # 預設 headless CLI 逾時（秒）；解讀多卡多變體可能久，給足時間但避免無限卡住。
 DEFAULT_CLI_TIMEOUT_SECONDS = 1800.0
 
@@ -162,7 +210,7 @@ def build_prompt(
     instruction＝使用者在報表旁「重產解讀」時輸入的附加需求（可為空）。
     2026-07-27 前 payload 有存但這裡零消費，使用者打了完全沒作用——
     比失敗更誤導（看似成功卻沒照要求做），故納入 prompt。
-    附加需求**不得凌駕輸出契約**：仍只寫 narratives.json、維持 v2 兩層結構。
+    附加需求**不得凌駕輸出契約**：仍只寫 narratives.json、維持 v3 三件套兩層結構。
 
     report_keys＝只重產這幾張報表的解讀（2026-07-29 使用者定案「報表要能各自
     獨立重產解釋」）。不給＝整份重跑（原行為）。
@@ -191,16 +239,20 @@ def build_prompt(
             "   以契約為準，並在對應解讀文字中說明無法滿足的部分。"
         )
     return (
-        "任務：產製專利報表解讀 narratives.json（系統派工、非互動、一次性，v2）。\n\n"
-        f"1. 先完整閱讀 {skill} 全文，逐字遵守其中的解讀 Prompt 模板 v2、各報表解讀重點、\n"
-        "   口徑守則、痛點待調查固定文案（含 {x_median} 實際值代入）與輸出契約 v2。\n"
+        "任務：產製專利報表解讀 narratives.json（系統派工、非互動、一次性，v3）。\n\n"
+        f"1. 先完整閱讀 {skill} 全文，逐字遵守其中的解讀 Prompt 模板、各報表解讀重點、\n"
+        "   口徑守則、痛點待調查固定文案（含 {x_median} 實際值代入）與輸出契約 v3。\n"
         f"2. 目標報表目錄：{run_dir}\n"
         "3. 讀取該目錄 report_data.json：sections 鍵列出全部卡片與各卡片內的 variants（含\n"
         "   variant_key）。對每張卡片的每個變體成對讀取該變體的數據 rows 與 SVG 圖檔，\n"
-        "   每一變體產一段解讀文字。\n"
+        "   每一變體產一組三件套（headline＋points＋text）。\n"
         f"4. 輸出唯一檔案：{narratives_path}\n"
-        f"   形狀（v2 引擎讀取契約）：based_on_version 必須等於 \"{version}\"；reports 以\n"
-        "   report_key→variants→variant_key→{text,ai_model,prompt_version,generated_at} 兩層結構。\n"
+        f"   形狀（v3 引擎讀取契約）：based_on_version 必須等於 \"{version}\"；reports 以\n"
+        "   report_key→variants→variant_key→\n"
+        "   {headline,points,text,ai_model,prompt_version,generated_at} 兩層結構。\n"
+        f"   headline＝一句判讀結論（≤{NARRATIVE_HEADLINE_MAX} 字）；points＝\n"
+        f"   {NARRATIVE_POINTS_MIN}–{NARRATIVE_POINTS_MAX} 條要點（各含 label／text／\n"
+        f"   emphasis，text ≤{NARRATIVE_POINT_TEXT_MAX} 字）；text＝完整長文解讀。\n"
         "5. 只准寫 narratives.json 這一個檔案；不得改動目錄內其他檔案、不得執行 shell 指令；\n"
         "   寫完即結束，不輸出多餘說明。"
         + scope
@@ -343,6 +395,10 @@ def run_narrative(
             f"narratives.json based_on_version={got_version!r} 與目錄版本 {version!r} 不符（解讀過期）"
         )
 
+    # 三件套契約驗證（v4）：只警告不 raise——舊格式要能過渡、超限交 PPT 端 fallback；
+    # 警告進 summary 讓前端任務進度看得到，違規不得靜默。
+    contract_warnings = validate_narrative_contract(narratives)
+
     # 確定性程式重渲染 index（嵌入解讀）；CLI 不碰 index.html。
     refresh = refresh_index(run_dir)
 
@@ -381,4 +437,5 @@ def run_narrative(
         "variants_total": refresh.get("variants_total"),
         "pending": refresh.get("pending", []),
         "narratives_expired": refresh.get("narratives_expired", False),
+        "contract_warnings": contract_warnings,
     }

@@ -506,12 +506,9 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .export-note-block h4 { font-size: 0.98rem; margin-bottom: 0.45rem; color: var(--accent); }
 .export-note-block .note-text { white-space: pre-wrap; font-size: 0.9rem; line-height: 1.65; }
 .export-note-insert { text-align: center; margin: 0.35rem 0 0.9rem; }
-.export-confirm { background: var(--panel-2); border: 1px solid var(--border); border-radius: 0.45rem; padding: 0.7rem 0.85rem; font-size: 0.88rem; margin-bottom: 0.9rem; }
-.export-confirm .stat-grid { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; margin-top: 0.4rem; }
-.export-confirm .stat-grid .k { color: var(--text-muted); }
 /* 匯出的單頁 HTML 自帶列印樣式；此處讓平台內預覽列印時也維持乾淨版面。 */
 @media print {
-  #topbar, #nav-panel, #ai-panel, .export-toolbar, .export-confirm { display: none !important; }
+  #topbar, #nav-panel, #ai-panel, .export-toolbar { display: none !important; }
   #layout, body { display: block; height: auto; overflow: visible; }
   #main-panel { overflow: visible; padding: 0; }
   #export-preview { border: none; padding: 0; }
@@ -3753,19 +3750,18 @@ function fmtElapsed(startedMs) {
 function renderExport() {
   const m = el('main-panel');
   m.innerHTML = '<h2 class="panel-title">匯出報告</h2>'
-    + '<p class="hint" style="padding:0 0 0.7rem">預覽整份報告 → 開編輯模式修改 → 確認無誤 → 匯出單頁 HTML（可用瀏覽器列印成 PDF）。</p>'
+    + '<p class="hint" style="padding:0 0 0.7rem">預覽整份報告 → 開編輯模式修改 → 單頁 HTML 預覽（新分頁過目，分頁內可下載或列印成 PDF）。</p>'
     + '<div class="export-toolbar">'
     + '<label class="switch"><input type="checkbox" id="export-edit-toggle" onchange="toggleExportEditMode()"> 編輯模式</label>'
     + '<select id="export-version-select" class="ppt-layout-select" onchange="loadExportPreview(this.value)"></select>'
     + '<button class="btn btn-outline" id="btn-reload-preview" onclick="loadExportPreview(exportPreview.version)">重新載入預覽</button>'
     + '<button class="btn btn-outline" id="btn-export" onclick="triggerExport()">重新產製報表資料</button>'
     + '<span style="flex:1"></span>'
-    + '<button class="btn btn-outline" id="btn-export-html" onclick="reviewExportOutput()">匯出單頁 HTML</button>'
+    + '<button class="btn btn-outline" id="btn-export-html" onclick="reviewExportOutput()">單頁 HTML 預覽</button>'
     + '<button class="btn btn-primary" id="btn-export-ppt" onclick="requestExportPpt()">產生 PPT</button>'
     + '</div>'
     + '<div id="export-job"></div>'
     + '<div id="export-ppt-result"></div>'
-    + '<div id="export-confirm"></div>'
     + '<div id="export-preview"><div class="hint">載入報告內容中…</div></div>';
   loadExportPreview();
   loadExportVersionOptions();
@@ -4584,54 +4580,60 @@ function updateExportNote(noteId, field, value) {
   saveExportEdits();
 }
 
-// ── 匯出：確認步驟 → 產出自包含單頁 HTML ──
-// 確認摘要讓使用者過稿（定案：使用者 OK 才匯出）。
-function reviewExportOutput() {
-  const wrap = el('export-confirm');
-  if (!wrap) return;
+// ── 匯出：單頁 HTML 分頁預覽（2026-07-31 使用者定案）──
+// 「不要按下去就下載，而是出現一個分頁讓使用者看，真的要下載再按下載就好。」
+// 舊確認框流程退場（2026-07-31）——預覽分頁本身就是確認。
+async function reviewExportOutput() {
   if (!exportPreview.content) { alert('尚無報告內容可匯出。'); return; }
-  const cover = exportPreview.edits.cover || {};
-  const edits = exportPreview.edits;
-  const editedNarratives = Object.keys(edits.narratives || {}).length;
-  wrap.innerHTML = '<div class="export-confirm">'
-    + '<strong>確認匯出內容</strong>'
-    + '<div class="stat-grid">'
-    + '<span class="k">報告標題</span><span>' + escHtml(cover.title || '專利分析報告') + '</span>'
-    + '<span class="k">報表版本</span><span>' + escHtml(exportPreview.content.version) + '</span>'
-    + '<span class="k">報表卡片</span><span>' + (exportPreview.content.sections || []).length + ' 張</span>'
-    + '<span class="k">人工修改解讀</span><span>' + editedNarratives + ' 段</span>'
-    + '<span class="k">自寫段落</span><span>' + (edits.notes || []).length + ' 段</span>'
-    + '<span class="k">輸出格式</span><span>單頁 HTML（可用瀏覽器列印成 PDF）</span>'
-    + '</div>'
-    + '<div class="export-edit-actions" style="margin-top:0.7rem">'
-    + '<button class="btn btn-primary" id="btn-confirm-export" onclick="confirmExportOutput()">確認並下載</button>'
-    + '<button class="btn btn-outline" onclick="cancelExportOutput()">返回修改</button>'
-    + '</div></div>';
-}
-function cancelExportOutput() {
-  const wrap = el('export-confirm');
-  if (wrap) wrap.innerHTML = '';
-}
-async function confirmExportOutput() {
-  const btn = el('btn-confirm-export');
-  if (btn) { btn.disabled = true; btn.textContent = '產生中…'; }
+  // ⚠ 先同步開分頁再組 HTML：buildExportHtml 要 fetch 圖檔轉 data URI（非同步），
+  //   await 之後才 window.open 已不在使用者手勢內，會被瀏覽器彈窗攔截擋掉。
+  const win = window.open('', '_blank');
+  if (!win) { alert('瀏覽器攔截了新分頁，請允許本站的彈出視窗後再試。'); return; }
+  win.document.write('<p style="font-family:sans-serif;padding:2rem">產生報告預覽中…</p>');
   try {
     const html = await buildExportHtml();
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = '專利分析報告_' + exportPreview.content.version + '.html';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-    cancelExportOutput();
+    win.document.open();
+    win.document.write(injectExportToolbar(html));
+    win.document.close();
   } catch (e) {
-    alert('匯出失敗：' + e.message);
-    if (btn) { btn.disabled = false; btn.textContent = '確認並下載'; }
+    win.document.open();
+    win.document.write('<p style="font-family:sans-serif;padding:2rem">產生失敗：'
+      + escHtml(e.message) + '</p>');
+    win.document.close();
   }
 }
+
+// 在產出的單頁 HTML 內注入自足工具列（下載／列印）。
+// ⚠ 自足＝分頁不依賴母頁：下載是序列化分頁自身 DOM、剔除工具列後存檔，
+//   所以落檔內容與舊「直接下載」完全相同；列印走瀏覽器原生（可存 PDF）。
+function injectExportToolbar(html) {
+  const toolbar = '<style id="export-toolbar-style">'
+    + '#export-toolbar-bar{position:fixed;top:12px;right:12px;z-index:99;display:flex;'
+    + 'gap:8px;background:#fff;border:1px solid #e2e6ec;border-radius:8px;'
+    + 'padding:8px 10px;box-shadow:0 2px 8px rgba(0,0,0,.12);font-family:sans-serif}'
+    + '#export-toolbar-bar button{border:1px solid #0f3460;border-radius:6px;'
+    + 'background:#0f3460;color:#fff;padding:6px 14px;cursor:pointer;font-size:14px}'
+    + '#export-toolbar-bar button.ghost{background:#fff;color:#0f3460}'
+    + '@media print{#export-toolbar-bar{display:none}}'
+    + '</style>'
+    + '<div id="export-toolbar-bar">'
+    + '<button onclick="__exportDownload()">下載 HTML</button>'
+    + '<button class="ghost" onclick="window.print()">列印 / 存 PDF</button>'
+    + '</div>'
+    + '<script id="export-toolbar-script">'
+    + 'function __exportDownload(){'
+    + 'var doc=document.documentElement.cloneNode(true);'
+    + 'var bar=doc.querySelector("#export-toolbar-bar");if(bar)bar.remove();'
+    + 'var sty=doc.querySelector("#export-toolbar-style");if(sty)sty.remove();'
+    + 'var sc=doc.querySelector("#export-toolbar-script");if(sc)sc.remove();'
+    + 'var blob=new Blob(["<!DOCTYPE html>\\n"+doc.outerHTML],{type:"text/html;charset=utf-8"});'
+    + 'var a=document.createElement("a");a.href=URL.createObjectURL(blob);'
+    + 'a.download=document.title+".html";a.click();'
+    + 'setTimeout(function(){URL.revokeObjectURL(a.href)},5000);'
+    + '}<\/script>';
+  return html.replace('</body>', toolbar + '</body>');
+}
+
 
 // 圖檔轉 data URI 內嵌（自包含，離線開得起來）；同一 URL 只抓一次。
 const exportChartCache = new Map();

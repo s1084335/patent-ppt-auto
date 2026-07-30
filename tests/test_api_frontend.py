@@ -799,17 +799,17 @@ class FrontendSkeletonTests(unittest.TestCase):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.html)
 
-    def test_export_has_confirm_step_before_export(self):
-        """匯出前有確認步驟（使用者 OK 才匯出）。"""
+    def test_export_preview_tab_before_download(self):
+        """匯出前先過目（2026-07-31 改分頁預覽：按下開新分頁看完整報告，
+        分頁內才有下載——取代舊確認框摘要）。細部契約見 test_export_html_preview_tab.py。"""
         for needle in (
-            "btn-export-html",       # 匯出鈕
-            "reviewExportOutput",    # 先組確認摘要
-            "export-confirm",        # 確認區掛點
-            "btn-confirm-export",    # 確認匯出
-            "confirmExportOutput",
+            "btn-export-html",       # 預覽鈕
+            "reviewExportOutput",    # 開分頁預覽
+            "injectExportToolbar",   # 分頁內下載／列印工具列
         ):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.html)
+        self.assertNotIn("confirmExportOutput", self.html, "舊確認框流程應已退場")
 
     def test_export_output_is_selfcontained_html_with_print_css(self):
         """匯出單頁 HTML：自包含（圖以 data URI 內嵌）且含 @media print 列印樣式。"""
