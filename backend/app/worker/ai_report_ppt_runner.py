@@ -390,20 +390,26 @@ def _default_build_ppt(*, report_dir, approvals_path, output_dir, theme_path=Non
     ]
     completed = subprocess.run(  # noqa: S603 argv 由固定值組成，非使用者字串
         argv, capture_output=True, text=True, encoding="utf-8")
+    # 實機曾回 stdout=None（通常代表子程序輸出未被捕捉或外層 runtime 行為異常）。
+    # runner 不能讓 None.splitlines()/None.strip() 蓋掉真正問題，先正規化成字串。
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
     if completed.returncode != 0:
+        detail = stderr.strip() or stdout.strip() or "stdout/stderr 皆為空"
         raise ReportPptRunnerError(
             f"build_ppt 子行程失敗（exit={completed.returncode}）："
-            f"{completed.stderr.strip() or completed.stdout.strip()}")
+            f"{detail}")
     # 解析 build_ppt 印出的 pptx 與 manifest 路徑。
     pptx_path = None
     manifest_path = None
-    for line in completed.stdout.splitlines():
+    for line in stdout.splitlines():
         if line.startswith("pptx:"):
             pptx_path = line.split(":", 1)[1].strip()
         if line.startswith("manifest:"):
             manifest_path = line.split(":", 1)[1].strip()
     if not pptx_path:
-        raise ReportPptRunnerError(f"build_ppt 未回報 pptx 路徑；輸出：{completed.stdout[:500]}")
+        output = stdout[:500] if stdout else "stdout 為空"
+        raise ReportPptRunnerError(f"build_ppt 未回報 pptx 路徑；輸出：{output}")
     manifest: dict[str, Any] = {}
     if manifest_path:
         path = Path(manifest_path)

@@ -17,6 +17,7 @@ CLI 一律用可注入的 fake runner，build_ppt 與 upload 也可注入，
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -392,6 +393,47 @@ class CliWhitelistTests(unittest.TestCase):
         self.assertEqual(tools, "Read", "主路徑白名單應恰為 Read")
         for banned in ("WebSearch", "WebFetch", "Write", "Bash", "Glob", "Grep"):
             self.assertNotIn(banned, tools)
+
+
+# ── 預設 build_ppt 子程序路徑 ─────────────────────────────────────
+
+
+class DefaultBuildPptSubprocessTests(unittest.TestCase):
+    """預設 build_ppt 子程序輸出解析要有防呆，不能因 stdout/stderr 為 None 蓋掉真因。"""
+
+    def test_success_without_stdout_reports_missing_pptx_path(self):
+        """實機回報 stdout=None 時，不得噴 AttributeError: splitlines。"""
+        completed = subprocess.CompletedProcess(args=["uv"], returncode=0)
+        completed.stdout = None
+        completed.stderr = None
+        with mock.patch.object(runner_mod.subprocess, "run", return_value=completed):
+            with self.assertRaises(runner_mod.ReportPptRunnerError) as ctx:
+                runner_mod._default_build_ppt(
+                    report_dir=Path("report"),
+                    approvals_path=Path("approvals.json"),
+                    output_dir=Path("output"),
+                )
+        msg = str(ctx.exception)
+        self.assertIn("build_ppt 未回報 pptx 路徑", msg)
+        self.assertIn("stdout 為空", msg)
+        self.assertNotIn("AttributeError", msg)
+        self.assertNotIn("splitlines", msg)
+
+    def test_failure_without_stderr_reports_exit_code(self):
+        """子程序失敗且 stderr/stdout 都是 None 時，也要回可讀 exit code。"""
+        completed = subprocess.CompletedProcess(args=["uv"], returncode=2)
+        completed.stdout = None
+        completed.stderr = None
+        with mock.patch.object(runner_mod.subprocess, "run", return_value=completed):
+            with self.assertRaises(runner_mod.ReportPptRunnerError) as ctx:
+                runner_mod._default_build_ppt(
+                    report_dir=Path("report"),
+                    approvals_path=Path("approvals.json"),
+                    output_dir=Path("output"),
+                )
+        msg = str(ctx.exception)
+        self.assertIn("build_ppt 子行程失敗（exit=2）", msg)
+        self.assertIn("stdout/stderr 皆為空", msg)
 
 
 # ── 全庫也能產 PPT（build_ppt 對全庫不設限） ───────────────────────
