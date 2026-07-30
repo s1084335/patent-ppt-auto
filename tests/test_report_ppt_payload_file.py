@@ -104,29 +104,34 @@ class ReportPptPayloadFileTests(unittest.TestCase):
         self.assertTrue(payload.get("slot_keys"), "缺 slot_keys，CLI 不知要產哪些槽")
 
     def test_payload_uses_runtime_content_rules_file(self):
-        """AI 文案 prompt 必須吃專案 runtime rules 檔，不能只靠 runner 內建舊規則。"""
+        """AI 文案 prompt 必須吃專案 runtime rules 檔，不能只靠 runner 內建舊規則。
+
+        ⚠ 判準是「blob 就是那個檔的內容」，不是逐句比對措辭。原本逐條 assert 十七個
+        句子，等於把規則檔的**文字**凍結在測試裡：規則一改寫測試就紅，改測試又等於
+        把規則抄了第二份——正是這支測試想擋的「第二落點」。故改成檔案同一性比對，
+        另外只釘住不論怎麼改寫都不能消失的護欄語意。
+        """
         captured: dict = {}
         with TemporaryDirectory() as td:
             self._run(Path(td), report_data={"sections": []}, captured=captured)
             payload = read_payload_from_argv(captured["argv"])
         rules_blob = "\n".join(payload.get("rules", []))
-        self.assertIn("cover.title", rules_blob)
-        self.assertIn("內容品質標準", rules_blob)
-        self.assertIn("申請量直接等同競爭力", rules_blob)
-        self.assertIn("有市場資料", rules_blob)
-        self.assertIn("無市場資料", rules_blob)
-        self.assertIn("融會貫通", rules_blob)
-        self.assertIn("各報表解讀重點", rules_blob)
-        self.assertIn("口徑守則", rules_blob)
-        self.assertIn("主題代碼不入文", rules_blob)
-        self.assertIn("缺資料報表不得入文", rules_blob)
-        self.assertIn("不得在 PPT 中提示缺漏", rules_blob)
-        self.assertIn("競爭者是否已進場", rules_blob)
-        self.assertIn("不等於產品核心度", rules_blob)
-        self.assertIn("象限名稱", rules_blob)
-        self.assertIn("象限判讀", rules_blob)
-        self.assertIn("後續檢視點", rules_blob)
-        self.assertIn("不得只寫成「可人工確認」", rules_blob)
+
+        rules_file = (
+            Path(__file__).resolve().parents[1]
+            / "skills" / "patent-report-ppt" / "report_ppt_content_rules.md"
+        )
+        self.assertIn(
+            rules_file.read_text(encoding="utf-8").strip(), rules_blob,
+            "payload 的 rules 不是 runtime 規則檔的內容（runner 又內建了一份？）",
+        )
+        # 護欄語意：合法槽位、品質標準、超譯禁令、缺漏不入 PPT、象限判讀口徑。
+        for guardrail in (
+            "cover.title", "direction.body", "內容品質標準",
+            "產品核心度", "競爭者是否已進場",
+            "不得在 PPT 中提示缺漏", "主題代碼", "象限判讀",
+        ):
+            self.assertIn(guardrail, rules_blob, f"規則檔缺少護欄：{guardrail}")
 
     def test_cli_can_read_the_payload_file(self):
         """白名單必須放行 Read——資料在檔案裡，CLI 讀不到就什麼都做不了。"""
