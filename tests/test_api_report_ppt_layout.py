@@ -128,7 +128,7 @@ class ReportPptLayoutApiTests(unittest.TestCase):
         self.assertEqual(kinds, sorted(set(kinds)))
         used = {p["kind"] for p in body["pages"]}
         self.assertTrue(used.issubset(set(kinds)))
-        self.assertIn("chart_with_narrative", kinds)
+        self.assertIn("section_divider", kinds)
 
     def test_no_report_version_returns_404(self):
         """沒有任何報表版本＝404 帶可行動訊息，不是 500。"""

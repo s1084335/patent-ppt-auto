@@ -20,22 +20,31 @@ SKILL_DIR = Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt"
 BUILDER_PATH = SKILL_DIR / "scripts" / "build_ppt.py"
 THEME_PATH = SKILL_DIR / "theme.json"
 
-# 受檢查的組版函式：所有 renderer 與共用組版輔助。
+# 受檢查的組版函式：全部 renderer、共用頁面區塊與組版輔助（v3 版型庫，2026-07-30）。
 LAYOUT_FUNCTIONS = {
     "_render_cover",
-    "_render_header",
-    "_render_chart_with_narrative",
-    "_render_direction",
+    "_render_section_divider",
+    "_render_chart_with_points",
+    "_render_comparison",
+    "_render_stat_callout",
+    "_render_percentage_bars",
     "_render_table",
-    "_render_table_with_narrative",
-    "_render_narrative_only",
+    "_render_table_with_points",
+    "_render_direction",
+    "_render_header",
+    "_render_footnote",
+    "_render_points_panel",
     "_add_table",
-    "_add_watermark",
+    "_add_text",
+    "_add_number_bold_text",
+    "_add_picture_fitted",
+    "_new_textbox",
 }
 
 # 會把位置引數當座標用的組版輔助（依序 left, top, width, height）。
 POSITIONAL_GEOMETRY_CALLS = {
-    "_add_band": (1, 2, 3, 4),  # (slide, theme, left, top, width, height, color)
+    "_add_band": (2, 3, 4, 5),  # (slide, theme, left, top, width, height, color)
+    "_add_oval": (2, 3, 4, 5),  # (slide, theme, left, top, width, height, color)
 }
 
 GEOMETRY_KEYWORDS = {"left", "top", "width", "height"}
