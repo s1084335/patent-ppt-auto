@@ -4785,6 +4785,26 @@ async function pollExportJob(jobId) {
 // ⚠ 預覽閘門不跳過：必須先有預覽內容（exportPreview.content）＝使用者已預覽，才送。
 // ⚠ workspace_id 放進 params（to_payload 會 exclude 具名 workspace_id）；報表版本以
 //    based_on_version 帶入（runner 據以解析報表版本目錄）。
+// 重抓目前匯出版本的 content 並寫回快取。
+// ⚠ 「要不要先跑 narrative」是會花 8 分鐘與一次 AI 額度的決策，不能建立在
+//   可能過期的快取上（2026-07-31 實機 #149：#148 兩分半鐘前才產完解讀，
+//   匯出頁快取仍停在「解讀還沒產」那一刻，於是又跑了一次整份重產）。
+//   content 端點已於本日修為 ~1 秒，決策前重抓一次成本可忽略。
+// 重抓失敗時回舊快取，不阻斷產 PPT——判斷失準的代價小於整條路斷掉。
+async function refreshExportContent() {
+  const version = exportPreview.version
+    || (exportPreview.content && exportPreview.content.version);
+  if (!version) return exportPreview.content;
+  try {
+    const content = await getJson(
+      API + '/reports/versions/' + encodeURIComponent(version) + '/content');
+    exportPreview.content = content;
+    return content;
+  } catch (e) {
+    return exportPreview.content;
+  }
+}
+
 function exportReportHasNarratives(content) {
   content = content || exportPreview.content;
   const sections = (content && content.sections) || [];
@@ -4848,9 +4868,13 @@ async function requestExportPpt(options) {
   options = options || {};
   const wrap = el('export-ppt-result');
   if (!exportPreview.content) { alert('請先於下方預覽報告內容，再輸出 PPT。'); return; }
-  if (!options.skipNarrativeCheck && !exportReportHasNarratives(exportPreview.content)) {
-    await runNarrativeThenExportPpt();
-    return;
+  if (!options.skipNarrativeCheck) {
+    // 依即時資料判斷，不看快取（見 refreshExportContent 的說明）。
+    const fresh = await refreshExportContent();
+    if (!exportReportHasNarratives(fresh)) {
+      await runNarrativeThenExportPpt();
+      return;
+    }
   }
   const btn = el('btn-export-ppt');
   if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
@@ -5326,10 +5350,26 @@ function renderTaskList(tasks) {
   c.innerHTML = visible.map(taskCardHtml).join('');
 }
 
+// 匯出頁快取已依哪個 narrative job 刷新過（避免輪詢期間重覆重抓）。
+let lastExportNarrativeReloadJobId = 0;
+
 async function maybeRefreshReportNarratives(tasks) {
+  const succeeded = (tasks || [])
+    .filter(t => t.job_type === 'ai:narrative' && t.status === 'succeeded');
+  // 匯出頁快取同步（2026-07-31）：原本只刷報表種類頁的 #report-inline-view，
+  // 匯出頁的 exportPreview.content 永遠停在載入當下——顯示與判斷都會用到舊狀態。
+  if (exportPreview.version) {
+    const mine = succeeded
+      .filter(t => t.payload && t.payload.based_on_version === exportPreview.version)
+      .sort((a, b) => (b.job_id || 0) - (a.job_id || 0));
+    const newest = mine.length ? (mine[0].job_id || 0) : 0;
+    if (newest > lastExportNarrativeReloadJobId) {
+      lastExportNarrativeReloadJobId = newest;   // 每個 job 只刷一次，不隨輪詢重打
+      await refreshExportContent();
+    }
+  }
   if (state.nav !== 'reports' || !reportViewContent || !reportViewContent.version) return;
-  const done = (tasks || [])
-    .filter(t => t.job_type === 'ai:narrative' && t.status === 'succeeded')
+  const done = succeeded
     .filter(t => t.payload && t.payload.based_on_version === reportViewContent.version)
     .sort((a, b) => (b.job_id || 0) - (a.job_id || 0));
   if (!done.length) return;
