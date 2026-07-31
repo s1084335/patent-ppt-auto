@@ -124,8 +124,10 @@ class _DirRunSource:
 class _DbRunSource:
     """存在 app_layer.report_artifacts 的報表版本（worker 容器產、backend 容器讀）。
 
-    每個檔案單獨取回並在本次請求內快取——一次 content 組裝要問多個檔案的存在性
-    （每張圖一次），不快取會對同一版重覆打 DB。
+    ⚠ 存在性檢查與內容下載分離（2026-07-31 實機：content 端點 12 秒的根因）——
+    舊版 `exists()` 直接走 `read_bytes()`，**把 30–100KB 的圖檔完整撈回來只為了
+    回答「在不在」**，content 組裝逐變體問 20+ 次就疊出 12 秒。改為首次需要時
+    一次撈整版檔名集合（只查 filename，一趟往返），exists 查集合。
     """
 
     def __init__(self, version: str, *, has_narratives: bool | None = None):
@@ -133,14 +135,35 @@ class _DbRunSource:
         # list_versions 已用 SQL 聚合算出有無解讀；帶進來讓列表端點不必為一個布林值撈內容。
         self.has_narratives_hint = has_narratives
         self._cache: dict[str, bytes | None] = {}
+        self._filenames: set[str] | None = None
+
+    def _names(self) -> set[str]:
+        if self._filenames is None:
+            self._filenames = _db_list_filenames(self.name)
+        return self._filenames
 
     def read_bytes(self, filename: str):
         if filename not in self._cache:
-            self._cache[filename] = _db_read_artifact(self.name, filename)
+            # 清單已知不存在的檔不再打 DB（一次清單查詢即涵蓋所有缺檔判斷）。
+            if filename not in self._names():
+                self._cache[filename] = None
+            else:
+                self._cache[filename] = _db_read_artifact(self.name, filename)
         return self._cache[filename]
 
     def exists(self, filename: str) -> bool:
-        return self.read_bytes(filename) is not None
+        return filename in self._names()
+
+
+def _db_list_filenames(version: str) -> set:
+    """一次取回某版本的全部檔名（只查 filename，一趟往返）。
+
+    供 _DbRunSource 的存在性檢查用——逐檔 exists 各打一次 DB 是 content 端點
+    12 秒的元兇，這裡一次查完讓 20+ 次 exists 變成集合查找。
+    """
+    from backend.app.db import report_artifact_store
+
+    return report_artifact_store.list_filenames(version)
 
 
 def _db_read_artifact(version: str, filename: str):
@@ -502,16 +525,38 @@ def get_report_ppt_layout(version: str | None = None):
     }
 
 
-@report_versions_router.get("/reports/versions")
-def list_report_versions(limit: int | None = None):
-    """列出所有報表版本（新到舊），供前端「最新展開＋舊版收合」的版本清單。
+def _version_workspace_id(source) -> int | None:
+    """讀版本歸屬的 workspace_id（version_meta.json，~120B 小檔）。
 
-    效率：只讀版本名與 narratives 的存在性，不開任何 report_data.json——版本一多也不會慢
-    （本機端只 stat；DB 端 list_versions 不選 content，has_narratives 由 SQL 聚合直接得出）。
-    卡片數等需要開檔的資訊留給展開時的 content 端點取（lazy）。
-    limit 只截清單長度，total 仍回實際總數供前端「顯示更多」。
+    無 meta（舊版本）或無鍵＝不歸屬任何 workspace → 回 None。
+    """
+    import json as _json
+
+    raw = source.read_bytes("version_meta.json")
+    if raw is None:
+        return None
+    try:
+        value = _json.loads(raw.decode("utf-8")).get("workspace_id")
+        return int(value) if value is not None else None
+    except (ValueError, TypeError, UnicodeDecodeError):
+        return None
+
+
+@report_versions_router.get("/reports/versions")
+def list_report_versions(limit: int | None = None, workspace_id: int | None = None):
+    """列出報表版本（新到舊），供前端「最新展開＋舊版收合」的版本清單。
+
+    workspace_id 給定時只回該 workspace 產的版本（2026-07-31 定案：版本與 PPT
+    依 workspace 區隔）；⚠ 無 version_meta.json 的舊版本不歸屬任何 workspace，
+    帶過濾時一律不顯示——「沒產過就不要顯示」，舊版本重產即可。
+    不帶參數維持回全部（CLI 與既有呼叫相容）。
+
+    效率：過濾只讀 ~120B 的 meta 小檔，不開 report_data.json；未過濾時完全不開檔。
+    limit 只截清單長度，total 回過濾後總數供前端「顯示更多」。
     """
     sources = list(reversed(_list_run_sources()))  # 新到舊
+    if workspace_id is not None:
+        sources = [s for s in sources if _version_workspace_id(s) == workspace_id]
     total = len(sources)
     if limit is not None and limit > 0:
         sources = sources[:limit]

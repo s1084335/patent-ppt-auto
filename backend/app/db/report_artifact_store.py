@@ -55,6 +55,21 @@ def upload_run_dir(run_dir: Path | str) -> int:
     return len(files)
 
 
+def list_filenames(version: str) -> set:
+    """某版本的全部檔名集合（不撈 content）。
+
+    效率契約：存在性判斷一律用本函式的一次查詢，不得為判斷存在而 read_file
+    整個 blob（2026-07-31 content 端點 12 秒的教訓）。
+    """
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT filename FROM app_layer.report_artifacts WHERE version = %s",
+                (version,),
+            )
+            return {row[0] for row in cur.fetchall()}
+
+
 def read_file(version: str, filename: str) -> bytes | None:
     """取回單一產物內容；不存在回 None（呼叫端才能明確回 404，不猜路徑）。
 

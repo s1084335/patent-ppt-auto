@@ -384,6 +384,7 @@ def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict
         "patent_ids": payload.get("patent_ids"),
         "cluster_data": cluster_data,
         "workspace_name": _resolve_workspace_name(payload.get("workspace_id")),
+        "workspace_id": payload.get("workspace_id"),
     }
     if limit is not None:
         # payload.limit＝報表列數上限；引擎內唯一吃 limit 的是排名類報表的 ranking_limit。

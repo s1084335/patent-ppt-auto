@@ -808,6 +808,7 @@ class SelectiveRenderTests(unittest.TestCase):
                     "report_data.json",
                     "index.html",
                     "artifact_manifest.json",
+                    "version_meta.json",
                 ]),
             )
             run_dir = Path(result["output_dir"])

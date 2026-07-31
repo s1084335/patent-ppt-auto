@@ -63,6 +63,9 @@ REPORT_SOURCE_TABLE = "derived_layer.report_patent_base"
 # 否則專利總數會從 60 變成 74（重複計數）。
 # ⚠ 件數總和大於專利總數是刻意的（使用者確認為專利分析慣例），報表需加註。
 APPLICANT_EXPANDED_TABLE = "derived_layer.report_patent_applicant_expanded"
+# ⚠ 2026-07-31 起無報表引用：使用者推翻 07-28「共同申請人各自計數」定案，
+#   分析統計一律只計第一順位（權人與分群家數本來就是 split_part 第一個）。
+#   VIEW 與 migration 保留不刪（架構不動），僅停止引用。
 
 REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
     "application_trend": ReportDefinition(
@@ -125,7 +128,7 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         report_type="aggregate",
         label="Applicant × Jurisdiction Matrix",
         label_zh="公司×國家交叉表",
-        source_table=APPLICANT_EXPANDED_TABLE,  # 0042：共同申請人各自計數
+        source_table=REPORT_SOURCE_TABLE,  # 2026-07-31 推翻 0042：分析只計第一順位申請人（瀏覽顯示仍完整）
         columns=("applicant_display_name", "country_code"),
         group_by=("applicant_display_name", "country_code"),
         default_order=(
@@ -167,7 +170,7 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         report_type="aggregate",
         label="Top Patent Applicants",
         label_zh="主要申請人排名",
-        source_table=APPLICANT_EXPANDED_TABLE,  # 0042：共同申請人各自計數
+        source_table=REPORT_SOURCE_TABLE,  # 2026-07-31 推翻 0042：分析只計第一順位申請人（瀏覽顯示仍完整）
         columns=("applicant_display_name",),
         group_by=("applicant_display_name",),
         aggregates=(
@@ -200,7 +203,7 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         report_type="aggregate",
         label="Applicant Year Matrix",
         label_zh="申請人年度專利分布矩陣",
-        source_table=APPLICANT_EXPANDED_TABLE,  # 0042：共同申請人各自計數
+        source_table=REPORT_SOURCE_TABLE,  # 2026-07-31 推翻 0042：分析只計第一順位申請人（瀏覽顯示仍完整）
         columns=("applicant_display_name", "application_year"),
         group_by=("applicant_display_name", "application_year"),
         default_order=(

@@ -2466,6 +2466,7 @@ def run_chart_trial(
     cluster_data: dict[str, Any] | None = None,
     patent_ids: list[int] | None = None,
     workspace_name: str | None = None,
+    workspace_id: int | None = None,
 ) -> dict[str, Any]:
     """渲染報表圖組（MCP reporting tools 與 CLI 共用的出圖入口）。
 
@@ -2519,6 +2520,8 @@ def run_chart_trial(
         # workspace 顯示名稱（P3-2）：封面主標的資料源（P1-8 cover.title 退場後由此組成）。
         # ⚠ 不給就不落鍵——封面端以「鍵不存在」走通用標題 fallback，落 null 反而混淆。
         **({"workspace_name": workspace_name} if workspace_name else {}),
+        # workspace_id（2026-07-31 版本區隔定案）：name 會撞名，id 才是穩定歸屬鍵。
+        **({"workspace_id": int(workspace_id)} if workspace_id is not None else {}),
         **patent_snapshot_metadata(patent_ids),
     }
 
@@ -2566,7 +2569,19 @@ def run_chart_trial(
         files.extend(variant["file"] for variant in section.get("variants", []))
         files.extend(variant["file"] for variant in section.get("more_variants", []))
         files.extend(link["file"] for link in section.get("links", []))
-    files += ["report_data.json", "index.html"]
+    # 版本歸屬標記檔（2026-07-31）：版本清單依 workspace 過濾時只讀這個 ~120B
+    # 小檔，不開 124KB 的 report_data.json——維持「列表不撈大檔」的效率契約。
+    # 沒 workspace 就不寫歸屬鍵：該版本不歸屬任何 workspace，帶過濾時不顯示。
+    write_json(
+        run_dir / "version_meta.json",
+        {
+            "version": version,
+            "generated_at": generated_at,
+            **({"workspace_id": int(workspace_id)} if workspace_id is not None else {}),
+            **({"workspace_name": workspace_name} if workspace_name else {}),
+        },
+    )
+    files += ["report_data.json", "index.html", "version_meta.json"]
     # De-duplicate while keeping order (a file may appear as both variant and link).
     files = list(dict.fromkeys(files))
     manifest = build_artifact_manifest(

@@ -3533,7 +3533,9 @@ async function loadReportVersions() {
   if (!wrap) return;
   wrap.innerHTML = '<div class="hint">載入報表版本中…</div>';
   try {
-    const data = await getJson(API + '/reports/versions?limit=' + reportVersions.limit);
+    // workspace 區隔（2026-07-31）：只列當前 workspace 產的版本；全庫也有真實 id。
+    const data = await getJson(API + '/reports/versions?limit=' + reportVersions.limit
+      + (state.workspaceId ? '&workspace_id=' + state.workspaceId : ''));
     reportVersions.items = data.versions || [];
     reportVersions.total = data.total || 0;
     reportVersions.loaded = {};
@@ -3772,7 +3774,10 @@ async function loadExportVersionOptions() {
   const sel = el('export-version-select');
   if (!sel) return;
   try {
-    const data = await getJson(API + '/reports/versions?limit=50');
+    // workspace 區隔（2026-07-31）：匯出版本下拉同樣只列當前 workspace 的版本，
+    // 否則會把別的 workspace 的上一版 PPT 端出來。
+    const data = await getJson(API + '/reports/versions?limit=50'
+      + (state.workspaceId ? '&workspace_id=' + state.workspaceId : ''));
     const versions = data.versions || [];
     sel.innerHTML = versions.map(v => '<option value="' + escHtml(v.version) + '">'
       + escHtml(v.version) + (v.is_latest ? '（最新）' : '') + '</option>').join('');
