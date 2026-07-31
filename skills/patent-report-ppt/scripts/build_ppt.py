@@ -291,6 +291,10 @@ ENCODING_NOTES = {
 }
 DEFAULT_ENCODING_NOTE = "條長＝件數｜數值取自報表引擎"
 
+# 警語在要點清單裡的固定 label。`_trim_blocks` 認這個字保護它不被裁切，
+# 故必須是常數而非各處寫死的字面（改字面時裁切保護才不會默默失效）。
+CAVEAT_LABEL = "判讀限制"
+
 # 方法論警語：只寫判讀限制，不寫系統狀態；沒有列在這裡的頁面不硬生警語框。
 CAVEATS = {
     "application_trend": "最近 1–2 個申請年件數偏低多為新案審查中的資料截止效應，非活動衰退。",
@@ -1352,6 +1356,10 @@ def _trim_blocks(
     ⚠ 依序填到滿為止會讓第一條吃光版面、後面的「意涵」「決策提醒」整條消失——
     等於只給讀者半個判讀。故改成**按條數分配行數**：每條至少一行，各自截斷，
     寧可每條短一點，也要讓完整的判讀結構（現況→意涵→後續）都露出來。
+
+    ⚠ `CAVEAT_LABEL` 那條**先扣足行數、不參與均分**（2026-07-31 實機第 3、5 頁）：
+    判讀限制被切成「…多為新案審…」，而那段沒有標點可切，`_truncate_to_width`
+    的「切在標點」邏輯救不了。警語講一半比不講更糟，故讓要點讓路而不是讓警語斷句。
     """
     if not blocks:
         return blocks
@@ -1363,11 +1371,21 @@ def _trim_blocks(
     if sum(needs) <= lines:
         return blocks
 
-    keep = min(len(blocks), lines)
-    share, extra = divmod(lines, keep)
+    protected = {index for index, block in enumerate(blocks) if block[0] == CAVEAT_LABEL}
+    reserved = min(lines, sum(needs[index] for index in protected))
+    others = [index for index in range(len(blocks)) if index not in protected]
+    room = lines - reserved
+    keep = min(len(others), room)
+    share, extra = divmod(room, keep) if keep else (0, 0)
+    ranks = {index: rank for rank, index in enumerate(others[:keep])}
     trimmed: list[tuple[str, str, str, bool]] = []
-    for index, (label, text, color, emphasized) in enumerate(blocks[:keep]):
-        allowance = share + (1 if index < extra else 0)
+    for index, (label, text, color, emphasized) in enumerate(blocks):
+        if index in protected:
+            trimmed.append((label, text, color, emphasized))
+            continue
+        if index not in ranks:
+            continue
+        allowance = share + (1 if ranks[index] < extra else 0)
         budget = allowance * per_line - (len(label) + 1 if label else 0)
         if len(text) > budget:
             text = text[: max(1, budget - 1)].rstrip("，、。；：") + "…"
@@ -1537,7 +1555,7 @@ def _render_chart_hero(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any])
               for p in listed]
     caveat = _caveat_of(spec)
     if caveat:
-        blocks = blocks + [("判讀限制", caveat, "muted", False)]
+        blocks = blocks + [(CAVEAT_LABEL, caveat, "muted", False)]
     _add_band(slide, theme, g["panel_left_in"], g["panel_top_in"],
               g["panel_width_in"], g["panel_height_in"], "panel", rounded=True)
     _add_text(slide, theme, "判讀要點",
@@ -1678,7 +1696,7 @@ def _render_stat_callout(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any
     size = theme.size("point_text_pt")
     blocks = _points_for(spec, ctx)
     if caveat:
-        blocks = blocks + [("判讀限制", caveat, "muted", False)]
+        blocks = blocks + [(CAVEAT_LABEL, caveat, "muted", False)]
     _add_number_bold_text(slide, theme,
                           _trim_blocks(theme, blocks, width_in=text_width, height_in=text_height, size_pt=size),
                           left=g["points_left_in"] + panel["text_inset_left_in"],
@@ -1949,10 +1967,17 @@ def _rows_note(shown: int, rows: list[dict[str, Any]], max_columns: int, visible
 
 
 def _first_rows(spec: PageSpec, ctx: dict[str, Any]) -> list[dict[str, Any]]:
-    """取本頁 rows；帶 row_filter 的頁（依通道拆頁）只留匹配的列。"""
+    """取本頁表格要印的 rows；帶 row_filter 的頁（依通道拆頁）只留匹配的列。
+
+    ⚠ 優先取引擎寫在 `table_display.display_rows` 的**呈現字串**：`top_applicants`
+    這類欄的原始值是物件陣列，直接印會變成 `{'name': '祺驊', ...`（2026-07-31 實機
+    第 9、10、18 頁）。呈現規則的唯一來源在引擎（`chart_runner._humanize_cell`），
+    本檔不自建第二份；舊報表版本沒有這個鍵時退回原始 rows。
+    """
+    display = (ctx["report_data"].get("table_display") or {}).get("display_rows") or {}
     filters = dict(spec.row_filter)
     for key in spec.report_keys:
-        rows = _rows_of(ctx["report_data"], key)
+        rows = display.get(key) or _rows_of(ctx["report_data"], key)
         if filters:
             rows = [r for r in rows
                     if all(str(r.get(col)) == value for col, value in filters.items())]

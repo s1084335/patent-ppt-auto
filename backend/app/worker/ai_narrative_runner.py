@@ -167,6 +167,22 @@ class NarrativeRunnerError(RuntimeError):
     """headless 解讀流程失敗（CLI 不存在、非零退出、產物缺失或版本不符）。"""
 
 
+def _narrative_report_keys(narratives_path: Path) -> set[str]:
+    """讀 narratives.json 現有的 report_key 集合；檔案不存在或壞掉回空集合。
+
+    只用於「重產前後比對」，壞檔等同沒有既有解讀——這一步不該把讀檔問題
+    誤報成資料遺失。
+    """
+    if not narratives_path.exists():
+        return set()
+    try:
+        data = json.loads(narratives_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return set()
+    reports = data.get("reports")
+    return set(reports) if isinstance(reports, dict) else set()
+
+
 @dataclass
 class CliResult:
     """headless CLI 一次執行的結果（供解析與回報）。"""
@@ -454,6 +470,9 @@ def run_narrative(
     resolver = resolve_run_dir or globals()["resolve_run_dir"]
     run_dir = resolver(based_on_version, root=root)
     version = run_dir.name
+    narratives_path = run_dir / "narratives.json"
+    # 重產前的 report_key 快照：限定範圍重產時，範圍外的解讀一張都不許少（見下方檢查）。
+    keys_before = _narrative_report_keys(narratives_path)
     if progress is not None:
         progress("cli_running", 30)
 
@@ -465,7 +484,6 @@ def run_narrative(
     if progress is not None:
         progress("cli_running", 85)
 
-    narratives_path = run_dir / "narratives.json"
     if not narratives_path.exists():
         raise NarrativeRunnerError(f"CLI 正常結束但未產出 {narratives_path}")
     narratives = json.loads(narratives_path.read_text(encoding="utf-8"))
@@ -474,6 +492,20 @@ def run_narrative(
         raise NarrativeRunnerError(
             f"narratives.json based_on_version={got_version!r} 與目錄版本 {version!r} 不符（解讀過期）"
         )
+
+    # ⚠ 限定範圍重產：範圍外的既有解讀一張都不許消失（2026-07-31）。
+    # CLI 若沒讀入既有檔、直接寫出只含本次範圍的檔案，結構完全合法、版本相符、
+    # 契約驗證也會過（那一張本身合規），接著整包 upsert 覆蓋 report_artifacts →
+    # 其餘十幾張解讀消失而 job 顯示 succeeded。與同檔「上傳失敗不可吞」同一條原則：
+    # 靜默資料損失比 failed 更難判斷，故在 refresh_index 與上傳**之前**擋下。
+    if report_keys:
+        dropped = keys_before - _narrative_report_keys(narratives_path) - set(report_keys)
+        if dropped:
+            raise NarrativeRunnerError(
+                f"限定重產 {sorted(report_keys)} 後，範圍外的既有解讀消失："
+                f"{sorted(dropped)}。CLI 未保留原檔內容，已中止上傳以免覆蓋 "
+                "report_artifacts（重跑前請確認 narratives.json 仍在 run_dir）。"
+            )
 
     # 三件套契約驗證（v4）：只警告不 raise——舊格式要能過渡、超限交 PPT 端 fallback；
     # 警告進 summary 讓前端任務進度看得到，違規不得靜默。

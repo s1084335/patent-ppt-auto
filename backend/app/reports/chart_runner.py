@@ -909,6 +909,9 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "applicant_display_name": "申請人",
     "current_assignee_display_name": "專利權人",
     "recent_assignee_display_name": "最新受讓人",
+    # ⚠ 複數那個是 string_agg 的輸出別名，與單數欄不同名；漏登記時表頭會直接印
+    # `recent_assignee_display_names`（2026-07-31 實機 PPT 附錄 2 抓到）。
+    "recent_assignee_display_names": "最新受讓人名單",
     "inventor_count": "發明人數",
     "family_size": "專利家族規模",
     "ipc_main_group_symbol": "IPC 主群組",
@@ -994,6 +997,43 @@ def _humanize_cell(value: Any) -> str:
     if isinstance(value, dict):
         return ", ".join(f"{k}: {v}" for k, v in value.items())
     return str(value)
+
+
+def table_display_spec(reports: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """report_data.json 的 `table_display` 區塊——表格呈現規格的唯一來源。
+
+    三樣東西一起走這個區塊，因為它們是同一件事的三面：欄要不要顯示
+    （`excluded_columns`）、欄頭寫什麼（`column_labels`）、儲存格的值長什麼樣
+    （`display_rows`）。
+
+    ⚠ 為什麼值也要由引擎輸出：`top_applicants` 這類欄的值是物件陣列，呈現規則在
+    `_humanize_cell`。組版 skill 會被 Installer 打包到使用者電腦、不得 import 本模組，
+    只能走檔案傳遞；讓 PPT 端自己再寫一份轉換，就是本 repo 已重演多次的
+    「同一規則兩處落點各自漂移」。
+
+    `display_rows` 只收**含物件值**的報表：純量報表原樣就能印，多存一份只是讓
+    report_data.json 白白膨脹一倍。
+    """
+    display_rows: dict[str, list[dict[str, str]]] = {}
+    for name, report in reports.items():
+        rows = report.get("rows")
+        if not isinstance(rows, list) or not rows:
+            continue
+        if not any(isinstance(value, (list, dict))
+                   for row in rows if isinstance(row, dict)
+                   for value in row.values()):
+            continue
+        display_rows[name] = [
+            {str(column): _humanize_cell(value) for column, value in row.items()}
+            for row in rows
+        ]
+    return {
+        "column_labels": dict(DATA_COLUMN_LABELS),
+        "excluded_columns": {
+            name: list(columns) for name, columns in DATA_TABLE_EXCLUDED_COLUMNS.items()
+        },
+        "display_rows": display_rows,
+    }
 
 
 def _data_table_html(rows: list[dict[str, Any]], report_name: str) -> str:
@@ -2565,17 +2605,11 @@ def run_chart_trial(
             "chart_rows_total": chart_rows_total,
             # sections 持久化：--refresh-index 由此重建 index（解讀回填後重渲染）
             "sections": persistable_sections(ctx.sections),
-            # 表格顯示規格（2026-07-31）：欄名對照與排除欄由引擎寫出，PPT 端讀這份。
-            # ⚠ 為什麼用檔案傳而不是讓 PPT import 本模組：組版 skill 會被 Installer
-            # 打包到使用者電腦、也可能在沒有 backend 依賴的環境跑，import 不可行。
-            # 原本 PPT 自建第二份對照表，結果與報表頁對不上——例如引擎已依使用者
-            # 2026-07-29 定案排掉「龍頭涉入」兩欄，PPT 那份沒跟，簡報仍印出來。
-            "table_display": {
-                "column_labels": dict(DATA_COLUMN_LABELS),
-                "excluded_columns": {
-                    name: list(columns) for name, columns in DATA_TABLE_EXCLUDED_COLUMNS.items()
-                },
-            },
+            # 表格顯示規格（2026-07-31）：欄名對照、排除欄與儲存格呈現字串由引擎寫出，
+            # PPT 端讀這份（理由見 table_display_spec docstring）。
+            # ⚠ 分群兩份走 ctx.cluster_reports、不在 persist_reports 裡，必須一併餵進去
+            # ——`top_applicants` 這類物件值欄正好都在它們身上。
+            "table_display": table_display_spec({**persist_reports, **ctx.cluster_reports}),
             **ctx.meta,
         },
     )
