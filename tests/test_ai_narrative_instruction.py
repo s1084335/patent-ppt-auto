@@ -71,8 +71,12 @@ class NarrativeInstructionTests(unittest.TestCase):
         )
 
     def test_prompt_version_bumped(self):
-        """prompt 契約變更需升版（v2 → v3），供產出追溯。"""
-        self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v3")
+        """prompt 契約變更需升版，供產出追溯。
+
+        ⚠ 這支長期斷言 v3、程式卻早在 v4——2026-07-31 發現時已是既有失敗。
+        改對齊 runner 的單一來源常數，日後升版不必再改兩處。
+        """
+        self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v5")
 
 
 if __name__ == "__main__":

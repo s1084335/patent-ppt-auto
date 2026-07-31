@@ -228,7 +228,14 @@ class CoverWorkspaceTests(unittest.TestCase):
                          "cover.title 應退場——封面標題由 workspace 名確定性組成")
 
     def test_cover_title_from_workspace(self):
-        self.assertEqual(bp._cover_title(_minimal_report_data(), {}), "拉繩訓練機")
+        """2026-07-31 起補上「專利分析」：單一 workspace 名不像簡報標題。"""
+        self.assertEqual(bp._cover_title(_minimal_report_data(), {}), "拉繩訓練機專利分析")
+
+    def test_cover_title_not_doubled(self):
+        """workspace 名本身已含「專利分析」時不得再接一次。"""
+        data = _minimal_report_data()
+        data["parameters"]["workspace_name"] = "拉繩訓練機專利分析"
+        self.assertEqual(bp._cover_title(data, {}), "拉繩訓練機專利分析")
 
     def test_cover_title_fallback(self):
         data = _minimal_report_data()

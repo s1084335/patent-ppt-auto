@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -48,27 +49,49 @@ SKILL_PATH = _resolve_skill_path()
 # v4（2026-07-31）：三件套契約——variant 加 headline／points（PPT 用要點，text 留給
 # 報表頁長文）。動因：實機 PPT 每頁 1 段 400–500 字字牆，⚠ AI 沒有違規，是舊規則
 # 教它寫散文（「標準寫法是：先點出數據現象…」）。
-PROMPT_VERSION = "report_narrative_v4"
+# v5（2026-07-31）：撰寫程序翻轉（points→headline→text）＋三道形狀鎖
+# ＋逐報表版面容量。契約實質改變，故升版供產出追溯。
+PROMPT_VERSION = "report_narrative_v5"
 
 # ── 三件套契約上限（v4；單一來源，skill 條文與驗證都以此為準）──
 # ⚠ 暫定值：理想上由 theme.json v2 的要點框尺寸換算，v2（skill creator 重建中）
 #   落地後對框尺寸驗算；要調整只改這裡。
 NARRATIVE_HEADLINE_MAX = 20   # 一句判讀結論（PPT 標題「{主題}：{headline}」）
-NARRATIVE_POINT_TEXT_MAX = 50  # 每條要點的字數（2026-07-31 40→50：實機「字太少」）
-NARRATIVE_POINTS_MIN = 3
-NARRATIVE_POINTS_MAX = 6  # 2026-07-31 5→6：同上
+# 以下三個是**全域上限**，實際能寫多少以 build_ppt.narrative_capacity() 逐報表算出的
+# 版面容量為準（同一份數字同時餵給 prompt、validator 與裁切）。
+NARRATIVE_POINT_TEXT_MAX = 55  # 每條要點的字數（2026-07-31 50→55，使用者選定）
+NARRATIVE_POINTS_MIN = 4       # 2026-07-31 3→4，使用者選定
+NARRATIVE_POINTS_MAX = 7       # 2026-07-31 6→7，同上
+
+# 要點與長文的數字一致性檢查用（含小數、百分比與千分位）。
+_NUMBER_PATTERN = re.compile(r"\d+(?:[.,]\d+)*%?")
 
 
-def validate_narrative_contract(narratives: dict[str, Any]) -> list[str]:
+def validate_narrative_contract(
+    narratives: dict[str, Any],
+    capacity: dict[str, dict[str, int]] | None = None,
+) -> list[str]:
     """驗三件套契約，回傳警告清單（合規＝空）。
+
+    `capacity`＝各報表要點區的實際版面容量（`build_ppt.narrative_capacity()`）。
+    給了就以它為準，沒給退回全域上限——撰寫（prompt）、驗證（本函式）與裁切
+    （`_trim_blocks`）三處吃同一份數字，才不會出現「說 55 字、版面只放得下 26」。
 
     ⚠ 只警告、不 raise、不截斷：narrative 是報表頁與 PPT 的共同資料來源，
     截了就毀；截斷是 PPT 消費端 fallback 的職責。舊格式（只有 text）要能
     過渡期照跑，故缺 headline／points 也只標記。警告進 summary 的
     contract_warnings，前端任務進度看得到——違規不得靜默。
     """
+    capacity = capacity or {}
     warnings: list[str] = []
     for report_key, report in (narratives.get("reports") or {}).items():
+        limits = capacity.get(report_key) or {}
+        max_points = int(limits.get("max_points") or NARRATIVE_POINTS_MAX)
+        max_chars = int(limits.get("max_chars") or NARRATIVE_POINT_TEXT_MAX)
+        # 版面容量比全域上限嚴時以版面為準；比全域寬時仍守全域（55 字是可讀性上限，
+        # 不是版面上限——一條要點再長就不叫要點了）。
+        max_chars = min(max_chars, NARRATIVE_POINT_TEXT_MAX)
+        min_points = min(NARRATIVE_POINTS_MIN, max_points)
         for variant_key, entry in (report.get("variants") or {}).items():
             where = f"{report_key}:{variant_key}"
             headline = entry.get("headline")
@@ -81,16 +104,35 @@ def validate_narrative_contract(narratives: dict[str, Any]) -> list[str]:
                 warnings.append(
                     f"{where} headline 超限（{len(str(headline))} 字 > "
                     f"{NARRATIVE_HEADLINE_MAX}）")
-            if not (NARRATIVE_POINTS_MIN <= len(points) <= NARRATIVE_POINTS_MAX):
+            if not (min_points <= len(points) <= max_points):
                 warnings.append(
-                    f"{where} points 條數 {len(points)} 不在 "
-                    f"{NARRATIVE_POINTS_MIN}–{NARRATIVE_POINTS_MAX}")
+                    f"{where} points 條數 {len(points)} 不在 {min_points}–{max_points}"
+                    f"（該頁版面容量）")
+            body = str(entry.get("text") or "")
             for i, point in enumerate(points):
                 text = str((point or {}).get("text") or "")
-                if len(text) > NARRATIVE_POINT_TEXT_MAX:
+                if len(text) > max_chars:
                     warnings.append(
-                        f"{where} points[{i}] 超限（{len(text)} 字 > "
-                        f"{NARRATIVE_POINT_TEXT_MAX}）")
+                        f"{where} points[{i}] 超限（{len(text)} 字 > {max_chars}）")
+                # 鎖一·電報體：一條只講一件事。句號代表寫成了句子，逗號超過一個
+                # 代表串接了多個論點——兩者都是「把長文塞進要點」的徵兆。
+                if "。" in text:
+                    warnings.append(f"{where} points[{i}] 含句號（要點寫電報體，不寫句子）")
+                if text.count("，") > 1:
+                    warnings.append(f"{where} points[{i}] 逗號過多（一條只講一個論點）")
+                # 鎖二·數字一致：要點裡的數字必須在長文也出現，否則兩邊會漂移
+                # （網頁報表頁讀 text、PPT 讀 points，讀者會看到互相對不上的數字）。
+                for number in _NUMBER_PATTERN.findall(text):
+                    if body and number not in body:
+                        warnings.append(
+                            f"{where} points[{i}] 的數字 {number} 未出現在長文——兩邊會對不上")
+            # 鎖三·覆蓋：長文由要點逐條展開，段落數不該少於要點數。
+            if body:
+                paragraphs = [p for p in re.split(r"\n\s*\n|\n", body) if p.strip()]
+                if len(paragraphs) < len(points):
+                    warnings.append(
+                        f"{where} 長文 {len(paragraphs)} 段 < 要點 {len(points)} 條"
+                        f"——長文應由要點逐條展開，不得漏掉判讀")
     return warnings
 
 
@@ -197,6 +239,22 @@ def resolve_run_dir(based_on_version: str | None, *, root: Path | None = None) -
     )
 
 
+def load_narrative_capacity() -> dict[str, dict[str, int]]:
+    """各報表要點區的實際版面容量；取不到回空 dict。
+
+    ⚠ 延後匯入 `ai_report_ppt_runner`：那支模組在 import 期就從本模組取東西，
+    寫成模組層 import 會循環。
+    ⚠ 失敗只降級不中斷：容量是「讓 CLI 寫得剛好」的優化，拿不到就退回全域上限，
+    不該讓整個解讀任務產不出來。
+    """
+    try:
+        from .ai_report_ppt_runner import _load_builder
+
+        return _load_builder().narrative_capacity()
+    except Exception:
+        return {}
+
+
 def build_prompt(
     run_dir: Path,
     version: str,
@@ -220,6 +278,22 @@ def build_prompt(
     """
     skill = skill_path if skill_path is not None else SKILL_PATH
     narratives_path = run_dir / "narratives.json"
+    # 逐報表的真實版面容量：大圖頁的右側直欄與無圖表格頁的底部橫幅差很多，
+    # 只給一組全域上限會讓 CLI 盲寫、事後被裁掉。取不到就不寫這段（退回全域上限）。
+    capacity = load_narrative_capacity()
+    capacity_note = ""
+    if capacity:
+        listed = "\n".join(
+            f"   - {key}：{limits['max_points']} 條以內、每條 ≤{limits['max_chars']} 字"
+            for key, limits in sorted(capacity.items())
+        )
+        capacity_note = (
+            "   ⚠ 下列報表的要點區版面容量**小於**上述全域上限，以這裡的為準：\n"
+            f"{listed}\n"
+            "   （未列出的報表用全域上限。超出容量不會被排版成好看的樣子，只會被切掉。）\n"
+            "   ⚠ 容量是**上限不是目標**：沒話講就少寫一條，不要為湊條數或湊字數灌水；\n"
+            "   但也不得敷衍——該報表看得出的判讀不能因為想寫短而省略。\n"
+        )
     scope = ""
     if report_keys:
         listed = "、".join(str(k) for k in report_keys)
@@ -249,11 +323,17 @@ def build_prompt(
         f"4. 輸出唯一檔案：{narratives_path}\n"
         f"   形狀（v3 引擎讀取契約）：based_on_version 必須等於 \"{version}\"；reports 以\n"
         "   report_key→variants→variant_key→\n"
-        "   {headline,points,text,ai_model,prompt_version,generated_at} 兩層結構。\n"
-        f"   headline＝一句判讀結論（≤{NARRATIVE_HEADLINE_MAX} 字）；points＝\n"
-        f"   {NARRATIVE_POINTS_MIN}–{NARRATIVE_POINTS_MAX} 條要點（各含 label／text／\n"
-        f"   emphasis，text ≤{NARRATIVE_POINT_TEXT_MAX} 字）；text＝完整長文解讀。\n"
-        "5. 只准寫 narratives.json 這一個檔案；不得改動目錄內其他檔案、不得執行 shell 指令；\n"
+        "   {points,headline,text,ai_model,prompt_version,generated_at} 兩層結構。\n"
+        "   ⚠ **依此順序逐欄寫，不要跳著寫**——順序就是撰寫程序：\n"
+        f"   points＝{NARRATIVE_POINTS_MIN}–{NARRATIVE_POINTS_MAX} 條電報體要點\n"
+        f"   （各含 label／text／emphasis，text ≤{NARRATIVE_POINT_TEXT_MAX} 字，\n"
+        "   不含句號、逗號至多一個）；\n"
+        f"   headline＝**從上列要點挑最重要一條濃縮**至 ≤{NARRATIVE_HEADLINE_MAX} 字，\n"
+        "   不是另想一句；\n"
+        "   text＝由上列要點**逐條展開**成連貫長文（段落數不少於要點條數，\n"
+        "   要點出現過的數字必須也出現在長文）。\n"
+        + capacity_note
+        + "5. 只准寫 narratives.json 這一個檔案；不得改動目錄內其他檔案、不得執行 shell 指令；\n"
         "   寫完即結束，不輸出多餘說明。"
         + scope
         + extra
@@ -397,7 +477,7 @@ def run_narrative(
 
     # 三件套契約驗證（v4）：只警告不 raise——舊格式要能過渡、超限交 PPT 端 fallback；
     # 警告進 summary 讓前端任務進度看得到，違規不得靜默。
-    contract_warnings = validate_narrative_contract(narratives)
+    contract_warnings = validate_narrative_contract(narratives, load_narrative_capacity())
 
     # 確定性程式重渲染 index（嵌入解讀）；CLI 不碰 index.html。
     refresh = refresh_index(run_dir)

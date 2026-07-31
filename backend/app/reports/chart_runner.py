@@ -2330,11 +2330,26 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     # ⚠ 這個 variant **沒有圖檔**（file 為空字串）：它只是解讀的落點，
     # 不得指向 .svg／.html——指了會在畫面顯示「圖檔待產出」佔位。
     # ⚠ 放在最前面：檢視選單以第一個變體為預設，主題統計表本來就是這張卡的主體。
-    variants.insert(0, {
-        "label": "主題統計表",
-        "file": "",
-        "variant_key": "topic_table",
-    })
+    #
+    # 🔴 2026-07-31：一個 variant 改為**依通道各一個**。
+    # 主題統計表在 PPT 依 source_field 拆成「技術主題分布」「功效主題分布」兩頁，
+    # 但解讀只有一份 → 兩頁印出一模一樣的標題與要點（使用者實機回報）。
+    # 治本在上游：讓解讀本來就分通道產，PPT 兩頁各取各的。
+    # ⚠ 這兩個 variant 一樣**沒有圖檔**（file 為空字串），只是解讀落點。
+    # ⚠ 只有**實際存在兩個通道**時才拆：單通道還硬塞兩個變體，會多出一個永遠空的
+    # 解讀落點（檢視選單也會多一個點不出東西的選項）。這裡的判斷刻意與
+    # build_ppt._split_by_channel 一致——上游怎麼分，下游就怎麼取。
+    channels = [
+        ("wips_independent_claims", "topic_table_tech", "主題統計表（技術）"),
+        ("effect_summary", "topic_table_effect", "主題統計表（功效）"),
+    ]
+    present = [c for c in channels
+               if any(str(r.get("source_field")) == c[0] for r in topic_rows)]
+    if len(present) > 1:
+        for index, (_, variant_key, label) in enumerate(present):
+            variants.insert(index, {"label": label, "file": "", "variant_key": variant_key})
+    else:
+        variants.insert(0, {"label": "主題統計表", "file": "", "variant_key": "topic_table"})
 
     for sf, segment_label, opp_matrix, pain_matrix in segment_matrices:
         # 檔名後綴：多來源時帶 slug（tech/effect），單一來源維持原檔名（相容既有契約）
@@ -2550,6 +2565,17 @@ def run_chart_trial(
             "chart_rows_total": chart_rows_total,
             # sections 持久化：--refresh-index 由此重建 index（解讀回填後重渲染）
             "sections": persistable_sections(ctx.sections),
+            # 表格顯示規格（2026-07-31）：欄名對照與排除欄由引擎寫出，PPT 端讀這份。
+            # ⚠ 為什麼用檔案傳而不是讓 PPT import 本模組：組版 skill 會被 Installer
+            # 打包到使用者電腦、也可能在沒有 backend 依賴的環境跑，import 不可行。
+            # 原本 PPT 自建第二份對照表，結果與報表頁對不上——例如引擎已依使用者
+            # 2026-07-29 定案排掉「龍頭涉入」兩欄，PPT 那份沒跟，簡報仍印出來。
+            "table_display": {
+                "column_labels": dict(DATA_COLUMN_LABELS),
+                "excluded_columns": {
+                    name: list(columns) for name, columns in DATA_TABLE_EXCLUDED_COLUMNS.items()
+                },
+            },
             **ctx.meta,
         },
     )

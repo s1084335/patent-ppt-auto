@@ -30,6 +30,7 @@ import hashlib
 import json
 import math
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -39,8 +40,18 @@ from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
-from pptx.oxml.ns import qn
+from pptx.oxml import parse_xml
+from pptx.oxml.ns import nsdecls, qn
 from pptx.util import Emu, Inches, Pt
+
+# ⚠ 同層模組匯入：本檔有兩種載入方式——直接執行（uv run 本檔）與以檔案路徑載入
+# （backend 的 ai_report_ppt_runner._load_builder 用 spec_from_file_location）。
+# 後者不會把本檔所在目錄放進 sys.path，`from starfield import ...` 會 ImportError。
+_SCRIPT_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
+from starfield import starfield_png  # noqa: E402  （須在 sys.path 補完之後）
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 THEME_PATH = SKILL_ROOT / "theme.json"
@@ -114,8 +125,10 @@ PAGE_LAYOUT: tuple[PageSpec, ...] = (
              report_keys=("application_trend", "publication_trend")),
     PageSpec(page=3, kind="percentage_bars", title="保護地域分布", topic="保護地域分布",
              report_keys=("country_distribution",)),
+    # IPC＋CPC 同頁對照（2026-07-31）：原本只掛 ipc，cpc 落到動態插頁、與 ipc 隔開
+    # 好幾頁——註解寫著「IPC/CPC 維持同頁比較」但實作沒做到，這裡補齊。
     PageSpec(page=4, kind="comparison", title="技術分類布局", topic="技術分類布局",
-             report_keys=("ipc_main_distribution",)),
+             report_keys=("ipc_main_distribution", "cpc_main_distribution")),
     # 主題分布：rows 帶 source_field 兩通道，展開時依通道拆成兩張表格頁（P1-3）。
     PageSpec(page=5, kind="table_with_points", title="技術主題分布", topic="技術主題分布",
              report_keys=("cluster_topic_table",)),
@@ -131,8 +144,53 @@ PAGE_LAYOUT: tuple[PageSpec, ...] = (
              report_keys=("applicant_ranking", "owner_ranking"), is_appendix=True),
 )
 
+# 論證順序（2026-07-31 使用者定案的 17 頁大綱）：範圍 → 時間 → 空間 → 技術 →
+# 競爭 → 機會 → 結論 → 附錄。
+#
+# ⚠ 問題背景：`PAGE_LAYOUT` 原本只固定 8 個 report_key，介面上其餘 7 種報表
+# 全部落入動態插頁，順序由 `_iter_report_entries` 決定＝**引擎輸出什麼順序就什麼
+# 順序**，整批塞在結論前。使用者：「我沒有看到我們的內容大綱怎安排」——論證鏈
+# 只有頭尾編排過，中段是未編排的填充（CPC 與 IPC 隔開、年度矩陣與競爭者佈局分家）。
+#
+# ⚠ 為什麼不是把這 7 張寫成 PAGE_LAYOUT 固定條目：那樣得連 `kind` 一起寫死，
+# 就失去 `_kind_for_report` 依「報表型別＋實際圖檔數」判定版型的能力（同一張報表
+# 有圖沒圖該用的版型不同）。故只編排**位置**，版型仍自動判定；未列在此的報表
+# （日後新增的）照舊自動出頁，排在已知證據之後、結論之前，不會漏。
+EVIDENCE_ORDER: tuple[str, ...] = (
+    "application_trend", "publication_trend", "lifecycle",              # 時間
+    "country_distribution", "applicant_country_distribution",           # 空間
+    "family_country_layout",
+    "ipc_main_distribution", "cpc_main_distribution", "cluster_topic_table",  # 技術
+    "applicant_ranking", "owner_ranking",                               # 競爭
+    "applicant_year_matrix", "owner_year_matrix",
+    "opportunity_quadrant", "pain_point_quadrant",                      # 機會
+)
+
+# 不進 PPT 的報表（2026-07-31 使用者定案）：家族完整性明細屬資料品質稽核，
+# 不是給決策者看的證據；對照 297 期論述與割草機範例，附錄也沒有這張。
+# ⚠ 報表頁仍照常產出，只是不上簡報。
+EXCLUDED_FROM_PPT = frozenset({"family_quality_detail"})
+
+# 截斷時優先切在這些標點之後（見 `_truncate_to_width`）：斷在標點像「話沒說完」，
+# 斷在字中間像「字被砍掉」，後者會讓讀者以為產檔壞了。
+TRUNCATE_BREAK_MARKS = ("，", "、", "；", "：", "。", "）", ",", ";")
+
+# 背景層（漸層底＋星空紋理）的 shape 名稱：版面自檢與 QA 用它排除全出血元素。
+BACKGROUND_SHAPE_NAME = "space-background"
+
+# 向量圖 part 的流水號：`PackURI` 必須唯一，同名會讓後插入的圖覆蓋前一張。
+# 逐頁遞增、順序固定，故同一份報表重跑產出的檔案仍完全一致。
+_VECTOR_INDEX = 0
+
 # 依通道拆頁的報表（P1-3）：rows 的哪個欄位分通道、各通道的顯示名。
 # ⚠ 主題分布不走「多圖拆頁」（它根本沒圖）——是**依列值**拆成兩張表格頁。
+# 通道 → 解讀變體鍵（2026-07-31）：主題統計表拆成技術／功效兩頁後，各取各的解讀。
+# ⚠ 上游 `chart_runner` 必須宣告同名 variant，否則這裡對不到、兩頁又會共用同一段。
+CHANNEL_NARRATIVE_VARIANTS: dict[str, str] = {
+    "wips_independent_claims": "topic_table_tech",
+    "effect_summary": "topic_table_effect",
+}
+
 CHANNEL_SPLIT_REPORTS: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
     "cluster_topic_table": ("source_field", (
         ("wips_independent_claims", "技術主題分布"),
@@ -140,9 +198,18 @@ CHANNEL_SPLIT_REPORTS: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
     )),
 }
 
-# 表格欄位的顯示對照（P1-5）：中文欄名、排除欄、欄值轉譯。
-# ⚠ 既有定案：topic_code 供機制識別不入畫面；source_field 原始欄名／欄值不得
-#   出現在使用者介面（前端由 DATA_TABLE_EXCLUDED_COLUMNS 擋，PPT 這裡自己要擋）。
+# 表格欄位的顯示對照——⚠ **僅作舊報表版本的 fallback**（2026-07-31 起）。
+#
+# 正式來源是引擎寫進 `report_data.json["table_display"]` 的那份（欄名對照＋逐報表
+# 排除欄）。本檔這份留著只為相容：`table_display` 是新加的鍵，先前已產出的報表版本
+# 沒有它，缺了會讓簡報印出原始英文欄名。
+#
+# ⚠ 為什麼曾經對不上：這裡自建一份、引擎另有一份，兩邊各自演進。實測差異包括
+#   `top3_share` 引擎叫「前三大占比(%)」這裡叫「前三大集中度(%)」、
+#   `max_share` 引擎叫「最大一家(%)」這裡叫「最大占比(%)」、
+#   `current_assignee_display_name` 這裡根本沒有（寫成 owner_display_name）→ 印英文；
+#   排除欄更誇張：引擎排 4 欄、這裡只排 1 欄，使用者要求拿掉的「龍頭涉入」還在簡報上。
+# 新增欄位請改引擎那份，不要往這裡加。
 TABLE_COLUMN_LABELS: dict[str, str] = {
     "label": "主題",
     "source_field": "通道",
@@ -247,6 +314,74 @@ NUMBER_PATTERN = re.compile(r"(\d[\d,]*(?:\.\d+)?\s*(?:%|件|家|年|項|個)?)"
 # 再蓋章等於否定定稿流程；不確定性提醒收斂到判讀限制框（該頁需要才出現）。
 
 
+# 一條要點在版面上預估佔幾行（含 label 那截）。用來把「可用行數」換算成「可寫幾條」。
+NARRATIVE_POINT_LINES = 2
+
+
+def _points_area(theme: Theme, kind: str) -> tuple[float, float, int] | None:
+    """該版型放要點的區域：(寬, 高, 欄數)；沒有要點區的版型回 None。"""
+    if kind == "chart_hero":
+        g = theme.geometry["chart_hero"]
+        inset = g["panel_inset_in"]
+        return (g["panel_width_in"] - inset - inset,
+                g["panel_height_in"] - g["panel_text_top_offset_in"] - inset, 1)
+    if kind == "table_with_points":
+        g = theme.geometry["table_with_points"]
+        inset = g["points_band_inset_in"]
+        columns = int(g["points_band_columns"])
+        gap = g["points_band_column_gap_in"]
+        width = (g["points_band_width_in"] - inset - inset - gap * (columns - 1)) / columns
+        return (width,
+                g["points_band_height_in"] - g["points_band_text_top_offset_in"] - inset, columns)
+    if kind == "comparison":
+        g = theme.geometry["comparison"]
+        return (g["column_width_in"] - g["points_inset_right_in"],
+                g["points_height_in"] - g["points_top_offset_in"] - g["points_bottom_pad_in"], 1)
+    # ⚠ `table`（附錄）不在此列：附錄頁**不放要點**（`_render_table` 沒有要點區），
+    # 誤把它算進來會用附錄的幾何覆蓋掉同一張報表在內頁的真實容量。
+    if kind in {"chart_with_points", "percentage_bars", "stat_callout"}:
+        g = theme.geometry["points_panel"]
+        return (g["width_in"] - g["text_inset_right_in"],
+                g["height_in"] - g["text_top_offset_in"] - g["text_bottom_pad_in"], 1)
+    return None
+
+
+def narrative_capacity(theme: Theme | None = None) -> dict[str, dict[str, int]]:
+    """每張報表的要點區實際容量：{report_key: {max_points, max_chars}}。
+
+    ⚠ 為什麼要這個（2026-07-31）：解讀 CLI 原本只拿到一組全域上限（4–7 條 ×55 字），
+    一刀切。但 `chart_hero` 的右側直欄與無圖表格頁的底部橫幅**可用空間差很多**，
+    CLI 盲寫、`_trim_blocks` 事後裁切——截斷就是這樣來的。
+
+    這裡由 `PAGE_LAYOUT`（哪張報表上哪種版型）＋ `theme.json` 幾何（那種版型的
+    要點區多大）算出真實容量，**不新增任何常數**。撰寫（prompt）、驗證（validator）
+    與裁切（_trim_blocks）三處因此吃同一份數字，不會再出現「說 55 字、實際只放得下
+    40」的錯位。
+    """
+    theme = theme or Theme.load()
+    size = theme.size("point_text_pt")
+    capacity: dict[str, dict[str, int]] = {}
+    for spec in PAGE_LAYOUT:
+        if spec.is_appendix:
+            continue
+        # ⚠ 用**實際渲染時**的版型算，不是宣告的版型：列在 SPLIT_PAIR_REPORTS 的
+        # comparison 頁會被 `_split_pairs_by_policy` 拆成一圖一頁的 chart_hero，
+        # 拿 comparison 的窄長條去算會嚴重低估（實測只算得出 1 條）。
+        kind = spec.kind
+        if kind == "comparison" and any(key in SPLIT_PAIR_REPORTS for key in spec.report_keys):
+            kind = "chart_hero"
+        area = _points_area(theme, kind)
+        if area is None:
+            continue
+        width_in, height_in, columns = area
+        per_line, max_lines = _text_capacity(theme, width_in=width_in, height_in=height_in, size_pt=size)
+        max_points = max(1, (max_lines * columns) // NARRATIVE_POINT_LINES)
+        max_chars = max(1, per_line * NARRATIVE_POINT_LINES)
+        for key in spec.report_keys:
+            capacity[key] = {"max_points": max_points, "max_chars": max_chars}
+    return capacity
+
+
 def all_slot_keys() -> list[str]:
     """回傳 PPT 階段 AI 需要產的全部文案槽（唯一來源＝PAGE_LAYOUT）。
 
@@ -271,6 +406,10 @@ class Theme:
     geometry: dict[str, Any]
     slide: dict[str, float]
     qa: dict[str, Any]
+    # v3 深空主題：背景漸層兩色與角度、星空紋理生成參數、圖表轉色與裁切規則。
+    gradient: dict[str, Any]
+    starfield: dict[str, Any]
+    chart_recolor: dict[str, Any]
 
     @classmethod
     def load(cls, path: Path | str = THEME_PATH) -> Theme:
@@ -281,6 +420,9 @@ class Theme:
             geometry=data["geometry"],
             slide=data["slide"],
             qa=data["qa"],
+            gradient=data["gradient"],
+            starfield=data["starfield"],
+            chart_recolor=data["chart_recolor"],
         )
 
     def rgb(self, name: str) -> RGBColor:
@@ -325,7 +467,13 @@ def _display_width(text: str) -> float:
 
 
 def _truncate_to_width(text: str, width_in: float, size_pt: float) -> str:
-    """把字串截到指定英吋寬度內（超出加「…」），用於表格儲存格避免自動換行撐高列。"""
+    """把字串截到指定英吋寬度內（超出加「…」），用於表格儲存格避免自動換行撐高列。
+
+    ⚠ 截點優先落在標點（2026-07-31）：原本切在剛好超寬的那個字，會產生
+    「全數歸在 A…」這種斷在詞中間的句子。改成先找容量內最後一個標點，
+    切在它之後——讀起來是「一句話沒講完」而不是「字被砍斷」。
+    找不到標點（例如整串是公司名）才退回原本的硬切。
+    """
     budget = width_in / (size_pt / 72.0)
     if _display_width(text) <= budget:
         return text
@@ -336,7 +484,12 @@ def _truncate_to_width(text: str, width_in: float, size_pt: float) -> str:
             break
         used += step
         kept.append(ch)
-    return "".join(kept) + "…"
+    clipped = "".join(kept)
+    cut = max((clipped.rfind(mark) for mark in TRUNCATE_BREAK_MARKS), default=-1)
+    # 太靠前的標點不採用（只留半截等於沒講），門檻取容量的六成。
+    if cut >= len(clipped) * 0.6:
+        clipped = clipped[: cut + 1]
+    return clipped + "…"
 
 
 def _lines_needed(text: str, per_line: int) -> int:
@@ -355,9 +508,12 @@ class ChartIndex:
     （IPC 的 L4/L5、機會矩陣的技術面/功效面）——這正是成對呈現的來源。
     """
 
-    def __init__(self, report_dir: Path, cache_dir: Path, manifest: dict[str, Any] | None = None) -> None:
+    def __init__(self, report_dir: Path, cache_dir: Path, manifest: dict[str, Any] | None = None,
+                 theme: Theme | None = None) -> None:
         self.report_dir = report_dir
         self.cache_dir = cache_dir
+        # theme 供圖表深色轉色與白邊裁切用；None＝維持原樣只轉檔（前端預覽走這條）。
+        self.theme = theme
         self._by_report: dict[str, list[str]] = {}
         self._raster_cache: dict[str, Path | None] = {}
         self.manifest_found = bool(manifest)
@@ -407,18 +563,118 @@ class ChartIndex:
             self._raster_cache[name] = None
             return None
         if source.suffix.lower() == ".svg":
-            resolved = globals()["rasterize_svg"](source, self.cache_dir)
+            resolved = globals()["rasterize_svg"](source, self.cache_dir, self.theme)
         else:
             resolved = source
         self._raster_cache[name] = resolved
         return resolved
 
 
-def rasterize_svg(svg_path: Path, cache_dir: Path) -> Path | None:
-    """SVG → PNG（python-pptx 不吃 SVG）。轉不動時回 None，由呼叫端降級處理。"""
+BACKGROUND_RECT_PATTERN = re.compile(
+    r'<rect[^>]*?fill="(?:white|#fff|#ffffff|#FFF|#FFFFFF)"[^>]*?/>', re.I)
+SVG_SIZE_PATTERN = re.compile(r'<svg[^>]*?width="(\d+(?:\.\d+)?)"[^>]*?height="(\d+(?:\.\d+)?)"', re.I)
+RASTER_DPI = 150
+
+
+def recolor_svg(svg_text: str, recolor: dict[str, Any]) -> str:
+    """把引擎產的淺底圖表 SVG 換成深空配色（PPT 端轉色，不動引擎）。
+
+    ⚠ 為什麼在這裡轉而不是讓引擎產深色：同一份 SVG 也內嵌在**網頁報表頁**
+    （淺底），引擎改深色會讓網頁那邊變成深底深字。使用者 2026-07-31 選定此方案。
+    ⚠ 只換顏色，不動 viewBox、不裁切內容、不拉伸——圖表形式一律照引擎產的樣子
+    （使用者定案：「不能像 NotebookLM 把圖表改形式」）。
+    """
+    if recolor.get("strip_background"):
+        # 整版白底矩形必須先拿掉，否則深色頁上會出現一塊白板。
+        svg_text = BACKGROUND_RECT_PATTERN.sub("", svg_text, count=1)
+    for old, new in (recolor.get("map") or {}).items():
+        svg_text = re.sub(re.escape(f"#{old}"), f"#{new}", svg_text, flags=re.I)
+    return svg_text
+
+
+def _crop_box(png_path: Path, padding: int) -> tuple[int, int, int, int] | None:
+    """圖檔實際內容的邊界（含安全邊）；整張都是空的回 None。
+
+    去掉白邊是使用者 2026-07-31 授權的（「裁切就是邊邊白白的可以切」）——
+    這不是改圖表形式，是不再把死空間當成圖的一部分塞進版面。實測一張趨勢圖
+    左右上下共有 320 px 是空的，切掉後同樣的框內圖表內容線性大 25%。
+    """
+    try:
+        from PIL import Image  # python-pptx 本來就依賴 Pillow，不是新增相依
+    except ImportError:
+        return None
+    with Image.open(png_path) as image:
+        box = image.getbbox()  # RGBA：回傳非透明區域
+        if box is None:
+            return None
+        left, top, right, bottom = box
+        width, height = image.size
+    return (max(0, left - padding), max(0, top - padding),
+            min(width, right + padding), min(height, bottom + padding))
+
+
+def prepare_chart(svg_path: Path, cache_dir: Path, theme: Theme) -> tuple[Path | None, Path | None]:
+    """圖表 SVG → (PNG, 轉色裁切後的 SVG)；轉不動時 PNG 回 None 由呼叫端降級。
+
+    🔴 兩個回傳值必須**同源**：PNG 是後援與預覽用、SVG 供 PowerPoint 顯示向量。
+    若 PNG 用轉色版、SVG 用原始版，會出現「縮圖淺色、放大變深色」的錯位，
+    而且極難察覺（多數人不會放大到觸發 SVG 渲染）。故兩者都由同一份轉色＋
+    同一個裁切框產出。
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    recolor = getattr(theme, "chart_recolor", {}) or {}
+    source = svg_path.read_text(encoding="utf-8")
+    dark = recolor_svg(source, recolor)
+    digest = hashlib.sha256(dark.encode("utf-8")).hexdigest()[:16]
+    png_path = cache_dir / f"{svg_path.stem}_{digest}.png"
+    out_svg = cache_dir / f"{svg_path.stem}_{digest}.svg"
+    if png_path.exists() and out_svg.exists():
+        return png_path, out_svg
+
+    try:
+        import pymupdf  # type: ignore
+    except ImportError:
+        try:
+            import fitz as pymupdf  # type: ignore
+        except ImportError:
+            return None, None
+
+    staged = cache_dir / f"{svg_path.stem}_{digest}_src.svg"
+    staged.write_text(dark, encoding="utf-8")
+    try:
+        doc = pymupdf.open(str(staged))
+        # alpha=True：去掉白底後背景要**透明**才貼得上深色頁，也才裁得出內容邊界。
+        doc[0].get_pixmap(dpi=RASTER_DPI, alpha=True).save(str(png_path))
+        doc.close()
+    except Exception:
+        return None, None
+
+    box = _crop_box(png_path, int(recolor.get("crop_padding_px") or 0))
+    out_svg.write_text(_cropped_svg(dark, png_path, box), encoding="utf-8")
+    if box is not None:
+        try:
+            from PIL import Image
+
+            with Image.open(png_path) as image:
+                image.crop(box).save(png_path)
+        except Exception:
+            pass  # 裁不動就用未裁的，畫面只是留白多一點，不該讓整份簡報失敗
+    return png_path, out_svg
+
+
+def rasterize_svg(svg_path: Path, cache_dir: Path, theme: Theme | None = None) -> Path | None:
+    """SVG → PNG（python-pptx 不吃 SVG）。轉不動時回 None，由呼叫端降級處理。
+
+    ⚠ 保留這個名字與單一回傳值是為了呼叫端（`ChartIndex.resolve`）與既有測試不必改。
+    有 theme 時走 `prepare_chart`（深色轉色＋白邊裁切＋同時產向量版），
+    沒有 theme（例如前端預覽只拿得到 report_data）就只轉檔、不改外觀。
+    """
+    if theme is not None:
+        png_path, _ = prepare_chart(svg_path, cache_dir, theme)
+        return png_path
     cache_dir.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(svg_path.read_bytes()).hexdigest()[:16]
-    png_path = cache_dir / f"{svg_path.stem}_{digest}.png"
+    png_path = cache_dir / f"{svg_path.stem}_{digest}_plain.png"
     if png_path.exists():
         return png_path
     try:
@@ -430,11 +686,41 @@ def rasterize_svg(svg_path: Path, cache_dir: Path) -> Path | None:
             return None
     try:
         doc = pymupdf.open(str(svg_path))
-        doc[0].get_pixmap(dpi=150).save(str(png_path))
+        doc[0].get_pixmap(dpi=RASTER_DPI).save(str(png_path))
         doc.close()
     except Exception:
         return None
     return png_path
+
+
+def _cropped_svg(svg_text: str, png_path: Path, box: tuple[int, int, int, int] | None) -> str:
+    """把裁切框換算回 SVG 使用者座標並改寫 viewBox，讓向量版與 PNG 切在同一處。"""
+    size = SVG_SIZE_PATTERN.search(svg_text)
+    if box is None or size is None:
+        return svg_text
+    try:
+        from PIL import Image
+
+        with Image.open(png_path) as image:
+            png_width = image.size[0]
+    except Exception:
+        return svg_text
+    svg_width = float(size.group(1))
+    svg_height = float(size.group(2))
+    if not png_width or not svg_width:
+        return svg_text
+    scale = png_width / svg_width
+    left, top, right, bottom = (value / scale for value in box)
+    width = max(1.0, right - left)
+    height = max(1.0, bottom - top)
+    header = size.group(0)
+    replaced = re.sub(r'width="[\d.]+"', f'width="{width:.1f}"', header, count=1)
+    replaced = re.sub(r'height="[\d.]+"', f'height="{height:.1f}"', replaced, count=1)
+    replaced = f'{replaced} viewBox="{left:.1f} {top:.1f} {width:.1f} {height:.1f}"'
+    # 原本就有 viewBox 的話先移除，避免同一個標籤出現兩個。
+    svg_text = re.sub(r'\s+viewBox="[^"]*"', "", svg_text, count=1)
+    _ = svg_height
+    return svg_text.replace(header, replaced, 1)
 
 
 # --------------------------------------------------------------------------
@@ -708,7 +994,13 @@ def _add_number_bold_text(
 ) -> None:
     """逐條 bullet；每條由（標籤, 內文, 內文色, 標籤是否強調）構成。
 
-    關鍵數字以粗體切出來，讓決策者掃讀時先看到量級——這是割草機範例的要點框寫法。
+    ⚠ v3 起**全部內文一律粗體**（2026-07-31 使用者定案「文字內容記得加粗體」）：
+    深色底上細字會發灰，投影時尤其糊。
+
+    但這樣一來「用粗體切出關鍵數字」的原設計就失效了——全部都粗，數字不再突出。
+    故改以**顏色**承擔區分：數字改用 accent 青，非數字用原內文色。粗體管可讀性、
+    顏色管重點，兩件事分開，不再互相搶同一個視覺通道。
+    ⚠ 強調條（emphasis）的數字維持 alert 色不轉青，否則整條的警示語氣會被打斷。
     """
     _, frame = _new_textbox(slide, left=left, top=top, width=width, height=height)
     for index, (label, text, color, emphasized) in enumerate(blocks):
@@ -716,13 +1008,16 @@ def _add_number_bold_text(
         if label:
             chip = para.add_run()
             chip.text = f"{label}｜"
-            _set_font(chip, theme, size=size, color="alert" if emphasized else "royal", bold=True)
+            _set_font(chip, theme, size=size, color="alert" if emphasized else "accent", bold=True)
         for piece in NUMBER_PATTERN.split(text):
             if not piece:
                 continue
+            is_number = bool(NUMBER_PATTERN.fullmatch(piece))
             run = para.add_run()
             run.text = piece
-            _set_font(run, theme, size=size, color=color, bold=bool(NUMBER_PATTERN.fullmatch(piece)))
+            _set_font(run, theme, size=size,
+                      color="accent" if (is_number and color != "alert") else color,
+                      bold=True)
 
 
 def _add_band(slide, theme: Theme, left, top, width, height, color: str, *, rounded: bool = False, line: str = "") -> None:
@@ -743,6 +1038,65 @@ def _add_band(slide, theme: Theme, left, top, width, height, color: str, *, roun
     shape.text_frame.text = ""
 
 
+def _add_background(slide, theme: Theme, cache_dir: Path, *, density: float) -> None:
+    """深空背景層：全出血漸層矩形 ＋ 星空紋理疊圖（v3，2026-07-31）。
+
+    分兩層是有原因的，不是為了好看才拆：
+    - **漸層走 python-pptx 原生 gradFill**：向量，放大／投影／列印都不糊。
+      ⚠ 不可改用 SVG 漸層——pymupdf 不渲染 SVG 漸層，實測整片變純黑。
+    - **星點走圖片疊加**：星點數以百計，若逐顆畫成 shape 會讓檔案膨脹又拖慢
+      PowerPoint 開檔；疊一張透明底 PNG 便宜得多。seed 固定＝每次都一樣。
+
+    density＝紋理密度倍率（封面 1.0、內頁較淡）。紋理產不出來時**略過該層**
+    而不是中斷組版：少一層星點只是樸素些，整份簡報產不出來才是嚴重的。
+    """
+    g = theme.geometry["background"]
+    shape = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE,
+        Inches(g["left_in"]), Inches(g["top_in"]),
+        Inches(theme.slide["width_in"]), Inches(theme.slide["height_in"]),
+    )
+    shape.line.fill.background()
+    shape.shadow.inherit = False
+    shape.text_frame.text = ""
+
+    # 先讓 python-pptx 建出 gradFill 骨架，再把 stop 換成 theme 指定的兩色。
+    # 直接改 XML 是因為 python-pptx 預設會塞多個 stop，逐一設色反而更繞。
+    cfg = theme.gradient
+    shape.fill.gradient()
+    grad = shape._element.spPr.find(qn("a:gradFill"))
+    stops = grad.find(qn("a:gsLst"))
+    for gs in list(stops):
+        stops.remove(gs)
+    stops.append(parse_xml(
+        f'<a:gs {nsdecls("a")} pos="0"><a:srgbClr val="{cfg["start"]}"/></a:gs>'))
+    stops.append(parse_xml(
+        f'<a:gs {nsdecls("a")} pos="100000"><a:srgbClr val="{cfg["end"]}"/></a:gs>'))
+    # 線性漸層；若骨架給的是放射狀（a:path）就換掉，否則角度設定會無效。
+    path = grad.find(qn("a:path"))
+    if path is not None:
+        grad.remove(path)
+    lin = grad.find(qn("a:lin"))
+    if lin is None:
+        grad.append(parse_xml(
+            f'<a:lin {nsdecls("a")} scaled="0" ang="{int(cfg["angle_ooxml"])}"/>'))
+    else:
+        lin.set("ang", str(int(cfg["angle_ooxml"])))
+        lin.set("scaled", "0")
+
+    shape.name = BACKGROUND_SHAPE_NAME
+    texture = starfield_png(theme.starfield, cache_dir, density=density)
+    if texture is None:
+        return
+    picture = slide.shapes.add_picture(
+        str(texture), Inches(g["left_in"]), Inches(g["top_in"]),
+        width=Inches(theme.slide["width_in"]), height=Inches(theme.slide["height_in"]),
+    )
+    # ⚠ 命名是為了讓版面自檢認得出它：背景是**刻意全出血**的，
+    # 用「所有圖片都要在安全邊界內」去檢查它一定會誤報。
+    picture.name = BACKGROUND_SHAPE_NAME
+
+
 def _add_oval(slide, theme: Theme, left, top, width, height, color: str) -> None:
     """圓點裝飾（封面角落圓格網）。"""
     shape = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(left), Inches(top), Inches(width), Inches(height))
@@ -753,13 +1107,55 @@ def _add_oval(slide, theme: Theme, left, top, width, height, color: str) -> None
     shape.text_frame.text = ""
 
 
+def _attach_svg(picture, svg_path: Path, index: int) -> None:
+    """把向量版掛到已插入的圖片上（OOXML 的 `asvg:svgBlip` 擴充）。
+
+    PowerPoint 2016+ 顯示這份 SVG，舊版／網頁預覽／縮圖服務自動退回 `r:embed`
+    指向的 PNG。⚠ 這不是變通做法——PowerPoint 自己插入 SVG 時產生的就是這個
+    結構（點陣後援＋向量擴充），這裡只是用程式重現它。
+
+    ⚠ `PackURI` 必須唯一：同名會讓後插入的圖覆蓋前一張，整份簡報的圖全變成同一張。
+    """
+    try:
+        from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+        from pptx.opc.package import Part
+        from pptx.opc.packuri import PackURI
+
+        slide_part = picture.part
+        partname = PackURI(f"/ppt/media/chart-vector-{index}.svg")
+        svg_part = Part(partname, "image/svg+xml", slide_part.package, svg_path.read_bytes())
+        rel_id = slide_part.relate_to(svg_part, RT.IMAGE)
+        blip = picture._element.blipFill.find(qn("a:blip"))
+        if blip is None:
+            return
+        blip.append(parse_xml(
+            f'<a:extLst {nsdecls("a", "r")}>'
+            '<a:ext uri="{96DAC541-7B7A-43D3-8B79-37D633B846F1}">'
+            '<asvg:svgBlip xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main" '
+            f'r:embed="{rel_id}"/>'
+            "</a:ext></a:extLst>"
+        ))
+    except Exception:
+        # 掛不上就維持純 PNG：圖會是點陣的（放大略糊），但簡報照樣產得出來。
+        return
+
+
 def _add_picture_fitted(slide, image_path: Path, *, left: float, top: float, width: float, height: float) -> None:
     """等比縮放塞進框內並置中。
 
     ⚠ 舊版只給 `width=` 讓高度自由伸展，遇到高瘦圖就往下溢出 3.5 吋衝出版面。
     這裡先用原生尺寸插入再依框的長寬比縮放，圖再怪也不會出框。
+
+    ⚠ 同名 `.svg` 若存在（`prepare_chart` 產的轉色裁切版）就一併掛成向量：
+    以副檔名推導而不是多傳一個參數，是為了讓每個 renderer 的呼叫點都不必改——
+    兩份檔案本來就由同一次 `prepare_chart` 同時產出、同名同 digest，不會對錯。
     """
     picture = slide.shapes.add_picture(str(image_path), Inches(left), Inches(top))
+    vector = image_path.with_suffix(".svg")
+    if vector.exists():
+        global _VECTOR_INDEX
+        _VECTOR_INDEX += 1
+        _attach_svg(picture, vector, _VECTOR_INDEX)
     box_w, box_h = Inches(width), Inches(height)
     if picture.width <= 0 or picture.height <= 0:
         picture.width, picture.height = box_w, box_h
@@ -832,13 +1228,14 @@ def _render_header(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> 
     _add_text(slide, theme, spec.title,
               left=g["title_left_in"], top=g["title_top_in"],
               width=g["title_width_in"], height=g["title_height_in"],
-              size=theme.size("title_pt"), color="navy", bold=True)
+              # v3：深底主題下 navy 已是面板底色，標題再用它等於隱形（實機轉圖驗到）。
+              size=theme.size("title_pt"), color="ink", bold=True)
     _add_band(slide, theme, g["rule_left_in"], g["rule_top_in"],
               g["rule_width_in"], g["rule_height_in"], "accent")
     _add_text(slide, theme, f"{spec.page:02d}",
               left=g["page_number_left_in"], top=g["page_number_top_in"],
               width=g["page_number_width_in"], height=g["page_number_height_in"],
-              size=theme.size("page_number_pt"), color="royal", bold=True, align=PP_ALIGN.RIGHT)
+              size=theme.size("page_number_pt"), color="accent", bold=True, align=PP_ALIGN.RIGHT)
 
 
 def _render_footnote(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any], extra: str = "") -> None:
@@ -846,8 +1243,10 @@ def _render_footnote(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any], e
     g = theme.geometry["footnote"]
     sources = "、".join(_label_of(ctx["report_data"], key) for key in spec.report_keys) or "本次報表版本"
     period = ctx["period"] or "未標示"
-    # 報表版本納入註腳（可追溯性）；_fit_text 會在過長時縮字，不會截壞。
-    text = f"資料來源：{sources}｜統計期間：{period}｜報表版本 {ctx['version']}"
+    # ⚠ 2026-07-31 使用者定案：頁尾**不印報表版本**（「這種報表版本這種字不要有」）。
+    # 原本印 report_trial_20260731_… 這種內部識別碼，對讀者毫無意義又佔掉頁尾寬度；
+    # 可追溯性由 manifest 保留，不必寫在簡報上。
+    text = f"資料來源：{sources}｜統計期間：{period}"
     if extra:
         text = f"{text}｜{extra}"
     text, _ = _fit_text(theme, text, width_in=g["width_in"], height_in=g["height_in"],
@@ -866,7 +1265,7 @@ def _render_points_panel(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any
     _add_text(slide, theme, "判讀要點",
               left=g["left_in"] + g["header_inset_left_in"], top=g["top_in"] + g["header_top_offset_in"],
               width=g["width_in"] - g["text_inset_right_in"], height=g["header_height_in"],
-              size=theme.size("panel_header_pt"), color="royal", bold=True)
+              size=theme.size("panel_header_pt"), color="accent", bold=True)
 
     text_width = g["width_in"] - g["text_inset_right_in"]
     text_height = panel_height - g["text_top_offset_in"] - g["text_bottom_pad_in"]
@@ -891,6 +1290,53 @@ def _render_points_panel(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any
                   left=c["left_in"] + c["text_inset_left_in"], top=c["top_in"] + c["text_top_offset_in"],
                   width=body_width, height=body_height,
                   size=theme.size("caveat_text_pt"), color="on_dark_soft")
+
+
+def _visible_column_count(rows: list[dict[str, Any]], excluded: set[str]) -> int:
+    """排除欄之後實際可顯示的欄數（截欄註記的分母）。"""
+    if not rows:
+        return 0
+    return len([name for name in rows[0] if str(name) not in excluded])
+
+
+def _render_points_band(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any],
+                        *, top: float | None = None) -> None:
+    """底部要點橫幅：無圖的表格頁專用，讓表格拿到滿版寬度（v3，2026-07-31）。
+
+    ⚠ 橫幅容量比右側直欄小，所以**不是**把右欄內容原樣搬下來就好——
+    該頁能寫幾條、每條幾字由 `narrative_capacity()` 依本區幾何算出後餵給解讀 CLI，
+    上游照容量寫，這裡的 `_trim_blocks` 只當最後保底。
+    """
+    g = theme.geometry["table_with_points"]
+    left = g["points_band_left_in"]
+    top = g["points_band_top_in"] if top is None else top
+    width = g["points_band_width_in"]
+    height = g["points_band_height_in"]
+    inset = g["points_band_inset_in"]
+    _add_band(slide, theme, left, top, width, height, "panel", rounded=True)
+    _add_text(slide, theme, "判讀要點",
+              left=left + inset, top=top + g["points_band_header_top_offset_in"],
+              width=width - inset - inset, height=g["points_band_header_height_in"],
+              size=theme.size("panel_header_pt"), color="accent", bold=True)
+
+    columns = int(g["points_band_columns"])
+    gap = g["points_band_column_gap_in"]
+    col_width = (width - inset - inset - gap * (columns - 1)) / columns
+    text_top = top + g["points_band_text_top_offset_in"]
+    text_height = height - g["points_band_text_top_offset_in"] - inset
+    size = theme.size("point_text_pt")
+    # 容量以「單欄高度 × 欄數」估：橫幅是多欄排版，只用單欄高度會低估一半。
+    blocks = _trim_blocks(theme, _points_for(spec, ctx),
+                          width_in=col_width, height_in=text_height * columns, size_pt=size)
+    # 前半進左欄、後半進右欄——依序讀比蛇行（左右交錯）自然。
+    per_column = max(1, math.ceil(len(blocks) / columns)) if blocks else 1
+    for index in range(columns):
+        chunk = blocks[index * per_column:(index + 1) * per_column]
+        if not chunk:
+            continue
+        _add_number_bold_text(slide, theme, chunk,
+                              left=left + inset + index * (col_width + gap), top=text_top,
+                              width=col_width, height=text_height, size=size)
 
 
 def _trim_blocks(
@@ -933,10 +1379,12 @@ def _trim_blocks(
 # 版型 renderer
 # --------------------------------------------------------------------------
 def _render_cover(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
-    """封面：主標＋統計期間副標＋統計卡＋分析框架條＋幾何裝飾（淺底深字）。"""
+    """封面：主標＋統計期間副標＋統計卡＋分析框架條＋幾何裝飾（深底亮字）。
+
+    ⚠ v3 起**不再自己畫整頁底色**：底色由 `_add_background` 的漸層＋星空負責，
+    這裡若再鋪一張不透明矩形會把背景整個蓋掉（v2 是淺底主題才需要）。
+    """
     g = theme.geometry["cover"]
-    _add_band(slide, theme, g["background_left_in"], g["background_top_in"],
-              theme.slide["width_in"], theme.slide["height_in"], "paper")
     _add_band(slide, theme, g["accent_block_left_in"], g["accent_block_top_in"],
               g["accent_block_width_in"], g["accent_block_height_in"], "royal")
 
@@ -963,7 +1411,7 @@ def _render_cover(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> N
     _add_text(slide, theme, "專利情報整合分析",
               left=g["eyebrow_left_in"], top=g["eyebrow_top_in"],
               width=g["eyebrow_width_in"], height=g["eyebrow_height_in"],
-              size=theme.size("cover_subtitle_pt"), color="royal", bold=True)
+              size=theme.size("cover_subtitle_pt"), color="accent", bold=True)
 
     title = _cover_title(ctx["report_data"], ctx["slots"])
     title, _ = _fit_text(theme, title, width_in=g["title_width_in"], height_in=g["title_height_in"],
@@ -971,12 +1419,14 @@ def _render_cover(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> N
     _add_text(slide, theme, title,
               left=g["title_left_in"], top=g["title_top_in"],
               width=g["title_width_in"], height=g["title_height_in"],
-              size=theme.size("cover_title_pt"), color="navy", bold=True)
+              size=theme.size("cover_title_pt"), color="ink", bold=True)
     _add_band(slide, theme, g["rule_left_in"], g["rule_top_in"], g["rule_width_in"], g["rule_height_in"], "accent")
 
     period = ctx["period"]
+    # ⚠ 2026-07-31 使用者定案：封面也不印報表版本（內部識別碼對讀者無意義）。
+    #    可追溯性由 manifest 保留；頁尾同步移除，見 _render_footnote。
     _add_text(slide, theme,
-              f"統計期間 {period}　｜　報表版本 {ctx['version']}" if period else f"報表版本 {ctx['version']}",
+              f"統計期間 {period}" if period else "",
               left=g["period_left_in"], top=g["period_top_in"],
               width=g["period_width_in"], height=g["period_height_in"],
               size=theme.size("cover_subtitle_pt"), color="muted")
@@ -996,7 +1446,8 @@ def _render_cover(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> N
         _add_text(slide, theme, value,
                   left=left, top=g["stat_value_top_in"],
                   width=g["stat_width_in"], height=g["stat_value_height_in"],
-                  size=value_size, color="navy", bold=True, align=PP_ALIGN.CENTER)
+                  # v3：卡片底色就是 navy，數值再用 navy 等於隱形（實機轉圖驗到）。
+                  size=value_size, color="on_dark", bold=True, align=PP_ALIGN.CENTER)
         _add_text(slide, theme, unit,
                   left=left, top=g["stat_unit_top_in"],
                   width=g["stat_width_in"], height=g["stat_unit_height_in"],
@@ -1019,10 +1470,13 @@ def _render_cover(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> N
 
 
 def _render_section_divider(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
-    """章節隔頁：深色塊大字，只做段落分隔。"""
+    """章節隔頁：深色塊大字，只做段落分隔。
+
+    ⚠ v3 起不再自畫整頁底色（同 `_render_cover` 的理由：會蓋掉漸層與星空）。
+    ⚠ 目前大綱不使用本版型——使用者定案「不加章節號、不做章節隔頁」，
+    論證鏈靠頁序本身表達。保留 renderer 是因為 layout_overrides 仍可指定它。
+    """
     g = theme.geometry["section_divider"]
-    _add_band(slide, theme, g["background_left_in"], g["background_top_in"],
-              theme.slide["width_in"], theme.slide["height_in"], "navy")
     _add_band(slide, theme, g["accent_left_in"], g["accent_top_in"],
               g["accent_width_in"], g["accent_height_in"], "accent")
     _add_text(slide, theme, spec.title,
@@ -1091,7 +1545,7 @@ def _render_chart_hero(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any])
               top=g["panel_top_in"] + g["panel_header_top_offset_in"],
               width=g["panel_width_in"] - g["panel_inset_in"] * 2,
               height=g["panel_header_height_in"],
-              size=theme.size("panel_header_pt"), color="royal", bold=True)
+              size=theme.size("panel_header_pt"), color="accent", bold=True)
     text_width = g["panel_width_in"] - g["panel_inset_in"] * 2
     text_height = g["panel_height_in"] - g["panel_text_top_offset_in"] - g["panel_inset_in"]
     size = theme.size("point_text_pt")
@@ -1150,7 +1604,7 @@ def _render_comparison(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any])
         width = g["column_width_in"]
         _add_text(slide, theme, _variant_label(chart_name),
                   left=left, top=g["caption_top_in"], width=width, height=g["caption_height_in"],
-                  size=theme.size("chart_caption_pt"), color="royal", bold=True)
+                  size=theme.size("chart_caption_pt"), color="accent", bold=True)
         _add_text(slide, theme, note,
                   left=left, top=g["encoding_top_in"], width=width, height=g["encoding_height_in"],
                   size=theme.size("encoding_note_pt"), color="muted")
@@ -1218,7 +1672,7 @@ def _render_stat_callout(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any
               left=g["points_left_in"] + panel["header_inset_left_in"],
               top=g["points_top_in"] + panel["header_top_offset_in"],
               width=g["points_width_in"] - panel["text_inset_right_in"], height=panel["header_height_in"],
-              size=theme.size("panel_header_pt"), color="royal", bold=True)
+              size=theme.size("panel_header_pt"), color="accent", bold=True)
     text_width = g["points_width_in"] - panel["text_inset_right_in"]
     text_height = g["points_height_in"] - panel["text_top_offset_in"] - panel["text_bottom_pad_in"]
     size = theme.size("point_text_pt")
@@ -1269,7 +1723,7 @@ def _render_percentage_bars(slide, theme: Theme, spec: PageSpec, ctx: dict[str, 
                   fill_width, g["track_height_in"], "royal" if index == 0 else "blue", rounded=True)
         _add_text(slide, theme, f"{value:,} 件　{value / total:.0%}",
                   left=g["value_left_in"], top=top, width=g["value_width_in"], height=g["value_height_in"],
-                  size=theme.size("percent_value_pt"), color="navy", bold=True)
+                  size=theme.size("percent_value_pt"), color="ink", bold=True)
     _render_points_panel(slide, theme, spec, ctx)
     _render_footnote(slide, theme, spec, ctx)
 
@@ -1279,24 +1733,40 @@ def _render_table(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> N
     _render_header(slide, theme, spec, ctx)
     g = theme.geometry["table"]
     rows = _first_rows(spec, ctx)
+    labels, excluded = _table_display(ctx, spec)
     shown = _add_table(slide, theme, rows,
                        left=g["left_in"], top=g["top_in"], width=g["width_in"], height=g["height_in"],
                        row_height=g["row_height_in"], max_columns=int(g["max_columns"]),
-                       cell_margin_in=g["cell_margin_in"], cell_inset_in=g["cell_inset_in"])
-    _render_footnote(slide, theme, spec, ctx, _rows_note(shown, rows, int(g["max_columns"])))
+                       cell_margin_in=g["cell_margin_in"], cell_inset_in=g["cell_inset_in"],
+                       labels=labels, excluded=excluded)
+    _render_footnote(slide, theme, spec, ctx,
+                     _rows_note(shown, rows, int(g["max_columns"]), _visible_column_count(rows, excluded)))
 
 
 def _render_table_with_points(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
-    """表格＋右側要點：明細與判讀同頁。"""
+    """表格＋底部要點橫幅：明細與判讀同頁（v3 改滿版，2026-07-31）。
+
+    ⚠ 這類頁面（技術／功效主題分布）**沒有圖**，右欄本來就不必讓給要點卡。
+    量測：舊版 8.05 in ÷ 4 欄＝每欄 2.01 in；改滿版 12.13 in ÷ 6 欄＝每欄 2.02 in
+    ——欄寬幾乎不變，欄位卻從 4 欄變 6 欄全到齊。要點改放底部橫幅雙欄。
+    """
     _render_header(slide, theme, spec, ctx)
     g = theme.geometry["table_with_points"]
     rows = _first_rows(spec, ctx)
+    labels, excluded = _table_display(ctx, spec)
     shown = _add_table(slide, theme, rows,
                        left=g["left_in"], top=g["top_in"], width=g["width_in"], height=g["height_in"],
                        row_height=g["row_height_in"], max_columns=int(g["max_columns"]),
-                       cell_margin_in=g["cell_margin_in"], cell_inset_in=g["cell_inset_in"])
-    _render_points_panel(slide, theme, spec, ctx)
-    _render_footnote(slide, theme, spec, ctx, _rows_note(shown, rows, int(g["max_columns"])))
+                       cell_margin_in=g["cell_margin_in"], cell_inset_in=g["cell_inset_in"],
+                       labels=labels, excluded=excluded)
+    # 要點橫幅跟著表格底緣走：表高會依實際列數收縮（主題常只有 5–8 列），
+    # 橫幅若固定在「排滿 10 列」的位置，中間會空一大塊（實機轉圖驗到）。
+    # ⚠ 只往上收、不往下移：theme 的 top 是**最低**位置，超過就會壓到頁尾。
+    table_bottom = g["top_in"] + min(g["height_in"], (shown + 1) * g["row_height_in"])
+    _render_points_band(slide, theme, spec, ctx,
+                        top=min(g["points_band_top_in"], table_bottom + theme.geometry["column_gap_in"]))
+    _render_footnote(slide, theme, spec, ctx,
+                     _rows_note(shown, rows, int(g["max_columns"]), _visible_column_count(rows, excluded)))
 
 
 def _parse_direction_body(body: str) -> dict[str, Any] | None:
@@ -1355,7 +1825,7 @@ def _render_direction_flow(slide, theme: Theme, spec: PageSpec, ctx: dict[str, A
             _add_text(slide, theme, "→",
                       left=left + g["step_width_in"] + g["arrow_left_offset_in"],
                       top=g["arrow_top_in"], width=g["arrow_width_in"], height=g["arrow_height_in"],
-                      size=theme.size("flow_arrow_pt"), color="royal", bold=True,
+                      size=theme.size("flow_arrow_pt"), color="accent", bold=True,
                       align=PP_ALIGN.CENTER)
 
     topics = parsed["topics"][: int(g["topic_max"])]
@@ -1368,7 +1838,7 @@ def _render_direction_flow(slide, theme: Theme, spec: PageSpec, ctx: dict[str, A
         _add_text(slide, theme, str(topic.get("name") or ""),
                   left=left + g["topic_inset_in"], top=g["topic_top_in"] + g["topic_name_top_offset_in"],
                   width=g["topic_width_in"] - g["topic_inset_in"] * 2, height=g["topic_name_height_in"],
-                  size=theme.size("topic_name_pt"), color="navy", bold=True)
+                  size=theme.size("topic_name_pt"), color="ink", bold=True)
         detail_lines = []
         if topic.get("basis"):
             detail_lines.append(f"依據｜{topic['basis']}")
@@ -1417,7 +1887,7 @@ def _render_direction(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) 
               left=g["body_left_in"] + g["body_header_inset_left_in"],
               top=g["body_top_in"] + g["body_header_top_offset_in"],
               width=g["body_width_in"] - g["body_text_inset_right_in"], height=g["body_header_height_in"],
-              size=theme.size("panel_header_pt"), color="royal", bold=True)
+              size=theme.size("panel_header_pt"), color="accent", bold=True)
     text_width = g["body_width_in"] - g["body_text_inset_right_in"]
     text_height = g["body_height_in"] - g["body_text_top_offset_in"] - g["body_text_bottom_pad_in"]
     size = theme.size("body_pt")
@@ -1449,13 +1919,32 @@ def _render_direction(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) 
     _render_footnote(slide, theme, spec, ctx)
 
 
-def _rows_note(shown: int, rows: list[dict[str, Any]], max_columns: int) -> str:
-    """表格截列／截欄時據實說明，避免讀者把前 N 筆當成全部。"""
+def _table_display(ctx: dict[str, Any], spec: PageSpec) -> tuple[dict[str, str], set[str]]:
+    """本頁表格的欄名對照與排除欄：引擎那份優先，缺鍵才用本檔 fallback。
+
+    排除欄是**逐報表**的（同一欄在 A 報表要藏、在 B 報表要顯示），故依本頁掛的
+    report_keys 逐一併集。
+    """
+    display = ctx["report_data"].get("table_display") or {}
+    labels = {**TABLE_COLUMN_LABELS, **(display.get("column_labels") or {})}
+    excluded = set(TABLE_EXCLUDED_COLUMNS)
+    per_report = display.get("excluded_columns") or {}
+    for key in spec.report_keys:
+        excluded.update(per_report.get(key) or ())
+    return labels, excluded
+
+
+def _rows_note(shown: int, rows: list[dict[str, Any]], max_columns: int, visible_columns: int) -> str:
+    """表格截列／截欄時據實說明，避免讀者把前 N 筆當成全部。
+
+    ⚠ `visible_columns` 是**排除欄之後**的欄數：拿原始欄數去比會把引擎刻意藏起來
+    的欄（topic_code、龍頭涉入等）算進分母，印出「前 6/10 欄」這種嚇人又不實的註記。
+    """
     notes = []
     if rows and shown < len(rows):
         notes.append(f"顯示前 {shown}/{len(rows)} 筆")
-    if rows and len(rows[0]) > max_columns:
-        notes.append(f"前 {max_columns}/{len(rows[0])} 欄")
+    if visible_columns > max_columns:
+        notes.append(f"前 {max_columns}/{visible_columns} 欄，完整欄位見附錄")
     return "、".join(notes)
 
 
@@ -1485,6 +1974,8 @@ def _add_table(
     max_columns: int,
     cell_margin_in: float,
     cell_inset_in: float,
+    labels: dict[str, str],
+    excluded: set[str],
 ) -> int:
     """把引擎 rows 畫成表格。
 
@@ -1500,13 +1991,16 @@ def _add_table(
                   size=theme.size("table_body_pt"), color="muted", align=PP_ALIGN.CENTER)
         return 0
 
-    # 欄位顯示規則（P1-5）：排除機制欄（topic_code）、中文欄名、欄值轉譯
-    # （source_field 的原始欄值不得入畫面，轉「技術／功效」）。
-    columns = [name for name in rows[0] if str(name) not in TABLE_EXCLUDED_COLUMNS][:max_columns]
+    # 欄位顯示規則：排除欄與中文欄名以引擎那份為準（labels／excluded 由呼叫端備妥），
+    # 欄值轉譯仍在本檔（source_field 的原始欄值不得入畫面，轉「技術／功效」）。
+    columns = [name for name in rows[0] if str(name) not in excluded][:max_columns]
     max_rows = max(1, int(height / row_height) - 1)
     display = rows[:max_rows]
+    # 表高依實際列數收縮：宣告高度是**上限**不是固定值，列少時下半截留白會很難看
+    # （主題分布通常只有 8–12 列，舊版固定 4.86 in 有一半是空的）。
+    used_height = min(height, (len(display) + 1) * row_height)
     table = slide.shapes.add_table(
-        len(display) + 1, len(columns), Inches(left), Inches(top), Inches(width), Inches(height)
+        len(display) + 1, len(columns), Inches(left), Inches(top), Inches(width), Inches(used_height)
     ).table
     for row in table.rows:
         row.height = Inches(row_height)
@@ -1515,9 +2009,10 @@ def _add_table(
     text_width = width / len(columns) - cell_inset_in * 2
     for index, name in enumerate(columns):
         cell = table.cell(0, index)
-        shown = TABLE_COLUMN_LABELS.get(str(name), str(name))
+        shown = labels.get(str(name), str(name))
         cell.text = _truncate_to_width(shown, text_width, theme.size("table_header_pt"))
-        _style_cell(cell, theme, size=theme.size("table_header_pt"), color="on_dark", bold=True,
+        # v3 深空：表頭深藍底＋accent 青字（原白字在深底上與內文分不出層次）。
+        _style_cell(cell, theme, size=theme.size("table_header_pt"), color="accent", bold=True,
                     fill="navy", margin_in=cell_margin_in, inset_in=cell_inset_in)
     for r, row in enumerate(display, start=1):
         for c, name in enumerate(columns):
@@ -1530,7 +2025,8 @@ def _add_table(
             cell.text = "" if value is None else _truncate_to_width(
                 str(value), text_width, theme.size("table_body_pt")
             )
-            _style_cell(cell, theme, size=theme.size("table_body_pt"), color="ink",
+            # bold=True：v3 使用者定案「文字內容加粗體」，深底細字會發灰。
+            _style_cell(cell, theme, size=theme.size("table_body_pt"), color="ink", bold=True,
                         fill="paper" if r % 2 else "panel_alt",
                         margin_in=cell_margin_in, inset_in=cell_inset_in)
     return len(display)
@@ -1600,6 +2096,18 @@ def _page_should_render(report_data: dict[str, Any], spec: PageSpec) -> bool:
     return bool(_actual_report_keys(report_data, spec.report_keys))
 
 
+def _evidence_rank(spec: PageSpec) -> int:
+    """證據頁在論證鏈上的位置；未列名者排在已知證據之後（仍在結論之前）。
+
+    取第一個命中 EVIDENCE_ORDER 的 report_key——成對報表（如申請人／專利權人
+    排名同頁）以先列者定位即可，兩者在論證上本來就相鄰。
+    """
+    for key in spec.report_keys:
+        if key in EVIDENCE_ORDER:
+            return EVIDENCE_ORDER.index(key)
+    return len(EVIDENCE_ORDER)
+
+
 def _expand_page_layout(report_data: dict[str, Any], charts: ChartIndex | None = None) -> list[PageSpec]:
     """選擇驅動出頁：把有資料的報表展開成頁面清單，頁碼重新連號。
 
@@ -1624,7 +2132,9 @@ def _expand_page_layout(report_data: dict[str, Any], charts: ChartIndex | None =
     covered = {key for spec in PAGE_LAYOUT for key in spec.report_keys}
     extra: list[PageSpec] = []
     for report_key, report in _iter_report_entries(report_data):
-        if report_key in covered or not _report_key_has_data(report_data, report_key):
+        if report_key in covered or report_key in EXCLUDED_FROM_PPT:
+            continue
+        if not _report_key_has_data(report_data, report_key):
             continue
         files = _filter_report_charts((report_key,), charts.files_for((report_key,))) if charts else ()
         topic = _label_of(report_data, report_key)
@@ -1637,7 +2147,13 @@ def _expand_page_layout(report_data: dict[str, Any], charts: ChartIndex | None =
     #   必須排在結論（研發方向建議）之前——結論永遠壓軸（P1-6）。
     anchor = next((i for i, spec in enumerate(base)
                    if spec.is_appendix or spec.kind == "direction"), len(base))
-    merged = base[:anchor] + extra + base[anchor:]
+    # 證據段依 EVIDENCE_ORDER 重排（2026-07-31）：固定條目與動態插頁**混在一起**
+    # 排序，而不是「固定的在前、動態的在後」——否則 CPC 仍會離 IPC 很遠。
+    # sort 是穩定的，故未列名的報表維持引擎輸出的相對順序，只是整批落在最後。
+    head = [spec for spec in base[:anchor] if spec.kind == "cover"]
+    evidence = [spec for spec in base[:anchor] if spec.kind != "cover"] + extra
+    evidence.sort(key=_evidence_rank)
+    merged = head + evidence + base[anchor:]
     merged = _split_pairs_by_policy(merged, charts)
     return [_spec_with(spec, page=index) for index, spec in enumerate(merged, start=1)]
 
@@ -1744,7 +2260,9 @@ def _cover_title(report_data: dict[str, Any], slots: dict[str, str]) -> str:
     for key in ("workspace_name", "workspace_display_name", "workspace"):
         value = str(params.get(key) or "").strip()
         if value:
-            return value
+            # 2026-07-31 使用者定案：「封面頁主題要顯示成 workspace 名稱配上專利分析」
+            # ——單獨一個「滑雪機」不像簡報標題，補上主題詞才成句。
+            return value if value.endswith("專利分析") else f"{value}專利分析"
     return "專利情報整合分析"
 
 
@@ -1934,17 +2452,39 @@ def _narrative_candidates(spec: PageSpec) -> tuple[str, ...]:
     卻叫 `opportunity_quadrant`——沒有 alias 這頁永遠 narrative_missing
     （2026-07-31 實機 P10）。
     """
-    keys: list[str] = list(spec.report_keys)
+    # 🔴 順序＝精確度，不是「先 report_key 再圖檔」（2026-07-31 修）。
+    # 症狀：機會評估拆成技術／功效兩頁後，兩頁印出同一段解讀（圖是功效、文字是技術）。
+    # 根因：拆頁時 report_keys 被收窄成同一個 `opportunity_quadrant`，兩頁完全相同；
+    # 而 alias 依 report_key 層先展開，它同時對到 tech 與 effect 兩個變體，
+    # 於是兩頁都命中先列的 tech。圖檔主檔名（`opportunity_quadrant_effect`）才是
+    # 能區分兩頁的唯一線索，必須先查。
+    # 通道拆頁（主題統計表）最精確：該頁只呈現一個通道的列，解讀也該只取那個通道。
+    # ⚠ 這頁沒有圖檔，所以圖檔主檔名那條線索不存在，只能靠 row_filter 認。
+    channel: list[str] = []
+    for column, value in spec.row_filter:
+        variant = CHANNEL_NARRATIVE_VARIANTS.get(str(value))
+        if not variant:
+            continue
+        for key in spec.report_keys:
+            candidate = f"{key}:{variant}"
+            if candidate not in channel:
+                channel.append(candidate)
+
+    specific: list[str] = []
     for name in spec.charts:
         stem = Path(name).stem
-        if stem not in keys:
-            keys.append(stem)
+        if stem not in specific:
+            specific.append(stem)
         for suffix in CHART_ORDER_HINTS:
             if stem.endswith(suffix):
                 base = stem[: -len(suffix)]
-                if base not in keys:
-                    keys.append(base)
-    for key in list(keys):
+                if base not in specific:
+                    specific.append(base)
+    generic = [key for key in spec.report_keys if key not in specific]
+
+    keys: list[str] = channel + list(specific) + generic
+    # alias 也照同一順序展開：圖檔層 alias 一律排在 report_key 層 alias 之前。
+    for key in specific + generic:
         for alias in NARRATIVE_ALIASES.get(key, ()):
             if alias not in keys:
                 keys.append(alias)
@@ -1975,7 +2515,7 @@ def build_ppt(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     theme = Theme.load(theme_path)
-    charts = ChartIndex(report_dir, output_dir / ".cache", artifact_manifest)
+    charts = ChartIndex(report_dir, output_dir / ".cache", artifact_manifest, theme)
 
     warnings: list[dict[str, Any]] = []
     if not charts.manifest_found:
@@ -2061,8 +2601,13 @@ def build_ppt(
     blank = prs.slide_layouts[6]
 
     pages: list[dict[str, Any]] = []
+    inner_density = float(theme.starfield["inner_page_density"])
     for spec in layout:
-        RENDERERS[spec.kind](prs.slides.add_slide(blank), theme, spec, ctx)
+        slide = prs.slides.add_slide(blank)
+        # 背景先畫＝壓在最底層；封面用滿密度，內頁調淡避免星點被當成圖表資料點。
+        _add_background(slide, theme, charts.cache_dir,
+                        density=1.0 if spec.kind in {"cover", "section_divider"} else inner_density)
+        RENDERERS[spec.kind](slide, theme, spec, ctx)
         page_info: dict[str, Any] = {
             "page": spec.page,
             "kind": spec.kind,

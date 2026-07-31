@@ -447,8 +447,12 @@ def test_images_are_scaled_inside_their_box(built):
     margin = Inches(theme["qa"]["min_margin_in"])
 
     prs = Presentation(built["pptx_path"])
+    # ⚠ 排除背景層（深空主題的星空紋理）：它是**刻意全出血**貼滿整頁的，
+    # 用「圖片必須在安全邊界內」檢查它必定誤報。以 shape 名稱辨識，
+    # 不用「尺寸剛好等於投影片」去猜——那會連帶放行真正溢出到滿版的內容圖。
     pictures = [
-        shape for slide in prs.slides for shape in slide.shapes if shape.shape_type == 13
+        shape for slide in prs.slides for shape in slide.shapes
+        if shape.shape_type == 13 and shape.name != "space-background"
     ]
     assert pictures, "沒有任何圖片被插入"
     for pic in pictures:

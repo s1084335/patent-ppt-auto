@@ -32,15 +32,24 @@ from backend.app.worker import ai_narrative_runner as runner
 SKILL_MD = Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt" / "report-narrative-flow.md"
 
 
-def _entry(headline="布局集中於 A63B", points=None, text="長文"):
+def _entry(headline="布局集中於 A63B", points=None, text=None):
+    """合規樣本。⚠ v5 起長文必須「由要點逐條展開」：段落數不少於要點數、
+    要點裡的數字也要出現在長文——所以 fixture 不能再用一句「長文」帶過。
+    """
     if points is None:
         points = [
-            {"label": "現況", "text": "A63B 47 件，F03G 僅 2 件", "emphasis": True},
+            {"label": "現況", "text": "A63B 47 件、F03G 僅 2 件", "emphasis": True},
             {"label": "意涵", "text": "同一方向反覆布局"},
             {"label": "後續", "text": "以 5 階細分類檢視斷層"},
+            {"label": "現況", "text": "近三年新進者僅 1 家"},
         ]
+    if text is None:
+        text = ("A63B 累計 47 件，F03G 僅 2 件，資源明顯偏向前者。\n"
+                "同一方向反覆布局，顯示技術路線已收斂。\n"
+                "建議以 5 階細分類檢視斷層所在。\n"
+                "近三年新進者僅 1 家，進入門檻偏高。")
     return {"headline": headline, "points": points, "text": text,
-            "ai_model": "m", "prompt_version": "report_narrative_v4",
+            "ai_model": "m", "prompt_version": "report_narrative_v5",
             "generated_at": "2026-07-31T00:00:00"}
 
 
@@ -53,12 +62,12 @@ class ContractConstantsTests(unittest.TestCase):
 
     def test_limits_single_source(self):
         self.assertEqual(runner.NARRATIVE_HEADLINE_MAX, 20)
-        self.assertEqual(runner.NARRATIVE_POINT_TEXT_MAX, 50)
-        self.assertEqual(runner.NARRATIVE_POINTS_MIN, 3)
-        self.assertEqual(runner.NARRATIVE_POINTS_MAX, 6)
+        self.assertEqual(runner.NARRATIVE_POINT_TEXT_MAX, 55)
+        self.assertEqual(runner.NARRATIVE_POINTS_MIN, 4)
+        self.assertEqual(runner.NARRATIVE_POINTS_MAX, 7)
 
     def test_prompt_version_bumped(self):
-        self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v4")
+        self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v5")
 
 
 class SkillRulesTests(unittest.TestCase):
@@ -75,10 +84,10 @@ class SkillRulesTests(unittest.TestCase):
 
     def test_limits_written_in_rules(self):
         """規則要明定數字——沒有數字的「精簡」是無效指令。"""
-        for token in ("20", "50", "3", "6"):
+        for token in ("20", "55", "4", "7"):
             with self.subTest(token=token):
                 self.assertIn(token, self.md)
-        self.assertIn("report_narrative_v4", self.md, "prompt_version 未升版")
+        self.assertIn("report_narrative_v5", self.md, "prompt_version 未升版")
 
     def test_prose_instruction_removed(self):
         """⚠ 舊散文指令必須移除——它與要點契約直接矛盾（AI 會二選一）。"""
@@ -116,17 +125,18 @@ class ValidateContractTests(unittest.TestCase):
         self.assertIn("rk", w[0], "warning 要指出是哪張報表")
 
     def test_points_count_out_of_range(self):
-        for n in (2, 7):
+        """v5 起範圍是 4–7（原 3–6）：2 條太少、8 條太多。"""
+        for n in (2, 8):
             with self.subTest(n=n):
                 pts = [{"label": "l", "text": "t"} for _ in range(n)]
                 w = runner.validate_narrative_contract(_narratives(_entry(points=pts)))
                 self.assertTrue(any("points" in x for x in w), f"{n} 條未被警告")
 
     def test_point_text_too_long(self):
-        pts = [{"label": "l", "text": "字" * 51}] + \
-              [{"label": "l", "text": "ok"} for _ in range(2)]
+        pts = [{"label": "l", "text": "字" * 56}] + \
+              [{"label": "l", "text": "ok"} for _ in range(3)]
         w = runner.validate_narrative_contract(_narratives(_entry(points=pts)))
-        self.assertTrue(any("50" in x for x in w))
+        self.assertTrue(any("55" in x for x in w))
 
     def test_old_format_warns_not_raises(self):
         """⚠ 舊格式（只有 text）：警告但不炸——過渡期舊資料要能跑。"""

@@ -555,12 +555,18 @@ class TopicSegmentTests(unittest.TestCase):
                              "痛點板應已停產")
             self.assertFalse((Path(tmp) / "pain_point_quadrant_effect.svg").exists(),
                              "痛點板應已停產")
-        # ⚠ 2026-07-30：variants[0] 是主題統計表的**解讀掛點**（無圖檔），
-        # 其後才是每來源的機會板。共 1 + 2 = 3 個。
-        # 掛點的存在理由見 test_topic_table_single_render.TopicTableNarrativeTests：
+        # ⚠ 2026-07-30：variants 前段是主題統計表的**解讀掛點**（無圖檔），
+        # 其後才是每來源的機會板。掛點的存在理由見
+        # test_topic_table_single_render.TopicTableNarrativeTests：
         # main.py 把 narrative 掛在 variant 上，沒 variant 就讀不到解讀。
-        self.assertEqual(len(files), 3, "統計表解讀掛點 1 + 每來源機會板 2")
-        self.assertEqual(files[0], "", "第一個應為主題統計表掛點（無圖檔）")
+        #
+        # 🔴 2026-07-31：本測資有技術／功效**兩個通道**，故掛點也是兩個
+        # （topic_table_tech／topic_table_effect）。動因：PPT 依通道把主題統計表
+        # 拆成兩頁，只有一份解讀時兩頁會印出一模一樣的標題與要點。
+        # ⚠ 單通道時仍只產一個掛點（chart_runner 以實際存在的通道判斷），
+        # 由 test_single_source_keeps_filenames_and_single_segment 守住。
+        self.assertEqual(len(files), 4, "統計表解讀掛點 2（雙通道）+ 每來源機會板 2")
+        self.assertEqual(files[:2], ["", ""], "前兩個應為主題統計表掛點（無圖檔）")
         for f in ("opportunity_quadrant_tech.svg", "opportunity_quadrant_effect.svg"):
             self.assertIn(f, files)
         self.assertIn("機會四象限分析——技術主題", tech_opp)

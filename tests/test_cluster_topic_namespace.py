@@ -142,6 +142,21 @@ class MatrixBuildersTests(unittest.TestCase):
 
 
 
+def _load_ppt_builder():
+    """以檔案路徑載入組版 skill（它不是套件，不能直接 import）。"""
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    path = (Path(__file__).resolve().parents[1]
+            / "skills" / "patent-report-ppt" / "scripts" / "build_ppt.py")
+    spec = importlib.util.spec_from_file_location("build_ppt_quadrant_test", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault("build_ppt_quadrant_test", module)
+    spec.loader.exec_module(module)
+    return module
+
+
 class PptQuadrantPageTests(unittest.TestCase):
     """PPT 象限頁要走得到分群版型（2026-07-28 驗收 agent 4c）。
 
@@ -161,20 +176,46 @@ class PptQuadrantPageTests(unittest.TestCase):
     PPT 只有 `cluster_topic_table` 那頁正常——兩邊行為不一致。**
     """
 
-    def test_ppt_sections_falls_back_to_variants(self):
-        """找不到同名 section 時，要退而用 variants 認出分群 section。"""
-        import re
-        from pathlib import Path
+    # ## 2026-07-31 改寫
+    #
+    # 原測試斷言的是**前端 CSS 模擬預覽**裡的 `pptSectionsForPage`。該模擬已於
+    # `fix/remove-ppt-css-simulation` 整批移除（預覽改走真正的 pptx renderer），
+    # 函式不存在，測試恆綠不起來——是留在 repo 裡的死測試，會讓整套永遠紅一支。
+    #
+    # 但它守護的關切仍然成立，只是戰場換了：象限兩頁要各自對到自己的解讀。
+    # 這件事現在由 `build_ppt._narrative_candidates` 的候選順序決定，故改在該層釘住。
 
-        html = (Path(__file__).resolve().parents[1]
-                / "backend/app/static/index.html").read_text(encoding="utf-8")
-        m = re.search(r"function pptSectionsForPage\(content, page\) \{(.*?)\n\}",
-                      html, re.S)
-        self.assertIsNotNone(m, "找不到 pptSectionsForPage")
-        body = m.group(1)
-        self.assertIn("hasClusterVariant", body,
-                      "象限頁的 report_key 在 sections 裡不存在，"
-                      "必須用 variants 認——否則那兩頁永遠走不到分群版型")
+    def _candidates(self, chart: str) -> tuple[str, ...]:
+        bp = _load_ppt_builder()
+        spec = bp.PageSpec(page=1, kind="chart_hero", title="機會評估", topic="機會評估",
+                           report_keys=("opportunity_quadrant",), charts=(chart,))
+        return bp._narrative_candidates(spec)
+
+    def _first_cluster_alias(self, chart: str) -> str:
+        for key in self._candidates(chart):
+            if key.startswith("cluster_topic_table:"):
+                return key
+        self.fail(f"{chart} 沒有對到任何 cluster 解讀 alias")
+
+    def test_split_quadrant_pages_resolve_distinct_narratives(self):
+        """🔴 拆頁後兩頁不得共用同一段解讀（實機 P10／P11：圖是功效、文字是技術）。
+
+        根因：拆頁時兩頁的 `report_keys` 都被收窄成同一個 `opportunity_quadrant`，
+        而該 key 的 alias 同時對到 tech 與 effect 兩個變體；alias 若依 report_key 層
+        先展開，兩頁都會命中先列的 tech。圖檔主檔名才是能區分兩頁的唯一線索。
+        """
+        tech = self._first_cluster_alias("opportunity_quadrant_tech.svg")
+        effect = self._first_cluster_alias("opportunity_quadrant_effect.svg")
+        self.assertNotEqual(tech, effect, "兩頁對到同一段解讀＝圖文不符")
+        self.assertEqual(tech, "cluster_topic_table:opportunity_tech")
+        self.assertEqual(effect, "cluster_topic_table:opportunity_effect")
+
+    def test_chart_specific_alias_precedes_report_key_alias(self):
+        """順序即修法：圖檔層 alias 必須排在 report_key 層 alias 之前。"""
+        keys = self._candidates("opportunity_quadrant_effect.svg")
+        self.assertIn("opportunity_quadrant_effect", keys)
+        self.assertLess(keys.index("opportunity_quadrant_effect"), keys.index("opportunity_quadrant"),
+                        "圖檔主檔名比 report_key 精確，必須先查")
 
 if __name__ == "__main__":
     unittest.main()

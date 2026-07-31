@@ -190,8 +190,11 @@ class TopicTableNarrativeTests(unittest.TestCase):
         """⚠ 該 variant 不得指向不存在的圖檔——會顯示「圖檔待產出」佔位。"""
         import re
 
-        block = re.search(r'variants\.insert\(0,.*?\)|variants\.append\(\{[^}]*topic_table[^}]*\}\)',
-                          self.src, re.S)
+        # 2026-07-31：單一 variant 改為依通道各一個（技術／功效），宣告形式
+        # 由 insert(0, {...}) 變成迴圈 insert(index, {...})——比對改抓那段迴圈。
+        block = re.search(
+            r'for index, \(_, variant_key, label\).*?variants\.insert\(index, \{[^}]*\}\)',
+            self.src, re.S)
         self.assertIsNotNone(block, "找不到主題統計表的 variant 宣告")
         self.assertNotIn(".svg", block.group(0), "不得指向 SVG——它沒有圖")
         self.assertNotIn(".html", block.group(0), "不得指向 HTML——本輪已移除該檔")

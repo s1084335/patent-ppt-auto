@@ -385,6 +385,12 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 #export-preview { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.4rem 1.6rem; }
 .real-pptx-preview { max-height: calc(100vh - 15rem); overflow: auto; border: 1px solid var(--border); border-radius: 0.45rem; background: var(--panel-2); padding: 0.75rem; }
 .real-pptx-preview > * { margin-left: auto; margin-right: auto; }
+/* ⚠ 只關掉「投影片內部」的捲軸（2026-07-31 使用者截圖：每個文字框角落都冒出上下
+   箭頭，看起來像產檔壞了）。成因是 renderer 給文字容器 overflow:auto，內容超出
+   幾像素就顯示捲軸——PPT 檔本身沒問題，純顯示面。選擇器用後代 `*` 而不是元素
+   本身：外層 .real-pptx-preview 的捲軸要留著，那是用來翻頁的。 */
+.real-pptx-preview * { scrollbar-width: none; -ms-overflow-style: none; }
+.real-pptx-preview *::-webkit-scrollbar { display: none; }
 /* ⚠ 2026-07-30 移除 .ppt-slide 系列 CSS（25 條）：那是用 HTML/CSS 模擬 PPT 版面，與批次 2 導入的真實 .pptx 渲染（.real-pptx-preview）並存必然分岔——模擬版還留著早已定案不印的浮水印即為證據。編輯模式改用 renderReportContentHtml 的內容視圖。 */
 /* 報表種類頁標題列橫排（2026-07-27 R7／R8）：標題｜檢視選單｜市場 PDF（收合）。
    原本 15 個勾選框＋固定展開的市場區塊佔滿整頁，看不到報表本身。 */
