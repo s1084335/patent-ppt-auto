@@ -108,6 +108,13 @@ def create_report(request: ReportRequest) -> dict[str, Any]:
         payload["limit"] = request.limit
     if request.patent_ids is not None:
         payload["patent_ids"] = request.patent_ids
+    if request.workspace_id is not None:
+        # ⚠ 必須同時進 payload：handler 讀的是 `payload.get("workspace_id")`
+        # （分群 cluster_data 的範圍、version_meta 的歸屬鍵都靠它）。
+        # 只給 create_job 的具名參數＝只寫進 workflow_runs.workspace_id 欄，
+        # worker 完全看不到——2026-07-31 實機 #145「job succeeded 但前端整個
+        # 清單空白」的根因，也是本專案第三次「欄位在、位置不對」的同型錯誤。
+        payload["workspace_id"] = request.workspace_id
 
     job = job_repository.create_job(
         "report_generate",
