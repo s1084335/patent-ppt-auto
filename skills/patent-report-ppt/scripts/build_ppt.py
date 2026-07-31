@@ -1025,15 +1025,28 @@ def _add_number_bold_text(
 
 
 def _add_band(slide, theme: Theme, left, top, width, height, color: str, *, rounded: bool = False, line: str = "") -> None:
-    """加入色塊／底板。rounded 用於 Slidesgo 風格的圓角色塊。"""
+    """加入色塊／底板。rounded 用於圓角面板，方角用於裝飾條。
+
+    🔴 2026-07-31 批2：**圓角一律補可見邊框**。獨立驗收實測 46 個填色面板中
+    43 個是 `<a:ln><a:noFill/>`，面板底對背景只有 1.12–1.72，等於沒有邊界、
+    整頁區塊糊成一片。
+
+    ⚠ 治在**實作**而不是逐一改 43 個呼叫點：加參數會讓介面變寬、每個呼叫端與
+    測試都得跟著改（同日 `rasterize_svg` 加第三個參數就是這樣害測試變紅）。
+    判斷依據用既有語意——圓角＝面板（要邊界），方角＝標題底線／進度條等裝飾條
+    （加框反而礙眼），不必新增旗標。
+    """
     shape = slide.shapes.add_shape(
         MSO_SHAPE.ROUNDED_RECTANGLE if rounded else MSO_SHAPE.RECTANGLE,
         Inches(left), Inches(top), Inches(width), Inches(height),
     )
     shape.fill.solid()
     shape.fill.fore_color.rgb = theme.rgb(color)
+    if not line and rounded:
+        line = "hairline"
     if line:
         shape.line.color.rgb = theme.rgb(line)
+        shape.line.width = Pt(theme.font["panel_border_pt"])
     else:
         shape.line.fill.background()
     if rounded:
@@ -1281,7 +1294,7 @@ def _render_points_panel(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any
 
     if caveat:
         c = theme.geometry["caveat_panel"]
-        _add_band(slide, theme, c["left_in"], c["top_in"], c["width_in"], c["height_in"], "navy", rounded=True)
+        _add_band(slide, theme, c["left_in"], c["top_in"], c["width_in"], c["height_in"], "panel", rounded=True)
         _add_text(slide, theme, "判讀限制",
                   left=c["left_in"] + c["title_inset_left_in"], top=c["top_in"] + c["title_top_offset_in"],
                   width=c["width_in"] - c["text_inset_right_in"], height=c["title_height_in"],
@@ -1476,7 +1489,7 @@ def _render_cover(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> N
                   size=theme.size("stat_label_pt"), color="ink", align=PP_ALIGN.CENTER)
 
     _add_band(slide, theme, g["banner_left_in"], g["banner_top_in"],
-              g["banner_width_in"], g["banner_height_in"], "navy", rounded=True)
+              g["banner_width_in"], g["banner_height_in"], "panel", rounded=True)
     banner, _ = _fit_text(theme, ctx["framework_text"],
                           width_in=g["banner_text_width_in"], height_in=g["banner_text_height_in"],
                           size_pt=theme.size("cover_banner_pt"))
@@ -1576,7 +1589,7 @@ def _render_chart_hero(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any])
 
     if conclusion:
         _add_band(slide, theme, g["conclusion_left_in"], g["conclusion_top_in"],
-                  g["conclusion_width_in"], g["conclusion_height_in"], "navy", rounded=True)
+                  g["conclusion_width_in"], g["conclusion_height_in"], "panel_deep", rounded=True)
         text_width = g["conclusion_width_in"] - g["conclusion_inset_left_in"] * 2
         body, _ = _fit_text(theme, f"核心結論：{conclusion}", width_in=text_width,
                             height_in=g["conclusion_height_in"] - g["conclusion_text_top_offset_in"] * 2,
@@ -1647,7 +1660,7 @@ def _render_stat_callout(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any
     _render_header(slide, theme, spec, ctx)
     g = theme.geometry["stat_callout"]
     _add_band(slide, theme, g["block_left_in"], g["block_top_in"],
-              g["block_width_in"], g["block_height_in"], "navy", rounded=True)
+              g["block_width_in"], g["block_height_in"], "panel", rounded=True)
 
     rows: list[dict[str, Any]] = []
     report_key = ""
@@ -1738,7 +1751,12 @@ def _render_percentage_bars(slide, theme: Theme, spec: PageSpec, ctx: dict[str, 
         ratio = (value / top_value) if top_value else 0.0
         fill_width = max(g["track_height_in"], g["track_width_in"] * ratio)
         _add_band(slide, theme, g["track_left_in"], top + g["track_top_offset_in"],
-                  fill_width, g["track_height_in"], "royal" if index == 0 else "blue", rounded=True)
+                  # 🔴 批2：原本第一名用 royal、其餘用 blue——兩者都是**裝飾色**
+                  # （色相距 accent 僅 0.6°／0.7°），使用者反映「資料看起來像裝飾」；
+                  # 且 royal 比 blue 暗，等於**最大值最不顯眼**、語意反了。
+                  # 改為資料暖色，第一名用主序列、其餘用淺階，明暗與大小一致。
+                  fill_width, g["track_height_in"],
+                  "series_primary" if index == 0 else "series_light", rounded=True)
         _add_text(slide, theme, f"{value:,} 件　{value / total:.0%}",
                   left=g["value_left_in"], top=top, width=g["value_width_in"], height=g["value_height_in"],
                   size=theme.size("percent_value_pt"), color="ink", bold=True)
@@ -1820,13 +1838,19 @@ def _render_direction_flow(slide, theme: Theme, spec: PageSpec, ctx: dict[str, A
     python-pptx 畫不了原生 SmartArt——色塊＋箭頭是同等效果的確定性圖形。
     """
     g = theme.geometry["direction_flow"]
-    steps = (("態勢", parsed["situation"], "royal"),
-             ("機會", parsed["opportunity"], "blue"),
-             ("方向", parsed["direction"], "navy"))
+    # 🔴 2026-07-31 批2：三步原本用 royal／blue／navy，明暗完全不一致——
+    # `blue`(4FC3F7) 是亮青，配 on_dark_soft 深灰字等於讀不出來（實機第 17 頁）。
+    # 改為三階**都夠深**的同族藍，靠由深到淺表達流程推進，文字一律亮字。
+    # ⚠ 三張卡是**並列的同階資訊**（y/w/h 完全相同），不是有大小的序階，
+    # 故底色一律相同——流程推進由中間的箭頭表達。批2 初版讓三者由暗到亮遞增，
+    # 獨立驗收指出那是語意錯亂，且最暗的「態勢」卡對背景只有 1.343 不達標。
+    steps = (("態勢", parsed["situation"], "panel"),
+             ("機會", parsed["opportunity"], "panel"),
+             ("方向", parsed["direction"], "panel"))
     for index, (label, lines, color) in enumerate(steps):
         left = g["step_left_in"] + index * g["step_gap_in"]
         _add_band(slide, theme, left, g["step_top_in"], g["step_width_in"], g["step_height_in"],
-                  color, rounded=True)
+                  color, rounded=True, line="royal")
         _add_text(slide, theme, label,
                   left=left + g["step_inset_in"], top=g["step_top_in"] + g["step_label_top_offset_in"],
                   width=g["step_width_in"] - g["step_inset_in"] * 2, height=g["step_label_height_in"],
@@ -1838,7 +1862,8 @@ def _render_direction_flow(slide, theme: Theme, spec: PageSpec, ctx: dict[str, A
         _add_text(slide, theme, body,
                   left=left + g["step_inset_in"], top=g["step_top_in"] + g["step_text_top_offset_in"],
                   width=body_width, height=body_height,
-                  size=theme.size("flow_text_pt"), color="on_dark_soft")
+                  # 批2：on_dark_soft 在最亮的 panel_deep 上只有 3.28，改亮字。
+                  size=theme.size("flow_text_pt"), color="on_dark")
         if index < len(steps) - 1:
             _add_text(slide, theme, "→",
                       left=left + g["step_width_in"] + g["arrow_left_offset_in"],
@@ -1873,7 +1898,7 @@ def _render_direction_flow(slide, theme: Theme, spec: PageSpec, ctx: dict[str, A
 
     if parsed["conclusion"]:
         _add_band(slide, theme, g["conclusion_left_in"], g["conclusion_top_in"],
-                  g["conclusion_width_in"], g["conclusion_height_in"], "navy", rounded=True)
+                  g["conclusion_width_in"], g["conclusion_height_in"], "panel_deep", rounded=True)
         text_width = g["conclusion_width_in"] - g["conclusion_inset_in"] * 2
         body, _ = _fit_text(theme, f"核心結論：{parsed['conclusion']}", width_in=text_width,
                             height_in=g["conclusion_height_in"] - g["conclusion_text_top_offset_in"] * 2,
@@ -1920,7 +1945,7 @@ def _render_direction(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) 
                           width=text_width, height=text_height, size=size)
 
     _add_band(slide, theme, g["basis_left_in"], g["basis_top_in"],
-              g["basis_width_in"], g["basis_height_in"], "navy", rounded=True)
+              g["basis_width_in"], g["basis_height_in"], "panel", rounded=True)
     _add_text(slide, theme, "專利地圖依據",
               left=g["basis_left_in"] + g["basis_header_inset_left_in"],
               top=g["basis_top_in"] + g["basis_header_top_offset_in"],
@@ -2057,6 +2082,28 @@ def _add_table(
     return len(display)
 
 
+def _set_cell_borders(cell, theme: Theme) -> None:
+    """給儲存格四邊套主題細線。
+
+    ⚠ python-pptx 沒有儲存格框線 API，不寫就會沿用 PowerPoint **預設表格樣式**的
+    淺灰線（實測約 A8B3BD–DFE0E3），與全簡報統一的細線不一致——規格 S1-6 寫了
+    「外框細線」卻一直沒實作，獨立驗收在 p9/p10/p18/p19 抓到。
+    ⚠ 四邊都要寫：只寫左與上，相鄰儲存格之間會留下缺口。
+    """
+    colour = theme.color["hairline"]
+    width = int(Pt(theme.font["panel_border_pt"]))
+    props = cell._tc.get_or_add_tcPr()
+    for tag in ("a:lnL", "a:lnR", "a:lnT", "a:lnB"):
+        existing = props.find(qn(tag))
+        if existing is not None:
+            props.remove(existing)
+        props.append(parse_xml(
+            f'<{tag} {nsdecls("a")} w="{width}" cap="flat" cmpd="sng" algn="ctr">'
+            f'<a:solidFill><a:srgbClr val="{colour}"/></a:solidFill>'
+            f'</{tag}>'
+        ))
+
+
 def _style_cell(
     cell, theme: Theme, *, size: float, color: str, bold: bool = False, fill: str = "paper",
     margin_in: float = 0.0, inset_in: float = 0.0,
@@ -2075,6 +2122,7 @@ def _style_cell(
     for para in cell.text_frame.paragraphs:
         for run in para.runs:
             _set_font(run, theme, size=size, color=color, bold=bold)
+    _set_cell_borders(cell, theme)
 
 
 RENDERERS = {
