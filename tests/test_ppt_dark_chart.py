@@ -147,5 +147,33 @@ class PairedTextRecolorTests(unittest.TestCase):
                       "引擎沒有標記文字與底色的配對——下游無從得知白字疊在哪")
 
 
+class EncodingNoteSingleSourceTests(unittest.TestCase):
+    """圖表編碼說明的唯一來源在**畫圖端**（2026-07-31 引擎批 E3）。
+
+    ⚠ 這份說明原本寫在組版端，與引擎各自演進，實測三張對不上：
+    `annual_trend` 是折線卻寫「條長」、`application_growth` 縱軸是年增率 %
+    卻寫「件數」、`lifecycle` 橫軸是申請人家數卻寫「申請年」。
+    只有畫圖的那一端知道自己畫了什麼。
+    """
+
+    def test_engine_is_the_source(self):
+        src = CHART_RUNNER.read_text(encoding="utf-8")
+        self.assertIn("CHART_ENCODING_NOTES", src, "引擎沒有輸出編碼說明")
+        self.assertIn('"encoding_notes"', src, "編碼說明沒有進 table_display 傳給下游")
+
+    def test_builder_prefers_engine(self):
+        bp = _load_builder()
+        ctx = {"report_data": {"table_display": {"encoding_notes": {"foo": "引擎版說明"}}}}
+        spec = bp.PageSpec(page=1, kind="chart_hero", title="x", topic="x", report_keys=("foo",))
+        self.assertEqual(bp._encoding_note(spec, ctx), "引擎版說明")
+
+    def test_builder_falls_back_for_old_versions(self):
+        """舊報表版本沒有 encoding_notes，仍要有說明可用（不得空白）。"""
+        bp = _load_builder()
+        spec = bp.PageSpec(page=1, kind="chart_hero", title="x", topic="x",
+                           report_keys=("application_trend",))
+        self.assertTrue(bp._encoding_note(spec, {"report_data": {}}))
+
+
 if __name__ == "__main__":
     unittest.main()

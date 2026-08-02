@@ -1257,7 +1257,21 @@ def _variant_label(chart_name: str) -> str:
     return Path(chart_name).stem
 
 
-def _encoding_note(spec: PageSpec) -> str:
+def _encoding_note(spec: PageSpec, ctx: dict[str, Any] | None = None) -> str:
+    """圖表編碼說明：引擎那份優先，缺鍵才用本檔 fallback。
+
+    ⚠ 本檔的 `ENCODING_NOTES` 僅供**舊報表版本**相容——引擎自 2026-07-31 起會把
+    說明寫進 `report_data.json.table_display.encoding_notes`。兩份各自演進的後果
+    已實測到：`annual_trend` 是折線卻寫「條長」、`application_growth` 縱軸是
+    年增率 % 卻寫「件數」、`lifecycle` 橫軸是申請人家數卻寫「申請年」。
+    新增或修改說明請改引擎那份，不要往這裡加。
+    """
+    engine = {}
+    if ctx is not None:
+        engine = (ctx["report_data"].get("table_display") or {}).get("encoding_notes") or {}
+    for key in spec.report_keys:
+        if key in engine:
+            return engine[key]
     for key in spec.report_keys:
         if key in ENCODING_NOTES:
             return ENCODING_NOTES[key]
@@ -1611,7 +1625,7 @@ def _render_chart_hero(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any])
     """
     _render_header(slide, theme, spec, ctx)
     g = theme.geometry["chart_hero"]
-    _add_text(slide, theme, _encoding_note(spec),
+    _add_text(slide, theme, _encoding_note(spec, ctx),
               left=g["encoding_left_in"], top=g["encoding_top_in"],
               width=g["encoding_width_in"], height=g["encoding_height_in"],
               size=theme.size("encoding_note_pt"), color="muted", align=PP_ALIGN.RIGHT)
@@ -1673,7 +1687,7 @@ def _render_chart_with_points(slide, theme: Theme, spec: PageSpec, ctx: dict[str
     """內容頁預設版型：左圖約 60% 寬，右側要點框（＋必要時警語框）。"""
     _render_header(slide, theme, spec, ctx)
     g = theme.geometry["chart_with_points"]
-    _add_text(slide, theme, _encoding_note(spec),
+    _add_text(slide, theme, _encoding_note(spec, ctx),
               left=g["encoding_left_in"], top=g["encoding_top_in"],
               width=g["encoding_width_in"], height=g["encoding_height_in"],
               size=theme.size("encoding_note_pt"), color="muted", align=PP_ALIGN.RIGHT)
@@ -1694,7 +1708,7 @@ def _render_comparison(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any])
     """
     _render_header(slide, theme, spec, ctx)
     g = theme.geometry["comparison"]
-    note = _encoding_note(spec)
+    note = _encoding_note(spec, ctx)
     blocks = _points_for(spec, ctx)
     for index, chart_name in enumerate(spec.charts[: len(g["column_left_in"])]):
         left = g["column_left_in"][index]
@@ -1933,7 +1947,7 @@ def _render_chart_wide(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any])
     shown_w, shown_h = (_fitted_size(image, g["image_width_in"], g["image_height_in"])
                         if image is not None else (g["image_width_in"], g["image_height_in"]))
     edge_left = g["image_left_in"] + (g["image_width_in"] - shown_w) / 2
-    _add_text(slide, theme, _encoding_note(spec),
+    _add_text(slide, theme, _encoding_note(spec, ctx),
               left=edge_left, top=g["encoding_top_in"],
               width=shown_w, height=g["encoding_height_in"],
               size=theme.size("encoding_note_pt"), color="muted", align=PP_ALIGN.RIGHT)

@@ -1066,6 +1066,9 @@ def table_display_spec(reports: dict[str, dict[str, Any]]) -> dict[str, Any]:
             name: list(columns) for name, columns in DATA_TABLE_EXCLUDED_COLUMNS.items()
         },
         "display_rows": display_rows,
+        # 編碼說明沿用同一條傳遞通道，不另開新鍵——同一件事（「組版端需要知道
+        # 引擎怎麼畫的」）不該有兩個落點。
+        "encoding_notes": dict(CHART_ENCODING_NOTES),
     }
 
 
@@ -1108,6 +1111,33 @@ def _section_report_name(section: dict[str, Any]) -> str:
 
 # sections 持久化欄位白名單（report_data.json["sections"]，--refresh-index 重建 index 用；
 # 只收可 JSON 序列化的顯示欄位）。
+# 圖表編碼說明（「這張圖的長度／位置／顏色各代表什麼」）的**唯一來源**。
+#
+# 🔴 2026-07-31：這份說明原本寫在組版端（build_ppt.ENCODING_NOTES），與畫圖的這裡
+# 各自演進，實測三張對不上——`annual_trend` 是折線卻寫「條長」、`application_growth`
+# 縱軸是年增率 % 卻寫「件數」、`lifecycle` 橫軸是申請人家數卻寫「申請年」。
+# ⚠ 只有畫圖的這一端知道自己畫了什麼，故說明必須從這裡輸出，組版端讀取即可。
+CHART_ENCODING_NOTES: dict[str, str] = {
+    "application_trend": "折線＝當年件數｜橫軸＝年份｜兩線分別為申請與授權公告",
+    "publication_trend": "折線＝當年公告件數｜橫軸＝公告年",
+    "application_growth": "折線＝年增率(%)｜橫軸＝年份｜僅連續年份計算",
+    "country_distribution": "條長＝件數佔比｜數值＝實際件數",
+    "jurisdiction_distribution": "條長＝件數｜排序＝件數由高至低",
+    "ipc_main_distribution": "條長＝件數｜左右為不同階層，非同圖合成",
+    "cpc_main_distribution": "條長＝件數｜左右為不同階層，非同圖合成",
+    "opportunity_quadrant": "橫軸＝申請人家數｜縱軸＝專利件數｜點＝技術主題",
+    "cluster_topic_table": "條長＝主題件數｜家數＝投入該主題的申請人數",
+    "applicant_ranking": "條長＝件數｜排序＝件數由高至低",
+    "owner_ranking": "條長＝件數｜排序＝件數由高至低",
+    "applicant_country_distribution": "格值＝件數｜列＝申請人、欄＝受理國",
+    "applicant_year_matrix": "泡泡大小與顏色＝件數｜列＝申請人、欄＝申請年",
+    "owner_year_matrix": "泡泡大小與顏色＝件數｜列＝專利權人、欄＝申請年",
+    "lifecycle": "橫軸＝申請人家數｜縱軸＝專利件數｜連線＝同一技術群",
+    "family_country_layout": "條長＝存活家族數｜分組＝受理國",
+    "family_quality_detail": "條長＝家族成員件數｜分組＝家族",
+}
+
+
 SECTION_PERSIST_KEYS = (
     "title", "report_key", "variants", "more_variants", "more_label", "note", "stacked", "links",
 )
