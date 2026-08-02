@@ -447,6 +447,28 @@
       "conclusion_inset_left_in": 0.25,
       "conclusion_text_top_offset_in": 0.08
     },
+    "_chart_wide_comment": "扁圖版型（ratio ≥3.5）：圖佔滿寬置頂，要點改底部橫幅並**跟著圖的實際底緣**走。⚠ 圖高是上限不是固定值——扁圖自然高度只有 1.6–3.1 in，固定高度會在圖與要點之間留一大塊空白（IPC 四階分布實測只用到 1.5 in）。band_min_top 保證要點不會貼在標題下方。",
+    "chart_wide": {
+      "encoding_left_in": 0.6,
+      "encoding_top_in": 1.62,
+      "encoding_width_in": 12.13,
+      "encoding_height_in": 0.24,
+      "image_left_in": 0.6,
+      "image_top_in": 1.9,
+      "image_width_in": 12.13,
+      "image_height_in": 3.2,
+      "band_gap_in": 0.22,
+      "band_min_top_in": 3.5,
+      "band_left_in": 0.6,
+      "band_width_in": 12.13,
+      "band_bottom_in": 6.6,
+      "band_inset_in": 0.18,
+      "band_header_top_offset_in": 0.1,
+      "band_header_height_in": 0.26,
+      "band_text_top_offset_in": 0.42,
+      "band_columns": 2,
+      "band_column_gap_in": 0.3
+    },
     "direction_flow": {
       "step_left_in": 0.6,
       "step_top_in": 1.72,

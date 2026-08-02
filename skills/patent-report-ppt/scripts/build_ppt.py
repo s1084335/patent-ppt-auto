@@ -178,6 +178,14 @@ TRUNCATE_BREAK_MARKS = ("，", "、", "；", "：", "。", "）", ",", ";")
 # 背景層（漸層底＋星空紋理）的 shape 名稱：版面自檢與 QA 用它排除全出血元素。
 BACKGROUND_SHAPE_NAME = "space-background"
 
+# 扁圖門檻（寬/高）：超過此值改用「滿寬圖＋底部要點」版型。
+# ⚠ 3.5 不是拍腦袋——實測 18 張圖在兩種版型下的縮放倍率：
+#   ratio ≥3.89 → 滿寬 1.19 vs 現行 0.87（+37%，明顯有感）
+#   ratio 2.1–3.0 → 滿寬 0.43–0.82，**比現行更差**（高度被底部要點壓縮）
+#   ratio <2.06 → 高度先滿，換滿寬毫無幫助
+# 也就是說「比框扁就換」是錯的判準，要看**換完是否真的變大**。
+WIDE_CHART_ASPECT_MIN = 3.5
+
 # 向量圖 part 的流水號：`PackURI` 必須唯一，同名會讓後插入的圖覆蓋前一張。
 # 逐頁遞增、順序固定，故同一份報表重跑產出的檔案仍完全一致。
 _VECTOR_INDEX = 0
@@ -520,6 +528,7 @@ class ChartIndex:
         self.theme = theme
         self._by_report: dict[str, list[str]] = {}
         self._raster_cache: dict[str, Path | None] = {}
+        self._aspect_cache: dict[str, float | None] = {}
         self.manifest_found = bool(manifest)
         for artifact in (manifest or {}).get("artifacts", []) or []:
             if not isinstance(artifact, dict):
@@ -557,6 +566,25 @@ class ChartIndex:
     def owners_of(self, chart_name: str, keys: tuple[str, ...]) -> tuple[str, ...]:
         """某張圖對應到候選 report_key 中的哪幾個；拆頁時用來把 report_key 一起收窄。"""
         return tuple(key for key in keys if chart_name in self._by_report.get(key, []))
+
+    def aspect_of(self, name: str) -> float | None:
+        """圖檔的原始長寬比（寬/高）；讀不到回 None。
+
+        版型選擇要看**圖本身的形狀**：同一個框塞得下 0.78 到 7.42 的比例，
+        差 9.5 倍，沒有一種框能同時服務兩端（2026-07-31 實測）。
+        """
+        if name in self._aspect_cache:
+            return self._aspect_cache[name]
+        source = self.report_dir / name
+        aspect = None
+        if source.exists() and source.suffix.lower() == ".svg":
+            head = source.read_text(encoding="utf-8", errors="ignore")[:400]
+            match = SVG_SIZE_PATTERN.search(head)
+            if match:
+                width, height = float(match.group(1)), float(match.group(2))
+                aspect = width / height if height else None
+        self._aspect_cache[name] = aspect
+        return aspect
 
     def resolve(self, name: str) -> Path | None:
         """把圖檔轉成 python-pptx 吃得下的點陣檔；SVG 轉 PNG 只轉一次。"""
@@ -1831,6 +1859,101 @@ def _parse_direction_body(body: str) -> dict[str, Any] | None:
     }
 
 
+def _fitted_size(image_path: Path, box_w: float, box_h: float) -> tuple[float, float]:
+    """圖等比縮放塞進框後的**實際**尺寸（英吋）。
+
+    元件要對齊圖的實際範圍而不是框——圖填不滿框時，靠框對齊的說明文字會飄在
+    空白處（獨立驗收在扁圖頁抓到）。取不到尺寸就回框的大小，退化為原行為。
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(image_path) as img:
+            width_px, height_px = img.size
+    except Exception:
+        return box_w, box_h
+    if not width_px or not height_px:
+        return box_w, box_h
+    scale = min(box_w / (width_px / 96), box_h / (height_px / 96))
+    return (width_px / 96) * scale, (height_px / 96) * scale
+
+
+def _render_chart_wide(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """扁圖版型（ratio ≥3.5）：圖佔滿寬置頂，要點在下方橫幅。
+
+    ⚠ 為什麼另立版型：`chart_hero` 的框是 8.9×4.32（比例 2.06），扁圖塞進去會
+    **寬度先滿、高度大量浪費**——IPC 四階分布（比例 6.05）實測只用到 1.5 in 高，
+    下方空掉三分之一頁。改滿寬後縮放倍率 0.87→1.19（+37%，實測 6 張皆然）。
+    ⚠ 門檻取 3.5 而非「比框扁就換」：比例 2.1–3.0 的圖換滿寬反而更差
+    （倍率 0.43–0.82 < 現行 0.56–0.76），因為高度被底部要點壓縮。
+    """
+    _render_header(slide, theme, spec, ctx)
+    g = theme.geometry["chart_wide"]
+    image = ctx["charts"].resolve(spec.charts[0]) if spec.charts else None
+
+    # 說明文字靠右對齊**圖的實際右緣**，不是框的右緣。
+    shown_w, shown_h = (_fitted_size(image, g["image_width_in"], g["image_height_in"])
+                        if image is not None else (g["image_width_in"], g["image_height_in"]))
+    edge_left = g["image_left_in"] + (g["image_width_in"] - shown_w) / 2
+    _add_text(slide, theme, _encoding_note(spec),
+              left=edge_left, top=g["encoding_top_in"],
+              width=shown_w, height=g["encoding_height_in"],
+              size=theme.size("encoding_note_pt"), color="muted", align=PP_ALIGN.RIGHT)
+    if image is not None:
+        # ⚠ 框高直接給**圖的實際高度**：`_add_picture_fitted` 會把圖置中在框裡，
+        # 框比圖高就會往下推（IPC 四階實測被推 0.87 in），底緣算式就對不上、
+        # 要點橫幅直接蓋住圖表。把框縮成圖的大小，置中即成無作用。
+        _add_picture_fitted(slide, image,
+                            left=g["image_left_in"], top=g["image_top_in"],
+                            width=g["image_width_in"], height=shown_h)
+
+    # 要點橫幅跟著圖的**實際底緣**走；圖矮時橫幅上移，不留一大塊空白。
+    band_top = max(g["band_min_top_in"], g["image_top_in"] + shown_h + g["band_gap_in"])
+    _render_wide_points_band(slide, theme, spec, ctx, top=band_top)
+    _render_footnote(slide, theme, spec, ctx)
+
+
+def _render_wide_points_band(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any],
+                             *, top: float) -> None:
+    """扁圖頁的底部要點橫幅（雙欄），高度吃到頁尾之前的可用空間。"""
+    g = theme.geometry["chart_wide"]
+    inset = g["band_inset_in"]
+    columns_n = int(g["band_columns"])
+    gap_w = g["band_column_gap_in"]
+    col_w = (g["band_width_in"] - inset - inset - gap_w * (columns_n - 1)) / columns_n
+    size_pt = theme.size("point_text_pt")
+    # ⚠ 高度依**內容**決定，`band_bottom_in` 只是上限：橫幅若一律吃到底，
+    # 資料少的頁面（IPC 四階只有 2 條）下半部就是一大片空白——
+    # 這正是本批要治的毛病，換個位置再犯一次沒有意義。
+    lines = sum(_lines_needed(f"{label}｜{text}", _text_capacity(
+        theme, width_in=col_w, height_in=g["band_bottom_in"], size_pt=size_pt)[0])
+        for label, text, _, _ in _points_for(spec, ctx))
+    per_column_lines = math.ceil(lines / columns_n) if lines else 1
+    needed = (g["band_text_top_offset_in"] + inset
+              + per_column_lines * size_pt / 72.0 * theme.qa["line_height_ratio"])
+    height = min(g["band_bottom_in"] - top,
+                 max(g["band_header_height_in"] + inset + inset, needed))
+    _add_band(slide, theme, g["band_left_in"], top, g["band_width_in"], height, "panel", rounded=True)
+    _add_text(slide, theme, "判讀要點",
+              left=g["band_left_in"] + inset, top=top + g["band_header_top_offset_in"],
+              width=g["band_width_in"] - inset - inset, height=g["band_header_height_in"],
+              size=theme.size("panel_header_pt"), color="accent", bold=True)
+
+    columns, gap, col_width, size = columns_n, gap_w, col_w, size_pt
+    text_top = top + g["band_text_top_offset_in"]
+    text_height = height - g["band_text_top_offset_in"] - inset
+    blocks = _trim_blocks(theme, _points_for(spec, ctx),
+                          width_in=col_width, height_in=text_height * columns, size_pt=size)
+    per_column = max(1, math.ceil(len(blocks) / columns)) if blocks else 1
+    for index in range(columns):
+        chunk = blocks[index * per_column:(index + 1) * per_column]
+        if not chunk:
+            continue
+        _add_number_bold_text(slide, theme, chunk,
+                              left=g["band_left_in"] + inset + index * (col_width + gap),
+                              top=text_top, width=col_width, height=text_height, size=size)
+
+
 def _render_direction_flow(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any],
                            parsed: dict[str, Any]) -> None:
     """合併版（2026-07-31 使用者經表單選定）：
@@ -2135,6 +2258,7 @@ RENDERERS = {
     "percentage_bars": _render_percentage_bars,
     "table": _render_table,
     "table_with_points": _render_table_with_points,
+    "chart_wide": _render_chart_wide,
     "direction": _render_direction,
 }
 
@@ -2167,6 +2291,17 @@ def _page_should_render(report_data: dict[str, Any], spec: PageSpec) -> bool:
     if spec.kind in {"cover", "direction", "section_divider"}:
         return True
     return bool(_actual_report_keys(report_data, spec.report_keys))
+
+
+def _kind_for_aspect(kind: str, files: tuple[str, ...], charts: ChartIndex | None) -> str:
+    """單圖頁若是**扁圖**，改用滿寬版型；其餘維持原版型。
+
+    ⚠ 只對單圖頁生效：多圖頁（並排比較）本來就各自佔半寬，換滿寬沒有意義。
+    """
+    if charts is None or kind not in SINGLE_CHART_KINDS or len(files) != 1:
+        return kind
+    aspect = charts.aspect_of(files[0])
+    return "chart_wide" if aspect and aspect >= WIDE_CHART_ASPECT_MIN else kind
 
 
 def _evidence_rank(spec: PageSpec) -> int:
@@ -2228,6 +2363,10 @@ def _expand_page_layout(report_data: dict[str, Any], charts: ChartIndex | None =
     evidence.sort(key=_evidence_rank)
     merged = head + evidence + base[anchor:]
     merged = _split_pairs_by_policy(merged, charts)
+    # ⚠ 版型的長寬比調整要在**拆頁之後**：多圖頁要拆完才知道每頁只有一張圖，
+    # 且動態插頁走 `_kind_for_report` 不經基礎迴圈——放在這裡才涵蓋全部頁面。
+    merged = [_spec_with(spec, kind=_kind_for_aspect(spec.kind, spec.charts, charts))
+              for spec in merged]
     return [_spec_with(spec, page=index) for index, spec in enumerate(merged, start=1)]
 
 
@@ -2250,11 +2389,26 @@ def _split_by_channel(spec: PageSpec, report_data: dict[str, Any]) -> list[PageS
     ]
 
 
+def theme_comparison_columns() -> list[float]:
+    """並排版型的欄位左緣（欄數＝len）。⚠ 取自 theme，不在程式寫死欄數。"""
+    return list(Theme.load().geometry["comparison"]["column_left_in"])
+
+
 def _split_pairs_by_policy(layout: list[PageSpec], charts: ChartIndex | None = None) -> list[PageSpec]:
-    """列在 SPLIT_PAIR_REPORTS 的成對報表改成分頁（表格內容多，並排讀不動）。"""
+    """成對報表改成分頁；⚠ 並排版型只有兩欄，超過兩張圖一律拆頁。
+
+    🔴 2026-07-31：技術分類布局頁掛了 4 張圖（IPC L4/L5 ＋ CPC L4/L5），
+    `comparison` 只畫得下兩欄，**CPC 兩張從來沒被畫出來**——而頁尾仍寫著
+    「資料來源：IPC 主分類分布、CPC 主分類分布」。靜默丟圖比畫不下更糟：
+    讀者以為看到的就是全部。故除了 SPLIT_PAIR_REPORTS 的政策拆頁外，
+    只要圖數超過並排欄數就一律拆。
+    """
+    columns = len(theme_comparison_columns())
     result: list[PageSpec] = []
     for spec in layout:
-        if spec.kind == "comparison" and any(key in SPLIT_PAIR_REPORTS for key in spec.report_keys):
+        policy_split = any(key in SPLIT_PAIR_REPORTS for key in spec.report_keys)
+        overflow = len(spec.charts) > columns
+        if spec.kind == "comparison" and (policy_split or overflow):
             # 拆頁後用大圖版型（chart_hero）——分頁的動機就是圖要大。
             result.extend(_split_multi_chart_page(_spec_with(spec, kind="chart_hero"), charts))
         else:
