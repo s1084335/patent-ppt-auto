@@ -200,6 +200,73 @@ class NarrativeAliasTests(unittest.TestCase):
         self.assertEqual(variant.get("headline"), "主題集中")
 
 
+class SplitLevelNarrativeTests(unittest.TestCase):
+    """F-4：同一報表拆成 L4／L5 兩頁時，各頁必須取自己那個變體。
+
+    🔴 2026-08-02 實機（22 頁）：p8 IPC Level 4 與 p9 IPC Level 5 的標題與四條
+    判讀要點**逐字相同**，p10／p11 CPC 兩頁亦然。讀者會以為投影片貼重複。
+
+    根因不在解讀端——`narratives.json` 確實產了 L4／L5 兩段不同內容。是組版端
+    `_narrative_candidates` 只把圖檔主檔名 `ipc_main_distribution_L4` 當候選鍵，
+    而 narratives 的鍵是 `ipc_main_distribution`（變體收在 `variants` 內），
+    於是退回 report_key 那條線，`_narrative_entry` 取 `variants` 的**第一個**，
+    兩頁都拿到 L4。缺的是把「主檔名＋後綴」翻成 `report_key:variant` 語法。
+    """
+
+    NARRATIVES = {"reports": {"ipc_main_distribution": {"variants": {
+        "L4": {"headline": "A63B次分類達47件", "points": [{"label": "現況", "text": "L4"}], "text": "t"},
+        "L5": {"headline": "A63B-069達19件", "points": [{"label": "現況", "text": "L5"}], "text": "t"},
+    }}}}
+
+    def _variant_of(self, chart: str) -> dict:
+        spec = bp.PageSpec(page=9, kind="chart_hero", title="技術分類布局", topic="技術分類布局",
+                           report_keys=("ipc_main_distribution",), charts=(chart,))
+        _, variant = bp._narrative_entry(self.NARRATIVES, bp._narrative_candidates(spec))
+        return variant
+
+    def test_level4_page_takes_l4(self):
+        self.assertEqual(self._variant_of("ipc_main_distribution_L4.svg").get("headline"), "A63B次分類達47件")
+
+    def test_level5_page_takes_l5(self):
+        """🔴 這條是實機錯誤的直接重現：L5 頁拿到了 L4 的解讀。"""
+        self.assertEqual(self._variant_of("ipc_main_distribution_L5.svg").get("headline"), "A63B-069達19件")
+
+    def test_two_pages_do_not_share_one_variant(self):
+        l4 = self._variant_of("ipc_main_distribution_L4.svg")
+        l5 = self._variant_of("ipc_main_distribution_L5.svg")
+        self.assertNotEqual(l4.get("headline"), l5.get("headline"), "拆出來的兩頁共用了同一段解讀")
+
+
+class PercentageBarRatioTests(unittest.TestCase):
+    """F-7：佔比條的條長必須用「佔全體比例」，不得用「相對第一名」。
+
+    🔴 2026-08-02 實機 p5：CN 39 件（65%）畫**滿格**，TW/US 9 件（15%）畫成短條，
+    同一張圖裡兩種基準——條長分母是 `top_value`（第一名），右側標的百分比分母卻是
+    `total`。讀者看到 CN 佔滿整條軌道，會讀成 100%，而字寫 65%。
+
+    軌道（bar_track）本身就是 100% 基準，條長用真佔比才對得起來：
+    CN 畫到 65%，剩下的 35% 留白正是「還有其他國家」的資訊。
+    """
+
+    def test_ratio_uses_total_not_max(self):
+        """CN 39／總 60 → 0.65，不是 39/39＝1.0。"""
+        self.assertAlmostEqual(bp._bar_fill_ratio(39, 60), 0.65)
+        self.assertAlmostEqual(bp._bar_fill_ratio(9, 60), 0.15)
+        self.assertAlmostEqual(bp._bar_fill_ratio(3, 60), 0.05)
+
+    def test_top_bar_is_not_full_when_share_below_100(self):
+        """第一名只要不是 100%，就不得畫滿。"""
+        self.assertLess(bp._bar_fill_ratio(39, 60), 1.0)
+
+    def test_ratios_sum_to_one(self):
+        """全部條長加起來等於整條軌道——這是「佔比」的定義。"""
+        total = 60
+        self.assertAlmostEqual(sum(bp._bar_fill_ratio(v, total) for v in (39, 9, 9, 3)), 1.0)
+
+    def test_zero_total_does_not_raise(self):
+        self.assertEqual(bp._bar_fill_ratio(0, 0), 0.0)
+
+
 class TablePageNoNarrativeWarningTests(unittest.TestCase):
     """P1-4：純表格頁（明細）不配解讀，不得誤報 narrative_missing。"""
 

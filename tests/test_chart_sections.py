@@ -73,10 +73,15 @@ class SectionRegistryTests(unittest.TestCase):
         specs = chart_runner.resolve_sections(["lifecycle", "country_distribution"])
         self.assertEqual([spec.key for spec in specs], ["country_map", "lifecycle"])
 
-    def test_resolve_application_trend_includes_growth(self):
-        # 申請趨勢同時驅動雙線趨勢圖與年增率折線兩個 sections。
+    def test_application_growth_section_removed(self):
+        """年增率 section 已移除（2026-08-02 使用者定案）。
+
+        小樣本下年增率被極低基期放大到失真——2022 年由前一年 1 件增至 15 件即
+        1400%，該圖自己的判讀限制就寫著這句，沒有解釋力。報表與 PPT 都不再產。
+        """
         keys = [spec.key for spec in chart_runner.resolve_sections(["application_trend"])]
-        self.assertEqual(keys, ["annual_trend", "application_growth"])
+        self.assertEqual(keys, ["annual_trend"])
+        self.assertNotIn("application_growth", {spec.key for spec in chart_runner.SECTION_SPECS})
 
     def test_recent_assignee_ranking_is_not_used(self):
         """最新受讓人報表已定案不使用；不得要求 section registry 支援它。"""
@@ -460,10 +465,8 @@ class PersistenceTruncationTests(unittest.TestCase):
             self.assertLessEqual(len(years), 25, f"{name} 入庫年份數應 ≤25")
             self.assertEqual(min(years), 1995, f"{name} 應留最新 25 年（1995–2019）")
             self.assertEqual(rd["reports"][name].get("rows_total"), 30)
-        # 年增率衍生序列（chart_rows，年份鍵為 "year"）同樣最新 25 年
-        growth_years = {int(r["year"]) for r in rd["chart_rows"]["application_growth"]}
-        self.assertLessEqual(len(growth_years), 25)
-        self.assertGreaterEqual(min(growth_years), 1995)
+        # 年增率序列已隨 section 移除，不得再出現在 chart_rows
+        self.assertNotIn("application_growth", rd["chart_rows"])
 
     def test_topic_rows_not_truncated(self):
         data = {
@@ -802,7 +805,7 @@ class SelectiveRenderTests(unittest.TestCase):
                 )
 
             self.assertEqual(result["status"], "ok")
-            self.assertEqual(result["sections_rendered"], ["annual_trend", "application_growth"])
+            self.assertEqual(result["sections_rendered"], ["annual_trend"])
             # 只查趨勢 section 依賴的兩張報表（公告補齊雙線），沒有其他報表被查。
             self.assertEqual(sorted(set(fetched)), ["application_trend", "publication_trend"])
             # 產出檔只有選中 sections 的圖＋固定兩檔。
@@ -810,7 +813,6 @@ class SelectiveRenderTests(unittest.TestCase):
                 sorted(result["files"]),
                 sorted([
                     "annual_trend.svg",
-                    "application_growth.svg",
                     "report_data.json",
                     "index.html",
                     "artifact_manifest.json",
@@ -849,7 +851,7 @@ class SelectiveRenderTests(unittest.TestCase):
                     output_dir=Path(tmp),
                     report_names=["application_trend", "publication_trend"],
                 )
-        # application_trend 被 annual_trend 與 application_growth 兩個 sections 依賴，
+        # application_trend 同時被趨勢圖與（在同一批查詢裡的）其他 section 用到，
         # 但快取後只實際查一次 DB。
         self.assertEqual(calls.count("application_trend"), 1)
 
@@ -1222,6 +1224,119 @@ class SectionReportKeyTests(unittest.TestCase):
                 "data-empty", by_title[title],
                 f"卡片「{title}」數據表為空（顯示無資料），但該報表有 rows",
             )
+
+
+class EncodingNoteAccuracyTests(unittest.TestCase):
+    """F-5：編碼說明必須描述那張圖**實際**怎麼畫，不得沿用舊版型或憑鍵名想像。"""
+
+    def test_ipc_cpc_notes_do_not_claim_side_by_side(self):
+        """🔴 拆頁後 IPC/CPC 各階層獨立成頁，不得再寫「左右為不同階層」。
+
+        2026-07-31 批 3 把並排頁拆成一圖一頁（修「CPC 兩張從未畫出」），
+        但編碼說明沒跟著改——實機 p8–p11 四頁都還寫著「左右為不同階層，
+        非同圖合成」，而畫面上根本沒有左右兩張圖。
+        """
+        for key in ("ipc_main_distribution", "cpc_main_distribution"):
+            note = chart_runner.CHART_ENCODING_NOTES[key]
+            self.assertNotIn("左右", note, f"{key} 的編碼說明仍描述並排版型")
+
+    def test_lifecycle_note_matches_how_chart_is_drawn(self):
+        """🔴 生命週期是**依年份**連線，不是「同一技術群」。
+
+        同檔 `render_lifecycle_chart` 的 docstring 與 SVG 副題（connected by year）
+        都寫著依年份，說明卻寫成技術群——2026-08-02 使用者當場抓到。
+        """
+        note = chart_runner.CHART_ENCODING_NOTES["lifecycle"]
+        self.assertIn("年份", note)
+        self.assertNotIn("技術群", note)
+
+
+class BubbleLegendSpanTests(unittest.TestCase):
+    """F-6：泡泡圖圖例級距不得出現「下限大於上限」或把單值寫成區間。
+
+    🔴 2026-08-02 實機 p17（max_value=3）印出「低 **1–0**」——下限 1、上限 0。
+    根因：級距由 `ceil(下界×max)`／`floor(上界×max)` 直接串接，max 小的時候
+    某一階完全落不到任何整數上（0–0.75 件），floor 就小於 ceil。
+    p16（max_value=5）則是把單值印成「1–1／2–2／3–3」。
+    """
+
+    def _spans(self, max_value: int):
+        return chart_runner.bubble_legend_spans(max_value)
+
+    def test_no_inverted_span(self):
+        """任何 max_value 下都不得出現下限 > 上限。"""
+        for max_value in range(1, 31):
+            for _color, label, span in self._spans(max_value):
+                bounds = [int(x) for x in span.split("–")]
+                self.assertLessEqual(bounds[0], bounds[-1],
+                                     f"max_value={max_value} 的「{label}」級距顛倒：{span}")
+
+    def test_empty_band_is_dropped(self):
+        """max_value=3 時最低階涵蓋不到任何整數件數，該階不列入圖例。"""
+        labels = [label for _c, label, _s in self._spans(3)]
+        self.assertNotIn("低", labels)
+        self.assertEqual([s for _c, _l, s in self._spans(3)], ["1", "2", "3"])
+
+    def test_single_value_not_written_as_range(self):
+        """單值級距寫「1」，不寫「1–1」。"""
+        spans = [s for _c, _l, s in self._spans(5)]
+        self.assertEqual(spans, ["1", "2", "3", "4–5"])
+
+    def test_spans_cover_every_count_once(self):
+        """級距要連續且不重疊——每個實際件數只能落在一階。"""
+        for max_value in (3, 5, 8, 11, 20):
+            covered: list[int] = []
+            for _c, _l, span in self._spans(max_value):
+                bounds = [int(x) for x in span.split("–")]
+                covered.extend(range(bounds[0], bounds[-1] + 1))
+            self.assertEqual(covered, list(range(1, max_value + 1)),
+                             f"max_value={max_value} 的級距沒有完整覆蓋 1..{max_value}")
+
+
+class PointLabelPlacementTests(unittest.TestCase):
+    """E7：資料點標籤不得互相重疊，也不得壓在資料點上。
+
+    🔴 2026-08-02 實機 p4 生命週期：左下角兩個年份標籤疊成「20**」讀不出來，
+    2015／2019／2023 也各自擠在點旁。
+
+    07-31 的第一版避讓只看「折線在此點往上還往下」，把標籤放到線的另一側——
+    那解的是「被折線壓過」，解不了**標籤之間**與**標籤壓到別的點**。
+    資料點密集時（本案 60 件裡多年落在 1–2 家、1–2 件）兩者才是主因。
+    """
+
+    def _place(self, items, obstacles=()):
+        return chart_runner.place_point_labels(list(items), list(obstacles))
+
+    def test_two_close_labels_do_not_overlap(self):
+        placed = self._place([(100.0, 100.0, "2011"), (104.0, 102.0, "2012")])
+        self.assertEqual(len(placed), 2)
+        self.assertTrue(all(p is not None for p in placed), "兩個標籤都該放得下（換位置即可）")
+        (x1, y1), (x2, y2) = placed
+        self.assertFalse(chart_runner.boxes_overlap(
+            chart_runner.label_box(x1, y1, "2011"), chart_runner.label_box(x2, y2, "2012")),
+            "相鄰兩年的標籤仍然重疊")
+
+    def test_label_does_not_cover_data_point(self):
+        """標籤不得蓋住任何資料點（包含不是它自己的那些）。"""
+        obstacles = [(100.0, 100.0, 4.0), (118.0, 94.0, 4.0)]
+        placed = self._place([(100.0, 100.0, "2022")], obstacles)
+        self.assertIsNotNone(placed[0])
+        box = chart_runner.label_box(*placed[0], "2022")
+        for ox, oy, r in obstacles:
+            self.assertFalse(chart_runner.boxes_overlap(box, (ox - r, oy - r, ox + r, oy + r)),
+                             "標籤壓在資料點上")
+
+    def test_gives_up_instead_of_stacking(self):
+        """四個候選位置全被占滿時回 None（不標），不得硬疊上去。"""
+        crowd = [(100.0 + i * 2, 100.0, f"20{i:02d}") for i in range(12)]
+        placed = self._place(crowd)
+        self.assertIn(None, placed, "極度擁擠時應放棄部分標籤，而不是全部硬放")
+        kept = [(p, item) for p, item in zip(placed, crowd) if p]
+        for i, (p1, it1) in enumerate(kept):
+            for p2, it2 in kept[i + 1:]:
+                self.assertFalse(chart_runner.boxes_overlap(
+                    chart_runner.label_box(*p1, it1[2]), chart_runner.label_box(*p2, it2[2])),
+                    "保留下來的標籤之間仍有重疊")
 
 
 if __name__ == "__main__":

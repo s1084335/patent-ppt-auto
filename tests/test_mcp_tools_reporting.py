@@ -146,7 +146,7 @@ class RunReportAnalysisTests(unittest.TestCase):
         chart_result = {
             "output_dir": "out/report_trial_x",
             "files": ["annual_trend.svg", "report_data.json", "index.html"],
-            "sections_rendered": ["annual_trend", "application_growth"],
+            "sections_rendered": ["annual_trend"],
         }
         with mock.patch.object(tools_reporting, "run_reports_batch", return_value={}) as batch, \
                 mock.patch.object(tools_reporting, "run_chart_trial", return_value=chart_result) as charts:
@@ -154,7 +154,7 @@ class RunReportAnalysisTests(unittest.TestCase):
         charts.assert_called_once_with(analysis_id=None, report_names=["application_trend"], filters=None)
         self.assertEqual(result["charts"]["output_dir"], "out/report_trial_x")
         self.assertTrue(result["charts"]["index_html"].endswith("index.html"))
-        self.assertEqual(result["charts"]["sections_rendered"], ["annual_trend", "application_growth"])
+        self.assertEqual(result["charts"]["sections_rendered"], ["annual_trend"])
         # 預設 limit 保護 context。
         batch.assert_called_once_with(
             ["application_trend"], filters=None, limit=tools_reporting.DEFAULT_ROW_LIMIT, patent_ids=None,

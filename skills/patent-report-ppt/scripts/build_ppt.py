@@ -1838,8 +1838,19 @@ def _render_stat_callout(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any
     _render_footnote(slide, theme, spec, ctx)
 
 
+def _bar_fill_ratio(value: int, total: int) -> float:
+    """佔比條的條長比例——分母是**全體總數**，不是第一名。
+
+    🔴 2026-08-02 實機 p5：條長原本用 `value / top_value`，右側標的百分比卻用
+    `value / total`。CN 39 件被畫滿整條軌道、字寫 65%——同一張圖兩種基準，
+    讀者把滿格讀成 100%。軌道本身就是 100% 基準，條長用真佔比才對得起來：
+    CN 停在 65%，留白的 35% 正是「還有其他國家」這個資訊。
+    """
+    return (value / total) if total else 0.0
+
+
 def _render_percentage_bars(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
-    """佔比條列（如受理國分布）：條長＝佔比，右側數值為實際件數。"""
+    """佔比條列（如受理國分布）：條長＝佔全體比例，右側數值為件數與佔比。"""
     _render_header(slide, theme, spec, ctx)
     g = theme.geometry["percentage_bars"]
     rows: list[dict[str, Any]] = []
@@ -1851,7 +1862,6 @@ def _render_percentage_bars(slide, theme: Theme, spec: PageSpec, ctx: dict[str, 
     label_col = _label_column(rows, numeric) if numeric else ""
     ranked = sorted(rows, key=lambda r: _as_int(r.get(numeric)), reverse=True) if numeric else []
     ranked = ranked[: int(g["row_max"])]
-    top_value = max((_as_int(r.get(numeric)) for r in ranked), default=0)
     total = sum(_as_int(r.get(numeric)) for r in ranked) or 1
 
     # 條數少時整組垂直置中，避免條列擠在上方、下半頁一片空白。
@@ -1868,7 +1878,7 @@ def _render_percentage_bars(slide, theme: Theme, spec: PageSpec, ctx: dict[str, 
                   size=theme.size("percent_label_pt"), color="ink", bold=True)
         _add_band(slide, theme, g["track_left_in"], top + g["track_top_offset_in"],
                   g["track_width_in"], g["track_height_in"], "bar_track", rounded=True)
-        ratio = (value / top_value) if top_value else 0.0
+        ratio = _bar_fill_ratio(value, total)
         fill_width = max(g["track_height_in"], g["track_width_in"] * ratio)
         _add_band(slide, theme, g["track_left_in"], top + g["track_top_offset_in"],
                   # 🔴 批2：原本第一名用 royal、其餘用 blue——兩者都是**裝飾色**
@@ -2795,10 +2805,20 @@ def _narrative_candidates(spec: PageSpec) -> tuple[str, ...]:
         if stem not in specific:
             specific.append(stem)
         for suffix in CHART_ORDER_HINTS:
-            if stem.endswith(suffix):
-                base = stem[: -len(suffix)]
-                if base not in specific:
-                    specific.append(base)
+            if not stem.endswith(suffix):
+                continue
+            base = stem[: -len(suffix)]
+            # 🔴 2026-08-02：檔名後綴**就是**變體鍵，先翻成 `report_key:variant` 再查。
+            # 症狀：p8 IPC Level 4 與 p9 Level 5 的標題與四條要點逐字相同（CPC 亦然）。
+            # 根因：解讀端其實產了 L4／L5 兩段不同內容，但候選鍵只有主檔名
+            # `ipc_main_distribution_L4`（narratives 沒這個鍵）與 base
+            # `ipc_main_distribution`，於是 `_narrative_entry` 走「取 variants 第一個」
+            # 那條路，兩頁都拿 L4。⚠ scoped 必須排在 base 前面，否則等於沒改。
+            scoped = f"{base}:{suffix.lstrip('_')}"
+            if scoped not in specific:
+                specific.append(scoped)
+            if base not in specific:
+                specific.append(base)
     generic = [key for key in spec.report_keys if key not in specific]
 
     keys: list[str] = channel + list(specific) + generic

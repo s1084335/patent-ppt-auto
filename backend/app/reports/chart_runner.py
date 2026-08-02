@@ -166,7 +166,6 @@ CHART_FILE_REPORTS: dict[str, list[str]] = {
     "owner_year_matrix.svg": ["owner_year_matrix"],
     "owner_year_matrix_more.svg": ["owner_year_matrix"],
     "lifecycle.svg": ["lifecycle"],
-    "application_growth.svg": ["application_trend"],
     "family_quality.json": ["family_quality_detail"],
     # 三個分群 artifact 各自對回自己的報表名（供 manifest／解讀查找定位到正確報表）。
     "cluster_topic_table.html": ["cluster_topic_table"],
@@ -529,60 +528,6 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
     path.write_text("\n".join(svg), encoding="utf-8")
 
 
-def compute_yoy_growth(rows: list[dict[str, Any]], year_key: str = "application_year", value_key: str = "patent_count") -> list[dict[str, Any]]:
-    """由年度件數序列計算年增率（%）。
-
-    只對「連續兩年且前一年 > 0」的年份產生增率點，年份斷檔或前年為 0 不硬算。
-    """
-    series = {int(r[year_key]): int(r[value_key]) for r in rows if r.get(year_key) is not None}
-    years = sorted(series)
-    growth: list[dict[str, Any]] = []
-    for prev, cur in zip(years, years[1:]):
-        if cur - prev == 1 and series[prev] > 0:
-            growth.append({"year": cur, "growth_pct": round((series[cur] - series[prev]) / series[prev] * 100, 1)})
-    return growth
-
-
-def render_growth_chart(path: Path, title: str, growth_rows: list[dict[str, Any]]) -> None:
-    """年增率折線圖：允許負值，畫 0% 基準線。"""
-    width, height = 980, 560
-    left, right, top, bottom = 76, 34, 64, 72
-    plot_w, plot_h = width - left - right, height - top - bottom
-    years = [int(r["year"]) for r in growth_rows]
-    values = [float(r["growth_pct"]) for r in growth_rows]
-    if not years:
-        years, values = [0], [0.0]
-    v_min, v_max = min(values + [0.0]), max(values + [0.0])
-    pad = max((v_max - v_min) * 0.1, 5.0)
-    v_min, v_max = v_min - pad, v_max + pad
-    svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
-        '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="{left}" y="54" font-size="13" fill="{COLOR_TEXT_SOFT}">YoY growth (%), consecutive years only</text>',
-    ]
-    for i in range(5):
-        tick = v_min + (v_max - v_min) * i / 4
-        y = scale(tick, v_min, v_max, top + plot_h, top)
-        svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="12" fill="{COLOR_TEXT_SOFT}">{tick:.0f}%</text>')
-    zero_y = scale(0, v_min, v_max, top + plot_h, top)
-    svg.append(f'<line x1="{left}" y1="{zero_y:.1f}" x2="{left + plot_w}" y2="{zero_y:.1f}" stroke="{COLOR_TEXT}" stroke-width="1.5"/>')
-    x_labels = years if len(years) <= 12 else years[:: max(1, math.ceil(len(years) / 10))]
-    for year in x_labels:
-        x = scale(year, years[0], years[-1], left, left + plot_w)
-        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="12" fill="{COLOR_TEXT_SOFT}">{year}</text>')
-    points = " ".join(
-        f"{scale(y, years[0], years[-1], left, left + plot_w):.1f},{scale(v, v_min, v_max, top + plot_h, top):.1f}"
-        for y, v in zip(years, values)
-    )
-    svg.append(f'<polyline points="{points}" fill="none" stroke="{COLOR_APPLICATION}" stroke-width="3"/>')
-    for y, v in zip(years, values):
-        svg.append(f'<circle cx="{scale(y, years[0], years[-1], left, left + plot_w):.1f}" cy="{scale(v, v_min, v_max, top + plot_h, top):.1f}" r="3.5" fill="{COLOR_APPLICATION}"/>')
-    svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
-
-
 def render_bubble_chart(
     path: Path,
     title: str,
@@ -797,6 +742,29 @@ def readable_text_on(fill: str) -> str:
     return TEXT_ON_LIGHT if luminance > 0.4 else "#FFFFFF"
 
 
+def bubble_legend_spans(max_value: int) -> list[tuple[str, str, str]]:
+    """圖例級距：回傳 (色, 標籤, 件數範圍)；本圖用不到的級距**直接不列**。
+
+    級距是把 `YEAR_BUBBLE_COLOR_BANDS` 的比例分界換算回整數件數。
+
+    🔴 2026-08-02 實機 p17（max_value=3）印出「低 **1–0**」——下限大於上限。
+    根因：`max_value` 小的時候某一階可能完全落不到任何整數上（最低階涵蓋
+    0–0.75 件），此時 `floor(上界)` 就小於 `ceil(下界)`。那一階本圖根本沒有
+    任何泡泡，硬印出來只會讓讀者對照不到東西——正確作法是不列。
+    ⚠ 同時：`lo == hi` 時寫單一數字，不寫「1–1」這種假區間（實機 p16）。
+    """
+    spans: list[tuple[str, str, str]] = []
+    previous = 0.0
+    for upper_bound, color, label in YEAR_BUBBLE_COLOR_BANDS:
+        lo = max(1, math.ceil(previous * max_value + 0.001))
+        hi = math.floor(upper_bound * max_value)
+        previous = upper_bound
+        if hi < lo:
+            continue
+        spans.append((color, label, f"{lo}" if lo == hi else f"{lo}–{hi}"))
+    return spans
+
+
 def year_bubble_color(value: int, max_value: int) -> tuple[str, str]:
     """依全體前 20 家的共同尺度回傳明顯色階，確保上下兩區可直接比較。"""
     ratio = value / max(max_value, 1)
@@ -834,12 +802,7 @@ def render_year_bubble_matrix_chart(
     # ⚠ 不改成共用尺度：泡泡半徑也吃 max_value，共用會讓小值那張全部縮小
     # （見 shared_matrix_max 的否決理由）。標出級距是不傷鑑別度的作法。
     legend_x = 82
-    previous_bound = 0
-    for upper_bound, color, label in YEAR_BUBBLE_COLOR_BANDS:
-        low = previous_bound * max_value
-        high = upper_bound * max_value
-        span = f"{max(1, math.ceil(low + 0.001)):.0f}–{math.floor(high):.0f}"
-        previous_bound = upper_bound
+    for color, label, span in bubble_legend_spans(max_value):
         parts.append(f'<circle cx="{legend_x}" cy="86" r="9" fill="{color}"/>')
         parts.append(f'<text x="{legend_x + 10}" y="90" font-size="11" fill="#4B5563">'
                      f'{label} {span}</text>')
@@ -870,6 +833,61 @@ def render_year_bubble_matrix_chart(
             )
     parts.append("</svg>")
     path.write_text("\n".join(parts), encoding="utf-8")
+
+
+LABEL_FONT_SIZE = 11
+# 中文與數字混排時每字約 0.6 個字級寬；年份是四位數字，估寬足夠準（只用來避讓）。
+LABEL_CHAR_WIDTH = 0.6
+
+
+def label_box(x: float, y: float, text: str) -> tuple[float, float, float, float]:
+    """標籤的外接矩形 (x1, y1, x2, y2)。y 是 SVG baseline，故上緣要往回推一個字級。"""
+    w = len(text) * LABEL_FONT_SIZE * LABEL_CHAR_WIDTH
+    return (x, y - LABEL_FONT_SIZE, x + w, y + 3)
+
+
+def boxes_overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    """兩個矩形是否相交（碰到邊界不算重疊）。"""
+    return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
+
+
+def place_point_labels(
+    items: list[tuple[float, float, str]],
+    obstacles: list[tuple[float, float, float]],
+) -> list[tuple[float, float] | None]:
+    """替資料點標籤挑位置：四個候選方位輪流試，都撞就放棄該標籤。
+
+    🔴 2026-08-02 實機 p4：左下兩個年份疊成「20**」讀不出來。
+    07-31 的第一版避讓只看「折線走向」把標籤放到線的另一側——那解的是
+    「被折線壓過」，解不了**標籤彼此重疊**與**標籤壓到別的資料點**。
+    在本案這種資料（多年落在 1–2 家、1–2 件，點擠成一團）後兩者才是主因。
+
+    ⚠ 放不下時回 `None`（該點不標），不硬放。少一個年份標籤讀者仍看得懂軌跡；
+    兩個字疊在一起則是兩個都讀不出來，更糟。
+
+    Parameters
+    ----------
+    items : [(x, y, text)]  要標的點與文字（y 為資料點座標，非 baseline）
+    obstacles : [(x, y, r)] 不可被覆蓋的圓（所有資料點）
+    """
+    # 右上 → 右下 → 左上 → 左下：先試慣用的右上，再依序退。
+    candidates = ((6, -6), (6, 16), (-6, -6), (-6, 16))
+    blocked = [(ox - r, oy - r, ox + r, oy + r) for ox, oy, r in obstacles]
+    placed: list[tuple[float, float] | None] = []
+    for x, y, text in items:
+        width = len(text) * LABEL_FONT_SIZE * LABEL_CHAR_WIDTH
+        chosen: tuple[float, float] | None = None
+        for dx, dy in candidates:
+            lx = x + dx if dx > 0 else x + dx - width
+            ly = y + dy
+            box = label_box(lx, ly, text)
+            if any(boxes_overlap(box, other) for other in blocked):
+                continue
+            chosen = (lx, ly)
+            blocked.append(box)
+            break
+        placed.append(chosen)
+    return placed
 
 
 def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -> None:
@@ -907,21 +925,25 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
         for _y, a, c in data
     )
     svg.append(f'<polyline points="{points}" fill="none" stroke="#94A3B8" stroke-width="1.5"/>')
-    label_step = max(1, math.ceil(len(data) / 12))
-    for index, (year, applicants, count) in enumerate(data):
-        x = scale(applicants, 0, x_max, left, left + plot_w)
-        y = scale(count, 0, y_max, top + plot_h, top)
+    coords = [
+        (scale(a, 0, x_max, left, left + plot_w), scale(c, 0, y_max, top + plot_h, top))
+        for _y, a, c in data
+    ]
+    for x, y in coords:
         svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{COLOR_APPLICATION}"/>')
-        if index % label_step == 0 or index == len(data) - 1:
-            # 🔴 標籤原本固定放右上（x+6, y-6），折線往右上走時就被線壓過
-            # （2026-07-31 獨立驗收：「2011」幾乎讀不出）。
-            # ⚠ 不用白色描邊避讓：背景在網頁是白、在簡報是深色，描邊色兩邊都會錯。
-            # 改依**折線在此點的走向**把標籤放到線的另一側——與背景無關。
-            neighbour = data[index + 1] if index + 1 < len(data) else data[index - 1] if index else None
-            going_up = neighbour is not None and neighbour[2] > count
-            offset_y = 16 if going_up else -6
-            svg.append(f'<text x="{x + 6:.1f}" y="{y + offset_y:.1f}" font-size="11" '
-                       f'fill="{COLOR_TEXT_SOFT}">{year}</text>')
+    # 🔴 標籤避讓改用碰撞偵測（2026-08-02）。
+    # 第一版（07-31）只依折線走向把標籤放到線的另一側——解了「被折線壓過」，
+    # 但解不了標籤彼此重疊、標籤壓到別的資料點。實機 p4 仍有兩個年份疊成「20**」。
+    # ⚠ 所有資料點都是障礙物（不只自己那一個），放不下就不標。
+    label_step = max(1, math.ceil(len(data) / 12))
+    wanted = [i for i in range(len(data)) if i % label_step == 0 or i == len(data) - 1]
+    items = [(coords[i][0], coords[i][1], str(data[i][0])) for i in wanted]
+    obstacles = [(x, y, 4.0) for x, y in coords]
+    for index, position in zip(wanted, place_point_labels(items, obstacles)):
+        if position is None:
+            continue
+        svg.append(f'<text x="{position[0]:.1f}" y="{position[1]:.1f}" font-size="{LABEL_FONT_SIZE}" '
+                   f'fill="{COLOR_TEXT_SOFT}">{data[index][0]}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -1150,14 +1172,19 @@ def _section_report_name(section: dict[str, Any]) -> str:
 # 各自演進，實測三張對不上——`annual_trend` 是折線卻寫「條長」、`application_growth`
 # 縱軸是年增率 % 卻寫「件數」、`lifecycle` 橫軸是申請人家數卻寫「申請年」。
 # ⚠ 只有畫圖的這一端知道自己畫了什麼，故說明必須從這裡輸出，組版端讀取即可。
+#
+# 🔴 2026-08-02：搬過來之後**又寫錯一次**——`lifecycle` 改寫成「連線＝同一技術群」，
+# 但同檔 `render_lifecycle_chart` 的 docstring 就寫著「依年份連線」，SVG 副題也是
+# `connected by year`。搬家沒讓說明變正確，只是換了個地方憑印象寫。
+# ⚠ 新增或修改任何一條前，**先去看那張圖實際怎麼畫**，不要照著鍵名想像。
 CHART_ENCODING_NOTES: dict[str, str] = {
     "application_trend": "折線＝當年件數｜橫軸＝年份｜兩線分別為申請與授權公告",
     "publication_trend": "折線＝當年公告件數｜橫軸＝公告年",
-    "application_growth": "折線＝年增率(%)｜橫軸＝年份｜僅連續年份計算",
-    "country_distribution": "條長＝件數佔比｜數值＝實際件數",
+    "country_distribution": "條長＝佔全體比例（軌道＝100%）｜數值＝件數與佔比",
     "jurisdiction_distribution": "條長＝件數｜排序＝件數由高至低",
-    "ipc_main_distribution": "條長＝件數｜左右為不同階層，非同圖合成",
-    "cpc_main_distribution": "條長＝件數｜左右為不同階層，非同圖合成",
+    # ⚠ 拆頁後每頁只有一個階層，說明不得再提「左右」（階層寫在圖表標題裡）。
+    "ipc_main_distribution": "條長＝件數｜縱軸＝分類代碼｜本頁為單一階層",
+    "cpc_main_distribution": "條長＝件數｜縱軸＝分類代碼｜本頁為單一階層",
     "opportunity_quadrant": "橫軸＝申請人家數｜縱軸＝專利件數｜點＝技術主題",
     "cluster_topic_table": "條長＝主題件數｜家數＝投入該主題的申請人數",
     "applicant_ranking": "條長＝件數｜排序＝件數由高至低",
@@ -1165,7 +1192,7 @@ CHART_ENCODING_NOTES: dict[str, str] = {
     "applicant_country_distribution": "格值＝件數｜列＝申請人、欄＝受理國",
     "applicant_year_matrix": "泡泡大小與顏色＝件數｜列＝申請人、欄＝申請年",
     "owner_year_matrix": "泡泡大小與顏色＝件數｜列＝專利權人、欄＝申請年",
-    "lifecycle": "橫軸＝申請人家數｜縱軸＝專利件數｜連線＝同一技術群",
+    "lifecycle": "橫軸＝申請人家數｜縱軸＝專利件數｜連線＝依年份先後",
     "family_country_layout": "條長＝存活家族數｜分組＝受理國",
     "family_quality_detail": "條長＝家族成員件數｜分組＝家族",
 }
@@ -1532,10 +1559,6 @@ def truncate_rows_for_persistence(
         if isinstance(value, list) and key.startswith(_CHART_ROWS_TOP20_PREFIXES):
             chart_rows_total[key] = len(value)
             chart_rows_out[key] = value[:PERSIST_RANKING_ROWS]
-        elif key == "application_growth" and isinstance(value, list):
-            # 年增率序列的年份鍵為 "year"（compute_yoy_growth 輸出形狀）
-            chart_rows_total[key] = len(value)
-            chart_rows_out[key] = _latest_years_rows(value, "year")
         else:
             chart_rows_out[key] = value
     return reports_out, chart_rows_out, chart_rows_total
@@ -1886,20 +1909,6 @@ def _build_lifecycle_section(ctx: ChartContext) -> None:
         "variants": [{"label": "Lifecycle", "file": "lifecycle.svg", "variant_key": "default"}],
         "note": "各點＝一個申請年；萌芽/成長/成熟/衰退的階段判讀由分析者依軌跡判斷。",
     })
-
-
-def _build_growth_section(ctx: ChartContext) -> None:
-    """年增率折線：由申請趨勢衍生計算（連續年才計，前年為 0 不硬算）。"""
-    application = ctx.report("application_trend")
-    growth_rows = compute_yoy_growth(application["rows"])
-    growth_title = f'{application["label_zh"]}年增率'
-    render_growth_chart(ctx.run_dir / "application_growth.svg", growth_title, growth_rows)
-    ctx.sections.append({
-        "title": growth_title,
-        "variants": [{"label": "YoY %", "file": "application_growth.svg", "variant_key": "default"}],
-        "note": "年增率＝(當年−前一年)/前一年；年份斷檔或前一年為 0 的年份不產生增率點。技術別成長折線待分群引擎產出 topic 後再加。",
-    })
-    ctx.chart_rows["application_growth"] = growth_rows
 
 
 # 主題來源段名／檔名後綴（2026-07-21 定案：技術、功效不混；原始欄名不進使用者介面）
@@ -2604,7 +2613,6 @@ SECTION_SPECS: tuple[SectionSpec, ...] = (
     SectionSpec("owner_year_matrix", ("owner_year_matrix",), _build_owner_year_matrix_section),
     SectionSpec("applicant_country", ("applicant_country_distribution",), _build_applicant_country_section),
     SectionSpec("lifecycle", ("lifecycle",), _build_lifecycle_section),
-    SectionSpec("application_growth", ("application_trend",), _build_growth_section),
     # 分群卡片＝一張 section 出三個 artifact（主題統計表＋機會板＋痛點板）。三個報表名
     # 都掛在此 spec：requestreport_names 帶其中任一就渲染整張分群卡（三者同源、一體呈現）；
     # 保留 "cluster_analytics" 虛擬別名，相容既有「無對應報表的特殊 section」契約與呼叫端。
