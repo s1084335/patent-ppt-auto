@@ -110,11 +110,17 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output"
 COLOR_APPLICATION = "#006DF5"   # theme blue：申請線／長條主色
 COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
 COLOR_BAR = "#006DF5"
-COLOR_BAR_ALT = "#869FB2"       # theme muted：次要長條
+# ⚠ 不得與 COLOR_TEXT_SOFT 共用色值：轉色表以**色碼**為鍵，兩個角色撞同一個
+# 字面值時下游無法分辨「這是次要文字還是次要資料」，只能一起換或一起不換
+# （2026-07-31 獨立驗收：次要長條因此被換成裝飾色族，距 accent 僅 0.4°）。
+COLOR_BAR_ALT = "#C99A5B"       # 次要長條（暖中性，與資料暖色系一致）
 COLOR_MAP = "#F8FAFC"
 COLOR_GRID = "#DCE3F2"          # theme bar_track：格線
 COLOR_TEXT = "#00094A"          # theme navy：標題與主文字
 COLOR_TEXT_SOFT = "#869FB2"     # 次要文字（刻度、副標）
+# 淺色填色上的圖元內文字色（見 readable_text_on）；不與 COLOR_TEXT 共用——
+# 那是「頁面文字」，這是「畫在圖元上的文字」，底色來源不同。
+TEXT_ON_LIGHT = "#1A1A1A"
 # SVG 內建字體宣告：不宣告時瀏覽器與 PowerPoint 轉圖都退回襯線字（舊版視覺斷裂主因）。
 SVG_FONT_STYLE = "<style>text{font-family:'Microsoft JhengHei','Segoe UI',sans-serif}</style>"
 
@@ -337,7 +343,11 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
         label = xml_text(row.get(label_key))
         value = int(row[value_key])
         bar_w = scale(value, 0, max_value, 0, plot_w)
-        color = COLOR_BAR if index % 2 == 0 else COLOR_BAR_ALT
+        # 🔴 2026-07-31：原本 `index % 2` 依奇偶列交替兩色——**沒有任何語意**，
+        # 卻讓讀者以為長條分成兩類（獨立驗收在三張排名圖抓到，且沒有圖例可解釋）。
+        # ⚠ 為這種交替補圖例等於為不存在的分類編故事；正解是拿掉交替。
+        # 需要幫助讀者對齊列時該用斑馬紋**底色**，不是改資料本身的顏色。
+        color = COLOR_BAR
         svg.append(f'<text x="{left - 12}" y="{y + 20}" text-anchor="end" font-size="13" fill="{COLOR_TEXT}">{label[:42]}</text>')
         svg.append(f'<rect x="{left}" y="{y + 6}" width="{bar_w:.1f}" height="18" rx="2" fill="{color}"/>')
         svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{y + 20}" font-size="13" fill="{COLOR_TEXT}">{value}</text>')
@@ -498,7 +508,7 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
         # 區域局用橘色，與國家（藍色）視覺區分：代表「這個地區有佈局」而非單一國家。
         fill, stroke = ("#F59E0B", "#92400E") if is_regional else ("#2563EB", "#1E40AF")
         svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" fill="{fill}" fill-opacity="0.68" stroke="{stroke}" stroke-width="2"/>')
-        svg.append(f'<text x="{x:.1f}" y="{y + 4:.1f}" text-anchor="middle" font-size="13" fill="white" font-weight="700">{xml_text(code)}</text>')
+        svg.append(f'<text x="{x:.1f}" y="{y + 4:.1f}" text-anchor="middle" font-size="13" fill="{readable_text_on(fill)}" data-on-fill="{fill}" font-weight="700">{xml_text(code)}</text>')
         svg.append(f'<text x="{x:.1f}" y="{y + radius + 18:.1f}" text-anchor="middle" font-size="13" fill="{COLOR_TEXT}">{value}</text>')
     footnote = "Bubble view: circle area is proportional to patent count. 橘色＝區域專利局（標轄區位置）。"
     if no_geo_notes:
@@ -750,6 +760,29 @@ YEAR_BUBBLE_COLOR_BANDS: tuple[tuple[float, str, str], ...] = (
 )
 
 
+def readable_text_on(fill: str) -> str:
+    """在指定底色上可讀的文字色——**依底色亮度決定**，不得寫死白字。
+
+    🔴 2026-07-31：象限泡泡與地圖泡泡寫死 `fill="white"`，實測對比 1.24–2.82
+    （WCAG 門檻 4.5），render 上實質看不見。
+    ⚠ 更關鍵的是**下游轉色**：PPT 組版端會把圖表換成深色主題配色，此時底色變了、
+    字色沒跟著變。故凡是「畫在圖元上的文字」都要輸出 `data-on-fill` 標記配對的
+    底色，下游轉色後才能依新底色重算字色（見 build_ppt.recolor_svg）。
+
+    亮度門檻取 WCAG 相對亮度 0.4：高於此用深字、低於此用白字，兩側皆 ≥4.5。
+    """
+    value = fill.lstrip("#")
+    if len(value) != 6:
+        return "#FFFFFF"
+    channels = []
+    for offset in (0, 2, 4):
+        component = int(value[offset:offset + 2], 16) / 255
+        channels.append(component / 12.92 if component <= 0.03928
+                        else ((component + 0.055) / 1.055) ** 2.4)
+    luminance = 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+    return TEXT_ON_LIGHT if luminance > 0.4 else "#FFFFFF"
+
+
 def year_bubble_color(value: int, max_value: int) -> tuple[str, str]:
     """依全體前 20 家的共同尺度回傳明顯色階，確保上下兩區可直接比較。"""
     ratio = value / max(max_value, 1)
@@ -808,7 +841,7 @@ def render_year_bubble_matrix_chart(
             )
             parts.append(
                 f'<text x="{x:.1f}" y="{y + 20:.1f}" font-size="{value_font_size}" font-weight="700" '
-                f'text-anchor="middle" fill="#FFFFFF" pointer-events="none">{value}</text>'
+                f'text-anchor="middle" fill="{readable_text_on(fill)}" data-on-fill="{fill}" pointer-events="none">{value}</text>'
             )
     parts.append("</svg>")
     path.write_text("\n".join(parts), encoding="utf-8")
@@ -1999,7 +2032,7 @@ def _chip_svg(chip: dict[str, Any], abs_x: float, abs_y: float, attrs: str) -> l
         f'height="{_CHIP_H}" rx="6" fill="{fill}">'
         f'<title>{xml_text(chip.get("tooltip", chip["text"]))}</title></rect>',
         f'<text x="{abs_x + _CHIP_PAD_X:.1f}" y="{abs_y + 16.5:.1f}" font-size="{_CHIP_FONT}" '
-        f'fill="{_chip_text_color(fill)}">{xml_text(chip["display"])}</text>',
+        f'fill="{_chip_text_color(fill)}" data-on-fill="{fill}">{xml_text(chip["display"])}</text>',
     ]
 
 

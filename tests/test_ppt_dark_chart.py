@@ -94,5 +94,58 @@ class RecolorBehaviourTests(unittest.TestCase):
         self.assertIn("#FFFFFF", out)
 
 
+class PairedTextRecolorTests(unittest.TestCase):
+    """轉色後，畫在圖元上的文字要依**新底色**重算（2026-07-31 引擎批 E1）。
+
+    ## 為什麼需要
+
+    引擎本來就會自動算對比色，但那是對**原始淺色主題**的底色算的。
+    PPT 端把底色換成深空配色後字色沒跟著變——實測象限 chip 白字掉到 1.44、
+    泡泡數字 1.24，畫面上實質看不見。
+
+    ⚠ 單靠字串替換無從得知「這段白字疊在哪個底上」，故由引擎輸出
+    `data-on-fill` 標記配對關係，PPT 端據此重算。
+    """
+
+    def setUp(self):
+        self.bp = _load_builder()
+        self.theme = self.bp.Theme.load(THEME_PATH)
+
+    def _contrast(self, a: str, b: str) -> float:
+        def lum(h):
+            h = h.lstrip("#")
+            ch = []
+            for i in (0, 2, 4):
+                c = int(h[i:i + 2], 16) / 255
+                ch.append(c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4)
+            return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+        la, lb = lum(a), lum(b)
+        hi, lo = max(la, lb), min(la, lb)
+        return (hi + 0.05) / (lo + 0.05)
+
+    def test_text_on_light_fill_becomes_dark(self):
+        """淺色底（轉色後的暖色）上的白字要改成深字，否則看不見。"""
+        svg = ('<svg><rect fill="#F59E0B"/>'
+               '<text fill="#FFFFFF" data-on-fill="#F59E0B">7</text></svg>')
+        out = self.bp.recolor_svg(svg, self.theme.chart_recolor)
+        fill = re.search(r'<rect fill="([^"]+)"', out).group(1)
+        text = re.search(r'<text fill="([^"]+)"', out).group(1)
+        self.assertGreaterEqual(
+            self._contrast(text, fill), 4.5,
+            f"文字 {text} 疊在 {fill} 上對比不足——轉色後沒有重算字色")
+
+    def test_unmarked_text_follows_normal_map(self):
+        """沒有 data-on-fill 的文字（軸標、標題）畫在頁面底上，照原規則轉亮字。"""
+        svg = '<svg><text fill="#00094A">軸標</text></svg>'
+        out = self.bp.recolor_svg(svg, self.theme.chart_recolor)
+        self.assertIn("#EAF6FB", out)
+
+    def test_engine_marks_pairing(self):
+        """引擎必須輸出 data-on-fill，否則 PPT 端沒有資訊可依據。"""
+        src = (REPO / "backend" / "app" / "reports" / "chart_runner.py").read_text(encoding="utf-8")
+        self.assertIn("data-on-fill", src,
+                      "引擎沒有標記文字與底色的配對——下游無從得知白字疊在哪")
+
+
 if __name__ == "__main__":
     unittest.main()

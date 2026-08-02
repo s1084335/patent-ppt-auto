@@ -619,9 +619,47 @@ def recolor_svg(svg_text: str, recolor: dict[str, Any]) -> str:
     if recolor.get("strip_background"):
         # 整版白底矩形必須先拿掉，否則深色頁上會出現一塊白板。
         svg_text = BACKGROUND_RECT_PATTERN.sub("", svg_text, count=1)
-    for old, new in (recolor.get("map") or {}).items():
+    mapping = {k.upper(): v for k, v in (recolor.get("map") or {}).items()}
+    for old, new in mapping.items():
         svg_text = re.sub(re.escape(f"#{old}"), f"#{new}", svg_text, flags=re.I)
-    return svg_text
+    return _recolor_paired_text(svg_text, mapping)
+
+
+def _recolor_paired_text(svg_text: str, mapping: dict[str, str]) -> str:
+    """依**轉色後的底色**重算「畫在圖元上的文字」顏色。
+
+    🔴 引擎本來就會自動算對比色（`_chip_text_color`／`readable_text_on`），但那是
+    對**原始**淺色主題的底色算的。本模組把底色換成深空配色之後，字色沒跟著變——
+    實測象限 chip 白字掉到 1.44、泡泡數字 1.24，畫面上實質看不見。
+
+    ⚠ 單靠字串替換無從得知「這段白字疊在哪個底上」，所以由引擎在 SVG 標
+    `data-on-fill="<原始底色>"`；這裡讀它、查出新底色、重算字色。
+    沒有標記的文字（座標軸、標題）不動——它們畫在頁面底上，不是圖元上。
+    """
+    def _swap(match: re.Match[str]) -> str:
+        element, source = match.group(0), match.group(1).upper().lstrip("#")
+        # ⚠ 走到這裡時 data-on-fill 的值**已被前面的全域替換換成新色**，
+        # 查表查不到是正常的——此時它本身就是新底色。不要因為「查不到」
+        # 就當成錯誤，也不要調換兩者順序：先算字色再換底色會讓標記失效。
+        new_fill = mapping.get(source, source)
+        return re.sub(r'fill="#?[0-9A-Fa-f]{6}"', f'fill="{_readable_on(new_fill)}"',
+                      element, count=1)
+
+    return re.sub(r'<text[^>]*?data-on-fill="([^"]+)"[^>]*?>', _swap, svg_text)
+
+
+def _readable_on(fill: str) -> str:
+    """深底用亮字、淺底用深字（WCAG 相對亮度 0.4 為界，兩側皆 ≥4.5）。"""
+    value = fill.lstrip("#")
+    if len(value) != 6:
+        return "#FFFFFF"
+    channels = []
+    for offset in (0, 2, 4):
+        component = int(value[offset:offset + 2], 16) / 255
+        channels.append(component / 12.92 if component <= 0.03928
+                        else ((component + 0.055) / 1.055) ** 2.4)
+    luminance = 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+    return "#132C44" if luminance > 0.4 else "#FFFFFF"
 
 
 def _crop_box(png_path: Path, padding: int) -> tuple[int, int, int, int] | None:
