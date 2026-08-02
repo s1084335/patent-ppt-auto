@@ -51,7 +51,11 @@ SKILL_PATH = _resolve_skill_path()
 # 教它寫散文（「標準寫法是：先點出數據現象…」）。
 # v5（2026-07-31）：撰寫程序翻轉（points→headline→text）＋三道形狀鎖
 # ＋逐報表版面容量。契約實質改變，故升版供產出追溯。
-PROMPT_VERSION = "report_narrative_v5"
+# v6（2026-08-02）：放寬形式、收緊內容。⚠ v5 的「不得含句號、逗號至多一個」
+# 讓 CLI 只能砍掉數字（實測 points 只用 4 條 × 19 字，容量卻有 8 條 × 54 字）——
+# 規則本身是 W-1 的根因。改為句號 ≤1／逗號 ≤2，同時新增三道內容鎖：
+# 現況必須帶數字、每頁至少一條意涵、CPC 必須與 IPC 對照。
+PROMPT_VERSION = "report_narrative_v6"
 
 # ── 三件套契約上限（v4；單一來源，skill 條文與驗證都以此為準）──
 # ⚠ 暫定值：理想上由 theme.json v2 的要點框尺寸換算，v2（skill creator 重建中）
@@ -65,6 +69,22 @@ NARRATIVE_POINTS_MAX = 7       # 2026-07-31 6→7，同上
 
 # 要點與長文的數字一致性檢查用（含小數、百分比與千分位）。
 _NUMBER_PATTERN = re.compile(r"\d+(?:[.,]\d+)*%?")
+
+# ── C-6：把「文字要有意義」從提示變成檢查（2026-08-02）──
+#
+# 使用者定調：報告文字要從「看到什麼數據 → 描述數據」提升為
+# 「數據代表什麼 → 為何重要 → 對技術布局有何意義」。
+# ⚠ 只寫在給 AI 看的提示、沒有程式驗證的規則，等於沒有規則
+#   （known-issues-optimization C-1 的教訓）。以下三件是可程式化的部分。
+NARRATIVE_EVIDENCE_LABELS = ("現況",)      # 這一類在講數據 → 必須有數字
+NARRATIVE_IMPLICATION_LABELS = ("意涵",)   # 這一類在講意義 → 每頁至少要有一條
+
+# 需要與另一張圖對照著講的報表。
+# 🔴 參考報告（附件3 電輔自行車）的 CPC 段落寫的是「**與 IPC 分布圖不同的是**…
+# Y02T（交通運輸的減排技術）…」——CPC 不重講一次 IPC，而是講 CPC 有而 IPC
+# 沒有的分類及其意義。實機 p10／p11 與 p8／p9 逐字相同，F-4 修好的只是
+# 「取到對的 variant」這個機制，內容上該講什麼差異是這一層的事。
+NARRATIVE_CONTRAST_WITH = {"cpc_main_distribution": "IPC"}
 
 
 def validate_narrative_contract(
@@ -114,18 +134,47 @@ def validate_narrative_contract(
                 if len(text) > max_chars:
                     warnings.append(
                         f"{where} points[{i}] 超限（{len(text)} 字 > {max_chars}）")
-                # 鎖一·電報體：一條只講一件事。句號代表寫成了句子，逗號超過一個
-                # 代表串接了多個論點——兩者都是「把長文塞進要點」的徵兆。
-                if "。" in text:
-                    warnings.append(f"{where} points[{i}] 含句號（要點寫電報體，不寫句子）")
-                if text.count("，") > 1:
+                # 鎖一·一條只講一個論點（🔴 2026-08-02 放寬形式）。
+                #
+                # 原規則是「不得含句號、逗號至多一個」。實測那讓 CLI **只能砍掉數字**：
+                #   text（報表頁，過關）：「在 subclass 層級，A63B 達 47 件，是絕對主體。」
+                #   points（PPT，太少）：「IPC大方向幾乎全落在運動訓練器材領域」（零數字）
+                # 「A63B 達 47 件，是絕對主體」已用掉唯一的逗號，再加依據就違規——
+                # 不是 CLI 偷懶，是規則逼它二選一。容量給到 8 條 × 54 字，只用了 4 條 × 19 字。
+                #
+                # ⚠ 放寬不等於取消：本意是「不要串接多個論點」，那由**上限**表達
+                # （句號 ≤1、逗號 ≤2），不是禁止標點。
+                if text.count("。") > 1:
+                    warnings.append(f"{where} points[{i}] 句號過多（一條只講一個論點）")
+                if text.count("，") > 2:
                     warnings.append(f"{where} points[{i}] 逗號過多（一條只講一個論點）")
+                # 鎖四·現況要帶數字（W-1 的正面要求）。
+                # 只放寬形式不會讓數字自己回來——「現況」是講數據的那一類，
+                # 沒有數字就只剩形容詞（實機原句：「IPC大方向幾乎全落在運動訓練器材領域」）。
+                label = str((point or {}).get("label") or "")
+                if label in NARRATIVE_EVIDENCE_LABELS and not _NUMBER_PATTERN.search(text):
+                    warnings.append(
+                        f"{where} points[{i}]（{label}）沒有任何數字——現況要有數據依據")
                 # 鎖二·數字一致：要點裡的數字必須在長文也出現，否則兩邊會漂移
                 # （網頁報表頁讀 text、PPT 讀 points，讀者會看到互相對不上的數字）。
                 for number in _NUMBER_PATTERN.findall(text):
                     if body and number not in body:
                         warnings.append(
                             f"{where} points[{i}] 的數字 {number} 未出現在長文——兩邊會對不上")
+            # 鎖五·每頁至少一條「意涵」（C-6）。
+            # ⚠ 全部都是「現況」＝把數據複述一遍就交差，讀者仍要自己想「所以呢」。
+            labels = [str((p or {}).get("label") or "") for p in points]
+            if not any(label in NARRATIVE_IMPLICATION_LABELS for label in labels):
+                warnings.append(
+                    f"{where} 沒有任何「意涵」——只描述數據不說意義，停在「看到什麼數據」那一層")
+            # 鎖六·該對照的要對照著講（CPC vs IPC）。
+            counterpart = NARRATIVE_CONTRAST_WITH.get(report_key)
+            if counterpart:
+                joined = " ".join(str((p or {}).get("text") or "") for p in points) + body
+                if counterpart not in joined:
+                    warnings.append(
+                        f"{where} 未與 {counterpart} 對照——這一頁要講的是與 {counterpart} 的"
+                        f"差異，不是把 {counterpart} 那段重講一次")
             # 鎖三·覆蓋：長文由要點逐條展開，段落數不該少於要點數。
             if body:
                 paragraphs = [p for p in re.split(r"\n\s*\n|\n", body) if p.strip()]
@@ -351,9 +400,14 @@ def build_prompt(
         "   report_key→variants→variant_key→\n"
         "   {points,headline,text,ai_model,prompt_version,generated_at} 兩層結構。\n"
         "   ⚠ **依此順序逐欄寫，不要跳著寫**——順序就是撰寫程序：\n"
-        f"   points＝{NARRATIVE_POINTS_MIN}–{NARRATIVE_POINTS_MAX} 條電報體要點\n"
+        f"   points＝{NARRATIVE_POINTS_MIN}–{NARRATIVE_POINTS_MAX} 條要點\n"
         f"   （各含 label／text／emphasis，text ≤{NARRATIVE_POINT_TEXT_MAX} 字，\n"
-        "   不含句號、逗號至多一個）；\n"
+        "   一條只講一個論點：句號至多一個、逗號至多兩個）；\n"
+        "   ⚠ 每條要寫到「數據代表什麼 → 為何重要 → 對技術布局有何意義」，\n"
+        "   不是把數據複述一遍。label 為「現況」者**必須帶數字**；\n"
+        "   每個變體**至少一條「意涵」**（只列現況＝沒有判讀）。\n"
+        "   CPC 分類那一頁要講的是**與 IPC 的差異**（哪些分類 IPC 沒有、代表什麼），\n"
+        "   不是把 IPC 那段重講一次。\n"
         f"   headline＝**從上列要點挑最重要一條濃縮**至 ≤{NARRATIVE_HEADLINE_MAX} 字，\n"
         "   不是另想一句；\n"
         "   text＝由上列要點**逐條展開**成連貫長文（段落數不少於要點條數，\n"

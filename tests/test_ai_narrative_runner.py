@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from backend.app.worker import ai_narrative_runner as runner
+from backend.app.worker import ai_narrative_runner
 from backend.app.worker.ai_narrative_runner import CliResult, NarrativeRunnerError
 
 
@@ -354,6 +355,109 @@ class RunNarrativeOrchestrationTests(unittest.TestCase):
                     refresh_index=lambda rd: {},
                     root=base,
                 )
+
+
+class NarrativeContractV6Tests(unittest.TestCase):
+    """W-1＋C-6：電報體規則把數字砍掉了；放寬形式，改成強制帶依據與意義。
+
+    🔴 W-1 的根因是**我訂的規則**，不是 CLI 偷懶也不是容量不足：
+    「不得含句號」→ 一條只能寫一個子句；「逗號至多一個」→
+    「A63B 達 47 件，是絕對主體」已用掉唯一逗號，再加依據就違規。
+    容量給到 8 條 × 54 字，實際只用 4 條 × 19–22 字。
+
+    🔴 C-6 使用者定調：文字要從「看到什麼數據 → 描述數據」提升為
+    「數據代表什麼 → 為何重要 → 對技術布局有何意義」。
+    ⚠ 這條若只寫進 prompt 而沒有檢查，就等於沒有規則（AGENTS.md）。
+    可程式化的部分有三件：現況要帶數字、每頁至少一條意涵、CPC 要講與 IPC 的差異。
+    """
+
+    def _warn(self, points, body, key="ipc_main_distribution"):
+        narratives = {"reports": {key: {"variants": {"default": {
+            "headline": "測試標題", "points": points, "text": body}}}}}
+        return ai_narrative_runner.validate_narrative_contract(narratives)
+
+    @staticmethod
+    def _pick(warnings, keyword):
+        return [w for w in warnings if keyword in w]
+
+    def test_one_period_is_allowed(self):
+        """一個句號代表寫成完整判讀，不是把長文塞進要點。"""
+        warns = self._warn(
+            [{"label": "現況", "text": "A63B達47件，佔78%，為絕對主體。"}],
+            "A63B達47件，佔78%，為絕對主體。")
+        self.assertFalse(self._pick(warns, "句號"))
+
+    def test_two_periods_still_rejected(self):
+        """⚠ 放寬不等於取消：兩個句號就是串接了兩個論點。"""
+        warns = self._warn(
+            [{"label": "現況", "text": "A63B達47件。F03G僅2件。"}],
+            "A63B達47件。F03G僅2件。")
+        self.assertTrue(self._pick(warns, "句號"))
+
+    def test_two_commas_allowed_three_rejected(self):
+        ok = self._warn([{"label": "現況", "text": "A63B達47件，佔78%，為主體"}],
+                        "A63B達47件，佔78%，為主體")
+        self.assertFalse(self._pick(ok, "逗號"))
+        bad = self._warn([{"label": "現況", "text": "A達4件，B達3件，C達2件，D達1件"}],
+                         "A達4件，B達3件，C達2件，D達1件")
+        self.assertTrue(self._pick(bad, "逗號"))
+
+    def test_status_point_must_carry_a_number(self):
+        """🔴「現況」是講數據的——沒有數字就只是形容詞。
+
+        實機原句：「IPC大方向幾乎全落在運動訓練器材領域」（19 字，零數字）。
+        """
+        warns = self._warn(
+            [{"label": "現況", "text": "IPC大方向幾乎全落在運動訓練器材領域"}],
+            "IPC大方向幾乎全落在運動訓練器材領域")
+        self.assertTrue(self._pick(warns, "數字"))
+
+    def test_variant_must_have_an_implication(self):
+        """C-6：只描述數據不給意義，就是停在「看到什麼數據」那一層。"""
+        points = [{"label": "現況", "text": f"第{i}類達{i}件"} for i in range(1, 5)]
+        warns = self._warn(points, "\n\n".join(p["text"] for p in points))
+        self.assertTrue(self._pick(warns, "意涵"))
+
+    def test_implication_satisfies_the_rule(self):
+        points = [{"label": "現況", "text": "A63B達47件"},
+                  {"label": "意涵", "text": "布局集中訓練器材，跨領域延伸僅2件"},
+                  {"label": "後續", "text": "第二布局線尚未成形"},
+                  {"label": "現況", "text": "F03G僅2件"}]
+        warns = self._warn(points, "\n\n".join(p["text"] for p in points))
+        self.assertFalse(self._pick(warns, "意涵"))
+
+    def test_cpc_must_contrast_with_ipc(self):
+        """🔴 參考報告的 CPC 段落寫的是「與 IPC 分布圖不同的是…」。
+
+        實機 p10／p11 的 CPC 判讀與 p8／p9 的 IPC **逐字相同**——F-4 修好了
+        「取到對的 variant」這個機制，但內容上該講什麼差異是解讀層的事。
+        """
+        points = [{"label": "現況", "text": "CPC僅8件全落在A63B"},
+                  {"label": "意涵", "text": "標引覆蓋遠低於樣本稀薄"},
+                  {"label": "後續", "text": "訊號量不足應以主分類為主"},
+                  {"label": "現況", "text": "A63B-0022達5件"}]
+        body = "\n\n".join(p["text"] for p in points)
+        warns = self._warn(points, body, key="cpc_main_distribution")
+        self.assertTrue(self._pick(warns, "IPC"))
+
+    def test_cpc_mentioning_ipc_passes(self):
+        points = [{"label": "現況", "text": "CPC僅8件，遠低於IPC的49件"},
+                  {"label": "意涵", "text": "CPC標引覆蓋率不足兩成"},
+                  {"label": "後續", "text": "判讀應以IPC為主"},
+                  {"label": "現況", "text": "A63B-0022達5件"}]
+        warns = self._warn(points, "\n\n".join(p["text"] for p in points),
+                           key="cpc_main_distribution")
+        self.assertFalse(self._pick(warns, "未與"))
+
+    def test_other_reports_are_not_asked_to_mention_ipc(self):
+        """⚠ 只有 CPC 需要對照 IPC；別的報表不得被這條規則波及。"""
+        points = [{"label": "現況", "text": "CN受理39件"},
+                  {"label": "意涵", "text": "申請足跡高度集中中國"},
+                  {"label": "後續", "text": "海外保護偏薄"},
+                  {"label": "現況", "text": "EP僅3件"}]
+        warns = self._warn(points, "\n\n".join(p["text"] for p in points),
+                           key="country_distribution")
+        self.assertFalse(self._pick(warns, "IPC"))
 
 
 if __name__ == "__main__":

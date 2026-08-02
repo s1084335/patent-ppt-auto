@@ -49,7 +49,7 @@ def _entry(headline="布局集中於 A63B", points=None, text=None):
                 "建議以 5 階細分類檢視斷層所在。\n"
                 "近三年新進者僅 1 家，進入門檻偏高。")
     return {"headline": headline, "points": points, "text": text,
-            "ai_model": "m", "prompt_version": "report_narrative_v5",
+            "ai_model": "m", "prompt_version": "report_narrative_v6",
             "generated_at": "2026-07-31T00:00:00"}
 
 
@@ -67,7 +67,7 @@ class ContractConstantsTests(unittest.TestCase):
         self.assertEqual(runner.NARRATIVE_POINTS_MAX, 7)
 
     def test_prompt_version_bumped(self):
-        self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v5")
+        self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v6")
 
 
 class SkillRulesTests(unittest.TestCase):
@@ -87,7 +87,7 @@ class SkillRulesTests(unittest.TestCase):
         for token in ("20", "55", "4", "7"):
             with self.subTest(token=token):
                 self.assertIn(token, self.md)
-        self.assertIn("report_narrative_v5", self.md, "prompt_version 未升版")
+        self.assertIn("report_narrative_v6", self.md, "prompt_version 未升版")
 
     def test_prose_instruction_removed(self):
         """⚠ 舊散文指令必須移除——它與要點契約直接矛盾（AI 會二選一）。"""
