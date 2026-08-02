@@ -323,11 +323,12 @@ def render_line_chart(
 
 def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_key: str, value_key: str = "patent_count", limit: int = 20) -> None:
     data = rows[:limit]
-    width = 980
-    row_h = 30
+    width = CHART_CANVAS_WIDTH
+    row_h = CHART_ROW_HEIGHT
     top = 68
     left = 310
-    right = 40
+    # right 留給列尾數值：18px 字要放得下「1,234」而不撞出畫布。
+    right = 150
     bottom = 34
     height = top + bottom + max(1, len(data)) * row_h
     plot_w = width - left - right
@@ -359,9 +360,9 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
         # 🔴 2026-08-02（W-2）：移除交替後五條變成完全同色，補上**依數值**的
         # 連續深淺——這個有語意，且同件數必同色。
         color = ranking_bar_color(value, max_value)
-        svg.append(f'<text x="{left - 12}" y="{y + 20}" text-anchor="end" font-size="13" fill="{COLOR_TEXT}">{label[:42]}</text>')
-        svg.append(f'<rect x="{left}" y="{y + 6}" width="{bar_w:.1f}" height="18" rx="2" fill="{color}"/>')
-        svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{y + 20}" font-size="13" fill="{COLOR_TEXT}">{value}</text>')
+        svg.append(f'<text x="{left - 12}" y="{y + 20}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{label}</text>')
+        svg.append(f'<rect x="{left}" y="{y + 5}" width="{bar_w:.1f}" height="18" rx="2" fill="{color}"/>')
+        svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{y + 20}" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{value}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -386,52 +387,76 @@ def render_segmented_bar_chart(
     """
     total_rows = len(rows)
     data = rows[:limit]
-    width = 980
-    row_h = 50
+    width = CHART_CANVAS_WIDTH
+    # 🔴 P-2：row_h 由 50 壓到 28——原本每列固定 50px 讓 12 列的畫布高達 7.54in，
+    # 塞進 4.32in 圖框被壓到 0.573 倍，字只剩 5.6pt（下限 12pt）。
+    #
+    # ⚠ 但 row_h 一律 28 會讓「最新受讓人」那行放不下——**移除它就是丟資訊**
+    # （2026-08-03 使用者定案：資訊不能有被截斷的；既有測試也在守這件事）。
+    # 故改為**動態列高**：只有帶受讓人註記的那幾列佔兩行，其餘一行。
+    # 本案 12 列只有 1 列有受讓人，總高 466px，縮放仍 ≈0.89。
+    row_h = CHART_ROW_HEIGHT
     top = 90
     left = 310
-    right = 40
+    right = 150
     bottom = 34
-    height = top + bottom + max(1, len(data)) * row_h
+
+    def _assignees(row: dict[str, Any]) -> str:
+        names = [n.strip() for n in str(row.get("recent_assignee_display_names") or "").split("; ") if n.strip()]
+        return ("最新受讓人：" + "；".join(names)) if names else ""
+
+    # ⚠ 列數必須跟著**畫布高度上限**走，不是固定 limit：多幾列有受讓人註記，
+    # 畫布就變高、縮放變小、字又掉回不可讀。改為逐列累加到上限為止，
+    # 少放的那幾列由「顯示前 N/M 名」誠實標示（完整名單在附錄）。
+    kept: list[dict[str, Any]] = []
+    notes: list[str] = []
+    row_heights: list[int] = []
+    used = top + bottom
+    for row in data:
+        note = _assignees(row)
+        needed = row_h * (2 if note else 1)
+        if kept and used + needed > CHART_CANVAS_MAX_HEIGHT:
+            break
+        kept.append(row)
+        notes.append(note)
+        row_heights.append(needed)
+        used += needed
+    data = kept
+    height = top + bottom + (sum(row_heights) or row_h)
     plot_w = width - left - right
     max_value = max([int(row.get(total_key) or 0) for row in data] + [1])
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="28" y="36" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<rect x="28" y="56" width="12" height="12" fill="{RANKING_BAR_SCALE[0]}"/><text x="46" y="67" font-size="13" fill="{COLOR_TEXT}">全部專利</text>',
-        f'<rect x="126" y="56" width="12" height="12" fill="{COLOR_APPLICATION}"/><text x="144" y="67" font-size="13" fill="{COLOR_TEXT}">{xml_text(segment_label)}</text>',
+        f'<rect x="28" y="56" width="12" height="12" fill="{RANKING_BAR_SCALE[0]}"/><text x="46" y="67" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">全部專利</text>',
+        f'<rect x="126" y="56" width="12" height="12" fill="{COLOR_APPLICATION}"/><text x="144" y="67" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{xml_text(segment_label)}</text>',
         *([f'<text x="{width - 40}" y="67" text-anchor="end" font-size="12" '
            f'fill="{COLOR_TEXT_SOFT}">{xml_text(truncation_note(len(data), total_rows))}</text>']
           if truncation_note(len(data), total_rows) else []),
     ]
+    y_cursor = top
     for index, row in enumerate(data):
-        y = top + index * row_h
+        y = y_cursor
+        y_cursor += row_heights[index]
         label = xml_text(row.get(label_key))
-        assignee_names = [
-            name.strip()
-            for name in str(row.get("recent_assignee_display_names") or "").split("; ")
-            if name.strip()
-        ]
-        assignee_note = ""
-        if assignee_names:
-            shown = assignee_names[:3]
-            extra = len(assignee_names) - len(shown)
-            assignee_note = "最新受讓人：" + "；".join(shown) + (f" +{extra}" if extra > 0 else "")
         total = int(row.get(total_key) or 0)
         segment = min(int(row.get(segment_key) or 0), total)
         total_w = scale(total, 0, max_value, 0, plot_w)
         segment_w = scale(segment, 0, max_value, 0, plot_w)
         segment_x = left + max(total_w - segment_w, 0)
-        svg.append(f'<text x="{left - 12}" y="{y + 20}" text-anchor="end" font-size="13" fill="{COLOR_TEXT}">{label[:42]}</text>')
+        svg.append(f'<text x="{left - 12}" y="{y + 20}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{label}</text>')
         # 🔴 F-2：原本 fill="#CBD5E1"（白底淺灰藍）被 chart_recolor 當結構色轉成
         # 面板底 274A66，對深空背景只有 1.72——簡報上這根長條等於不存在。
         # 改用資料色階（依數值深淺，W-2），最淺一階對兩種背景都 ≥3.0。
-        svg.append(f'<rect class="bar-total" x="{left}" y="{y + 5}" width="{total_w:.1f}" height="20" rx="2" fill="{ranking_bar_color(total, max_value)}"/>')
-        svg.append(f'<rect class="bar-segment" x="{segment_x:.1f}" y="{y + 5}" width="{segment_w:.1f}" height="20" rx="2" fill="{COLOR_APPLICATION}"/>')
-        svg.append(f'<text x="{left + total_w + 8:.1f}" y="{y + 20}" font-size="13" fill="{COLOR_TEXT}">{segment} / {total}</text>')
-        if assignee_note:
-            svg.append(f'<text x="{left}" y="{y + 41}" font-size="12" fill="{COLOR_TEXT_SOFT}">{xml_text(assignee_note[:90])}</text>')
+        svg.append(f'<rect class="bar-total" x="{left}" y="{y + 5}" width="{total_w:.1f}" height="18" rx="2" fill="{ranking_bar_color(total, max_value)}"/>')
+        svg.append(f'<rect class="bar-segment" x="{segment_x:.1f}" y="{y + 5}" width="{segment_w:.1f}" height="18" rx="2" fill="{COLOR_APPLICATION}"/>')
+        svg.append(f'<text x="{left + total_w + 8:.1f}" y="{y + 20}" font-size="{CHART_LABEL_PX}" '
+                   f'fill="{COLOR_TEXT}">{segment} / {total}</text>')
+        # 受讓人名單完整輸出、不截斷——這一列本來就多給了一行。
+        if notes[index]:
+            svg.append(f'<text x="{left}" y="{y + 20 + row_h}" font-size="{CHART_LABEL_PX - 3}" '
+                       f'fill="{COLOR_TEXT_SOFT}">{xml_text(notes[index])}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -595,7 +620,7 @@ def render_bubble_chart(
         x = scale(float(row[x_key]), 0, x_max, left, left + plot_w)
         y = scale(float(row[y_key]), 0, y_max, top + plot_h, top)
         radius = 6 + 30 * math.sqrt(float(row[size_key]) / s_max)
-        label = str(row[label_key])[:22]
+        label = str(row[label_key])
         half_w = len(label) * 3.3  # 11px 字約 6.6px 寬的一半估值
         default_y = y - radius - 5
         # 候選位置：上方原位 → 下方 → 更上 → 更下……交錯外推，最多 12 檔。
@@ -683,7 +708,7 @@ def render_matrix_chart(
         )
     for row_index, row_label in enumerate(top_rows):
         y = top_margin + row_index * cell_h
-        display = row_label if len(row_label) <= 26 else row_label[:25] + "…"
+        display = row_label
         parts.append(
             f'<text x="{label_width - 8}" y="{y + cell_h / 2 + 4}" font-size="11" text-anchor="end" fill="{COLOR_TEXT}">{xml_text(display)}</text>'
         )
@@ -840,7 +865,7 @@ def render_year_bubble_matrix_chart(
         parts.append(f'<text x="{x:.1f}" y="{top - 14}" font-size="17" text-anchor="middle" fill="{COLOR_TEXT}">{year}</text>')
     for row_index, company in enumerate(row_names):
         y = top + row_index * row_h
-        display = company if len(company) <= 20 else company[:19] + "…"
+        display = company
         parts.append(f'<text x="{left - 10}" y="{y + 20}" font-size="17" text-anchor="end" fill="{COLOR_TEXT}">{xml_text(display)}</text>')
         for col_index, year in enumerate(years):
             value = values.get((company, year), 0)
@@ -1029,6 +1054,20 @@ def render_chart_embed(file: str) -> str:
 # 白底（網頁報表）實測對比：10.88／7.43／5.28／3.75／3.08，全數過關。
 # 對應的深底階由 theme.json 的 chart_recolor 映射（對背景 9.24→3.53）。
 RANKING_BAR_SCALE: tuple[str, ...] = ("#0A3A80", "#0B4FB8", "#1268D6", "#2E86E0", "#4A97E3")
+
+
+# ── 圖表畫布：以**最終顯示尺寸**設計（P-2，2026-08-03）──
+#
+# 🔴 實測：排名圖原本畫 980×724px（10.21×7.54 in），塞進 chart_hero 的
+# 8.9×4.32 in 圖框被高度卡到 0.573 倍——13px 的公司名到投影片上只剩 5.6pt，
+# 而組版原生文字的下限是 12pt。⚠ 根因不是字寫太小，是**圖畫太高**。
+#
+# 反推：要讓縮放 ≥0.9，畫布不得超過 9.89×4.80 in ＝ 949×461 px。
+# 字級 18px（＝13.5pt）× 0.9 ＝ 12.2pt，剛好過線。
+CHART_CANVAS_WIDTH = 949
+CHART_CANVAS_MAX_HEIGHT = 460
+CHART_LABEL_PX = 18          # 列標籤／數值；縮放後約 12.2pt
+CHART_ROW_HEIGHT = 28        # 12 列 → 68+336+34 = 438px，仍在上限內
 
 
 def ranking_bar_color(value: float, max_value: float) -> str:

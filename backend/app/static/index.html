@@ -413,10 +413,16 @@ table.data td.cell-wrap, table.data th.cell-wrap {
    換行到表格下方。且此症狀隨視窗寬度時好時壞（寬時 1rem 佔比小可能勉強塞下），
    比穩定壞掉更難查。
    兩欄各扣 0.5rem（gap 的一半），相加即為 100% - 1rem，正好容納 gap。 */
-.report-single-data { flex: 0 0 calc(45% - 0.5rem); min-width: 0; overflow-x: auto; }
-.report-single-chart { flex: 1 1 calc(55% - 0.5rem); min-width: 0; }
-.report-single-compact-data .report-single-data { flex-basis: calc(32% - 0.5rem); }
-.report-single-compact-data .report-single-chart { flex-basis: calc(68% - 0.5rem); }
+/* 🔴 2026-08-03 使用者定案：圖表滿寬、表格排下方。
+   原本圖表只佔 55%（約 577px），SVG 980px 寬被縮到 0.59 倍；受理局分布那種
+   4 列的扁圖縮完只剩 131px 高，13px 的軸標籤變成 **7.6px**，實測看不清楚。
+   ⚠ 縮圖不是「小一點」而已——字級是等比縮的，縮到某個點就不再是資訊。
+   改滿寬後圖寬 1050px，配合引擎新畫布（標籤 18px）約可得 20px。
+   代價：卡片變高、要多捲動；使用者選擇這個取捨。 */
+.report-single { flex-direction: column; }
+.report-single-data { flex: 1 1 100%; width: 100%; min-width: 0; overflow-x: auto; }
+.report-single-chart { flex: 1 1 100%; width: 100%; min-width: 0; order: -1; }
+/* 單欄版面下比例已無意義，只留表格的緊湊字級設定。 */
 .report-single-compact-data table.data { width: auto; min-width: 15rem; font-size: 0.82rem; }
 .report-single-compact-data table.data th,
 .report-single-compact-data table.data td {

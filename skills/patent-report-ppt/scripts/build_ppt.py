@@ -2385,29 +2385,59 @@ def _add_table(
     # 欄位顯示規則：排除欄與中文欄名以引擎那份為準（labels／excluded 由呼叫端備妥），
     # 欄值轉譯仍在本檔（source_field 的原始欄值不得入畫面，轉「技術／功效」）。
     columns = [name for name in rows[0] if str(name) not in excluded][:max_columns]
-    max_rows = max(1, int(height / row_height) - 1)
-    display = rows[:max_rows]
+
+    # 🔴 2026-08-03 使用者定案：**資訊不能有被截斷的**。
+    # 原本是「放不下就切掉加『…』」——讀者既不知道被切掉什麼，也無從查證。
+    # 改為：欄寬依內容分配 → 放不下就換行 → **列高跟著長**；
+    # 真的塞不進框時少顯示幾列（完整版在附錄），但**顯示出來的每一格都完整**。
+    col_widths = _column_widths(columns, rows, labels, width,
+                                size_pt=theme.size("table_body_pt"), inset_in=cell_inset_in)
+    text_widths = [w - cell_inset_in * 2 for w in col_widths]
+    body_pt = theme.size("table_body_pt")
+
+    def _lines_for(row: dict[str, Any]) -> int:
+        needed = 1
+        for index, name in enumerate(columns):
+            value = row.get(name)
+            if isinstance(value, list):
+                value = "、".join(str(v) for v in value)
+            text = "" if value is None else str(value)
+            span = _display_width(text) * (body_pt / 72.0)
+            needed = max(needed, math.ceil(span / max(text_widths[index], 1e-6)))
+        return needed
+
+    header_lines = max(
+        (math.ceil(_display_width(labels.get(str(n), str(n))) * (theme.size("table_header_pt") / 72.0)
+                   / max(text_widths[i], 1e-6)) for i, n in enumerate(columns)), default=1)
+    header_lines = max(1, header_lines)
+
+    # 逐列累加實際高度，超過框就停——不是用 height/row_height 平均估。
+    display: list[dict[str, Any]] = []
+    row_line_counts: list[int] = []
+    used = header_lines * row_height
+    for row in rows:
+        lines = _lines_for(row)
+        if used + lines * row_height > height and display:
+            break
+        display.append(row)
+        row_line_counts.append(lines)
+        used += lines * row_height
     # 表高依實際列數收縮：宣告高度是**上限**不是固定值，列少時下半截留白會很難看
     # （主題分布通常只有 8–12 列，舊版固定 4.86 in 有一半是空的）。
-    used_height = min(height, (len(display) + 1) * row_height)
+    used_height = min(height, (header_lines + sum(row_line_counts)) * row_height)
     table = slide.shapes.add_table(
         len(display) + 1, len(columns), Inches(left), Inches(top), Inches(width), Inches(used_height)
     ).table
-    for row in table.rows:
-        row.height = Inches(row_height)
+    # 列高依該列實際行數——換了行卻不加高，字就會被切在框外。
+    table.rows[0].height = Inches(header_lines * row_height)
+    for index, lines in enumerate(row_line_counts, start=1):
+        table.rows[index].height = Inches(lines * row_height)
 
-    # 🔴 F-3／F-16：欄寬依內容需求分配，不再等分。等分讓兩位數的「專利件數」
-    # 和一長串名單拿一樣寬——一邊浪費、一邊截斷。
-    col_widths = _column_widths(columns, display, labels, width,
-                                size_pt=theme.size("table_body_pt"), inset_in=cell_inset_in)
     for index, col_width in enumerate(col_widths):
         table.columns[index].width = Inches(col_width)
-    # 扣掉左右內距後才是真正可用的文字寬度；截字到這個寬度內，儲存格就不會自動換行把列撐高。
-    text_widths = [w - cell_inset_in * 2 for w in col_widths]
     for index, name in enumerate(columns):
         cell = table.cell(0, index)
-        shown = labels.get(str(name), str(name))
-        cell.text = _truncate_to_width(shown, text_widths[index], theme.size("table_header_pt"))
+        cell.text = labels.get(str(name), str(name))
         # v3 深空：表頭深藍底＋accent 青字（原白字在深底上與內文分不出層次）。
         _style_cell(cell, theme, size=theme.size("table_header_pt"), color="accent", bold=True,
                     fill="navy", margin_in=cell_margin_in, inset_in=cell_inset_in)
@@ -2419,9 +2449,7 @@ def _add_table(
                 value = "、".join(str(v) for v in value)
             value = mapped.get(str(value), value) if mapped else value
             cell = table.cell(r, c)
-            cell.text = "" if value is None else _truncate_to_width(
-                str(value), text_widths[c], theme.size("table_body_pt")
-            )
+            cell.text = "" if value is None else str(value)
             # bold=True：v3 使用者定案「文字內容加粗體」，深底細字會發灰。
             _style_cell(cell, theme, size=theme.size("table_body_pt"), color="ink", bold=True,
                         fill="paper" if r % 2 else "panel_alt",

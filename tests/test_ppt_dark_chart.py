@@ -21,6 +21,7 @@ import importlib.util
 import json
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -173,6 +174,74 @@ class EncodingNoteSingleSourceTests(unittest.TestCase):
         spec = bp.PageSpec(page=1, kind="chart_hero", title="x", topic="x",
                            report_keys=("application_trend",))
         self.assertTrue(bp._encoding_note(spec, {"report_data": {}}))
+
+
+class ChartTextSizeOnSlideTests(unittest.TestCase):
+    """P-2：圖表文字的判準是**縮放後的 pt**，不是 SVG 裡寫的 px。
+
+    🔴 2026-08-03 實測：排名圖 SVG 980×724px（10.21×7.54 in）塞進 chart_hero
+    的 8.9×4.32 in 圖框，被高度卡到 **0.573 倍**——13px 的公司名到投影片上
+    只剩 **5.6pt**，而組版原生文字的下限是 12pt。差超過一倍。
+
+    ⚠ 根因不是「字寫太小」，是**圖畫太高**：12 列 × 50px 讓圖有 7.54in。
+    07-31 那次「20 列縮到 0.37 倍」我只解了列數，沒解這件事，所以 12 列還是同一個病。
+
+    修法：SVG 以**最終顯示尺寸**設計（畫布比例貼齊圖框），不是畫大圖再縮。
+    """
+
+    MIN_SLIDE_PT = 12.0   # 與 theme.font.min_pt 同口徑
+
+    def setUp(self):
+        self.theme = json.loads(THEME_PATH.read_text(encoding="utf-8"))
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+    def _render_ranking(self, tmp: Path, rows: int = 12):
+        from backend.app.reports import chart_runner as cr
+        data = [{"applicant_display_name": f"公司名稱{i}", "patent_count": 20 - i,
+                 "recent_assignee_count": 0} for i in range(rows)]
+        path = tmp / "rank.svg"
+        cr.render_segmented_bar_chart(path, "主要申請人排名", data, "applicant_display_name",
+                                      total_key="patent_count", segment_key="recent_assignee_count",
+                                      limit=rows, segment_label="有最新受讓人")
+        return path.read_text(encoding="utf-8")
+
+    @staticmethod
+    def _canvas(svg: str) -> tuple[float, float]:
+        m = re.search(r'width="(\d+)" height="(\d+)"', svg)
+        return int(m.group(1)) / 96, int(m.group(2)) / 96
+
+    def _slide_pt(self, svg: str, px: float, box: str = "chart_hero") -> float:
+        g = self.theme["geometry"][box]
+        w_in, h_in = self._canvas(svg)
+        scale = min(g["image_width_in"] / w_in, g["image_height_in"] / h_in)
+        return px * 72 / 96 * scale
+
+    def test_row_labels_readable_after_scaling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            svg = self._render_ranking(Path(tmp))
+        sizes = [int(s) for s in re.findall(r'text-anchor="end" font-size="(\d+)"', svg)]
+        self.assertTrue(sizes, "找不到列標籤")
+        worst = min(sizes)
+        actual = self._slide_pt(svg, worst)
+        self.assertGreaterEqual(
+            actual, self.MIN_SLIDE_PT,
+            f"列標籤 {worst}px 縮放後只有 {actual:.1f}pt（下限 {self.MIN_SLIDE_PT}pt）")
+
+    def test_canvas_is_not_taller_than_the_frame_allows(self):
+        """⚠ 畫布比例要貼齊圖框，否則高度先滿、整張被壓小。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            svg = self._render_ranking(Path(tmp))
+        g = self.theme["geometry"]["chart_hero"]
+        w_in, h_in = self._canvas(svg)
+        scale = min(g["image_width_in"] / w_in, g["image_height_in"] / h_in)
+        self.assertGreaterEqual(scale, 0.85, f"縮放倍率 {scale:.3f} 過小——畫布比圖框高太多")
+
+    def test_value_labels_also_readable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            svg = self._render_ranking(Path(tmp))
+        sizes = [int(s) for s in re.findall(r'font-size="(\d+)"', svg)]
+        body = [s for s in sizes if s < 20]          # 排除標題那種大字
+        self.assertGreaterEqual(self._slide_pt(svg, min(body)), self.MIN_SLIDE_PT)
 
 
 class ChartTitleStrippedOnSlideTests(unittest.TestCase):

@@ -370,6 +370,63 @@ class PanelHeightFitsContentTests(unittest.TestCase):
         self.assertGreater(bp._points_panel_height(theme, [], width_in=width), 0.5)
 
 
+class NoTruncatedInformationTests(unittest.TestCase):
+    """🔴 使用者定案（2026-08-03）：**資訊不能有被截斷的**。
+
+    原本的處理是「放不下就切掉加『…』」——那是把問題丟給讀者：
+    「祺驊 3：Brett Unswo…」讀者既不知道被切掉什麼，也無從查證。
+
+    正解是**換呈現方式**：欄寬依內容分配（已做）、放不下就換行、
+    列高依內容長、真的塞不下就少顯示幾列並標明完整版在附錄——
+    但**已經顯示出來的每一格都必須完整**。
+    """
+
+    COLUMNS = ["主題標籤", "專利件數", "前三大申請人"]
+    ROWS = [
+        {"主題標籤": "拉繩捲輪回收機構", "專利件數": 15,
+         "前三大申請人": "祺驊 3：Brett Unsworth 1：MOTIOFY AB 1"},
+        {"主題標籤": "阻力調節拉繩機構", "專利件數": 8,
+         "前三大申請人": "廈門帝瑪斯健康科技 2：MOTIOFY AB 1：OXEFIT, INC. 1"},
+    ]
+
+    def _table(self, width=12.0, height=4.0, row_height=0.4):
+        from pptx import Presentation
+        from pptx.util import Inches
+        theme = bp.Theme.load(THEME_PATH)
+        prs = Presentation()
+        prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        bp._add_table(slide, theme, self.ROWS, left=0.6, top=1.5, width=width, height=height,
+                      row_height=row_height, max_columns=6, cell_margin_in=0.04,
+                      cell_inset_in=0.06, labels={}, excluded=set())
+        return next(s for s in slide.shapes if s.has_table).table
+
+    def test_no_ellipsis_in_any_cell(self):
+        table = self._table()
+        for r, row in enumerate(table.rows):
+            for c, _ in enumerate(table.columns):
+                text = table.cell(r, c).text
+                self.assertNotIn("…", text, f"儲存格 ({r},{c}) 被截斷：{text!r}")
+
+    def test_long_value_is_kept_whole(self):
+        table = self._table()
+        shown = {table.cell(r, c).text for r in range(len(table.rows)) for c in range(len(table.columns))}
+        self.assertIn("祺驊 3：Brett Unsworth 1：MOTIOFY AB 1", shown)
+
+    def test_header_is_kept_whole(self):
+        table = self._table()
+        headers = [table.cell(0, c).text for c in range(len(table.columns))]
+        self.assertEqual(headers, self.COLUMNS)
+
+    def test_row_height_grows_for_wrapped_content(self):
+        """放不下就換行——換了行就要有對應的列高，否則字會被切在框外。"""
+        narrow = self._table(width=6.0)
+        wide = self._table(width=12.0)
+        narrow_h = sum(r.height for r in narrow.rows)
+        wide_h = sum(r.height for r in wide.rows)
+        self.assertGreater(narrow_h, wide_h, "窄表沒有加高列高，換行的字會被切掉")
+
+
 class TableColumnWidthTests(unittest.TestCase):
     """F-3＋F-16：表格欄寬一律等分，兩個方向都出錯。
 
