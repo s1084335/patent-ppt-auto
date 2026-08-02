@@ -122,10 +122,19 @@
       "92400E": "C98A5A",
       "C99A5B": "FFD9A0",
       "10B981": "FFC46B",
-      "14B8A6": "FFC46B"
+      "14B8A6": "FFC46B",
+      "0A3A80": "FFB74D",
+      "0B4FB8": "E8A445",
+      "1268D6": "D0913D",
+      "2E86E0": "B87E35",
+      "4A97E3": "A06B2D"
     },
     "_keep_comment": "刻意不換的顏色，兩者都是**畫在圖元上的文字**、由 data-on-fill 配對機制在轉色後重算，不該進 map：FFFFFF（深底上的白字）、1A1A1A（淺底上的深字，引擎 TEXT_ON_LIGHT）。⚠ 若把它們放進 map，會在重算之前就被換掉，配對機制反而失效。整版白底矩形另由 strip_background 處理。",
-    "keep": ["FFFFFF", "1A1A1A"]
+    "keep": [
+      "FFFFFF",
+      "1A1A1A"
+    ],
+    "_ranking_scale_comment": "排名長條色階（chart_runner.RANKING_BAR_SCALE）的深底對照。⚠ 白底是「件數多→深藍」、深底是「件數多→亮橘」——方向相反是刻意的：深色背景上越深＝越接近背景＝越不明顯，沿用白底方向會讓最大值最不顯眼（批 2 已修過同型錯誤）。最淺一階對 bg_start 實測 3.53，過 WCAG 圖形元素 3.0。"
   },
   "_starfield_comment": "星空紋理生成參數（scripts/starfield.py）。全部實測自 demo 的 stars.svg：480 星點、63 連線、半徑三階、透明度區間。seed 固定＝每次組版產出完全相同（可重現）。inner_page_density＝內頁密度倍率，星點若和圖表資料點一樣顯眼會讓人誤以為圖上有資料，故內頁調淡。",
   "starfield": {
@@ -134,7 +143,11 @@
     "height_px": 960,
     "render_dpi": 128,
     "star_count": 480,
-    "star_radii": [0.6, 0.9, 1.2],
+    "star_radii": [
+      0.6,
+      0.9,
+      1.2
+    ],
     "star_color": "#CFE8F5",
     "bright_color": "#A0F0F0",
     "bright_ratio": 0.08,
@@ -143,7 +156,10 @@
     "link_count": 63,
     "link_dist_min": 60,
     "link_dist_max": 220,
-    "link_colors": ["#4FA9CC", "#7FD8F0"],
+    "link_colors": [
+      "#4FA9CC",
+      "#7FD8F0"
+    ],
     "link_width": 0.6,
     "link_opacity_min": 0.1,
     "link_opacity_max": 0.28,

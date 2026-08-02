@@ -25,6 +25,7 @@ import unittest
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt"
+THEME_PATH = SKILL_DIR / "theme.json"
 
 
 def _load_builder():
@@ -235,6 +236,202 @@ class SplitLevelNarrativeTests(unittest.TestCase):
         l4 = self._variant_of("ipc_main_distribution_L4.svg")
         l5 = self._variant_of("ipc_main_distribution_L5.svg")
         self.assertNotEqual(l4.get("headline"), l5.get("headline"), "拆出來的兩頁共用了同一段解讀")
+
+
+class CoverStatSizeTests(unittest.TestCase):
+    """F-15：封面四張統計卡的主數字**字級不一致**。
+
+    🔴 實機 p1：「60」「20」是大字，「2011–2026」因為字長被降到小字，
+    四張卡並排時像三張重要、一張次要——但它們是同一層級的指標。
+    ⚠ 分級規則本身沒錯（避免撐出卡片），錯在**逐張各算各的**。
+    """
+
+    def test_all_cards_share_one_size(self):
+        theme = bp.Theme.load(THEME_PATH)
+        stats = [("60", "件", "專利總數"), ("39 | 9", "CN | TW", "地域分布"),
+                 ("2011–2026", "年", "年份區間"), ("20", "家", "申請人家數")]
+        sizes = {bp._cover_stat_size(theme, stats, value) for value, _, _ in stats}
+        self.assertEqual(len(sizes), 1, f"四張卡出現 {len(sizes)} 種字級：{sizes}")
+
+    def test_shared_size_is_the_smallest_needed(self):
+        """共用字級＝最長那個值需要的級數，不能大到把它撐出卡片。"""
+        theme = bp.Theme.load(THEME_PATH)
+        long_stats = [("60", "件", "x"), ("2011–2026", "年", "y")]
+        short_stats = [("60", "件", "x"), ("20", "家", "y")]
+        self.assertLess(bp._cover_stat_size(theme, long_stats, "60"),
+                        bp._cover_stat_size(theme, short_stats, "60"))
+
+
+class FrameworkBarFitsTests(unittest.TestCase):
+    """F-15：分析框架條被截成「…等共 12 項…」——連收尾都被切掉。
+
+    🔴 實機 p1。⚠ 根因是列數寫死 5 項：主題名長短不一，五個長名串起來就爆行。
+    收尾那句「等共 N 項分析」是**資訊**（讀者才知道還有多少沒列），
+    被截掉等於這行只剩半句話。
+    """
+
+    class _Spec:
+        def __init__(self, topic):
+            self.topic, self.title, self.kind, self.is_appendix = topic, topic, "chart_hero", False
+
+    LONG = [_Spec.__init__ and None]  # placeholder replaced in setUp
+
+    def setUp(self):
+        names = ["申請趨勢", "專利生命週期", "保護地域分布", "公司×國家交叉表",
+                 "國家佈局（現有保護）", "技術分類布局", "技術主題分布", "功效主題分布",
+                 "競爭者佈局", "申請人年度專利分布矩陣", "專利權人年度布局矩陣", "機會評估"]
+        self.layout = [self._Spec(n) for n in names]
+
+    def test_tail_is_never_truncated(self):
+        text = bp._framework_text(self.layout, budget_chars=60)
+        self.assertLessEqual(len(text), 60)
+        self.assertTrue(text.endswith("項分析"), f"收尾被截掉了：{text!r}")
+
+    def test_fewer_items_when_names_are_long(self):
+        tight = bp._framework_text(self.layout, budget_chars=40)
+        loose = bp._framework_text(self.layout, budget_chars=120)
+        self.assertLess(tight.count("→"), loose.count("→"))
+
+    def test_all_items_listed_when_they_fit(self):
+        short = [self._Spec(f"主題{i}") for i in range(3)]
+        text = bp._framework_text(short, budget_chars=120)
+        self.assertNotIn("等共", text, "全部列得下就不該出現「等共 N 項」")
+
+    def test_total_count_is_honest(self):
+        text = bp._framework_text(self.layout, budget_chars=60)
+        self.assertIn(f"共 {len(self.layout)} 項", text)
+
+
+class TextLanguageTagTests(unittest.TestCase):
+    """F-14：中文字被 PowerPoint 的拼字檢查畫紅色波浪底線。
+
+    🔴 使用者實機截圖 p20 可見紅色波浪線。⚠ 內容本身沒錯——是 run 沒有標語言，
+    PowerPoint 拿**預設的英文校對**去檢查中文。轉圖看不到（proofing marks 不進圖），
+    但客戶開檔會以為滿頁錯字。
+
+    修法：run 上標 `lang="zh-TW"`（東亞另有 `altLang`），並關閉該 run 的拼字檢查。
+    """
+
+    def _run_xml(self, **kwargs):
+        from pptx import Presentation
+        from pptx.util import Inches
+        theme = bp.Theme.load(THEME_PATH)
+        prs = Presentation()
+        prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        bp._add_text(slide, theme, "同業加速進場、技術處成長期",
+                     left=1.0, top=1.0, width=5.0, height=1.0, size=14.0, **kwargs)
+        shape = slide.shapes[-1]
+        return shape.text_frame.paragraphs[0].runs[0]._r.xml
+
+    def test_run_declares_traditional_chinese(self):
+        self.assertIn('lang="zh-TW"', self._run_xml())
+
+    def test_run_disables_spell_check(self):
+        """⚠ 只標語言不夠：PowerPoint 仍可能用簡體或其他詞庫標記專有名詞。"""
+        self.assertIn('noProof="1"', self._run_xml())
+
+
+class PanelHeightFitsContentTests(unittest.TestCase):
+    """F-10：判讀面板高度固定，內容少時下方空掉三到四成。
+
+    🔴 實機 p3／p4／p6／p12／p13／p16／p18／p19 八頁皆然——面板只有 2 條要點
+    卻仍畫滿宣告高度。⚠ 版型算的是**框**不是**內容**，這也是 F-1（17/22 頁
+    背景佔比 73–80%）的來源之一。
+    """
+
+    def _theme(self):
+        return bp.Theme.load(THEME_PATH)
+
+    def test_two_points_need_less_height_than_seven(self):
+        theme = self._theme()
+        few = [("現況", "A63B達47件", "", False), ("意涵", "布局集中訓練器材", "", False)]
+        many = few + [("後續", f"第{i}項待查", "", False) for i in range(5)]
+        g = theme.geometry["points_panel"]
+        width = g["width_in"] - g["text_inset_right_in"]
+        h_few = bp._points_panel_height(theme, few, width_in=width)
+        h_many = bp._points_panel_height(theme, many, width_in=width)
+        self.assertLess(h_few, h_many)
+
+    def test_height_never_exceeds_declared_maximum(self):
+        """⚠ 宣告高度是上限：內容再多也不能撐出版面。"""
+        theme = self._theme()
+        g = theme.geometry["points_panel"]
+        width = g["width_in"] - g["text_inset_right_in"]
+        huge = [("現況", "很長的要點" * 20, "", False) for _ in range(12)]
+        self.assertLessEqual(bp._points_panel_height(theme, huge, width_in=width),
+                             g["height_in"] + 1e-6)
+
+    def test_height_has_a_floor(self):
+        """空內容也要留得住標題列，不能塌成一條線。"""
+        theme = self._theme()
+        g = theme.geometry["points_panel"]
+        width = g["width_in"] - g["text_inset_right_in"]
+        self.assertGreater(bp._points_panel_height(theme, [], width_in=width), 0.5)
+
+
+class TableColumnWidthTests(unittest.TestCase):
+    """F-3＋F-16：表格欄寬一律等分，兩個方向都出錯。
+
+    🔴 F-3 實機 p21 十處截斷：「祺驊 3：Brett Unswo…」「廈門帝瑪斯健康科技 2…」。
+    🔴 F-16 實機 p22：「最新受讓人名單」14 列只有 2 列有值、「受讓取得」全是 0/1，
+    兩欄合計佔掉 **50%** 寬度。
+
+    ⚠ 截斷是症狀，**等分配置才是根因**——`width / len(columns)` 讓「專利件數」
+    這種兩位數的欄和「前三大申請人」拿一樣寬。
+    """
+
+    COLUMNS = ["主題標籤", "專利件數", "申請人家數", "前三大占比(%)", "前三大申請人"]
+    ROWS = [
+        {"主題標籤": "拉繩捲輪回收機構", "專利件數": 15, "申請人家數": 13,
+         "前三大占比(%)": 33, "前三大申請人": "祺驊 3：Brett Unsworth 1：MOTIOFY AB 1"},
+        {"主題標籤": "阻力調節拉繩機構", "專利件數": 8, "申請人家數": 7,
+         "前三大占比(%)": 50, "前三大申請人": "廈門帝瑪斯健康科技 2：MOTIOFY AB 1"},
+    ]
+
+    def _widths(self, total=12.0):
+        return bp._column_widths(self.COLUMNS, self.ROWS, {}, total,
+                                 size_pt=11.0, inset_in=0.06)
+
+    def test_widths_sum_to_the_table_width(self):
+        self.assertAlmostEqual(sum(self._widths(12.0)), 12.0, places=4)
+
+    def test_numeric_column_is_narrower_than_text_column(self):
+        """🔴 這是 F-3／F-16 的核心：兩位數的欄不該和長名單一樣寬。"""
+        widths = dict(zip(self.COLUMNS, self._widths()))
+        self.assertLess(widths["專利件數"], widths["前三大申請人"])
+        self.assertLess(widths["申請人家數"], widths["前三大申請人"])
+
+    def test_header_still_fits_in_narrow_columns(self):
+        """⚠ 窄欄也要放得下自己的欄頭，否則變成欄頭被截（比內容被截更糟）。"""
+        widths = dict(zip(self.COLUMNS, self._widths()))
+        for name in self.COLUMNS:
+            need = bp._display_width(name) * (11.0 / 72.0) + 0.06 * 2
+            self.assertGreaterEqual(widths[name] + 1e-6, min(need, 12.0 / len(self.COLUMNS)),
+                                    f"{name} 欄放不下自己的欄頭")
+
+    def test_mostly_empty_column_gets_less_room(self):
+        """F-16：整欄幾乎沒值的欄不該佔滿寬度。"""
+        columns = ["申請人", "專利件數", "最新受讓人名單", "受讓取得"]
+        rows = [{"申請人": "廈門帝瑪斯健康科技", "專利件數": 13, "最新受讓人名單": "", "受讓取得": 1},
+                {"申請人": "孟喬", "專利件數": 5, "最新受讓人名單": "億軒", "受讓取得": 0},
+                {"申請人": "祺驊", "專利件數": 5, "最新受讓人名單": "", "受讓取得": 0}]
+        widths = dict(zip(columns, bp._column_widths(columns, rows, {}, 12.0,
+                                                     size_pt=11.0, inset_in=0.06)))
+        self.assertLess(widths["受讓取得"], widths["申請人"])
+        self.assertLess(widths["最新受讓人名單"], widths["申請人"])
+
+    def test_single_column_takes_everything(self):
+        self.assertEqual(bp._column_widths(["只有一欄"], [{"只有一欄": "x"}], {}, 9.0,
+                                           size_pt=11.0, inset_in=0.06), [9.0])
+
+    def test_labels_are_used_for_header_width(self):
+        """欄頭寬要照**顯示名**算，不是照內部欄名。"""
+        widths = bp._column_widths(["patent_count", "top3_applicants"],
+                                   [{"patent_count": 15, "top3_applicants": "甲 3：乙 1"}],
+                                   {"patent_count": "專利件數", "top3_applicants": "前三大申請人"},
+                                   12.0, size_pt=11.0, inset_in=0.06)
+        self.assertLess(widths[0], widths[1])
 
 
 class PercentageBarRatioTests(unittest.TestCase):

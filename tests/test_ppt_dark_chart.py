@@ -175,5 +175,97 @@ class EncodingNoteSingleSourceTests(unittest.TestCase):
         self.assertTrue(bp._encoding_note(spec, {"report_data": {}}))
 
 
+class ChartTitleStrippedOnSlideTests(unittest.TestCase):
+    """F-8：頁標題與圖表內建標題講同一件事，上下兩行重複。
+
+    🔴 實機 p7／p8／p9／p10／p11／p14／p15／p16／p17 九頁皆然：
+    上面是 narrative 的 headline，下面是 SVG 自己畫的「IPC 主分類分布 - Level 4」。
+    ⚠ 不能直接砍 SVG 標題——網頁報表頁也讀同一份 SVG，那裡需要標題。
+    故引擎標上 `data-role="chart-title"`，**只有組版端**在放上投影片時移除。
+    """
+
+    def setUp(self):
+        self.bp = _load_builder()
+
+    def test_engine_marks_its_chart_titles(self):
+        source = CHART_RUNNER.read_text(encoding="utf-8")
+        self.assertIn('data-role="chart-title"', source,
+                      "引擎沒有標記圖表標題，組版端無從辨識該移除哪一行")
+
+    def test_builder_strips_marked_title(self):
+        svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">'
+               '<text data-role="chart-title" x="16" y="26" font-size="24">IPC 主分類分布 - Level 4</text>'
+               '<text x="16" y="60" font-size="11">A63B</text></svg>')
+        out = self.bp.strip_chart_title(svg)
+        self.assertNotIn("IPC 主分類分布", out)
+        self.assertIn("A63B", out, "只該移除標題，其餘內容不得動到")
+
+    def test_unmarked_text_is_kept(self):
+        svg = ('<svg xmlns="http://www.w3.org/2000/svg"><text x="1" y="2">保留我</text></svg>')
+        self.assertIn("保留我", self.bp.strip_chart_title(svg))
+
+    def test_idempotent(self):
+        svg = ('<svg xmlns="http://www.w3.org/2000/svg">'
+               '<text data-role="chart-title" x="1" y="2">標題</text></svg>')
+        once = self.bp.strip_chart_title(svg)
+        self.assertEqual(self.bp.strip_chart_title(once), once)
+
+
+def _luminance(hex_color: str) -> float:
+    value = hex_color.lstrip("#")
+    channels = []
+    for offset in (0, 2, 4):
+        c = int(value[offset:offset + 2], 16) / 255
+        channels.append(c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def _contrast(a: str, b: str) -> float:
+    la, lb = _luminance(a), _luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+class RankingScaleOnDarkTests(unittest.TestCase):
+    """W-2 硬約束：排名色階映射到深底後，**最淺一階也要 ≥3.0**。
+
+    🔴 使用者選「依數值連續深淺」。⚠ 但 F-2 就是淺色跟深空背景糊在一起造成的
+    （`CBD5E1`→`274A66` 對背景實測 1.72，長條等於不存在）。色階必須從
+    「最淺一階 ≥3.0」這個下限往上推，不能從主色往下淡——否則只是再做一次 F-2。
+
+    ⚠ 量的是漸層的**最亮端**（`bg_start`）：那是對比最差的位置，
+    在最暗端合格不代表整頁合格（批 2 的邊框就是這樣跌破的）。
+    """
+
+    def setUp(self):
+        self.theme = json.loads(THEME_PATH.read_text(encoding="utf-8"))
+        self.bg = self.theme["color"]["bg_start"]
+
+    def _scale(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from backend.app.reports.chart_runner import RANKING_BAR_SCALE
+        return RANKING_BAR_SCALE
+
+    def test_every_step_has_a_dark_theme_mapping(self):
+        mapping = {k.upper(): v for k, v in self.theme["chart_recolor"]["map"].items()}
+        for step in self._scale():
+            self.assertIn(step.lstrip("#").upper(), mapping,
+                          f"排名色階 {step} 沒有深底對照——深色頁上會維持白底用的藍")
+
+    def test_every_step_is_visible_on_the_brightest_background(self):
+        mapping = {k.upper(): v for k, v in self.theme["chart_recolor"]["map"].items()}
+        for step in self._scale():
+            target = mapping[step.lstrip("#").upper()]
+            self.assertGreaterEqual(
+                _contrast(target, self.bg), 3.0,
+                f"{step} → {target} 對背景 {self.bg} 僅 {_contrast(target, self.bg):.2f}")
+
+    def test_dark_steps_stay_monotonic(self):
+        """深底階也要單調——否則「件數多」在兩種底色上指向不同方向。"""
+        mapping = {k.upper(): v for k, v in self.theme["chart_recolor"]["map"].items()}
+        lums = [_luminance(mapping[s.lstrip("#").upper()]) for s in self._scale()]
+        self.assertEqual(lums, sorted(lums, reverse=True),
+                         f"深底色階亮度非單調遞減：{[round(x, 3) for x in lums]}")
+
+
 if __name__ == "__main__":
     unittest.main()

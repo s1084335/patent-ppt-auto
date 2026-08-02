@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sys
 import tempfile
@@ -1291,6 +1292,235 @@ class BubbleLegendSpanTests(unittest.TestCase):
                 covered.extend(range(bounds[0], bounds[-1] + 1))
             self.assertEqual(covered, list(range(1, max_value + 1)),
                              f"max_value={max_value} 的級距沒有完整覆蓋 1..{max_value}")
+
+
+def _relative_luminance(hex_color: str) -> float:
+    value = hex_color.lstrip("#")
+    channels = []
+    for offset in (0, 2, 4):
+        c = int(value[offset:offset + 2], 16) / 255
+        channels.append(c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def _contrast(a: str, b: str) -> float:
+    la, lb = _relative_luminance(a), _relative_luminance(b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+class RankingBarScaleTests(unittest.TestCase):
+    """F-2＋W-2：排名長條依數值連續深淺，且**最淺一階也要看得見**。
+
+    🔴 F-2 實機 p14：主長條 `CBD5E1` 被轉色成 `274A66`（面板底色），
+    對深空背景實測只有 **1.72**——那根長條幾乎不存在。根因是 `CBD5E1`
+    被歸進「淺灰＝結構色」那一組，但它在排名圖裡是**資料**不是結構。
+    ⚠ 這是批 2「資料色與裝飾色分離」漏掉的一個。
+
+    🔴 W-2 使用者選「依數值連續深淺」。⚠ 硬約束：**最淺一階對背景仍須 ≥3.0**
+    （WCAG 圖形元素門檻）——色階要從這個下限往上推，不能從主色往下淡，
+    否則就是再做一次 F-2。
+    """
+
+    def test_scale_has_five_steps(self):
+        self.assertEqual(len(chart_runner.RANKING_BAR_SCALE), 5)
+
+    def test_every_step_is_visible_on_white(self):
+        """網頁報表是白底——五階都要 ≥3.0，包含最淺那階。"""
+        for color in chart_runner.RANKING_BAR_SCALE:
+            self.assertGreaterEqual(_contrast(color, "FFFFFF"), 3.0,
+                                    f"{color} 在白底上看不清（圖形元素需 ≥3.0）")
+
+    def test_steps_are_monotonic(self):
+        """由深到淺單調——不單調就沒有「依數值」的語意。"""
+        lums = [_relative_luminance(c) for c in chart_runner.RANKING_BAR_SCALE]
+        self.assertEqual(lums, sorted(lums), f"色階亮度非單調：{lums}")
+
+    def test_largest_value_gets_the_darkest_step(self):
+        self.assertEqual(chart_runner.ranking_bar_color(13, 13),
+                         chart_runner.RANKING_BAR_SCALE[0])
+
+    def test_smallest_value_gets_the_lightest_step(self):
+        self.assertEqual(chart_runner.ranking_bar_color(1, 13),
+                         chart_runner.RANKING_BAR_SCALE[-1])
+
+    def test_equal_values_get_equal_colors(self):
+        """⚠ 同件數必須同色——不同色會讓讀者以為它們有差別。"""
+        self.assertEqual(chart_runner.ranking_bar_color(5, 13),
+                         chart_runner.ranking_bar_color(5, 13))
+
+    def test_zero_max_does_not_raise(self):
+        self.assertIn(chart_runner.ranking_bar_color(0, 0), chart_runner.RANKING_BAR_SCALE)
+
+    def test_ranking_chart_no_longer_uses_structural_grey(self):
+        """🔴 排名圖不得再用結構灰當資料條（F-2 的直接重現）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rank.svg"
+            chart_runner.render_bar_chart(
+                path, "主要申請人排名",
+                [{"applicant_display_name": f"公司{i}", "patent_count": v}
+                 for i, v in enumerate([13, 5, 5, 3, 1])],
+                "applicant_display_name")
+            svg = path.read_text(encoding="utf-8")
+        for structural in ("CBD5E1", "D1D5DB", "E5E7EB", "DCE3F2"):
+            self.assertNotIn(structural, svg.upper(), f"排名圖用了結構色 {structural} 當資料條")
+        self.assertIn(chart_runner.RANKING_BAR_SCALE[0].lstrip("#"), svg.upper())
+
+
+class MatrixLegendTests(unittest.TestCase):
+    """F-13：熱圖有三階顏色卻沒有任何色階說明。
+
+    🔴 實機 p6 公司×國家交叉表：格子有橘紅／橘／淡橘，整頁沒說哪個顏色代表幾件。
+    ⚠ 泡泡矩陣（p16／p17）有圖例，同一份簡報裡同一套色階一張有一張沒有。
+    圖例必須與格子共用 `bubble_legend_spans`——各算各的就會出現
+    「圖例說 3–5、格子其實畫到 6」這種對不上的情況。
+    """
+
+    ROWS = [{"applicant_display_name": "廈門帝瑪斯", "jurisdiction": "CN", "patent_count": 11},
+            {"applicant_display_name": "廈門帝瑪斯", "jurisdiction": "TW", "patent_count": 1},
+            {"applicant_display_name": "孟喬", "jurisdiction": "CN", "patent_count": 2},
+            {"applicant_display_name": "孟喬", "jurisdiction": "TW", "patent_count": 3}]
+
+    def _render(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "matrix.svg"
+            chart_runner.render_matrix_chart(path, "公司×國家交叉表", self.ROWS,
+                                             "applicant_display_name", "jurisdiction")
+            return path.read_text(encoding="utf-8")
+
+    def test_legend_is_present(self):
+        self.assertIn("件數色階", self._render())
+
+    def test_legend_spans_match_the_cells(self):
+        """圖例級距與格子上色共用同一個來源。"""
+        svg = self._render()
+        for _color, _label, span in chart_runner.bubble_legend_spans(11):
+            self.assertIn(span, svg, f"圖例缺級距 {span}")
+
+    def test_legend_colors_are_the_cell_colors(self):
+        svg = self._render().upper()
+        for color, _label, _span in chart_runner.bubble_legend_spans(11):
+            self.assertIn(color.lstrip("#").upper(), svg)
+
+
+class RankingTruncationNoteTests(unittest.TestCase):
+    """F-12：同型的兩張排名圖，規則必須一致。
+
+    🔴 實機 p14 申請人排名畫 12 列並標「顯示前 12/20 名，完整名單見附錄」；
+    p15 專利權人排名**畫滿 20 列且沒有任何註記**——同一種圖兩套規則。
+    列數多的那張字會被壓到不可讀（07-31 實測 20 列縮進圖框後只剩 5px）。
+    """
+
+    ROWS = [{"current_assignee_display_name": f"公司{i}", "patent_count": 20 - i}
+            for i in range(20)]
+
+    def _render(self, rows, **kwargs):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rank.svg"
+            chart_runner.render_bar_chart(path, "現專利權人排名", rows,
+                                          "current_assignee_display_name", **kwargs)
+            return path.read_text(encoding="utf-8")
+
+    def test_truncated_chart_says_so(self):
+        svg = self._render(self.ROWS, limit=12)
+        self.assertIn("顯示前 12/20 名", svg)
+
+    def test_untruncated_chart_has_no_note(self):
+        """⚠ 沒截斷卻標「顯示前 N 名」會讓讀者以為還有更多。"""
+        svg = self._render(self.ROWS[:5], limit=12)
+        self.assertNotIn("顯示前", svg)
+
+    def test_both_ranking_renderers_use_the_same_wording(self):
+        """兩支渲染函式的文案走同一個來源，不各寫各的。"""
+        source = Path(chart_runner.__file__).read_text(encoding="utf-8")
+        self.assertEqual(source.count('顯示前 {shown}/{total} 名，完整名單見附錄'), 1,
+                         "截斷註記的文案不只一處——兩張圖會各自漂移")
+
+    def test_owner_ranking_section_applies_the_row_limit(self):
+        """🔴 p15 沒傳 limit，預設 20 列全畫。"""
+        source = Path(chart_runner.__file__).read_text(encoding="utf-8")
+        start = source.index("def _build_owner_ranking_section")
+        body = source[start:start + 600]
+        self.assertIn("CHART_ROW_LIMIT", body, "專利權人排名未套用列數上限")
+
+
+class NiceTicksTests(unittest.TestCase):
+    """F-11：座標軸刻度必須等差且是好讀的整數。
+
+    🔴 實機 p2 縱軸 0／4／8／**11**／15、p4 縱軸 0／4／**9**／13／17——
+    刻度由 `max * i / 4` 直接取整，間距忽 3 忽 4，讀者無法心算比例。
+    """
+
+    def test_ticks_are_evenly_spaced(self):
+        for max_value in (1, 3, 7, 15, 17, 47, 156, 1249):
+            ticks = chart_runner.nice_ticks(max_value)
+            gaps = {ticks[i + 1] - ticks[i] for i in range(len(ticks) - 1)}
+            self.assertEqual(len(gaps), 1, f"max={max_value} 刻度不等差：{ticks}")
+
+    def test_ticks_cover_the_data(self):
+        """最後一格不得低於實際最大值，否則長條會畫出軸外。"""
+        for max_value in (1, 3, 7, 15, 17, 47, 156, 1249):
+            self.assertGreaterEqual(chart_runner.nice_ticks(max_value)[-1], max_value)
+
+    def test_step_is_a_round_number(self):
+        """步進限 1／2／2.5／5 的 10 次方倍——這是「好讀」的定義。"""
+        for max_value in (7, 15, 17, 47, 156, 1249):
+            ticks = chart_runner.nice_ticks(max_value)
+            step = ticks[1] - ticks[0]
+            mantissa = step / (10 ** math.floor(math.log10(step)))
+            self.assertIn(round(mantissa, 2), (1.0, 2.0, 2.5, 5.0), f"step={step}")
+
+    def test_starts_at_zero(self):
+        self.assertEqual(chart_runner.nice_ticks(15)[0], 0)
+
+    def test_zero_and_negative_do_not_raise(self):
+        self.assertTrue(chart_runner.nice_ticks(0))
+        self.assertTrue(chart_runner.nice_ticks(-5))
+
+    def test_p2_case_reads_cleanly(self):
+        """實機 p2 的 15 件：0/4/8/11/15 → 應變成等差。"""
+        self.assertEqual(chart_runner.nice_ticks(15), [0, 5, 10, 15, 20])
+
+
+class NoEnglishDebugSubtitleTests(unittest.TestCase):
+    """F-9：SVG 的英文副題是給開發者看的除錯資訊，不該出現在客戶簡報上。
+
+    🔴 實機 p4「X = applicant count, Y = patent count, connected by year」、
+    p16／p17「X = application_year, bubble = patent_count」。
+    ⚠ 與批 1 修掉的「英文欄名」同一類問題——當時只掃了表格欄名，沒掃圖表副題。
+    編碼說明已由 `CHART_ENCODING_NOTES` 用中文輸出並印在投影片上，這裡是重複且是英文。
+    """
+
+    # 這些片段一旦出現在 SVG 就是除錯副題外洩（欄名 application_year 本身不算，
+    # 故比對整段而非單字）。
+    FORBIDDEN = (
+        "X = applicant count",
+        "X = application_year",
+        "bubble = patent_count",
+        "X = total forward citations",
+        "Application year and grant announcement year comparison",
+        "Yearly count",
+        "YoY growth",
+    )
+
+    def _sources(self) -> str:
+        return Path(chart_runner.__file__).read_text(encoding="utf-8")
+
+    def test_no_english_subtitle_literals_in_renderers(self):
+        source = self._sources()
+        for fragment in self.FORBIDDEN:
+            self.assertNotIn(fragment, source, f"英文除錯副題殘留：{fragment}")
+
+    def test_lifecycle_svg_has_no_english_subtitle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "lifecycle.svg"
+            chart_runner.render_lifecycle_chart(path, "專利生命週期", [
+                {"application_year": 2020, "applicant_count": 3, "patent_count": 7},
+                {"application_year": 2022, "applicant_count": 7, "patent_count": 15},
+            ])
+            svg = path.read_text(encoding="utf-8")
+        self.assertNotIn("connected by year", svg)
+        self.assertNotIn("applicant count", svg)
 
 
 class IpcTechNameTests(unittest.TestCase):

@@ -287,14 +287,14 @@ def render_line_chart(
             for year in years
         )
 
-    y_ticks = [round(max_count * i / 4) for i in range(5)]
+    # F-11：刻度改用等差好讀值；⚠ 繪圖上限也要跟著刻度頂端，否則最上面那格畫不到。
+    y_ticks = nice_ticks(max_count)
+    max_count = max(y_ticks[-1], 1)
     x_labels = years if len(years) <= 12 else years[:: max(1, math.ceil(len(years) / 10))]
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         f'<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="{left}" y="54" font-size="13" fill="{COLOR_TEXT_SOFT}">'
-        f'{"Application year and grant announcement year comparison" if pub else "Yearly count"}</text>',
+        f'<text data-role="chart-title" x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
     ]
     for tick in y_ticks:
         y = scale(tick, 0, max_count, top + plot_h, top)
@@ -335,8 +335,13 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="28" y="36" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text data-role="chart-title" x="28" y="36" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
     ]
+    # F-12：截斷了就要說——同一種圖不得一張標、一張不標。
+    note = truncation_note(len(data), len(rows))
+    if note:
+        svg.append(f'<text x="{width - 40}" y="36" text-anchor="end" font-size="12" '
+                   f'fill="{COLOR_TEXT_SOFT}">{xml_text(note)}</text>')
     for index, row in enumerate(data):
         y = top + index * row_h
         raw_label = str(row.get(label_key) or "")
@@ -351,7 +356,9 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
         # 卻讓讀者以為長條分成兩類（獨立驗收在三張排名圖抓到，且沒有圖例可解釋）。
         # ⚠ 為這種交替補圖例等於為不存在的分類編故事；正解是拿掉交替。
         # 需要幫助讀者對齊列時該用斑馬紋**底色**，不是改資料本身的顏色。
-        color = COLOR_BAR
+        # 🔴 2026-08-02（W-2）：移除交替後五條變成完全同色，補上**依數值**的
+        # 連續深淺——這個有語意，且同件數必同色。
+        color = ranking_bar_color(value, max_value)
         svg.append(f'<text x="{left - 12}" y="{y + 20}" text-anchor="end" font-size="13" fill="{COLOR_TEXT}">{label[:42]}</text>')
         svg.append(f'<rect x="{left}" y="{y + 6}" width="{bar_w:.1f}" height="18" rx="2" fill="{color}"/>')
         svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{y + 20}" font-size="13" fill="{COLOR_TEXT}">{value}</text>')
@@ -391,12 +398,12 @@ def render_segmented_bar_chart(
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="28" y="36" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<rect x="28" y="56" width="12" height="12" fill="#CBD5E1"/><text x="46" y="67" font-size="13" fill="{COLOR_TEXT}">全部專利</text>',
+        f'<text data-role="chart-title" x="28" y="36" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<rect x="28" y="56" width="12" height="12" fill="{RANKING_BAR_SCALE[0]}"/><text x="46" y="67" font-size="13" fill="{COLOR_TEXT}">全部專利</text>',
         f'<rect x="126" y="56" width="12" height="12" fill="{COLOR_APPLICATION}"/><text x="144" y="67" font-size="13" fill="{COLOR_TEXT}">{xml_text(segment_label)}</text>',
         *([f'<text x="{width - 40}" y="67" text-anchor="end" font-size="12" '
-           f'fill="{COLOR_TEXT_SOFT}">顯示前 {len(data)}/{total_rows} 名，完整名單見附錄</text>']
-          if total_rows > len(data) else []),
+           f'fill="{COLOR_TEXT_SOFT}">{xml_text(truncation_note(len(data), total_rows))}</text>']
+          if truncation_note(len(data), total_rows) else []),
     ]
     for index, row in enumerate(data):
         y = top + index * row_h
@@ -417,7 +424,10 @@ def render_segmented_bar_chart(
         segment_w = scale(segment, 0, max_value, 0, plot_w)
         segment_x = left + max(total_w - segment_w, 0)
         svg.append(f'<text x="{left - 12}" y="{y + 20}" text-anchor="end" font-size="13" fill="{COLOR_TEXT}">{label[:42]}</text>')
-        svg.append(f'<rect class="bar-total" x="{left}" y="{y + 5}" width="{total_w:.1f}" height="20" rx="2" fill="#CBD5E1"/>')
+        # 🔴 F-2：原本 fill="#CBD5E1"（白底淺灰藍）被 chart_recolor 當結構色轉成
+        # 面板底 274A66，對深空背景只有 1.72——簡報上這根長條等於不存在。
+        # 改用資料色階（依數值深淺，W-2），最淺一階對兩種背景都 ≥3.0。
+        svg.append(f'<rect class="bar-total" x="{left}" y="{y + 5}" width="{total_w:.1f}" height="20" rx="2" fill="{ranking_bar_color(total, max_value)}"/>')
         svg.append(f'<rect class="bar-segment" x="{segment_x:.1f}" y="{y + 5}" width="{segment_w:.1f}" height="20" rx="2" fill="{COLOR_APPLICATION}"/>')
         svg.append(f'<text x="{left + total_w + 8:.1f}" y="{y + 20}" font-size="13" fill="{COLOR_TEXT}">{segment} / {total}</text>')
         if assignee_note:
@@ -553,17 +563,20 @@ def render_bubble_chart(
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="{left}" y="54" font-size="13" fill="{COLOR_TEXT_SOFT}">X = total forward citations, Y = patents, bubble = inventors</text>',
+        f'<text data-role="chart-title" x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
     ]
-    for i in range(5):
-        y_tick = y_max * i / 4
+    # F-11：兩軸都用等差好讀刻度（原本 max*i/4 取整後印出 0/4/9/13/17）。
+    y_ticks = nice_ticks(y_max)
+    x_ticks = nice_ticks(x_max)
+    y_max = max(y_ticks[-1], 1)
+    x_max = max(x_ticks[-1], 1)
+    for y_tick in y_ticks:
         y = scale(y_tick, 0, y_max, top + plot_h, top)
         svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="12" fill="{COLOR_TEXT_SOFT}">{y_tick:.0f}</text>')
-        x_tick = x_max * i / 4
+        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="12" fill="{COLOR_TEXT_SOFT}">{y_tick}</text>')
+    for x_tick in x_ticks:
         x = scale(x_tick, 0, x_max, left, left + plot_w)
-        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="12" fill="{COLOR_TEXT_SOFT}">{x_tick:.0f}</text>')
+        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="12" fill="{COLOR_TEXT_SOFT}">{x_tick}</text>')
     svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
     svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
     svg.append(f'<text x="{left + plot_w / 2:.0f}" y="{height - 20}" text-anchor="middle" font-size="13" fill="{COLOR_TEXT}">被引用總數（下載時點快照）</text>')
@@ -642,7 +655,8 @@ def render_matrix_chart(
     used_cols = {col for (row_label, col) in cells if row_label in set(top_rows)}
     cols = [name for name, _ in sorted(col_totals.items(), key=lambda kv: (-kv[1], kv[0])) if name in used_cols]
 
-    label_width, cell_w, cell_h, top_margin = 240, 54, 26, 64
+    # top_margin 由 64 → 88：騰出圖例列（F-13）。
+    label_width, cell_w, cell_h, top_margin = 240, 54, 26, 88
     width = label_width + cell_w * max(len(cols), 1) + 24
     height = top_margin + cell_h * max(len(top_rows), 1) + 28
     max_value = max((cells[(r, c)] for r in top_rows for c in cols if (r, c) in cells), default=1)
@@ -650,8 +664,18 @@ def render_matrix_chart(
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" font-family="Segoe UI, sans-serif">',
         f'<rect width="{width}" height="{height}" fill="white"/>',
-        f'<text x="16" y="26" font-size="16" font-weight="bold" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text data-role="chart-title" x="16" y="26" font-size="16" font-weight="bold" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text x="16" y="54" font-size="12" font-weight="600" fill="#374151">件數色階</text>',
     ]
+    # 🔴 F-13：格子有三階顏色卻沒有任何說明（實機 p6），讀者無從對照。
+    # ⚠ 圖例與格子共用 `bubble_legend_spans`——各算各的會出現
+    # 「圖例說 3–5、格子其實畫到 6」這種對不上的情況。
+    legend_x = 82
+    for legend_color, legend_label, legend_span in bubble_legend_spans(max_value):
+        parts.append(f'<rect x="{legend_x}" y="{44}" width="12" height="12" rx="2" fill="{legend_color}"/>')
+        parts.append(f'<text x="{legend_x + 18}" y="{54}" font-size="11" fill="#4B5563">'
+                     f'{xml_text(legend_label)} {xml_text(legend_span)}</text>')
+        legend_x += 74
     for col_index, col in enumerate(cols):
         x = label_width + col_index * cell_w + cell_w / 2
         parts.append(
@@ -797,8 +821,7 @@ def render_year_bubble_matrix_chart(
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="16" y="28" font-size="18" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="16" y="50" font-size="12" fill="{COLOR_TEXT_SOFT}">X = {xml_text(year_key_label)}, bubble = patent_count</text>',
+        f'<text data-role="chart-title" x="16" y="28" font-size="18" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         '<text x="16" y="90" font-size="12" font-weight="600" fill="#374151">件數色階</text>',
     ]
     # 🔴 圖例標出**本圖實際的級距數值**，不只寫「低／中／高」。
@@ -911,17 +934,20 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="{left}" y="54" font-size="13" fill="{COLOR_TEXT_SOFT}">X = applicant count, Y = patent count, connected by year</text>',
+        f'<text data-role="chart-title" x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
     ]
-    for i in range(5):
-        y_tick = y_max * i / 4
+    # F-11：兩軸都用等差好讀刻度（原本 max*i/4 取整後印出 0/4/9/13/17）。
+    y_ticks = nice_ticks(y_max)
+    x_ticks = nice_ticks(x_max)
+    y_max = max(y_ticks[-1], 1)
+    x_max = max(x_ticks[-1], 1)
+    for y_tick in y_ticks:
         y = scale(y_tick, 0, y_max, top + plot_h, top)
         svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="12" fill="{COLOR_TEXT_SOFT}">{y_tick:.0f}</text>')
-        x_tick = x_max * i / 4
+        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="12" fill="{COLOR_TEXT_SOFT}">{y_tick}</text>')
+    for x_tick in x_ticks:
         x = scale(x_tick, 0, x_max, left, left + plot_w)
-        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="12" fill="{COLOR_TEXT_SOFT}">{x_tick:.0f}</text>')
+        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="12" fill="{COLOR_TEXT_SOFT}">{x_tick}</text>')
     svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
     svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
     svg.append(f'<text x="{left + plot_w / 2:.0f}" y="{height - 20}" text-anchor="middle" font-size="13" fill="{COLOR_TEXT}">申請人家數</text>')
@@ -989,6 +1015,72 @@ def render_chart_embed(file: str) -> str:
     if lower.endswith((".html", ".htm")):
         return f'<iframe class="chart-media chart-frame" src="{xml_text(file)}" loading="lazy"></iframe>'
     return f'<a class="chart-fallback" href="{xml_text(file)}">{xml_text(file)}</a>'
+
+
+# ── 排名長條色階（F-2＋W-2，2026-08-02 使用者選定「依數值連續深淺」）──
+#
+# 🔴 F-2：p14 的主長條原本是 `CBD5E1`（白底的淺灰藍），被 chart_recolor 歸進
+# 「淺灰＝結構色」那一組轉成面板底色 `274A66`，對深空背景實測只有 **1.72**——
+# 那根長條在簡報上幾乎不存在。⚠ `CBD5E1` 在排名圖裡是**資料**不是結構，
+# 這是批 2「資料色與裝飾色分離」漏掉的一個。
+#
+# 🔴 W-2 硬約束：**最淺一階也要 ≥3.0**（WCAG 圖形元素門檻）。色階從這個下限
+# 往上推，不是從主色往下淡——後者就是再做一次 F-2。
+# 白底（網頁報表）實測對比：10.88／7.43／5.28／3.75／3.08，全數過關。
+# 對應的深底階由 theme.json 的 chart_recolor 映射（對背景 9.24→3.53）。
+RANKING_BAR_SCALE: tuple[str, ...] = ("#0A3A80", "#0B4FB8", "#1268D6", "#2E86E0", "#4A97E3")
+
+
+def ranking_bar_color(value: float, max_value: float) -> str:
+    """依「佔最大值的比例」挑色階；同數值必得同色。
+
+    ⚠ 分階依**數值**不依名次：名次相鄰但件數差很多（13 vs 5）該有明顯色差，
+    件數相同（5 vs 5）則必須同色——依名次上色會讓並列者看起來有高下之分。
+    """
+    if max_value <= 0:
+        return RANKING_BAR_SCALE[-1]
+    ratio = max(0.0, min(1.0, value / max_value))
+    for index, threshold in enumerate((0.8, 0.6, 0.4, 0.2)):
+        if ratio > threshold:
+            return RANKING_BAR_SCALE[index]
+    return RANKING_BAR_SCALE[-1]
+
+
+def truncation_note(shown: int, total: int) -> str:
+    """被截斷時的圖上註記；沒截斷回空字串。
+
+    ⚠ 唯一來源：兩張排名圖各寫各的會漂移——實機 p14 有這行、p15 沒有，
+    同一種圖兩套規則，讀者以為 p15 就是全部（F-12）。
+    """
+    if total <= shown:
+        return ""
+    return f"顯示前 {shown}/{total} 名，完整名單見附錄"
+
+
+def nice_ticks(max_value: float, count: int = 5) -> list[int]:
+    """回傳等差且好讀的座標軸刻度（含 0，最後一格不低於 max_value）。
+
+    🔴 2026-08-02 實機：p2 縱軸印出 0／4／8／**11**／15、p4 印出 0／4／**9**／13／17。
+    根因是刻度用 `max * i / (count-1)` 直接取整——間距忽 3 忽 4，讀者無法心算比例。
+
+    步進限制在 1／2／2.5／5 的 10 次方倍，這就是「好讀」的定義；
+    ⚠ 最後一格可能高於實際最大值（15 → 0/5/10/15/20），那是刻意的：
+    寧可頂端留白，也不要為了頂到滿而用 3.75 這種步進。
+    """
+    span = max(float(max_value), 0.0)
+    if span <= 0 or count < 2:
+        return list(range(count))
+    # ⚠ 資料量小於刻度數時每格給 1：算出來的步進會是 0.25 這種小數，
+    # 取整後變成 0,0,0,1,1（重複且不等差）。件數是整數，刻度不該有小數。
+    if span < count - 1:
+        return list(range(int(math.ceil(span)) + 1))
+    raw_step = span / (count - 1)
+    magnitude = 10 ** math.floor(math.log10(raw_step))
+    for multiple in (1, 2, 2.5, 5, 10):
+        step = multiple * magnitude
+        if step >= raw_step:
+            break
+    return [int(round(step * i)) for i in range(count)]
 
 
 def _load_ipc_tech_names() -> dict[str, dict[str, str]]:
@@ -1827,7 +1919,9 @@ def _build_applicant_ranking_section(ctx: ChartContext) -> None:
 
 def _build_owner_ranking_section(ctx: ChartContext) -> None:
     report = ctx.report("owner_ranking")
-    render_bar_chart(ctx.run_dir / "owner_ranking.svg", report["label_zh"], report["rows"], "current_assignee_display_name")
+    # F-12：與申請人排名同一套規則——列數收斂到可讀，被截時圖上標示。
+    render_bar_chart(ctx.run_dir / "owner_ranking.svg", report["label_zh"], report["rows"],
+                     "current_assignee_display_name", limit=CHART_ROW_LIMIT)
     ctx.sections.append({"title": report["label_zh"], "variants": [{"label": "Assignees", "file": "owner_ranking.svg", "variant_key": "default"}]})
 
 
@@ -2279,7 +2373,7 @@ def render_opportunity_quadrant_svg(
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="{margin_l}" y="34" font-size="20" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text data-role="chart-title" x="{margin_l}" y="34" font-size="20" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         # Y 軸口徑防呆註（沿用散點版文案）
         f'<text x="{margin_l}" y="56" font-size="11" fill="#9CA3AF">※ 純專利訊號(申請人家數)＝衡量競爭者是否已進場，不等於產品核心度</text>',
         # 圖例：色＝龍頭涉入三級｜數字＝件/家
@@ -2419,7 +2513,7 @@ def render_pain_point_quadrant_svg(
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="{margin_l}" y="34" font-size="20" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text data-role="chart-title" x="{margin_l}" y="34" font-size="20" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         # 副標銜接句（沿用散點版文案）
         f'<text x="{margin_l}" y="54" font-size="13" fill="{COLOR_TEXT_SOFT}">把機會矩陣「待釐清領域」一軸用公開痛點初步補上（數字＝專利件數）</text>',
     ]

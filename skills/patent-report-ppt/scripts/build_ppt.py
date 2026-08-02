@@ -508,6 +508,70 @@ def _display_width(text: str) -> float:
     return sum(0.55 if ord(ch) < 0x2E80 else 1.0 for ch in text)
 
 
+def _column_widths(
+    columns: list[str],
+    rows: list[dict[str, Any]],
+    labels: dict[str, str],
+    total_width_in: float,
+    *,
+    size_pt: float,
+    inset_in: float,
+) -> list[float]:
+    """依內容需求分配欄寬，總和等於表寬。
+
+    🔴 2026-08-02：原本一律 `width / len(columns)` 等分，兩個方向都出錯——
+    p21「前三大申請人」被截 10 處，p22「最新受讓人名單」14 列只有 2 列有值
+    卻和其他欄一樣寬。⚠ 截斷是症狀，等分才是根因：兩位數的「專利件數」
+    和一長串名單拿一樣的寬度。
+
+    分配方式：先算每欄的需求寬（欄頭與內容取較寬者），再按需求比例分配；
+    ⚠ 但每欄至少保住**自己的欄頭**——欄頭被截比內容被截更難懂
+    （讀者連這欄在講什麼都不知道）。欄頭需求超過等分寬時才讓步到等分寬，
+    否則欄多時會把整張表擠爆。
+    """
+    if not columns:
+        return []
+    if len(columns) == 1:
+        return [total_width_in]
+
+    per_char = size_pt / 72.0
+    padding = inset_in * 2
+    equal = total_width_in / len(columns)
+
+    demands: list[float] = []
+    minimums: list[float] = []
+    for name in columns:
+        header = _display_width(labels.get(str(name), str(name))) * per_char + padding
+        content = 0.0
+        for row in rows:
+            value = row.get(name)
+            if isinstance(value, list):
+                value = "、".join(str(v) for v in value)
+            content = max(content, _display_width("" if value is None else str(value)) * per_char)
+        demands.append(max(header, content + padding))
+        # ⚠ 欄頭寬需求可能本身就超過等分寬（欄多時常見），此時只能讓步到等分寬，
+        # 否則所有欄的下限加起來會超出表寬。
+        minimums.append(min(header, equal))
+
+    floor_total = sum(minimums)
+    spare = total_width_in - floor_total
+    if spare <= 0:
+        scale = total_width_in / floor_total
+        return [m * scale for m in minimums]
+
+    # 剩餘寬度按「超出下限的需求」比例分——需求大的欄拿得多，全滿足後仍有剩就平均補。
+    extra = [max(0.0, d - m) for d, m in zip(demands, minimums)]
+    extra_total = sum(extra)
+    if extra_total <= 0:
+        return [m + spare / len(columns) for m in minimums]
+    ratio = min(1.0, spare / extra_total)
+    widths = [m + e * ratio for m, e in zip(minimums, extra)]
+    leftover = total_width_in - sum(widths)
+    if leftover > 0:
+        widths = [w + leftover / len(columns) for w in widths]
+    return widths
+
+
 def _truncate_to_width(text: str, width_in: float, size_pt: float) -> str:
     """把字串截到指定英吋寬度內（超出加「…」），用於表格儲存格避免自動換行撐高列。
 
@@ -638,6 +702,18 @@ SVG_SIZE_PATTERN = re.compile(r'<svg[^>]*?width="(\d+(?:\.\d+)?)"[^>]*?height="(
 RASTER_DPI = 150
 
 
+def strip_chart_title(svg_text: str) -> str:
+    """移除 SVG 內建的圖表標題（引擎標了 `data-role="chart-title"` 的那一行）。
+
+    🔴 F-8：投影片上面是 narrative 的 headline、下面是 SVG 自己畫的
+    「IPC 主分類分布 - Level 4」，兩行講同一件事（實機九頁皆然）。
+
+    ⚠ 不在引擎端砍——網頁報表頁讀的是**同一份 SVG**，那裡沒有頁標題、需要它。
+    故引擎只負責標記，移除是組版端的事：同一份資料、兩種呈現。
+    """
+    return re.sub(r'<text[^>]*data-role="chart-title"[^>]*>.*?</text>\s*', "", svg_text, flags=re.S)
+
+
 def recolor_svg(svg_text: str, recolor: dict[str, Any]) -> str:
     """把引擎產的淺底圖表 SVG 換成深空配色（PPT 端轉色，不動引擎）。
 
@@ -724,7 +800,8 @@ def prepare_chart(svg_path: Path, cache_dir: Path, theme: Theme) -> tuple[Path |
     cache_dir.mkdir(parents=True, exist_ok=True)
     recolor = getattr(theme, "chart_recolor", {}) or {}
     source = svg_path.read_text(encoding="utf-8")
-    dark = recolor_svg(source, recolor)
+    # F-8：上投影片前拿掉圖表自帶標題（頁標題已經在說同一件事）。
+    dark = recolor_svg(strip_chart_title(source), recolor)
     digest = hashlib.sha256(dark.encode("utf-8")).hexdigest()[:16]
     png_path = cache_dir / f"{svg_path.stem}_{digest}.png"
     out_svg = cache_dir / f"{svg_path.stem}_{digest}.svg"
@@ -1040,6 +1117,13 @@ def _set_font(run, theme: Theme, *, size: float, color: str, bold: bool) -> None
     run.font.color.rgb = theme.rgb(color)
     run.font.name = theme.font["family"]
     rpr = run._r.get_or_add_rPr()
+    # 🔴 F-14：標語言＋關拼字檢查。不標時 PowerPoint 拿**預設的英文校對**檢查中文，
+    # 整頁被畫滿紅色波浪底線（2026-08-02 使用者實機截圖 p20）。
+    # ⚠ 內容沒有錯，是校對語言錯——轉圖看不到（proofing marks 不進圖），
+    # 但客戶開檔第一眼就是滿頁紅線，會以為報表產壞了。
+    rpr.set("lang", "zh-TW")
+    rpr.set("altLang", "en-US")
+    rpr.set("noProof", "1")
     for tag in ("a:ea", "a:cs"):
         element = rpr.find(qn(tag))
         if element is None:
@@ -1383,11 +1467,46 @@ def _render_footnote(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any], e
               size=theme.size("footnote_pt"), color="muted")
 
 
+def _points_panel_height(
+    theme: Theme,
+    blocks: list[tuple[str, str, str, bool]],
+    *,
+    width_in: float,
+    max_height_in: float | None = None,
+) -> float:
+    """要點面板的**實際**高度：依內容行數算，不超過宣告上限。
+
+    🔴 2026-08-02：面板高度原本是常數，內容只有 2 條時下方空掉三到四成
+    （實機 p3／p4／p6／p12／p13／p16／p18／p19 八頁）。⚠ 版型算的是框不是內容，
+    這也是 F-1「17/22 頁背景佔比 73–80%」的來源之一。
+
+    ⚠ 上限仍在：內容再多也不能撐出版面。下限保住標題列，空內容不塌成一條線。
+    """
+    g = theme.geometry["points_panel"]
+    ceiling = max_height_in if max_height_in is not None else g["height_in"]
+    chrome = g["text_top_offset_in"] + g["text_bottom_pad_in"]
+    size_pt = theme.size("point_text_pt")
+    per_line, _ = _text_capacity(theme, width_in=width_in, height_in=ceiling, size_pt=size_pt)
+    line_in = size_pt / 72.0 * float(theme.qa["line_height_ratio"])
+    lines = sum(
+        max(1, math.ceil(((len(label) + 1 if label else 0) + len(text)) / per_line))
+        for label, text, _, _ in blocks
+    )
+    return max(chrome + line_in, min(ceiling, chrome + lines * line_in))
+
+
 def _render_points_panel(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
     """右側要點框（＋必要時的方法論警語框）。"""
     g = theme.geometry["points_panel"]
     caveat = _caveat_of(spec)
-    panel_height = g["height_with_caveat_in"] if caveat else g["height_in"]
+    declared = g["height_with_caveat_in"] if caveat else g["height_in"]
+    # 先用宣告高度當上限裁切，再依裁切後的實際內容把面板收回來（F-10）。
+    trim_height = declared - g["text_top_offset_in"] - g["text_bottom_pad_in"]
+    fitted = _trim_blocks(theme, _points_for(spec, ctx),
+                          width_in=g["width_in"] - g["text_inset_right_in"],
+                          height_in=trim_height, size_pt=theme.size("point_text_pt"))
+    panel_height = _points_panel_height(
+        theme, fitted, width_in=g["width_in"] - g["text_inset_right_in"], max_height_in=declared)
     _add_band(slide, theme, g["left_in"], g["top_in"], g["width_in"], panel_height, "panel", rounded=True)
     _add_text(slide, theme, "判讀要點",
               left=g["left_in"] + g["header_inset_left_in"], top=g["top_in"] + g["header_top_offset_in"],
@@ -1397,7 +1516,7 @@ def _render_points_panel(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any
     text_width = g["width_in"] - g["text_inset_right_in"]
     text_height = panel_height - g["text_top_offset_in"] - g["text_bottom_pad_in"]
     size = theme.size("point_text_pt")
-    blocks = _trim_blocks(theme, _points_for(spec, ctx), width_in=text_width, height_in=text_height, size_pt=size)
+    blocks = fitted
     _add_number_bold_text(slide, theme, blocks,
                           left=g["left_in"] + g["text_inset_left_in"], top=g["top_in"] + g["text_top_offset_in"],
                           width=text_width, height=text_height, size=size)
@@ -1577,13 +1696,10 @@ def _render_cover(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> N
         _add_band(slide, theme, left, g["stat_top_in"], g["stat_width_in"], g["stat_height_in"],
                   "panel", rounded=True)
         _add_band(slide, theme, left, g["stat_top_in"], g["stat_width_in"], g["stat_accent_height_in"], "accent")
-        # 大數字分級：卡片寬度固定，值太長就降級字級，避免撐出卡片外（封面壓字的舊病）。
-        if len(value) <= 4:
-            value_size = theme.size("stat_value_pt")
-        elif len(value) <= 8:
-            value_size = theme.size("stat_value_medium_pt")
-        else:
-            value_size = theme.size("stat_value_small_pt")
+        # 🔴 F-15：四張卡**共用**同一個字級。分級規則本身沒錯（避免撐出卡片），
+        # 錯在逐張各算各的——實機 p1 的「2011–2026」被降級後，四張並排看起來
+        # 像三張重要、一張次要，但它們是同一層級的指標。
+        value_size = _cover_stat_size(theme, ctx["cover_stats"], value)
         _add_text(slide, theme, value,
                   left=left, top=g["stat_value_top_in"],
                   width=g["stat_width_in"], height=g["stat_value_height_in"],
@@ -2280,12 +2396,18 @@ def _add_table(
     for row in table.rows:
         row.height = Inches(row_height)
 
+    # 🔴 F-3／F-16：欄寬依內容需求分配，不再等分。等分讓兩位數的「專利件數」
+    # 和一長串名單拿一樣寬——一邊浪費、一邊截斷。
+    col_widths = _column_widths(columns, display, labels, width,
+                                size_pt=theme.size("table_body_pt"), inset_in=cell_inset_in)
+    for index, col_width in enumerate(col_widths):
+        table.columns[index].width = Inches(col_width)
     # 扣掉左右內距後才是真正可用的文字寬度；截字到這個寬度內，儲存格就不會自動換行把列撐高。
-    text_width = width / len(columns) - cell_inset_in * 2
+    text_widths = [w - cell_inset_in * 2 for w in col_widths]
     for index, name in enumerate(columns):
         cell = table.cell(0, index)
         shown = labels.get(str(name), str(name))
-        cell.text = _truncate_to_width(shown, text_width, theme.size("table_header_pt"))
+        cell.text = _truncate_to_width(shown, text_widths[index], theme.size("table_header_pt"))
         # v3 深空：表頭深藍底＋accent 青字（原白字在深底上與內文分不出層次）。
         _style_cell(cell, theme, size=theme.size("table_header_pt"), color="accent", bold=True,
                     fill="navy", margin_in=cell_margin_in, inset_in=cell_inset_in)
@@ -2298,7 +2420,7 @@ def _add_table(
             value = mapped.get(str(value), value) if mapped else value
             cell = table.cell(r, c)
             cell.text = "" if value is None else _truncate_to_width(
-                str(value), text_width, theme.size("table_body_pt")
+                str(value), text_widths[c], theme.size("table_body_pt")
             )
             # bold=True：v3 使用者定案「文字內容加粗體」，深底細字會發灰。
             _style_cell(cell, theme, size=theme.size("table_body_pt"), color="ink", bold=True,
@@ -2628,14 +2750,32 @@ def _cover_stats(report_data: dict[str, Any]) -> list[tuple[str, str, str]]:
     return stats[:4]
 
 
-FRAMEWORK_TOPIC_LIMIT = 5
+FRAMEWORK_BUDGET_CHARS = 58
 
 
-def _framework_text(layout: list[PageSpec]) -> str:
+def _cover_stat_size(theme: Theme, stats: list[tuple[str, str, str]], value: str) -> float:
+    """封面統計卡的主數字字級——**四張卡取同一級**。
+
+    ⚠ 級數由最長的那個值決定：卡片寬度固定，最長的放得下，其餘自然放得下。
+    逐張各算會讓長值被降級、短值維持大字，並排時像重要性不同（實機 p1）。
+    """
+    longest = max((len(str(v)) for v, _unit, _label in stats), default=len(str(value)))
+    if longest <= 4:
+        return theme.size("stat_value_pt")
+    if longest <= 8:
+        return theme.size("stat_value_medium_pt")
+    return theme.size("stat_value_small_pt")
+
+
+def _framework_text(layout: list[PageSpec], budget_chars: int = FRAMEWORK_BUDGET_CHARS) -> str:
     """分析框架條：用本次實際出頁的內容頁主題串成閱讀動線。
 
-    只列前幾個主題再收「等 N 項」——列滿十幾個會被單行版面截成「…」，
-    反而看不出動線。
+    🔴 F-15：原本固定列 5 項，主題名長短不一，五個長名串起來就爆行，
+    實機 p1 被截成「…國家佈局（現有保護） → 等共 12 項…」——**連收尾都被切掉**。
+    ⚠「等共 N 項分析」是資訊（讀者才知道還有多少沒列），被截掉這行只剩半句話。
+
+    改為**先扣掉收尾所需的字數**，剩下的預算才拿來排主題：寧可少列一項，
+    也要讓「還有幾項」講完整。
     """
     topics = list(dict.fromkeys(
         spec.topic or spec.title
@@ -2644,9 +2784,24 @@ def _framework_text(layout: list[PageSpec]) -> str:
     ))
     if not topics:
         return "分析框架：本次僅含封面與研發方向建議"
-    head = " → ".join(topics[:FRAMEWORK_TOPIC_LIMIT])
-    rest = len(topics) - FRAMEWORK_TOPIC_LIMIT
-    return f"分析框架：{head}" + (f" → 等共 {len(topics)} 項分析" if rest > 0 else "")
+    prefix = "分析框架："
+    tail = f" → 等共 {len(topics)} 項分析"
+    # 先試著全部列出——放得下就不需要收尾那句。
+    whole = prefix + " → ".join(topics)
+    if len(whole) <= budget_chars:
+        return whole
+    room = budget_chars - len(prefix) - len(tail)
+    shown: list[str] = []
+    used = 0
+    for topic in topics:
+        step = len(topic) + (3 if shown else 0)
+        if used + step > room:
+            break
+        shown.append(topic)
+        used += step
+    if not shown:
+        shown = [topics[0]]
+    return prefix + " → ".join(shown) + tail
 
 
 # --------------------------------------------------------------------------
