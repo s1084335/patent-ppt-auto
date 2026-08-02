@@ -1625,11 +1625,16 @@ def _render_chart_hero(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any])
     """
     _render_header(slide, theme, spec, ctx)
     g = theme.geometry["chart_hero"]
-    _add_text(slide, theme, _encoding_note(spec, ctx),
-              left=g["encoding_left_in"], top=g["encoding_top_in"],
-              width=g["encoding_width_in"], height=g["encoding_height_in"],
-              size=theme.size("encoding_note_pt"), color="muted", align=PP_ALIGN.RIGHT)
     image = ctx["charts"].resolve(spec.charts[0]) if spec.charts else None
+    # 說明靠右對齊**圖的實際右緣**，不是框的右緣。圖填不滿框時（瘦圖只佔框寬的
+    # 三分之一），靠框對齊會讓說明飄在圖右邊幾吋外的空白處（獨立驗收 p6 抓到）。
+    shown_w, _ = (_fitted_size(image, g["image_width_in"], g["image_height_in"])
+                  if image is not None else (g["image_width_in"], 0.0))
+    edge_left = g["image_left_in"] + (g["image_width_in"] - shown_w) / 2
+    _add_text(slide, theme, _encoding_note(spec, ctx),
+              left=edge_left, top=g["encoding_top_in"],
+              width=shown_w, height=g["encoding_height_in"],
+              size=theme.size("encoding_note_pt"), color="muted", align=PP_ALIGN.RIGHT)
     if image is not None:
         _add_picture_fitted(slide, image,
                             left=g["image_left_in"], top=g["image_top_in"],
@@ -1687,11 +1692,16 @@ def _render_chart_with_points(slide, theme: Theme, spec: PageSpec, ctx: dict[str
     """內容頁預設版型：左圖約 60% 寬，右側要點框（＋必要時警語框）。"""
     _render_header(slide, theme, spec, ctx)
     g = theme.geometry["chart_with_points"]
-    _add_text(slide, theme, _encoding_note(spec, ctx),
-              left=g["encoding_left_in"], top=g["encoding_top_in"],
-              width=g["encoding_width_in"], height=g["encoding_height_in"],
-              size=theme.size("encoding_note_pt"), color="muted", align=PP_ALIGN.RIGHT)
     image = ctx["charts"].resolve(spec.charts[0]) if spec.charts else None
+    # 說明靠右對齊**圖的實際右緣**，不是框的右緣。圖填不滿框時（瘦圖只佔框寬的
+    # 三分之一），靠框對齊會讓說明飄在圖右邊幾吋外的空白處（獨立驗收 p6 抓到）。
+    shown_w, _ = (_fitted_size(image, g["image_width_in"], g["image_height_in"])
+                  if image is not None else (g["image_width_in"], 0.0))
+    edge_left = g["image_left_in"] + (g["image_width_in"] - shown_w) / 2
+    _add_text(slide, theme, _encoding_note(spec, ctx),
+              left=edge_left, top=g["encoding_top_in"],
+              width=shown_w, height=g["encoding_height_in"],
+              size=theme.size("encoding_note_pt"), color="muted", align=PP_ALIGN.RIGHT)
     if image is not None:
         _add_picture_fitted(slide, image,
                             left=g["image_left_in"], top=g["image_top_in"],
