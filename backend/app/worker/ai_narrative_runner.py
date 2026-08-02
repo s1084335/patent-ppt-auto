@@ -255,7 +255,7 @@ def resolve_run_dir(based_on_version: str | None, *, root: Path | None = None) -
     )
 
 
-def load_narrative_capacity() -> dict[str, dict[str, int]]:
+def load_narrative_capacity(run_dir: Path | None = None) -> dict[str, dict[str, int]]:
     """各報表要點區的實際版面容量；取不到回空 dict。
 
     ⚠ 延後匯入 `ai_report_ppt_runner`：那支模組在 import 期就從本模組取東西，
@@ -266,7 +266,17 @@ def load_narrative_capacity() -> dict[str, dict[str, int]]:
     try:
         from .ai_report_ppt_runner import _load_builder
 
-        return _load_builder().narrative_capacity()
+        builder = _load_builder()
+        if run_dir is None:
+            return builder.narrative_capacity()
+        # 帶 run_dir 才算得出扁圖頁的真實容量（版型依圖的長寬比在執行時決定）。
+        import json as _json
+
+        manifest_path = run_dir / "artifact_manifest.json"
+        manifest = _json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+        theme = builder.Theme.load()
+        charts = builder.ChartIndex(run_dir, run_dir / ".cache", manifest, theme)
+        return builder.narrative_capacity(theme, charts)
     except Exception:
         return {}
 
@@ -296,7 +306,7 @@ def build_prompt(
     narratives_path = run_dir / "narratives.json"
     # 逐報表的真實版面容量：大圖頁的右側直欄與無圖表格頁的底部橫幅差很多，
     # 只給一組全域上限會讓 CLI 盲寫、事後被裁掉。取不到就不寫這段（退回全域上限）。
-    capacity = load_narrative_capacity()
+    capacity = load_narrative_capacity(run_dir)
     capacity_note = ""
     if capacity:
         listed = "\n".join(
@@ -509,7 +519,7 @@ def run_narrative(
 
     # 三件套契約驗證（v4）：只警告不 raise——舊格式要能過渡、超限交 PPT 端 fallback；
     # 警告進 summary 讓前端任務進度看得到，違規不得靜默。
-    contract_warnings = validate_narrative_contract(narratives, load_narrative_capacity())
+    contract_warnings = validate_narrative_contract(narratives, load_narrative_capacity(run_dir))
 
     # 確定性程式重渲染 index（嵌入解讀）；CLI 不碰 index.html。
     refresh = refresh_index(run_dir)

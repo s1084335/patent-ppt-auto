@@ -913,7 +913,15 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
         y = scale(count, 0, y_max, top + plot_h, top)
         svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{COLOR_APPLICATION}"/>')
         if index % label_step == 0 or index == len(data) - 1:
-            svg.append(f'<text x="{x + 6:.1f}" y="{y - 6:.1f}" font-size="11" fill="{COLOR_TEXT_SOFT}">{year}</text>')
+            # 🔴 標籤原本固定放右上（x+6, y-6），折線往右上走時就被線壓過
+            # （2026-07-31 獨立驗收：「2011」幾乎讀不出）。
+            # ⚠ 不用白色描邊避讓：背景在網頁是白、在簡報是深色，描邊色兩邊都會錯。
+            # 改依**折線在此點的走向**把標籤放到線的另一側——與背景無關。
+            neighbour = data[index + 1] if index + 1 < len(data) else data[index - 1] if index else None
+            going_up = neighbour is not None and neighbour[2] > count
+            offset_y = 16 if going_up else -6
+            svg.append(f'<text x="{x + 6:.1f}" y="{y + offset_y:.1f}" font-size="11" '
+                       f'fill="{COLOR_TEXT_SOFT}">{year}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 

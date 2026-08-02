@@ -345,6 +345,15 @@ def _points_area(theme: Theme, kind: str) -> tuple[float, float, int] | None:
         width = (g["points_band_width_in"] - inset - inset - gap * (columns - 1)) / columns
         return (width,
                 g["points_band_height_in"] - g["points_band_text_top_offset_in"] - inset, columns)
+    if kind == "chart_wide":
+        g = theme.geometry["chart_wide"]
+        inset = g["band_inset_in"]
+        columns = int(g["band_columns"])
+        gap = g["band_column_gap_in"]
+        width = (g["band_width_in"] - inset - inset - gap * (columns - 1)) / columns
+        # 高度取「圖最矮時橫幅能拿到的空間」——扁圖高度不一，取保守值才不會高估。
+        height = g["band_bottom_in"] - g["band_min_top_in"] - g["band_text_top_offset_in"] - inset
+        return (width, height, columns)
     if kind == "comparison":
         g = theme.geometry["comparison"]
         return (g["column_width_in"] - g["points_inset_right_in"],
@@ -358,7 +367,8 @@ def _points_area(theme: Theme, kind: str) -> tuple[float, float, int] | None:
     return None
 
 
-def narrative_capacity(theme: Theme | None = None) -> dict[str, dict[str, int]]:
+def narrative_capacity(theme: Theme | None = None,
+                       charts: ChartIndex | None = None) -> dict[str, dict[str, int]]:
     """每張報表的要點區實際容量：{report_key: {max_points, max_chars}}。
 
     ⚠ 為什麼要這個（2026-07-31）：解讀 CLI 原本只拿到一組全域上限（4–7 條 ×55 字），
@@ -380,13 +390,33 @@ def narrative_capacity(theme: Theme | None = None) -> dict[str, dict[str, int]]:
         # comparison 頁會被 `_split_pairs_by_policy` 拆成一圖一頁的 chart_hero，
         # 拿 comparison 的窄長條去算會嚴重低估（實測只算得出 1 條）。
         kind = spec.kind
-        if kind == "comparison" and any(key in SPLIT_PAIR_REPORTS for key in spec.report_keys):
+        # ⚠ 這裡要**重現執行時的版型決策順序**：先拆頁（政策拆或圖數溢出），
+        # 再依長寬比選滿寬版型。只做後者會被「comparison 不在 SINGLE_CHART_KINDS」
+        # 的守門條件擋掉，扁圖頁的容量就會沿用窄側欄、CLI 因此寫得比實際能放的少。
+        chart_names = tuple(charts.files_for(spec.report_keys)) if charts is not None else ()
+        if kind == "comparison" and (
+            any(key in SPLIT_PAIR_REPORTS for key in spec.report_keys)
+            or len(chart_names) > len(theme.geometry["comparison"]["column_left_in"])
+        ):
             kind = "chart_hero"
+        # ⚠ `chart_wide` 是**執行時依圖的長寬比**決定的，不是宣告在 PAGE_LAYOUT 裡。
+        # 拿不到圖檔時只能用宣告版型估——那會低估扁圖頁（滿寬雙欄橫幅比窄側欄大得多），
+        # CLI 因此寫得比實際能放的少。給了 charts 就能算準。
+        if charts is not None:
+            for name in chart_names:
+                if _kind_for_aspect(kind, (name,), charts) == "chart_wide":
+                    kind = "chart_wide"
+                    break
         area = _points_area(theme, kind)
         if area is None:
             continue
         width_in, height_in, columns = area
         per_line, max_lines = _text_capacity(theme, width_in=width_in, height_in=height_in, size_pt=size)
+        # ⚠ 有判讀限制的報表，警語會先佔掉行數（批1 起警語不參與均分），
+        # 容量必須扣掉它——否則 CLI 照上限寫，最後被擠掉的是要點。
+        caveat = CAVEATS.get(spec.report_keys[0] if spec.report_keys else "", "")
+        if caveat:
+            max_lines -= _lines_needed(f"{CAVEAT_LABEL}｜{caveat}", per_line)
         max_points = max(1, (max_lines * columns) // NARRATIVE_POINT_LINES)
         max_chars = max(1, per_line * NARRATIVE_POINT_LINES)
         for key in spec.report_keys:
