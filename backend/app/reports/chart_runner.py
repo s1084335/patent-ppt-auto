@@ -365,7 +365,15 @@ def render_segmented_bar_chart(
     segment_label: str,
     limit: int = 20,
 ) -> None:
-    """分段長條圖：總長代表 total_key，著色區段代表 segment_key。"""
+    """分段長條圖：總長代表 total_key，著色區段代表 segment_key。
+
+    ⚠ 每列 50px，20 列會讓圖高到 1124px。塞進簡報的圖框後縮到 **0.37 倍**——
+    13px 的公司名變成 5px，完全不可讀（2026-07-31 獨立驗收實測）。
+    圖是給人「一眼看出誰領先」的，長尾留給附錄的完整表格。
+    故 `limit` 預設收斂到 `CHART_ROW_LIMIT`；被截時圖上**明白標示**，
+    不得讓讀者以為看到的就是全部。
+    """
+    total_rows = len(rows)
     data = rows[:limit]
     width = 980
     row_h = 50
@@ -382,6 +390,9 @@ def render_segmented_bar_chart(
         f'<text x="28" y="36" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         f'<rect x="28" y="56" width="12" height="12" fill="#CBD5E1"/><text x="46" y="67" font-size="13" fill="{COLOR_TEXT}">全部專利</text>',
         f'<rect x="126" y="56" width="12" height="12" fill="{COLOR_APPLICATION}"/><text x="144" y="67" font-size="13" fill="{COLOR_TEXT}">{xml_text(segment_label)}</text>',
+        *([f'<text x="{width - 40}" y="67" text-anchor="end" font-size="12" '
+           f'fill="{COLOR_TEXT_SOFT}">顯示前 {len(data)}/{total_rows} 名，完整名單見附錄</text>']
+          if total_rows > len(data) else []),
     ]
     for index, row in enumerate(data):
         y = top + index * row_h
@@ -710,15 +721,18 @@ def render_matrix_chart(
                     f'<rect x="{x}" y="{y}" width="{cell_w - 2}" height="{cell_h - 2}" fill="#F1F5F9"/>'
                 )
                 continue
-            # 開根號縮放：大格夠深、小格仍看得出深淺差。
-            intensity = (value / max_value) ** 0.5
-            opacity = 0.12 + 0.78 * intensity
-            text_color = "#FFFFFF" if opacity > 0.55 else COLOR_TEXT
+            # 🔴 2026-07-31：原本用 `fill-opacity` 0.12–0.90 疊在同一色上表達大小。
+            # ⚠ **不透明度編碼會隨背景明暗翻轉語意**：白底上低不透明＝淡（小），
+            # 但深色主題移除白底後，低不透明露出的是深背景、高不透明是亮暖色——
+            # 方向整個反過來，與同一份簡報裡的泡泡矩陣（值大＝深）互相矛盾。
+            # 改用與泡泡矩陣**同一套離散色階**：色本身帶大小語意，不依賴背景。
+            fill = year_bubble_color(value, max_value)[0]
             parts.append(
-                f'<rect x="{x}" y="{y}" width="{cell_w - 2}" height="{cell_h - 2}" fill="{COLOR_APPLICATION}" fill-opacity="{opacity:.2f}"/>'
+                f'<rect x="{x}" y="{y}" width="{cell_w - 2}" height="{cell_h - 2}" fill="{fill}"/>'
             )
             parts.append(
-                f'<text x="{x + (cell_w - 2) / 2}" y="{y + cell_h / 2 + 4}" font-size="11" text-anchor="middle" fill="{text_color}">{value}</text>'
+                f'<text x="{x + (cell_w - 2) / 2}" y="{y + cell_h / 2 + 4}" font-size="11" '
+                f'text-anchor="middle" fill="{readable_text_on(fill)}" data-on-fill="{fill}">{value}</text>'
             )
     parts.append("</svg>")
     path.write_text("\n".join(parts), encoding="utf-8")
@@ -814,11 +828,22 @@ def render_year_bubble_matrix_chart(
         f'<text x="16" y="50" font-size="12" fill="{COLOR_TEXT_SOFT}">X = {xml_text(year_key_label)}, bubble = patent_count</text>',
         '<text x="16" y="90" font-size="12" font-weight="600" fill="#374151">件數色階</text>',
     ]
+    # 🔴 圖例標出**本圖實際的級距數值**，不只寫「低／中／高」。
+    # 兩張年度矩陣各自正規化，同樣是「1 件」在兩頁可能落在不同色階；
+    # 只寫抽象標籤時讀者無從得知，會把一頁的 1 誤讀成比另一頁的 1 更多。
+    # ⚠ 不改成共用尺度：泡泡半徑也吃 max_value，共用會讓小值那張全部縮小
+    # （見 shared_matrix_max 的否決理由）。標出級距是不傷鑑別度的作法。
     legend_x = 82
-    for _upper_bound, color, label in YEAR_BUBBLE_COLOR_BANDS:
+    previous_bound = 0
+    for upper_bound, color, label in YEAR_BUBBLE_COLOR_BANDS:
+        low = previous_bound * max_value
+        high = upper_bound * max_value
+        span = f"{max(1, math.ceil(low + 0.001)):.0f}–{math.floor(high):.0f}"
+        previous_bound = upper_bound
         parts.append(f'<circle cx="{legend_x}" cy="86" r="9" fill="{color}"/>')
-        parts.append(f'<text x="{legend_x + 10}" y="90" font-size="11" fill="#4B5563">{label}</text>')
-        legend_x += 54
+        parts.append(f'<text x="{legend_x + 10}" y="90" font-size="11" fill="#4B5563">'
+                     f'{label} {span}</text>')
+        legend_x += 74
     for col_index, year in enumerate(years):
         x = left + col_index * cell_w + cell_w / 2
         parts.append(f'<text x="{x:.1f}" y="{top - 14}" font-size="17" text-anchor="middle" fill="{COLOR_TEXT}">{year}</text>')
@@ -1425,6 +1450,11 @@ CLASSIFICATION_LEVEL_LABELS = {4: "Level 4 (Subclass)", 5: "Level 5 (Main Group)
 # 排名類報表出圖時套 ranking_limit（其餘報表用各自定義的預設列數）。
 RANKING_LIMIT_REPORTS = ("applicant_ranking", "owner_ranking")
 
+# 圖表可讀的列數上限。⚠ 不是資料上限——附錄表格仍列完整名單。
+# 每列 50px，20 列＝1124px，塞進簡報圖框縮到 0.37 倍、字剩 5px 不可讀。
+# 12 列＝702px，縮放約 0.58 倍（+57%），公司名讀得出來。
+CHART_ROW_LIMIT = 12
+
 # ---------------------------------------------------------------------------
 # 入庫截取（2026-07-21 定案修正）：排名類「保存」也只留前 20、年度序列只留最新
 # 25 年——長尾不落庫（report_data.json／analysis_outputs 不膨脹），完整排名／
@@ -1696,6 +1726,7 @@ def _build_applicant_ranking_section(ctx: ChartContext) -> None:
         "applicant_display_name",
         total_key="patent_count",
         segment_key="recent_assignee_count",
+        limit=CHART_ROW_LIMIT,
         segment_label="有最新受讓人",
     )
     ctx.sections.append({
@@ -1710,6 +1741,37 @@ def _build_owner_ranking_section(ctx: ChartContext) -> None:
     render_bar_chart(ctx.run_dir / "owner_ranking.svg", report["label_zh"], report["rows"], "current_assignee_display_name")
     ctx.sections.append({"title": report["label_zh"], "variants": [{"label": "Assignees", "file": "owner_ranking.svg", "variant_key": "default"}]})
 
+
+
+def shared_matrix_max(ctx: "ChartContext", *report_names: str) -> int | None:
+    """跨報表的共同色階基準（取各報表格值的最大值）。
+
+    ⚠ **目前未採用**，保留供日後參考並記下否決理由：泡泡半徑也用 `max_value`
+    正規化（`radius = 9 + 19*sqrt(value/max_value)`），共用尺度會讓數值較小的
+    那張圖泡泡全部縮小——實測最大半徑由 27 掉到 11.3，回歸測試擋下。
+    讀者原本抱怨的就是看不清，用「跨頁可比」換「兩張都變小」並不划算。
+    跨頁可比改以**圖例標出各自實際級距**達成（見 render_year_bubble_matrix_chart）。
+
+    🔴 2026-07-31：申請人年度矩陣與專利權人年度矩陣**各自正規化**，於是同樣是
+    「1 件」在兩頁顯示成不同顏色。兩張圖版型相同且相鄰，讀者必然橫向比較，
+    會把其中一頁的 1 誤讀成比另一頁的 1 更多。兩者單位同為「件數」，共用尺度成立。
+
+    ⚠ 兩個 section 是獨立建構、順序不保證，故**兩邊都算跨報表最大值**，
+    不靠「先跑的把值存起來給後跑的」——那種寫法換個註冊順序就失效。
+    報表未被選取時略過，全部缺席回 None（呼叫端退回各自正規化）。
+    """
+    values: list[int] = []
+    for name in report_names:
+        try:
+            report = ctx.report(name)
+        except Exception:
+            continue
+        for row in report.get("rows") or []:
+            for key, value in row.items():
+                if key.endswith("_display_name") or not isinstance(value, (int, float)):
+                    continue
+                values.append(int(value))
+    return max(values) if values else None
 
 
 def _build_applicant_year_matrix_section(ctx: ChartContext) -> None:
