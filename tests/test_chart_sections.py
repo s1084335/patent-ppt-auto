@@ -171,7 +171,7 @@ class OpportunityQuadrantLegendTests(unittest.TestCase):
             path = Path(tmp) / "opportunity.svg"
             chart_runner.render_opportunity_quadrant_svg(path, "機會四象限分析", data)
             svg = path.read_text(encoding="utf-8")
-        for battle in ("必守核心戰場", "新興戰場（競爭者已進場）", "待釐清領域", "單一玩家壟斷型"):
+        for battle in ("高競爭技術區", "新興戰場（競爭者已進場）", "待釐清領域", "單一玩家壟斷型"):
             self.assertEqual(svg.count(battle), 1,
                              f"戰場語言「{battle}」應恰出現一次（格 header），實得 {svg.count(battle)}")
         # chip 文字用中文 label 非 code，格式「label 件/家」
@@ -403,7 +403,7 @@ class BoardQuadrantTests(unittest.TestCase):
             self.assertEqual(col, col_by_topic[topic], f"{topic} 密度欄應為 {col_by_topic[topic]}")
         self.assertIn("待調查（灰帶）", svg, "缺獨立灰帶標示")
         # 四角象限名沿用
-        for corner in ("研發優先缺口★", "必守核心→迴避設計", "nice-to-have→防禦即可", "競爭者已過度投入→選擇性"):
+        for corner in ("研發優先缺口★", "高競爭→claim overlap 分析", "nice-to-have→防禦即可", "競爭者已過度投入→選擇性"):
             self.assertIn(corner, svg, f"缺象限名 {corner}")
         groups: dict[tuple[str, str], list[tuple[float, float, float]]] = {}
         for band, col, topic, x, y, w in chips:
@@ -598,7 +598,7 @@ class TopicSegmentTests(unittest.TestCase):
                 "leading_applicants", "leading_applicant_count",
             ],
         )
-        self.assertIn(tech_variant["rows"][0]["quadrant"], {"必守核心", "新興戰場", "待釐清", "單一玩家壟斷"})
+        self.assertIn(tech_variant["rows"][0]["quadrant"], {"高競爭技術區", "新興戰場", "待釐清", "單一玩家壟斷"})
         self.assertEqual(
             tech_variant["thresholds"],
             {"patent_count_median": 1.0, "applicant_count_median": 1.0},
@@ -1291,6 +1291,137 @@ class BubbleLegendSpanTests(unittest.TestCase):
                 covered.extend(range(bounds[0], bounds[-1] + 1))
             self.assertEqual(covered, list(range(1, max_value + 1)),
                              f"max_value={max_value} 的級距沒有完整覆蓋 1..{max_value}")
+
+
+class IpcTechNameTests(unittest.TestCase):
+    """C-3：IPC/CPC 只給代碼，讀者不知道那是什麼技術。
+
+    🔴 使用者：「IPC/CPC 沒有轉換成技術意義」。參考報告（附件3 電輔自行車）
+    的每一格都是「代碼＋中文技術名＋件數」三者同框，讀者不必去查對照表。
+
+    ⚠ 設計：官方原文與濃縮短名**存同一份**，各帶 version。拆成兩個檔會讓
+    「官方改版了但濃縮沒跟上」無人察覺——本專案已因兩處落點吃過四次虧。
+    """
+
+    def test_subclass_lookup(self):
+        self.assertEqual(chart_runner.tech_name("A63B"), "訓練與體育器械")
+        self.assertEqual(chart_runner.tech_name("F03G"), "彈力與重力發動機")
+
+    def test_ipc_and_cpc_main_group_share_one_entry(self):
+        """⚠ IPC 寫 A63B-021、CPC 寫 A63B-0021，前導零位數不同但**是同一個主目**。
+
+        兩種寫法必須正規化到同一鍵，否則同一分類在 IPC 頁與 CPC 頁會顯示不同名字
+        （或其中一頁查不到而退回代碼）。
+        """
+        self.assertEqual(chart_runner.tech_name("A63B-021"), "阻力式肌力訓練器械")
+        self.assertEqual(chart_runner.tech_name("A63B-0021"), "阻力式肌力訓練器械")
+        self.assertEqual(chart_runner.tech_name("A63B-0022"), "心肺與協調訓練器械")
+        self.assertEqual(chart_runner.tech_name("A63B-069"), "特殊運動訓練器械")
+        self.assertEqual(chart_runner.tech_name("F03G-005"), "人力機械動力裝置")
+
+    def test_unknown_code_falls_back_to_code_itself(self):
+        """查不到不留空、不猜——顯示代碼本身，讀者仍知道那是分類碼。"""
+        self.assertEqual(chart_runner.tech_name("G05B"), "G05B")
+        self.assertEqual(chart_runner.tech_name("G05B-019"), "G05B-019")
+        self.assertEqual(chart_runner.tech_name(""), "")
+
+    def test_every_entry_has_official_and_short(self):
+        """每一筆都要有官方原文（可追溯）與濃縮短名（顯示用），缺一不可。"""
+        for code, entry in chart_runner.IPC_TECH_NAMES.items():
+            self.assertTrue(entry.get("official"), f"{code} 缺官方原文")
+            self.assertTrue(entry.get("short"), f"{code} 缺濃縮短名")
+
+    def test_short_names_are_short_enough_for_chart_labels(self):
+        """短名要放得進圖表標籤——參考報告的標籤是 4–12 字，這裡放寬到 14。"""
+        for code, entry in chart_runner.IPC_TECH_NAMES.items():
+            self.assertLessEqual(len(entry["short"]), 14, f"{code} 的短名過長：{entry['short']}")
+
+    def test_short_is_not_the_official_text(self):
+        """⚠ 短名必須真的濃縮過。直接複製官方全文等於沒做這件事。"""
+        for code, entry in chart_runner.IPC_TECH_NAMES.items():
+            self.assertNotEqual(entry["short"], entry["official"], code)
+
+    def _render(self, rows, label_key="ipc_main_group_symbol"):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bar.svg"
+            chart_runner.render_bar_chart(path, "IPC 主分類分布", rows, label_key)
+            return path.read_text(encoding="utf-8")
+
+    def test_chart_label_carries_tech_name(self):
+        """🔴 圖上要看得到技術意義，不能只有代碼。"""
+        svg = self._render([{"ipc_main_group_symbol": "A63B-069", "patent_count": 19}])
+        self.assertIn("A63B-069", svg)
+        self.assertIn("特殊運動訓練器械", svg)
+
+    def test_non_classification_labels_unchanged(self):
+        """⚠ 同一支 render_bar_chart 也畫申請人排名——公司名不得被加工。"""
+        svg = self._render([{"applicant_display_name": "廈門帝瑪斯健康科技", "patent_count": 13}],
+                           label_key="applicant_display_name")
+        self.assertIn("廈門帝瑪斯健康科技", svg)
+        self.assertNotIn("訓練", svg)
+
+
+class TopicStatusDisplayTests(unittest.TestCase):
+    """C-7：技術狀態要出現在主題分類統計表上，中間計算欄不得外洩。
+
+    🔴 使用者定調：報告文字停在「哪些技術專利數量較高」，要提升到
+    「技術競爭型態、演進趨勢及布局意義」。狀態欄就是把「型態」放進表裡的落點——
+    技術演進不另開圖，併進技術通道的主題分類統計表。
+
+    ⚠ 狀態是算出來的，中間量（recent_count／share_early／concentration_*）
+    是過程不是結論，一旦出現在表上就是又一次「程式殘骸給讀者看」（批 1 的教訓）。
+    """
+
+    def test_status_columns_have_chinese_labels(self):
+        for key, label in (("status", "技術狀態"), ("status_meaning", "意義")):
+            self.assertEqual(chart_runner.DATA_COLUMN_LABELS.get(key), label)
+
+    def test_intermediate_metrics_are_hidden(self):
+        excluded = chart_runner.DATA_TABLE_EXCLUDED_COLUMNS["cluster_topic_table"]
+        for key in ("recent_count", "early_count", "recent_applicants", "early_applicants",
+                    "share_recent", "share_early", "concentration_recent", "concentration_early"):
+            self.assertIn(key, excluded, f"中間計算欄 {key} 會被印給讀者看")
+
+    def test_status_itself_is_not_hidden(self):
+        excluded = chart_runner.DATA_TABLE_EXCLUDED_COLUMNS["cluster_topic_table"]
+        self.assertNotIn("status", excluded)
+        self.assertNotIn("status_meaning", excluded)
+
+
+class QuadrantWordingTests(unittest.TestCase):
+    """C-5：象限只用「件數 × 申請人家數」切分，推不出迴避設計結論。
+
+    🔴 2026-08-02 使用者：現行 p18／p19 直接寫「必守核心戰場 → **迴避設計**」，
+    等於用密度統計冒充侵權判斷。真正 FTO 需要 claim chart、claim overlap、
+    legal status、jurisdiction，這張圖一項都沒有。
+
+    定案改法：象限名改「高競爭技術區」，行動改「需進行 claim overlap 分析」。
+    """
+
+    def test_high_density_quadrant_renamed(self):
+        label, action = chart_runner._qlabel(10, 10, 5, 5)
+        self.assertEqual(label, "高競爭技術區")
+        self.assertEqual(action, "需進行 claim overlap 分析")
+
+    def test_table_quadrant_name_matches_chart(self):
+        """⚠ 表格用名與圖上名必須同一套，否則同一象限在兩處叫不同名字。"""
+        name = chart_runner._opportunity_quadrant_name(
+            {"patent_count": 10, "applicant_count": 10}, 5, 5)
+        self.assertEqual(name, "高競爭技術區")
+
+    def test_no_avoidance_design_claim_in_quadrant_output(self):
+        """象限的任何輸出都不得再宣稱「迴避設計」。"""
+        labels = [chart_runner._qlabel(px, py, 5, 5) for px, py in
+                  ((10, 10), (1, 10), (1, 1), (10, 1))]
+        for label, action in labels:
+            self.assertNotIn("迴避設計", label)
+            self.assertNotIn("迴避設計", action)
+
+    def test_other_quadrants_unchanged(self):
+        """只有高密度高廣度那一象限改名，其餘三個維持原判讀。"""
+        self.assertEqual(chart_runner._qlabel(1, 10, 5, 5)[1], "值得追")
+        self.assertEqual(chart_runner._qlabel(1, 1, 5, 5)[1], "需使用者痛點調查")
+        self.assertEqual(chart_runner._qlabel(10, 1, 5, 5)[1], "注意依賴風險")
 
 
 class PointLabelPlacementTests(unittest.TestCase):

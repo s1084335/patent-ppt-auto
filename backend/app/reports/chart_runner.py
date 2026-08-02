@@ -339,7 +339,12 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
     ]
     for index, row in enumerate(data):
         y = top + index * row_h
-        label = xml_text(row.get(label_key))
+        raw_label = str(row.get(label_key) or "")
+        # 分類代碼補上技術意義（C-3）：只給 `A63B-069` 讀者不知道那是什麼技術。
+        # ⚠ 深化而非加參數——本函式也畫申請人排名，`tech_name` 查不到就原樣回傳，
+        # 公司名不會被誤加工，呼叫端一處都不用改。
+        annotated = tech_name(raw_label)
+        label = xml_text(raw_label if annotated == raw_label else f"{raw_label}　{annotated}")
         value = int(row[value_key])
         bar_w = scale(value, 0, max_value, 0, plot_w)
         # 🔴 2026-07-31：原本 `index % 2` 依奇偶列交替兩色——**沒有任何語意**，
@@ -986,6 +991,50 @@ def render_chart_embed(file: str) -> str:
     return f'<a class="chart-fallback" href="{xml_text(file)}">{xml_text(file)}</a>'
 
 
+def _load_ipc_tech_names() -> dict[str, dict[str, str]]:
+    """載入 IPC/CPC → 技術意義對照（資料與程式分離，非工程師也改得動）。
+
+    ⚠ 檔案缺失或壞掉時回空 dict 而非 raise：技術名是**加值**，
+    缺了退回顯示代碼本身仍可讀；為了它讓整張報表產不出來是本末倒置。
+    """
+    import json
+
+    path = Path(__file__).with_name("data") / "ipc_tech_names.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {k: v for k, v in (payload.get("codes") or {}).items() if isinstance(v, dict)}
+
+
+IPC_TECH_NAMES: dict[str, dict[str, str]] = _load_ipc_tech_names()
+
+
+def _normalize_class_code(code: str) -> str:
+    """把分類代碼正規化成對照表的鍵。
+
+    ⚠ IPC 寫 `A63B-021`、CPC 寫 `A63B-0021`——前導零位數不同，**卻是同一個主目**。
+    不正規化就會變成同一分類在 IPC 頁與 CPC 頁顯示不同名字（或其中一頁查不到）。
+    subclass（`A63B`）原樣；main group 統一成 `A63B/21`。
+    """
+    text = str(code or "").strip().upper()
+    if "-" not in text:
+        return text
+    subclass, _, group = text.partition("-")
+    digits = group.lstrip("0") or "0"
+    return f"{subclass}/{digits}"
+
+
+def tech_name(code: str) -> str:
+    """分類代碼 → 濃縮技術短名；查不到回**代碼本身**。
+
+    🔴 使用者：「IPC/CPC 沒有轉換成技術意義」——只給 `A63B-069` 讀者不知道那是什麼。
+    ⚠ 查不到時不留空、不猜：顯示 `G05B` 讀者仍知道那是分類碼，空白只會像壞掉。
+    """
+    entry = IPC_TECH_NAMES.get(_normalize_class_code(code))
+    return (entry or {}).get("short") or str(code or "")
+
+
 DATA_COLUMN_LABELS: dict[str, str] = {
     "patent_count": "專利件數",
     "year": "年份",
@@ -1024,6 +1073,10 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "top3_applicants": "前三大申請人",
     "patent_count_median": "專利件數中位數",
     "applicant_count_median": "申請人家數中位數",
+    # 技術狀態五類（2026-08-02 定案）：狀態說「是什麼型態」，意義說「所以呢」。
+    # 只有狀態沒有意義時，讀者仍得自己翻譯「競爭集中技術」代表什麼。
+    "status": "技術狀態",
+    "status_meaning": "意義",
 }
 
 
@@ -1049,9 +1102,14 @@ DATA_TABLE_EXCLUDED_COLUMNS: dict[str, tuple[str, ...]] = {
     # 2026-07-29 使用者定案：
     #   topic_code  → 「機制能識別就好，表格和報告不用顯示」（資料仍帶著，供合併/拆分識別）
     #   leading_*   → 「有前三大申請人好像就不用龍頭涉入了」（改以集中度兩欄表達競爭結構）
+    #   狀態的中間量 → 過程不是結論。recent_count／share_*／concentration_* 是
+    #                   算出狀態用的，印在表上就是又一次「把程式中間值給讀者看」
+    #                   （批 1 修過同型問題）。資料仍在 rows，供驗證與下游使用。
     "cluster_topic_table": (
         "source_field", "topic_code",
         "leading_applicant_count", "leading_applicants_involved",
+        "recent_count", "early_count", "recent_applicants", "early_applicants",
+        "share_recent", "share_early", "concentration_recent", "concentration_early",
     ),
     # recent_assignee_count → 使用者：「這欄可以不用，後面欄都列出公司了」。
     # ⚠ 只排除**顯示**，資料仍在 rows——applicant_ranking 的圖表用它當
@@ -2013,9 +2071,16 @@ def render_cluster_topic_table_html(
 
 
 def _qlabel(px: float, py: float, p_med: float, a_med: float) -> tuple[str, str]:
-    """Return (battle_label, action_tip) for opportunity quadrant."""
+    """回傳（象限名, 後續行動）。
+
+    🔴 2026-08-02：高密度高廣度原本叫「必守核心戰場 → 迴避設計」。
+    ⚠ 這張圖只有「件數 × 申請人家數」兩個維度，推不出迴避設計結論——
+    真正的 FTO 需要 claim chart、claim overlap、legal status、jurisdiction，
+    一項都不在這裡。用密度統計冒充侵權判斷會誤導決策，故改為描述**現象**
+    （高競爭技術區）與**下一步查證動作**（claim overlap 分析）。
+    """
     if px >= p_med and py >= a_med:
-        return "必守核心戰場", "迴避設計"
+        return "高競爭技術區", "需進行 claim overlap 分析"
     if px < p_med and py >= a_med:
         return "新興戰場（競爭者已進場）", "值得追"
     if px < p_med and py < a_med:
@@ -2028,7 +2093,7 @@ def _opportunity_quadrant_name(row: dict[str, Any], p_med: float, a_med: float) 
     hi_patent = float(row["patent_count"]) >= p_med
     hi_applicant = float(row["applicant_count"]) >= a_med
     if hi_patent and hi_applicant:
-        return "必守核心"
+        return "高競爭技術區"
     if (not hi_patent) and hi_applicant:
         return "新興戰場"
     if hi_patent and (not hi_applicant):
@@ -2300,7 +2365,7 @@ def render_pain_point_quadrant_svg(
     chip_fill = {"high": "#EF4444", "medium": "#EAB308", "low": "#10B981", "unknown": "#D1D5DB"}
     corner_names = {
         ("high", "lo"): "研發優先缺口★",
-        ("high", "hi"): "必守核心→迴避設計",
+        ("high", "hi"): "高競爭→claim overlap 分析",
         ("low", "lo"): "nice-to-have→防禦即可",
         ("low", "hi"): "競爭者已過度投入→選擇性",
     }
@@ -2423,7 +2488,8 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
         return
 
     topic_rows = build_topic_effect_table(
-        data["topics"], data["assignments"], data["normalized_applicants"]
+        data["topics"], data["assignments"], data["normalized_applicants"],
+        patents=data.get("patents"),
     )
 
     # 2026-07-21 定案：技術、功效不混——依 source_field 分段，矩陣板每來源各一組

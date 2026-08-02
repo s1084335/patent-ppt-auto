@@ -390,7 +390,7 @@ class AssignmentsCarrySourceFieldTests(unittest.TestCase):
                 "top_applicants_ws": [],
             }
 
-        def spy_build(topics, assignments, applicants):
+        def spy_build(topics, assignments, applicants, patents=None):
             captured["assignments"] = assignments
             return []
 

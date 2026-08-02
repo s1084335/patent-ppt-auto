@@ -17,6 +17,87 @@ from backend.app.clustering.sources import (
 )
 
 
+# ── 技術狀態分類（2026-08-02 使用者定案，五類）─────────────────────────────
+#
+# 這一組取代原本只有件數與家數的靜態統計：使用者要的是「技術競爭型態、演進趨勢
+# 及布局意義」的判讀，不是「哪個主題件數比較高」。
+TOPIC_STATUS_EMERGING = "新興技術"
+TOPIC_STATUS_GROWING = "成長技術"
+TOPIC_STATUS_MATURE = "成熟技術"
+TOPIC_STATUS_CONCENTRATED = "競爭集中技術"
+TOPIC_STATUS_DECLINING = "衰退／轉型技術"
+TOPIC_STATUS_UNCLASSIFIED = "未分類"
+TOPIC_STATUS_INSUFFICIENT = "樣本不足"
+
+# 「意義」不是裝飾——狀態名只說了是什麼，讀者要的是「所以呢」（C-6）。
+TOPIC_STATUS_MEANINGS: dict[str, str] = {
+    TOPIC_STATUS_EMERGING: "剛開始受到關注",
+    TOPIC_STATUS_GROWING: "技術快速擴散",
+    TOPIC_STATUS_MATURE: "技術方向逐漸穩定",
+    TOPIC_STATUS_CONCENTRATED: "技術成熟後由少數玩家掌握",
+    TOPIC_STATUS_DECLINING: "技術熱度降低或被新技術取代",
+    TOPIC_STATUS_INSUFFICIENT: "件數過少，趨勢判斷不可靠",
+}
+
+# 時間窗（申請年）。⚠ 這三個數字是從實際資料切出來的，不是慣例：
+#   2011–2019 共 17 件（9 年）／2020–2024 共 38 件（5 年）／2025–2026 僅 5 件。
+# 末兩年偏低是**資料截止效應**（新案還在審查中未公開），不是活動衰退，
+# 併進近期窗會把每個主題都拉成「衰退」。故整段排除，不計入任何一窗。
+STATUS_EARLY_YEARS = (2011, 2019)
+STATUS_RECENT_YEARS = (2020, 2024)
+
+# 「成長率高」與「成長停滯」的分界：近期件數佔該主題總件數的比例 R。
+# 全庫基準 R＝38/55＝0.69——高於它才叫成長得比整體快。
+STATUS_GROWTH_HIGH = 0.70
+STATUS_STAGNANT_BAND = (0.59, 0.79)
+
+# 件數過少時不判狀態。⚠ 切窗後「近期 2 件 vs 早期 1 件」在數學上是成長 100%，
+# 但那是噪音不是訊號；本案 13 個主題有 3 個落在這裡。
+STATUS_MIN_SAMPLE = 5
+
+
+def classify_topic_status(metrics: dict[str, Any], median_count: float) -> str:
+    """依五類條件判定技術狀態；判定優先序見下。
+
+    優先序 **衰退／轉型 → 競爭集中 → 成長 → 成熟 → 新興 → 未分類**。
+    ⚠ 衰退排最前面：件數在退的時候，就算集中度也升高了，主訊號仍是「熱度在退」；
+    報成「競爭集中」會暗示技術還活著，是相反的決策訊號。
+
+    Parameters
+    ----------
+    metrics : dict
+        patent_count／recent_count／early_count／recent_applicants／early_applicants／
+        share_recent／share_early（該主題占同窗全體的比例）／
+        concentration_recent／concentration_early（前三大合計占比）。
+    median_count : float
+        **同通道**各主題件數的中位數，作為「量高／量低」的界線。
+        不寫死絕對值——技術通道與功效通道的量級本來就不同。
+    """
+    total = int(metrics["patent_count"])
+    if total < STATUS_MIN_SAMPLE:
+        return TOPIC_STATUS_INSUFFICIENT
+
+    recent, early = int(metrics["recent_count"]), int(metrics["early_count"])
+    apps_recent, apps_early = int(metrics["recent_applicants"]), int(metrics["early_applicants"])
+    share_recent, share_early = float(metrics["share_recent"]), float(metrics["share_early"])
+    conc_recent, conc_early = float(metrics["concentration_recent"]), float(metrics["concentration_early"])
+    in_window = recent + early
+    ratio = (recent / in_window) if in_window else 0.0
+    high_volume = total >= median_count
+
+    if recent < early and share_recent < share_early and apps_recent < apps_early:
+        return TOPIC_STATUS_DECLINING
+    if high_volume and apps_recent < apps_early and conc_recent > conc_early:
+        return TOPIC_STATUS_CONCENTRATED
+    if recent > early and apps_recent > apps_early:
+        return TOPIC_STATUS_GROWING
+    if high_volume and STATUS_STAGNANT_BAND[0] <= ratio <= STATUS_STAGNANT_BAND[1]:
+        return TOPIC_STATUS_MATURE
+    if not high_volume and ratio >= STATUS_GROWTH_HIGH and share_recent > share_early:
+        return TOPIC_STATUS_EMERGING
+    return TOPIC_STATUS_UNCLASSIFIED
+
+
 def _compute_top_applicants(
     topic_patents: set[int],
     app_by_patent: dict[int, set[str]],
@@ -34,10 +115,62 @@ def _compute_top_applicants(
     return [{"name": n, "count": c} for n, c in sorted_apps[:3]], len(counts)
 
 
+def _window_metrics(
+    topic_patents: set[int],
+    patents: dict[int, dict[str, Any]],
+    window: tuple[int, int],
+    app_by_patent: dict[int, set[str]],
+) -> tuple[int, int, float]:
+    """單一時間窗內的（件數, 申請人家數, 前三大合計占比）。
+
+    ⚠ 只算落在窗內的專利；沒有申請年的專利不計入任何一窗（寧可少算也不猜年份）。
+    """
+    inside = {pid for pid in topic_patents
+              if window[0] <= int(patents.get(pid, {}).get("application_year") or 0) <= window[1]}
+    if not inside:
+        return 0, 0, 0.0
+    top3, app_count = _compute_top_applicants(inside, app_by_patent)
+    counts = [int(a.get("count", 0)) for a in top3]
+    return len(inside), app_count, round(sum(counts[:3]) / len(inside) * 100, 1)
+
+
+def _pick_representative(
+    topic_patents: set[int],
+    patents: dict[int, dict[str, Any]],
+    app_by_patent: dict[int, set[str]],
+    top_applicants: list[dict[str, Any]],
+) -> dict[str, str]:
+    """挑該主題的代表專利：**最大申請人**的專利中，申請年最新那件。
+
+    🔴 使用者：「分類有了，但缺證據」。說「馬達自鎖技術集中」的下一頁要能指出
+    是哪一件、誰的、講什麼——否則標籤沒有落地依據。
+
+    ⚠ 選法必須**確定性可重現**：最大申請人 → 申請年最新 → patent_id 最小。
+    同一份資料重跑必須挑到同一件，否則兩次報表對不起來、使用者無從查證。
+    """
+    empty = {"representative_patent": "", "representative_applicant": "",
+             "representative_title": ""}
+    if not top_applicants:
+        return empty
+    leader = top_applicants[0]["name"]
+    owned = [pid for pid in topic_patents if leader in app_by_patent.get(pid, set())]
+    if not owned:
+        return empty
+    # 年份缺漏者排最後（-1），不因為沒年份就被當成最新
+    best = max(owned, key=lambda pid: (int(patents.get(pid, {}).get("application_year") or -1), -pid))
+    meta = patents.get(best, {})
+    return {
+        "representative_patent": str(meta.get("number") or ""),
+        "representative_applicant": leader,
+        "representative_title": str(meta.get("title") or ""),
+    }
+
+
 def build_topic_effect_table(
     topics: list[dict[str, Any]],
     assignments: list[dict[str, Any]],
     normalized_applicants: list[dict[str, Any]],
+    patents: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """由分群定案資料建立主題/功效統計表列（全部主題都輸出，不做 Top N 截斷）。
 
@@ -51,6 +184,14 @@ def build_topic_effect_table(
     normalized_applicants : list[dict]
         每項需含 ``patent_id`` 與 ``applicant_name``（正規化後 applicant_display_name）；
         同一專利有多家申請人時會出現多列。
+    patents : dict[int, dict] | None
+        patent_id → 該專利屬性（``application_year`` / ``number`` / ``title``）。
+        給了才算得出技術狀態五類（見 `classify_topic_status`）與代表專利；
+        不給時輸出形狀與舊版完全相同，既有呼叫端零修改。
+        ⚠ 這是本表原本缺的兩個維度：三個輸入既不帶時間（「成長率高」「成長停滯」
+        無從判斷），也不帶專利識別（分類沒有證據可指）。
+        ⚠ 兩者共用同一個入口——都是「依 patent_id 查該專利的什麼」，
+        拆成 patent_years＋patent_meta 就是同一件事兩個落點。
 
     Returns
     -------
@@ -116,8 +257,8 @@ def build_topic_effect_table(
     result: list[dict[str, Any]] = []
     for key in sorted(topic_patents, key=lambda k: (order.get(k[1], 2), k[1], k[0])):
         code, source_field = key
-        patents = topic_patents[key]
-        top3, app_count = _compute_top_applicants(patents, app_by_patent)
+        patents_of_topic = topic_patents[key]
+        top3, app_count = _compute_top_applicants(patents_of_topic, app_by_patent)
         info = topic_map.get(key, {})
         # 集中度兩欄（2026-07-29 使用者定案「兩欄都要」）：
         #   top3_share＝前三大合計占比 → 看整體集中程度
@@ -125,11 +266,11 @@ def build_topic_effect_table(
         # 只看其一會誤判：實測使用者資料，「風阻磁阻調節 83%/33%（三家均分）」與
         # 「馬達捲繩自鎖 88%/62%（一家獨大）」前三大占比接近，競爭態勢卻相反。
         # 分母＝該主題專利件數；件數 0 時回 0，不除以零。
-        total = len(patents)
+        total = len(patents_of_topic)
         counts = [int(a.get("count", 0)) for a in top3]
         top3_share = round(sum(counts[:3]) / total * 100) if total else 0
         max_share = round(max(counts, default=0) / total * 100) if total else 0
-        result.append({
+        row = {
             "topic_code": code,
             "label": info.get("label", code),
             "source_field": info.get("source_field", source_field),
@@ -138,8 +279,42 @@ def build_topic_effect_table(
             "top3_share": top3_share,
             "max_share": max_share,
             "top_applicants": top3,
-        })
+        }
+        if patents is not None:
+            early = _window_metrics(patents_of_topic, patents, STATUS_EARLY_YEARS, app_by_patent)
+            recent = _window_metrics(patents_of_topic, patents, STATUS_RECENT_YEARS, app_by_patent)
+            row.update({
+                "early_count": early[0], "early_applicants": early[1], "concentration_early": early[2],
+                "recent_count": recent[0], "recent_applicants": recent[1], "concentration_recent": recent[2],
+            })
+            row.update(_pick_representative(patents_of_topic, patents, app_by_patent, top3))
+        result.append(row)
+
+    if patents is not None:
+        _attach_topic_status(result)
     return result
+
+
+def _attach_topic_status(rows: list[dict[str, Any]]) -> None:
+    """就地補上 Topic 占比與技術狀態（需要全體才算得出，故獨立第二階段）。
+
+    ⚠ 占比與中位數都**按通道各自算**：技術通道與功效通道的量級本來就不同
+    （本案中位數 8 vs 6.5），混算會讓功效主題整批被判成「量低」。
+    """
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_source.setdefault(str(row.get("source_field") or ""), []).append(row)
+
+    for channel_rows in by_source.values():
+        recent_total = sum(r["recent_count"] for r in channel_rows) or 1
+        early_total = sum(r["early_count"] for r in channel_rows) or 1
+        counts = [r["patent_count"] for r in channel_rows] or [0]
+        median_count = statistics.median(counts)
+        for row in channel_rows:
+            row["share_recent"] = round(row["recent_count"] / recent_total, 4)
+            row["share_early"] = round(row["early_count"] / early_total, 4)
+            row["status"] = classify_topic_status(row, median_count)
+            row["status_meaning"] = TOPIC_STATUS_MEANINGS.get(row["status"], "")
 
 
 def build_opportunity_matrix(

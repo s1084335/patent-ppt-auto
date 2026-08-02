@@ -8,6 +8,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from backend.app.reports import cluster_analytics as ca
 from backend.app.reports.cluster_analytics import (
     build_opportunity_matrix,
     build_pain_point_matrix,
@@ -257,6 +258,165 @@ class PainPointMatrixTests(unittest.TestCase):
         ]
         result = build_pain_point_matrix(topic_rows, [], x_median=5.0)
         self.assertEqual(result["rows"][0]["severity"], "unknown")
+
+
+class TopicStatusClassificationTests(unittest.TestCase):
+    """C-2／Q2：技術狀態五類分類（2026-08-02 使用者定案）。
+
+    | 狀態 | 判斷條件 | 意義 |
+    |---|---|---|
+    | 新興技術 | 專利量低，但成長率高、Topic 占比上升 | 剛開始受到關注 |
+    | 成長技術 | 專利量增加，申請人數同步增加 | 技術快速擴散 |
+    | 成熟技術 | 專利量高，但成長停滯 | 技術方向逐漸穩定 |
+    | 競爭集中技術 | 專利量高，申請人數下降，集中度提高 | 技術成熟後由少數玩家掌握 |
+    | 衰退／轉型技術 | 專利量下降，Topic 占比下降，申請人減少 | 技術熱度降低或被新技術取代 |
+
+    時間一律用**申請年**；近期窗 2020–2024、早期窗 2011–2019（由實際資料切出：
+    近期 38 件、早期 17 件、2025–2026 僅 5 件屬資料截止效應故排除）。
+    """
+
+    BASE = {
+        "patent_count": 10, "recent_count": 5, "early_count": 5,
+        "recent_applicants": 4, "early_applicants": 4,
+        "share_recent": 0.20, "share_early": 0.20,
+        "concentration_recent": 50, "concentration_early": 50,
+    }
+
+    def _classify(self, median=8.0, **overrides):
+        return ca.classify_topic_status({**self.BASE, **overrides}, median_count=median)
+
+    def test_insufficient_sample_is_not_classified(self):
+        """🔴 件數 <5 不判狀態。切窗後是「近期 2 件 vs 早期 1 件」，判成長是噪音。
+
+        本案 13 個 topic 有 3 個落此（捲軸雙繩回收 3 件、提升效率降成本 4 件、
+        提升運轉穩定度 2 件）。
+        """
+        self.assertEqual(self._classify(patent_count=4), ca.TOPIC_STATUS_INSUFFICIENT)
+        self.assertEqual(self._classify(patent_count=2), ca.TOPIC_STATUS_INSUFFICIENT)
+
+    def test_emerging(self):
+        """量低（<中位數）＋成長率高（R≥0.7）＋占比上升。"""
+        status = self._classify(patent_count=6, recent_count=5, early_count=1,
+                                share_recent=0.30, share_early=0.10)
+        self.assertEqual(status, ca.TOPIC_STATUS_EMERGING)
+
+    def test_growing(self):
+        """件數增加且申請人同步增加。"""
+        status = self._classify(patent_count=12, recent_count=9, early_count=3,
+                                recent_applicants=7, early_applicants=3,
+                                share_recent=0.22, share_early=0.20)
+        self.assertEqual(status, ca.TOPIC_STATUS_GROWING)
+
+    def test_mature(self):
+        """量高但成長停滯（R 落在全庫基準 ±0.1）。"""
+        status = self._classify(patent_count=15, recent_count=10, early_count=5,
+                                recent_applicants=5, early_applicants=5)
+        self.assertEqual(status, ca.TOPIC_STATUS_MATURE)
+
+    def test_concentrated(self):
+        """量高＋申請人下降＋集中度提高。"""
+        status = self._classify(patent_count=15, recent_count=10, early_count=5,
+                                recent_applicants=2, early_applicants=6,
+                                concentration_recent=80, concentration_early=40)
+        self.assertEqual(status, ca.TOPIC_STATUS_CONCENTRATED)
+
+    def test_declining(self):
+        """件數下降＋占比下降＋申請人減少。"""
+        status = self._classify(patent_count=12, recent_count=3, early_count=9,
+                                recent_applicants=2, early_applicants=6,
+                                share_recent=0.08, share_early=0.30)
+        self.assertEqual(status, ca.TOPIC_STATUS_DECLINING)
+
+    def test_declining_wins_over_concentrated(self):
+        """⚠ 優先序：衰退／轉型 → 競爭集中 → 成長 → 成熟 → 新興。
+
+        件數下降時就算集中度也提高了，主訊號仍是「熱度在退」，不該報成
+        「成熟後由少數玩家掌握」——後者暗示技術還活著。
+        """
+        status = self._classify(patent_count=15, recent_count=3, early_count=12,
+                                recent_applicants=1, early_applicants=5,
+                                share_recent=0.05, share_early=0.30,
+                                concentration_recent=90, concentration_early=40)
+        self.assertEqual(status, ca.TOPIC_STATUS_DECLINING)
+
+    def test_every_status_has_a_meaning(self):
+        """五類都要有「意義」文字——狀態名本身不解釋為什麼重要（C-6）。"""
+        for status in (ca.TOPIC_STATUS_EMERGING, ca.TOPIC_STATUS_GROWING,
+                       ca.TOPIC_STATUS_MATURE, ca.TOPIC_STATUS_CONCENTRATED,
+                       ca.TOPIC_STATUS_DECLINING):
+            self.assertTrue(ca.TOPIC_STATUS_MEANINGS.get(status), status)
+
+
+class TopicTableWithPatentsTests(unittest.TestCase):
+    """前置缺口：`build_topic_effect_table` 原本三個輸入只有 topic 與申請人，
+
+    既算不出狀態（缺申請年），也指不出代表專利（缺專利號與名稱）。
+    加**一個** `patents`（patent_id → 該專利屬性）供這兩件事共用——
+    ⚠ 不開兩個參數：兩者都是「依 patent_id 查該專利的什麼」，
+    拆成 patent_years＋patent_meta 就是同一件事兩個入口。
+    不給時維持原行為，既有呼叫端零修改。
+    """
+
+    TOPICS = [{"topic_code": "T001", "label": "拉繩捲輪回收機構",
+               "source_field": "wips_independent_claims"}]
+
+    def _rows(self, patents=None):
+        assignments = [{"topic_code": "T001", "patent_id": pid,
+                        "source_field": "wips_independent_claims"} for pid in range(1, 11)]
+        applicants = [{"patent_id": pid, "applicant_name": f"A{pid % 4}"} for pid in range(1, 11)]
+        return build_topic_effect_table(self.TOPICS, assignments, applicants, patents=patents)
+
+    @staticmethod
+    def _patents(years):
+        return {pid: {"application_year": year, "number": f"CN{pid:06d}",
+                      "title": f"標題{pid}"} for pid, year in years.items()}
+
+    def test_without_patents_keeps_old_shape(self):
+        row = self._rows()[0]
+        self.assertEqual(row["patent_count"], 10)
+        self.assertNotIn("status", row)
+        self.assertNotIn("representative_patent", row)
+
+    def test_with_patents_emits_status(self):
+        row = self._rows(self._patents({pid: (2022 if pid > 3 else 2015)
+                                        for pid in range(1, 11)}))[0]
+        self.assertIn("status", row)
+        self.assertEqual(row["recent_count"], 7)
+        self.assertEqual(row["early_count"], 3)
+
+    def test_years_outside_window_are_excluded(self):
+        """2025–2026 屬資料截止效應，不計入任何一窗。"""
+        row = self._rows(self._patents({pid: (2026 if pid > 8 else 2022)
+                                        for pid in range(1, 11)}))[0]
+        self.assertEqual(row["recent_count"], 8)
+        self.assertEqual(row["early_count"], 0)
+
+    def test_representative_patent_is_from_largest_applicant(self):
+        """代表專利＝該主題內**件數最多的申請人**的專利，取申請年最新那件。
+
+        🔴 使用者：「分類有了，但缺證據」。代表專利就是證據——
+        說「馬達自鎖技術集中」的下一頁要能指出是哪一件、誰的、講什麼。
+        ⚠ 選法必須確定性可重現：最大申請人 → 申請年最新 → patent_id 最小。
+        """
+        # A1 拿到 pid 1/5/9（%4==1），其中 9 最新
+        patents = self._patents({pid: (2020 + pid % 5) for pid in range(1, 11)})
+        row = self._rows(patents)[0]
+        self.assertEqual(row["representative_applicant"], "A1")
+        self.assertEqual(row["representative_patent"], "CN000009")
+        self.assertEqual(row["representative_title"], "標題9")
+
+    def test_representative_is_stable_across_runs(self):
+        patents = self._patents({pid: 2022 for pid in range(1, 11)})
+        first = self._rows(patents)[0]["representative_patent"]
+        for _ in range(3):
+            self.assertEqual(self._rows(patents)[0]["representative_patent"], first)
+
+    def test_missing_patent_meta_degrades_quietly(self):
+        """只有年份、沒有專利號時不得炸——代表專利留空即可。"""
+        patents = {pid: {"application_year": 2022} for pid in range(1, 11)}
+        row = self._rows(patents)[0]
+        self.assertIn("status", row)
+        self.assertEqual(row["representative_patent"], "")
 
 
 if __name__ == "__main__":

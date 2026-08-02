@@ -57,6 +57,9 @@ def load_cluster_workspace_data(
             每項含 patent_id / applicant_name。
         top_applicants_ws : list[str]
             該 workspace 主題涵蓋專利的前十大申請人名稱。
+        patents : dict[int, dict]
+            patent_id → {application_year, number, title}；供技術狀態分類與
+            代表專利使用（與申請人同一查詢帶回，不多走一趟 DB）。
     """
     # ── 1+2. topics 與 assignments 委派唯讀 repository（合併鏈、未分類、incremental
     #         fallback 均在 repository 內處理；無 topics 的 run 視為空結果） ──
@@ -67,6 +70,7 @@ def load_cluster_workspace_data(
         return {
             "topics": [], "assignments": [],
             "normalized_applicants": [], "top_applicants_ws": [],
+            "patents": {},
         }
 
     topics_out: list[dict[str, Any]] = [
@@ -87,8 +91,11 @@ def load_cluster_workspace_data(
     cur = conn.cursor()
     all_patent_ids = sorted({a["patent_id"] for a in assignments_out})
     if all_patent_ids:
+        # ⚠ 申請年、專利號、名稱併進**同一個查詢**帶回：技術狀態分類與代表專利
+        # 都要用，另開查詢等於為同一批 patent_id 走兩三趟 DB。
         cur.execute(
-            "SELECT DISTINCT patent_id, applicant_display_name "
+            'SELECT DISTINCT patent_id, applicant_display_name, application_year, '
+            '       "未審查的公開號" AS patent_number, title '
             "FROM derived_layer.report_patent_base "
             "WHERE patent_id = ANY(%s) AND applicant_display_name IS NOT NULL "
             "  AND applicant_display_name != ''",
@@ -102,6 +109,17 @@ def load_cluster_workspace_data(
         {"patent_id": int(r["patent_id"]), "applicant_name": r["applicant_display_name"]}
         for r in applicant_rows
     ]
+    # patent_id → 該專利屬性（申請年／專利號／名稱）。⚠ 單一入口：狀態分類與
+    # 代表專利都從這裡拿，不另建第二份 patent_id 對照表。
+    # 缺年份的專利仍收進來（代表專利用得到），但 `_window_metrics` 不會把它算進任一窗。
+    patents: dict[int, dict[str, Any]] = {
+        int(r["patent_id"]): {
+            "application_year": r.get("application_year"),
+            "number": r.get("patent_number") or "",
+            "title": r.get("title") or "",
+        }
+        for r in applicant_rows
+    }
 
     # ── 4. 前十大申請人（跨 workspace 主題專利） ──
     if all_patent_ids:
@@ -125,6 +143,7 @@ def load_cluster_workspace_data(
         "assignments": assignments_out,
         "normalized_applicants": normalized_applicants,
         "top_applicants_ws": top_applicants_ws,
+        "patents": patents,
     }
 
 
@@ -163,6 +182,7 @@ def compute_and_save_cluster_analysis(
             cluster_data["topics"],
             cluster_data["assignments"],
             cluster_data["normalized_applicants"],
+            patents=cluster_data.get("patents"),
         )
         opp_matrix = build_opportunity_matrix(
             topic_rows, cluster_data.get("top_applicants_ws", [])
