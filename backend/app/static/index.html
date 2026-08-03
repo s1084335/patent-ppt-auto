@@ -4296,7 +4296,13 @@ function sectionForReportView(section, option, sourceField) {
     title: option.label || reportLabelForKey(reportKey),
     report_key: reportKey,
     rows: variantRows.length ? variant.rows : (rows.length ? rows : (section.rows || [])),
-    column_labels: variant && variant.column_labels ? variant.column_labels : section.column_labels,
+    // ⚠ 要判**長度**不是 truthy：主題統計表的 variant 是沒有 rows 的解讀落點，
+    // 後端 _column_labels([]) 回 {}，而 {} 在 JS 為真 → 空物件蓋掉 section 那份
+    // 完整對照表，表頭整排退回英文 key（2026-08-03 實機，status 顯示成 status）。
+    // 同一個函式的 rows 早就用 variantRows.length 判斷了，這裡漏掉。
+    column_labels: (variant && variant.column_labels
+      && Object.keys(variant.column_labels).length)
+      ? variant.column_labels : section.column_labels,
     thresholds: variant ? (variant.thresholds || {}) : {},
     variants: variants.length ? variants : (section.variants || []).filter(variant => clusterVariantMatchesReport(variant, reportKey)),
   });

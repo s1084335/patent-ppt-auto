@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from backend.app.reports import cluster_analytics as ca
+from backend.app.clustering.sources import SOURCE_FIELD_EFFECT, SOURCE_FIELD_TECHNICAL
 from backend.app.reports.cluster_analytics import (
     build_opportunity_matrix,
     build_pain_point_matrix,
@@ -383,6 +384,72 @@ class TopicTableWithPatentsTests(unittest.TestCase):
         self.assertIn("status", row)
         self.assertEqual(row["recent_count"], 7)
         self.assertEqual(row["early_count"], 3)
+
+    def test_effect_channel_has_no_status_column(self):
+        """🔴 2026-08-03 使用者定案：**功效通道不放狀態欄**。
+
+        使用者實機看到「提升訓練成效 → 成長技術」後指出：
+        「功效通道的我說這樣做?這是技術通道的吧」——他 08-02 定的五類分類講的是
+        **技術**，我一次算完全部 topic 才分通道，等於自行把它套到功效上。
+        功效通道的用途是**跟技術主題對照**，不是自己判演進狀態。
+
+        ⚠ 做法是「該列不寫 status 鍵」，不是寫了再由顯示層排除：
+        PPT `_ordered_columns` 與網頁 `Object.keys(rows[0])` 都只看第一列的鍵，
+        兩邊又都已先依 source_field 過濾——上游不給，下游自然不顯示，
+        不必在兩個顯示層各加一份排除規則（那就是同一資訊第三、四處落點）。
+        """
+        topics = [{"topic_code": "E001", "label": "提升訓練成效",
+                   "source_field": SOURCE_FIELD_EFFECT}]
+        assignments = [{"topic_code": "E001", "patent_id": pid,
+                        "source_field": SOURCE_FIELD_EFFECT} for pid in range(1, 11)]
+        applicants = [{"patent_id": pid, "applicant_name": f"A{pid % 4}"}
+                      for pid in range(1, 11)]
+        row = build_topic_effect_table(
+            topics, assignments, applicants,
+            patents=self._patents({pid: (2022 if pid > 3 else 2015)
+                                   for pid in range(1, 11)}))[0]
+        self.assertNotIn("status", row, "功效列不該有技術狀態欄")
+        self.assertNotIn("status_meaning", row)
+        # ⚠ 其餘欄位一律保留——使用者只否決狀態欄，沒有否決代表專利與占比。
+        self.assertIn("representative", row)
+        self.assertIn("top3_share", row)
+
+    def test_effect_rows_carry_technical_means(self):
+        """🔴 功效列要答「這個功效可以用哪些技術手段達成」（2026-08-03 使用者定案）。
+
+        使用者原話：「技術對照是指我要知道功效可以用那些技術手段達成」。
+        資料本來就夠——同一批專利同時有技術通道與功效通道的分派，
+        取交集即可，不需要 AI、也不需要新的資料來源。
+
+        ⚠ 只給功效列。技術列不加反向欄（使用者：「技術通道的現在先維持這樣」）。
+        ⚠ 取**前三**：實機 8 個功效主題各命中 1–4 種技術手段，取三覆蓋絕大多數，
+        且與既有「前三大申請人」同口徑。
+        """
+        topics = [
+            {"topic_code": "T001", "label": "馬達捲繩回收機構",
+             "source_field": SOURCE_FIELD_TECHNICAL},
+            {"topic_code": "T002", "label": "磁阻調節機構",
+             "source_field": SOURCE_FIELD_TECHNICAL},
+            {"topic_code": "T001", "label": "提升訓練成效",
+             "source_field": SOURCE_FIELD_EFFECT},
+        ]
+        assignments = (
+            [{"topic_code": "T001", "patent_id": p, "source_field": SOURCE_FIELD_TECHNICAL}
+             for p in (1, 2, 3)]
+            + [{"topic_code": "T002", "patent_id": p, "source_field": SOURCE_FIELD_TECHNICAL}
+               for p in (4,)]
+            + [{"topic_code": "T001", "patent_id": p, "source_field": SOURCE_FIELD_EFFECT}
+               for p in (1, 2, 3, 4)]
+        )
+        applicants = [{"patent_id": p, "applicant_name": "A"} for p in range(1, 5)]
+        rows = build_topic_effect_table(topics, assignments, applicants)
+        by_source = {r["source_field"]: r for r in rows}
+
+        effect = by_source[SOURCE_FIELD_EFFECT]
+        self.assertEqual(effect["tech_means"], "馬達捲繩回收機構 3、磁阻調節機構 1",
+                         "功效列要列出達成它的技術手段（依件數由多到少）")
+        self.assertNotIn("tech_means", by_source[SOURCE_FIELD_TECHNICAL],
+                         "技術列不加反向對照——使用者要維持現狀")
 
     def test_years_outside_window_are_excluded(self):
         """2025–2026 屬資料截止效應，不計入任何一窗。"""

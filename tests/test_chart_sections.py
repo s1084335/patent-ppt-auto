@@ -922,7 +922,12 @@ class SelectiveRenderTests(unittest.TestCase):
             report_data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
 
         self.assertIn("有最新受讓人", svg)
-        self.assertIn("2 / 5", svg)
+        # 🔴 H-7（2026-08-03）：原本印「2 / 5」，讀者看不出分子是什麼。
+        # 改為主數字＝總件數，分段用**圖例同色**括在後面（顏色自己對應
+        # 圖例的「有最新受讓人」），分段為 0 時整個括號不印。
+        self.assertIn("5<tspan", svg, "分段標示未採用主數字＋同色括號")
+        self.assertIn(chart_runner.COLOR_SEGMENT, svg)
+        self.assertNotIn("2 / 5", svg, "還在用讀不出分子的舊寫法")
         self.assertIn("Acme", svg)
         self.assertIn("Beta", svg)
         total_rect = re.search(r'<rect class="bar-total" x="([0-9.]+)"[^>]+width="([0-9.]+)"', svg)
@@ -1472,13 +1477,19 @@ class SparseChartFillsFrameTests(unittest.TestCase):
         return int(re.search(r'height="(\d+)"', svg).group(1))
 
     def test_few_rows_still_fill_the_frame(self):
-        """2 列以上要填到六成；1 列另計。
+        """3 列以上要填到六成；1–2 列另計。
 
-        ⚠ 1 列無法也不該填滿——單根長條撐到滿框會變成一整塊色帶，那不是圖。
-        它的留白是**內容量的問題**（CPC L4 只有一個分類），要靠插圖補
-        （W-3），不是把長條拉粗。這裡只要求它比原本的 130px 明顯改善。
+        🔴 **本項判準 2026-08-03 依 H-6 下修（規格被實機推翻）**：
+        原本 1 列 0.45、2 列 0.6。實機 p9（CPC L4 只有 1 列）照這個標準撐開後，
+        那根長條橫貫全寬、粗到變成**一整塊色帶**，已經不像圖表——
+        用一個可讀性問題換掉另一個。
+
+        ⚠ 「不要大片留白」的意圖仍然保留：少列時列高照樣撐開（`_fill_row_height`
+        仍會放大），只是上限收到 `SPARSE_ROW_CEILING_FACTOR`＝2 倍。
+        剩下的留白是**內容量的問題**（CPC L4 就只有一個分類），
+        要靠版型或插圖補（W-3），不是把長條拉粗。
         """
-        for n, floor in ((1, 0.45), (2, 0.6), (3, 0.6)):
+        for n, floor in ((1, 0.28), (2, 0.35), (3, 0.6)):
             height = self._height(n)
             self.assertGreaterEqual(
                 height, chart_runner.CHART_CANVAS_MAX_HEIGHT * floor,

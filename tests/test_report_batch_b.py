@@ -143,8 +143,20 @@ class B1AcquiredCountCorrectnessTests(unittest.TestCase):
     這是最惡劣的一類 bug：SQL 不報錯、數字看起來合理（2 確實是某個真實數量），
     只有逐列核對才發現「每個人都受讓取得 2 件」不可能。
 
-    正解（實測 report_patent_applicant_expanded）只有 5 家有受讓紀錄：
+    正解（2026-07-29 實測）只有 5 家有受讓紀錄：
         DMASTER 運動 2、YIXUAN 2、SKI-ROW 1、OXEFIT 1、MOTIOFY 1
+
+    ⚠ **來源表已於 2026-07-31 改變**：當時實測跑在
+    `report_patent_applicant_expanded`（多申請人展開）上，
+    但同日使用者定案「分析只計第一順位申請人（瀏覽顯示仍完整）」，
+    `applicant_ranking.source_table` 因此改回 `REPORT_SOURCE_TABLE`
+    ＝`derived_layer.report_patent_base`（見 report_definitions 該欄註解）。
+
+    🔴 本檔下面那支測試沒跟著改，從 07-31 起就一直紅——**它紅的是自己過期，
+    不是程式壞掉**。2026-08-03 排查技術債時一度被我判成「SQL 範圍缺陷」，
+    追到定義才發現是測試表達了被推翻的舊規格。
+    ⚠ 教訓：長期紅的測試要當成「規格與實作不一致」來追，
+    不能因為「它一直紅」就長期 deselect——那會讓它從警訊退化成背景雜訊。
     """
 
     def test_group_col_is_table_qualified(self):
@@ -156,12 +168,20 @@ class B1AcquiredCountCorrectnessTests(unittest.TestCase):
                       "外層分組欄未限定表名——子查詢會退化成無關聯常數")
 
     def test_rendered_sql_has_distinct_scopes(self):
-        """組出來的 SQL：子查詢用 _rev、外層用完整表名，兩者不得同名裸引用。"""
-        from backend.app.reports.report_definitions import REPORT_DEFINITIONS
-        from backend.app.reports.report_engine import build_aggregate_columns
+        """組出來的 SQL：子查詢用 _rev、外層用完整表名，兩者不得同名裸引用。
 
-        sql = build_aggregate_columns(REPORT_DEFINITIONS["applicant_ranking"])
+        ⚠ 外層表名**取自 definition**，不寫死——寫死就會像 07-31 那樣，
+        來源表一改測試就紅在無關的地方，真正的迴歸反而被雜訊蓋掉。
+        """
+        from backend.app.reports.report_definitions import REPORT_DEFINITIONS
+        from backend.app.reports.report_engine import (
+            build_aggregate_columns, qualified_table_name,
+        )
+
+        definition = REPORT_DEFINITIONS["applicant_ranking"]
+        sql = build_aggregate_columns(definition)
         self.assertIn("_rev.", sql, "子查詢應以 _rev 限定")
-        # 外層欄位必須帶表名（schema.table.column 形式）
-        self.assertRegex(sql, r'"derived_layer"\."report_patent_applicant_expanded"\."applicant_display_name"',
-                         "外層分組欄應以完整表名限定")
+        table = qualified_table_name(definition.source_table)
+        group_col = definition.group_by[0]
+        self.assertIn(f'{table}."{group_col}"', sql,
+                      "外層分組欄應以完整表名限定，否則相關子查詢會退化成常數")

@@ -322,7 +322,7 @@
     "_table_with_points_comment": "v3 改滿版（2026-07-31）。這類頁面（技術／功效主題分布）**沒有圖**，右欄本來就不必讓給要點卡。量測：舊版 8.05 in ÷ 4 欄＝每欄 2.01 in；改滿版 12.13 in ÷ 6 欄＝每欄 2.02 in——欄寬幾乎不變，欄位卻從 4 欄變 6 欄全到齊，正好對上引擎排除 4 欄後剩下的六欄。要點改放底部橫幅雙欄；⚠ 底部容量小於右欄，故由 build_ppt.narrative_capacity() 依本區幾何算出實際容量餵給解讀 CLI，不再事後截斷。",
     "table_with_points": {
       "left_in": 0.6,
-      "top_in": 1.62,
+      "top_in": 1.5,
       "width_in": 12.13,
       "height_in": 2.88,
       "row_height_in": 0.32,

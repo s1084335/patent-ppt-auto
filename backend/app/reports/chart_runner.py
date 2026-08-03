@@ -324,7 +324,7 @@ def render_line_chart(
     for tick in y_ticks:
         y = scale(tick, 0, max_count, top + plot_h, top)
         svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{tick}</text>')
+        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 4:.1f}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{tick}</text>')
     svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
     svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
     for year in x_labels:
@@ -395,7 +395,7 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
         # 🔴 2026-08-02（W-2）：移除交替後五條變成完全同色，補上**依數值**的
         # 連續深淺——這個有語意，且同件數必同色。
         color = ranking_bar_color(value, max_value)
-        svg.append(f'<text x="{left - 12}" y="{y + 20}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{label}</text>')
+        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 20}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{label}</text>')
         svg.append(f'<rect x="{left}" y="{y + 5}" width="{bar_w:.1f}" height="18" rx="2" fill="{color}"/>')
         svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{y + 20}" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{value}</text>')
     svg.append("</svg>")
@@ -480,14 +480,21 @@ def render_segmented_bar_chart(
         total_w = scale(total, 0, max_value, 0, plot_w)
         segment_w = scale(segment, 0, max_value, 0, plot_w)
         segment_x = left + max(total_w - segment_w, 0)
-        svg.append(f'<text x="{left - 12}" y="{y + 20}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{label}</text>')
+        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 20}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{label}</text>')
         # 🔴 F-2：原本 fill="#CBD5E1"（白底淺灰藍）被 chart_recolor 當結構色轉成
         # 面板底 274A66，對深空背景只有 1.72——簡報上這根長條等於不存在。
         # 改用資料色階（依數值深淺，W-2），最淺一階對兩種背景都 ≥3.0。
         svg.append(f'<rect class="bar-total" x="{left}" y="{y + 5}" width="{total_w:.1f}" height="18" rx="2" fill="{ranking_bar_color(total, max_value)}"/>')
         svg.append(f'<rect class="bar-segment" x="{segment_x:.1f}" y="{y + 5}" width="{segment_w:.1f}" height="18" rx="2" fill="{COLOR_SEGMENT}"/>')
+        # 🔴 H-7（2026-08-03 實機 p13）：原本一律印「0 / 13」，讀者看不出分子是什麼
+        # ——分母是件數，分子是「有最新受讓人」的件數，但數字本身沒有任何線索。
+        # 改為：主數字＝總件數；有分段時才用**圖例同色**把它括在後面，
+        # 顏色自己會對應到圖例的「有最新受讓人」，不必再加一段說明文字。
+        # ⚠ 分段為 0 時整個括號不印——印「(0)」只是噪音。
+        segment_mark = (f'<tspan fill="{COLOR_SEGMENT}">（{segment}）</tspan>'
+                        if segment > 0 else "")
         svg.append(f'<text x="{left + total_w + 8:.1f}" y="{y + 20}" font-size="{CHART_LABEL_PX}" '
-                   f'fill="{COLOR_TEXT}">{segment} / {total}</text>')
+                   f'fill="{COLOR_TEXT}">{total}{segment_mark}</text>')
         # 受讓人名單完整輸出、不截斷——這一列本來就多給了一行。
         if notes[index]:
             svg.append(f'<text x="{left}" y="{y + 20 + row_h}" font-size="{CHART_LABEL_PX - 3}" '
@@ -633,7 +640,7 @@ def render_bubble_chart(
     for y_tick in y_ticks:
         y = scale(y_tick, 0, y_max, top + plot_h, top)
         svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{y_tick}</text>')
+        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 4:.1f}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{y_tick}</text>')
     for x_tick in x_ticks:
         x = scale(x_tick, 0, x_max, left, left + plot_w)
         svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{x_tick}</text>')
@@ -974,6 +981,24 @@ def boxes_overlap(a: tuple[float, float, float, float], b: tuple[float, float, f
     return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
 
 
+#: 象限板圖例前綴（唯一來源——量寬度與畫出來必須是同一個字串，
+#: 否則改了文字卻沒改寬度，又會壓在一起）。
+LEGEND_PREFIX_TEXT = "色＝龍頭涉入｜數字＝件/家"
+
+#: 圖例項之間的間距（px）。
+LEGEND_ITEM_GAP_PX = 24
+
+
+def _text_px(text: str) -> int:
+    """文字在 `CHART_LABEL_PX` 字級下的估算寬度（px）。"""
+    return int(_display_width(text) * CHART_LABEL_PX)
+
+
+#: 兩個標籤之間至少要留的間距（px）。
+#: 🔴 H-5：原本只判「框有沒有相交」，相切不算相交 → 標籤緊貼、讀者分不出歸屬。
+LABEL_MIN_GAP_PX = 3
+
+
 def place_point_labels(
     items: list[tuple[float, float, str]],
     obstacles: list[tuple[float, float, float]],
@@ -993,8 +1018,15 @@ def place_point_labels(
     items : [(x, y, text)]  要標的點與文字（y 為資料點座標，非 baseline）
     obstacles : [(x, y, r)] 不可被覆蓋的圓（所有資料點）
     """
-    # 右上 → 右下 → 左上 → 左下：先試慣用的右上，再依序退。
-    candidates = ((6, -6), (6, 16), (-6, -6), (-6, 16))
+    # 🔴 H-5（2026-08-03 實機 p3）：四個方位不夠。年份點擠成一團時位置很快用完，
+    # 就退回「不標」——那是丟資訊。改為**兩圈 × 四方位**，先近後遠：
+    # 近圈讀起來與點的關聯最清楚，實在放不下才往外退。
+    # ⚠ 同時把判定從「有沒有相交」改成「外擴 LABEL_MIN_GAP_PX 後有沒有相交」：
+    # 相切（間距 0）不算相交，但視覺上就是黏在一起——p3 的 2021／2011 正是如此。
+    candidates = (
+        (6, -6), (6, 16), (-6, -6), (-6, 16),        # 近圈
+        (14, -14), (14, 24), (-14, -14), (-14, 24),  # 遠圈
+    )
     blocked = [(ox - r, oy - r, ox + r, oy + r) for ox, oy, r in obstacles]
     placed: list[tuple[float, float] | None] = []
     for x, y, text in items:
@@ -1004,7 +1036,9 @@ def place_point_labels(
             lx = x + dx if dx > 0 else x + dx - width
             ly = y + dy
             box = label_box(lx, ly, text)
-            if any(boxes_overlap(box, other) for other in blocked):
+            grown = (box[0] - LABEL_MIN_GAP_PX, box[1] - LABEL_MIN_GAP_PX,
+                     box[2] + LABEL_MIN_GAP_PX, box[3] + LABEL_MIN_GAP_PX)
+            if any(boxes_overlap(grown, other) for other in blocked):
                 continue
             chosen = (lx, ly)
             blocked.append(box)
@@ -1039,7 +1073,7 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
     for y_tick in y_ticks:
         y = scale(y_tick, 0, y_max, top + plot_h, top)
         svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - 12}" y="{y + 4:.1f}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{y_tick}</text>')
+        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 4:.1f}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{y_tick}</text>')
     for x_tick in x_ticks:
         x = scale(x_tick, 0, x_max, left, left + plot_w)
         svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{x_tick}</text>')
@@ -1154,6 +1188,11 @@ def truncation_note(shown: int, total: int) -> str:
     return f"顯示前 {shown}/{total} 名，完整名單見附錄"
 
 
+#: 列數少於 3 時的列高上限倍率。
+#: ⚠ 與一般情況（4 倍）分開：1–2 列撐到 4 倍就變成色帶（H-6）。
+SPARSE_ROW_CEILING_FACTOR = 2
+
+
 def _fill_row_height(row_count: int, *, top: int, bottom: int,
                      base: int = CHART_ROW_HEIGHT, ceiling_factor: int = 4) -> int:
     """列高：列少時撐開填滿畫布，列多時維持基準值。
@@ -1168,7 +1207,28 @@ def _fill_row_height(row_count: int, *, top: int, bottom: int,
     if row_count <= 0:
         return base
     usable = CHART_CANVAS_MAX_HEIGHT - top - bottom
-    return int(max(base, min(base * ceiling_factor, usable // row_count)))
+    # 🔴 H-6（2026-08-03 實機 p9）：CPC 四階只有 1 列，撐到 base×4＝112px 後
+    # 那根長條橫貫全寬、粗到變成一整塊色帶，已經不像圖表了。
+    # ⚠ 列數極少時**不追求填滿**：填滿是為了避免大片留白，但把單一長條撐成色帶
+    # 是用一個可讀性問題換另一個。少列時上限收到 base×2，留白改由版型處理。
+    factor = ceiling_factor if row_count >= 3 else SPARSE_ROW_CEILING_FACTOR
+    return int(max(base, min(base * factor, usable // row_count)))
+
+
+#: 標籤文字與畫布左緣之間的留白（px）。
+#: 🔴 H-3（2026-08-03）：原本是寫在 `label_gutter` 算式裡的 `+ 24`，
+#: 沒有名字也沒有測試——改動時無從得知它代表什麼、夠不夠。
+#: 提高到 32 是因為實機仍被裁：估算再準也要留誤差空間（字型不同、字距不同）。
+#: 標籤區右緣到文字右緣的距離（px）——文字 `text-anchor="end"` 就落在這裡。
+#: 原本以字面 `left - 12` 散在五處渲染函式裡，改動時看不出它與 gutter 的關係。
+LABEL_TEXT_OFFSET_PX = 12
+
+#: 標籤區在「估算寬度」之外要多留的總量（px）＝文字偏移 ＋ 左側安全邊界。
+#: 🔴 H-3（2026-08-03）：原本是算式裡的 `+ 24`，實機仍把 `A63B-021` 的開頭裁掉。
+#: ⚠ 為什麼要留到 48：`_display_width` 是**估算**（SVG 沒有 text metrics），
+#: 實測誤差可達 30px（估 259 而實際 >271）。字型 fallback、字距差異都會放大它。
+#: 估準一點（0.55→0.62）與留夠邊界，兩件事都要做——只做前者仍會擦邊。
+LABEL_GUTTER_PADDING_PX = 48
 
 
 def label_gutter(labels: list[str], *, minimum: int = 180, maximum: int = 480) -> int:
@@ -1185,12 +1245,23 @@ def label_gutter(labels: list[str], *, minimum: int = 180, maximum: int = 480) -
     if not labels:
         return minimum
     widest = max(_display_width(text) for text in labels)
-    return int(max(minimum, min(maximum, widest * CHART_LABEL_PX + 24)))
+    return int(max(minimum, min(maximum,
+                                widest * CHART_LABEL_PX + LABEL_GUTTER_PADDING_PX)))
 
 
 def _display_width(text: str) -> float:
-    """中文近全形、英數約 0.55 倍——與組版端同一套估法。"""
-    return sum(0.55 if ord(ch) < 0x2E80 else 1.0 for ch in str(text))
+    """字串的顯示寬度，單位是「全形字」。
+
+    🔴 H-3（2026-08-03 實機）：原本英數用 0.55，實測**低估**——
+    `A63B-021` 這種大寫字母＋數字的分類碼，實際約 0.62 em／字元
+    （大寫字母約 0.7、數字約 0.56，混排平均高於 0.55）。
+    低估的症狀與「標籤區寫死太窄」一模一樣：開頭的字被畫布左緣裁掉，
+    而 G-3 那輪只把寫死改成依內容算，沒驗算出來的值準不準。
+
+    ⚠ 這是估算不是量測——SVG 沒有 text metrics，只能用係數逼近。
+    因此 `LABEL_GUTTER_PADDING_PX` 要留誤差空間，兩者搭配才安全。
+    """
+    return sum(0.62 if ord(ch) < 0x2E80 else 1.0 for ch in str(text))
 
 
 def nice_ticks(max_value: float, count: int = 5) -> list[int]:
@@ -1304,6 +1375,8 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     # 技術狀態五類（2026-08-02 定案）：狀態說「是什麼型態」，意義說「所以呢」。
     # 只有狀態沒有意義時，讀者仍得自己翻譯「競爭集中技術」代表什麼。
     "status": "技術狀態",
+    # 功效列專用：這個功效是用哪些技術做出來的（2026-08-03 使用者定案）。
+    "tech_means": "主要技術手段",
     "status_meaning": "意義",
     # ⚠ 加欄位就要同時登記顯示規則——不登記就會以英文欄名印給讀者看
     # （批 1 修過 recent_assignee_display_names，2026-08-03 我在加這幾欄時又犯一次）。
@@ -1365,7 +1438,8 @@ DATA_TABLE_PRIORITY_COLUMNS: dict[str, tuple[str, ...]] = {
         "label",            # 這是哪個主題
         "patent_count",     # 多大
         "applicant_count",  # 多少人在做
-        "status",           # 什麼型態  ← 這一輪的重點
+        "status",           # 什麼型態  ← 技術列
+        "tech_means",       # 用什麼做的 ← 功效列（與 status 互斥，各通道各有一個）
         "top3_share",       # 多集中
         "top_applicants",   # 誰在做
         "representative",   # 證據
@@ -2543,13 +2617,17 @@ def render_opportunity_quadrant_svg(
         # Y 軸口徑防呆註（沿用散點版文案）
         f'<text x="{margin_l}" y="56" font-size="{CHART_LABEL_PX}" fill="#9CA3AF">※ 純專利訊號(申請人家數)＝衡量競爭者是否已進場，不等於產品核心度</text>',
         # 圖例：色＝龍頭涉入三級｜數字＝件/家
-        f'<text x="{margin_l}" y="86" font-size="{CHART_LABEL_PX}" font-weight="600" fill="{COLOR_TEXT}">色＝龍頭涉入｜數字＝件/家</text>',
+        f'<text x="{margin_l}" y="86" font-size="{CHART_LABEL_PX}" font-weight="600" fill="{COLOR_TEXT}">{LEGEND_PREFIX_TEXT}</text>',
     ]
-    legend_x = margin_l + 200
+    # 🔴 H-8（2026-08-03 實機 p17／p18）：圖例方塊壓在「數字＝件/家」上面。
+    # 原本 `margin_l + 200` 與 `+= 130` 都是寫死的——前綴實際約 234px、
+    # 每個圖例項約 144px，兩個數字都不夠。改為依**實際文字寬度**推進，
+    # 與標籤區用同一支 `_display_width`，不另立估法。
+    legend_x = margin_l + _text_px(LEGEND_PREFIX_TEXT) + LEGEND_ITEM_GAP_PX
     for key, desc in [("lead≥2", "龍頭涉入≥2家"), ("lead=1", "龍頭涉入1家"), ("lead=0", "無龍頭涉入")]:
         parts.append(f'<rect x="{legend_x}" y="{76}" width="12" height="12" fill="{_TIER_COLORS[key]}" rx="2"/>')
         parts.append(f'<text x="{legend_x + 18}" y="87" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{xml_text(desc)}</text>')
-        legend_x += 130
+        legend_x += 18 + _text_px(desc) + LEGEND_ITEM_GAP_PX
 
     cell_pos = {
         "q2": (margin_l, grid_top, top_row_h),

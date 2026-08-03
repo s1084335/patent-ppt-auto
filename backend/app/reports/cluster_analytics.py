@@ -59,6 +59,10 @@ STATUS_MIN_SAMPLE = 5
 # 對齊——取多於它就會開始取到沒列在表上的申請人，讀者對不起來。
 REPRESENTATIVE_MAX = 3
 
+# 功效主題列出幾種技術手段（2026-08-03 使用者：「我要知道功效可以用那些技術手段達成」）。
+# 實機 8 個功效主題各命中 1–4 種，取三覆蓋絕大多數；與「前三大申請人」同口徑。
+TECH_MEANS_MAX = 3
+
 
 def classify_topic_status(metrics: dict[str, Any], median_count: float) -> str:
     """依五類條件判定技術狀態；判定優先序見下。
@@ -309,7 +313,43 @@ def build_topic_effect_table(
 
     if patents is not None:
         _attach_topic_status(result)
+    _attach_technical_means(result, topic_patents, topic_map)
     return result
+
+
+def _attach_technical_means(
+    rows: list[dict[str, Any]],
+    topic_patents: dict[tuple[str, str], set[int]],
+    topic_map: dict[tuple[str, str], dict[str, Any]],
+) -> None:
+    """就地替**功效列**補上「主要技術手段」——這個功效是用哪些技術做出來的。
+
+    做法：同一批專利同時有技術通道與功效通道的分派，取交集即可。
+    ⚠ 純交集統計，不需要 AI 也不需要新資料來源——兩個通道的 assignment 都已存在。
+
+    ⚠ 只加在功效列。技術列不做反向對照（2026-08-03 使用者：技術通道維持現狀）；
+    真要做也應該是另一個欄位，不是同一個鍵兩種語意。
+    ⚠ 值是**字串**不是結構化 list：這欄純顯示，做成 list 會逼 PPT 與網頁兩端
+    各寫一份格式化邏輯（`top_applicants` 已經是這樣，不要再多一個）。
+    """
+    tech_sets = [
+        (str(topic_map.get(key, {}).get("label") or key[0]), patents)
+        for key, patents in topic_patents.items()
+        if key[1] == SOURCE_FIELD_TECHNICAL and patents
+    ]
+    if not tech_sets:
+        return
+    for row in rows:
+        if row.get("source_field") != SOURCE_FIELD_EFFECT:
+            continue
+        own = topic_patents.get((row["topic_code"], SOURCE_FIELD_EFFECT), set())
+        if not own:
+            continue
+        hits = [(name, len(own & pats)) for name, pats in tech_sets if own & pats]
+        # 件數多的在前；同件數依名稱排序，避免同資料兩次執行順序不同。
+        hits.sort(key=lambda item: (-item[1], item[0]))
+        row["tech_means"] = "、".join(
+            f"{name} {count}" for name, count in hits[:TECH_MEANS_MAX])
 
 
 def _attach_topic_status(rows: list[dict[str, Any]]) -> None:
@@ -322,16 +362,25 @@ def _attach_topic_status(rows: list[dict[str, Any]]) -> None:
     for row in rows:
         by_source.setdefault(str(row.get("source_field") or ""), []).append(row)
 
-    for channel_rows in by_source.values():
+    for source_field, channel_rows in by_source.items():
         recent_total = sum(r["recent_count"] for r in channel_rows) or 1
         early_total = sum(r["early_count"] for r in channel_rows) or 1
         counts = [r["patent_count"] for r in channel_rows] or [0]
         median_count = statistics.median(counts)
+        # 🔴 狀態分類**只給技術通道**（2026-08-03 使用者定案）。
+        # 使用者實機看到「提升訓練成效 → 成長技術」後指出這是技術通道的設計。
+        # 他 08-02 定的五類講的是技術；功效通道的用途是**跟技術主題對照**，
+        # 不自己判演進狀態。⚠ 分類邏輯本身沒問題（中位數本來就分通道算），
+        # 錯的是把它套到功效上——所以是不套用，不是改演算法。
+        # ⚠ 占比兩欄（share_recent／share_early）維持兩通道都算：
+        # 它們是機會矩陣與解讀的輸入，不只服務 status。
+        classify = source_field == SOURCE_FIELD_TECHNICAL
         for row in channel_rows:
             row["share_recent"] = round(row["recent_count"] / recent_total, 4)
             row["share_early"] = round(row["early_count"] / early_total, 4)
-            row["status"] = classify_topic_status(row, median_count)
-            row["status_meaning"] = TOPIC_STATUS_MEANINGS.get(row["status"], "")
+            if classify:
+                row["status"] = classify_topic_status(row, median_count)
+                row["status_meaning"] = TOPIC_STATUS_MEANINGS.get(row["status"], "")
 
 
 def build_opportunity_matrix(

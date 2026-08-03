@@ -330,8 +330,14 @@ NUMBER_PATTERN = re.compile(r"(\d[\d,]*(?:\.\d+)?\s*(?:%|件|家|年|項|個)?)"
 NARRATIVE_POINT_LINES = 2
 
 
-def _points_area(theme: Theme, kind: str) -> tuple[float, float, int] | None:
-    """該版型放要點的區域：(寬, 高, 欄數)；沒有要點區的版型回 None。"""
+def _points_area(theme: Theme, kind: str, *, caveat: bool = False) -> tuple[float, float, int] | None:
+    """該版型放要點的區域：(寬, 高, 欄數)；沒有要點區的版型回 None。
+
+    🔴 `caveat`（H-2，2026-08-03）：有判讀限制框的頁，要點框會縮成
+    `height_with_caveat_in`（3.3）而不是 `height_in`（5.0）——渲染端一直是這樣做的
+    （`_render_points_panel`），但容量計算沒跟上，於是解讀 CLI 照 5.0 寫、
+    塞進 3.3 的框、被截成「…」。⚠ 光扣掉「警語本身佔幾行」補不上 1.7 in 的框差。
+    """
     if kind == "chart_hero":
         g = theme.geometry["chart_hero"]
         inset = g["panel_inset_in"]
@@ -362,8 +368,9 @@ def _points_area(theme: Theme, kind: str) -> tuple[float, float, int] | None:
     # 誤把它算進來會用附錄的幾何覆蓋掉同一張報表在內頁的真實容量。
     if kind in {"chart_with_points", "percentage_bars", "stat_callout"}:
         g = theme.geometry["points_panel"]
+        declared = g["height_with_caveat_in"] if caveat else g["height_in"]
         return (g["width_in"] - g["text_inset_right_in"],
-                g["height_in"] - g["text_top_offset_in"] - g["text_bottom_pad_in"], 1)
+                declared - g["text_top_offset_in"] - g["text_bottom_pad_in"], 1)
     return None
 
 
@@ -407,14 +414,14 @@ def narrative_capacity(theme: Theme | None = None,
                 if _kind_for_aspect(kind, (name,), charts) == "chart_wide":
                     kind = "chart_wide"
                     break
-        area = _points_area(theme, kind)
+        # ⚠ 順序：先知道有沒有 caveat，才算得出**這頁實際的框**（H-2）。
+        caveat = CAVEATS.get(spec.report_keys[0] if spec.report_keys else "", "")
+        area = _points_area(theme, kind, caveat=bool(caveat))
         if area is None:
             continue
         width_in, height_in, columns = area
         per_line, max_lines = _text_capacity(theme, width_in=width_in, height_in=height_in, size_pt=size)
-        # ⚠ 有判讀限制的報表，警語會先佔掉行數（批1 起警語不參與均分），
-        # 容量必須扣掉它——否則 CLI 照上限寫，最後被擠掉的是要點。
-        caveat = CAVEATS.get(spec.report_keys[0] if spec.report_keys else "", "")
+        # ⚠ 框變小之外，警語本身還會先佔掉行數（批1 起警語不參與均分），兩者都要扣。
         if caveat:
             max_lines -= _lines_needed(f"{CAVEAT_LABEL}｜{caveat}", per_line)
         max_points = max(1, (max_lines * columns) // NARRATIVE_POINT_LINES)
@@ -1495,6 +1502,64 @@ def _points_panel_height(
     return max(chrome + line_in, min(ceiling, chrome + lines * line_in))
 
 
+def _points_band_height(
+    theme: Theme,
+    blocks: list[tuple[str, str, str, bool]],
+    *,
+    width_in: float,
+    columns: int,
+) -> float:
+    """底部要點橫幅的**實際**高度（H-1，2026-08-03）。
+
+    原本固定 `points_band_height_in`＝1.75，但實機只放 2 條要點時下半是空的，
+    而同一頁的表格卻因為框高不足被卡掉三筆——空間分配的兩邊都錯。
+
+    ⚠ 複用 `_points_panel_height` 算單欄，不另寫一套估算：橫幅只是「多欄的面板」，
+    兩套估法遲早會分岔（本專案已因兩處落點靜默失敗六次）。
+    多欄取**最高**的那一欄——欄高不齊時以最高者為準，否則短欄會壓到別的東西。
+    """
+    g = theme.geometry["table_with_points"]
+    inset = g["points_band_inset_in"]
+    gap = g["points_band_column_gap_in"]
+    chrome = g["points_band_text_top_offset_in"] + inset
+    if not blocks:
+        return chrome
+    col_width = (width_in - inset * 2 - gap * (columns - 1)) / max(columns, 1)
+    per_column = max(1, math.ceil(len(blocks) / max(columns, 1)))
+    chunks = [blocks[i * per_column:(i + 1) * per_column] for i in range(columns)]
+    # _points_panel_height 已含它自己的 chrome（面板的 text_top_offset＋bottom_pad），
+    # 這裡要的是純內容高度，故扣掉再套橫幅自己的 chrome。
+    panel_g = theme.geometry["points_panel"]
+    panel_chrome = panel_g["text_top_offset_in"] + panel_g["text_bottom_pad_in"]
+    body = max(
+        (_points_panel_height(theme, chunk, width_in=col_width,
+                              max_height_in=theme.geometry["footnote"]["top_in"]) - panel_chrome
+         for chunk in chunks if chunk),
+        default=0.0,
+    )
+    return chrome + max(body, 0.0)
+
+
+def _table_available_height(theme: Theme, geometry_key: str, *, band_height_in: float = 0.0) -> float:
+    """表格能用到的**實際**垂直空間：頁尾上緣 − 表格上緣 − 間距 − 要點區。
+
+    🔴 H-1（使用者：「這個所有主題都放都還能放解讀，為甚麼要卡掉」）：
+    `table_with_points.height_in` 寫死 2.88（只夠 4 列宣告高），
+    但 1.62 → 6.78 實際有 5.16 in。表格從一開始就沒拿到該有的空間，
+    判讀面板壓上來只是後果。
+
+    ⚠ 宣告的 `height_in` 不再當固定值用，但仍是**下限**——版型意圖是表格至少那麼高。
+    """
+    g = theme.geometry[geometry_key]
+    # ⚠ 表格與橫幅之間用**橫幅自己的內距**（0.18），不是欄間距 `column_gap_in`（0.30）。
+    # 後者是給並排欄位的水平留白，垂直方向套上去偏寬——實測技術主題頁因此差
+    # 0.07 in 放不下第 5 列（表格 3.75＋橫幅 1.18＋間距 0.30 = 5.23 > 可用 5.16）。
+    # 用 0.18 後總和 5.11，第 5 列進得來，而視覺上與橫幅內距一致、不會顯得擠。
+    gap = float(theme.geometry["table_with_points"]["points_band_inset_in"]) if band_height_in else 0.0
+    room = theme.geometry["footnote"]["top_in"] - g["top_in"] - gap - band_height_in
+    return max(g["height_in"], room)
+
+
 def _render_points_panel(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
     """右側要點框（＋必要時的方法論警語框）。"""
     g = theme.geometry["points_panel"]
@@ -1546,7 +1611,7 @@ def _visible_column_count(rows: list[dict[str, Any]], excluded: set[str]) -> int
 
 
 def _render_points_band(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any],
-                        *, top: float | None = None) -> None:
+                        *, top: float | None = None, height: float | None = None) -> None:
     """底部要點橫幅：無圖的表格頁專用，讓表格拿到滿版寬度（v3，2026-07-31）。
 
     ⚠ 橫幅容量比右側直欄小，所以**不是**把右欄內容原樣搬下來就好——
@@ -1557,7 +1622,8 @@ def _render_points_band(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]
     left = g["points_band_left_in"]
     top = g["points_band_top_in"] if top is None else top
     width = g["points_band_width_in"]
-    height = g["points_band_height_in"]
+    # height 省略時回到宣告值——舊呼叫端（若有）行為不變。
+    height = g["points_band_height_in"] if height is None else height
     inset = g["points_band_inset_in"]
     _add_band(slide, theme, left, top, width, height, "panel", rounded=True)
     _add_text(slide, theme, "判讀要點",
@@ -1583,6 +1649,23 @@ def _render_points_band(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]
         _add_number_bold_text(slide, theme, chunk,
                               left=left + inset + index * (col_width + gap), top=text_top,
                               width=col_width, height=text_height, size=size)
+
+
+# 被 `_trim_blocks` 整條丟掉的要點（H-2）。⚠ 用模組級收集器而非回傳值：
+# `_trim_blocks` 有 7 個呼叫端，改回傳形狀等於逼每一處都跟著改，而它們全都
+# 只關心「要畫哪些條」。build_ppt() 收尾時把這裡的內容併進 manifest warnings，
+# 所以丟棄仍然說得出來、不是靜默。
+_DROPPED_POINTS: list[tuple[str, str, str, bool]] = []
+
+
+def dropped_points() -> list[tuple[str, str, str, bool]]:
+    """本次組版被整條丟掉的要點（供 QA 與測試查驗）。"""
+    return list(_DROPPED_POINTS)
+
+
+def reset_dropped_points() -> None:
+    """每次組版開始前清空——否則同一個 process 連續產兩份會互相污染。"""
+    _DROPPED_POINTS.clear()
 
 
 def _trim_blocks(
@@ -1615,24 +1698,26 @@ def _trim_blocks(
 
     protected = {index for index, block in enumerate(blocks) if block[0] == CAVEAT_LABEL}
     reserved = min(lines, sum(needs[index] for index in protected))
+    # 🔴 H-2（2026-08-03 使用者：「這種卡掉的敘述不要再有」）：**一律不截字**。
+    # 依序放到裝不下為止，放不下的整條不放並記進 dropped——
+    # 句子斷在半路讀者看不懂，比少一條更糟；少一條至少「看到的都完整」，
+    # 而且 warnings 會講出來，不是靜默。
+    # ⚠ 真正的治本在上游：`narrative_capacity()` 把每頁**實際**能寫多少交給 CLI，
+    # 讓它照著寫。這裡只是保底，正常情況不該觸發。
     others = [index for index in range(len(blocks)) if index not in protected]
     room = lines - reserved
-    keep = min(len(others), room)
-    share, extra = divmod(room, keep) if keep else (0, 0)
-    ranks = {index: rank for rank, index in enumerate(others[:keep])}
-    trimmed: list[tuple[str, str, str, bool]] = []
-    for index, (label, text, color, emphasized) in enumerate(blocks):
-        if index in protected:
-            trimmed.append((label, text, color, emphasized))
+    kept: set[int] = set()
+    used = 0
+    for index in others:
+        if used + needs[index] > room:
             continue
-        if index not in ranks:
-            continue
-        allowance = share + (1 if ranks[index] < extra else 0)
-        budget = allowance * per_line - (len(label) + 1 if label else 0)
-        if len(text) > budget:
-            text = text[: max(1, budget - 1)].rstrip("，、。；：") + "…"
-        trimmed.append((label, text, color, emphasized))
-    return trimmed
+        kept.add(index)
+        used += needs[index]
+    dropped = [blocks[index] for index in others if index not in kept]
+    if dropped:
+        _DROPPED_POINTS.extend(dropped)
+    return [block for index, block in enumerate(blocks)
+            if index in protected or index in kept]
 
 
 # --------------------------------------------------------------------------
@@ -2014,11 +2099,13 @@ def _render_table(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> N
     g = theme.geometry["table"]
     rows = _first_rows(spec, ctx)
     labels, excluded, priority = _table_display(ctx, spec)
-    shown = _add_table(slide, theme, rows,
-                       left=g["left_in"], top=g["top_in"], width=g["width_in"], height=g["height_in"],
-                       row_height=g["row_height_in"], max_columns=int(g["max_columns"]),
-                       cell_margin_in=g["cell_margin_in"], cell_inset_in=g["cell_inset_in"],
-                       labels=labels, excluded=excluded, priority=priority)
+    # 附錄不放要點，整個可用區都給表格（H-4：原本用宣告的 height_in，13 筆只出 6 筆）。
+    shown, _used = _add_table(slide, theme, rows,
+                              left=g["left_in"], top=g["top_in"], width=g["width_in"],
+                              height=_table_available_height(theme, "table"),
+                              row_height=g["row_height_in"], max_columns=int(g["max_columns"]),
+                              cell_margin_in=g["cell_margin_in"], cell_inset_in=g["cell_inset_in"],
+                              labels=labels, excluded=excluded, priority=priority)
     _render_footnote(slide, theme, spec, ctx,
                      _rows_note(shown, rows, int(g["max_columns"]), _visible_column_count(rows, excluded)))
 
@@ -2034,17 +2121,26 @@ def _render_table_with_points(slide, theme: Theme, spec: PageSpec, ctx: dict[str
     g = theme.geometry["table_with_points"]
     rows = _first_rows(spec, ctx)
     labels, excluded, priority = _table_display(ctx, spec)
-    shown = _add_table(slide, theme, rows,
-                       left=g["left_in"], top=g["top_in"], width=g["width_in"], height=g["height_in"],
-                       row_height=g["row_height_in"], max_columns=int(g["max_columns"]),
-                       cell_margin_in=g["cell_margin_in"], cell_inset_in=g["cell_inset_in"],
-                       labels=labels, excluded=excluded, priority=priority)
-    # 要點橫幅跟著表格底緣走：表高會依實際列數收縮（主題常只有 5–8 列），
-    # 橫幅若固定在「排滿 10 列」的位置，中間會空一大塊（實機轉圖驗到）。
-    # ⚠ 只往上收、不往下移：theme 的 top 是**最低**位置，超過就會壓到頁尾。
-    table_bottom = g["top_in"] + min(g["height_in"], (shown + 1) * g["row_height_in"])
+    # 🔴 H-1（2026-08-03）：先算要點區**實際**要多高，剩下的全給表格。
+    # ⚠ 順序不能反：表格能放幾列取決於剩多少空間，而剩多少取決於要點內容——
+    #   要點內容是已知的（narrative 早就產好了），表格列數才是被算出來的那一邊。
+    band_blocks = _points_for(spec, ctx)
+    band_height = _points_band_height(theme, band_blocks,
+                                      width_in=g["points_band_width_in"],
+                                      columns=int(g["points_band_columns"]))
+    shown, used_height = _add_table(
+        slide, theme, rows,
+        left=g["left_in"], top=g["top_in"], width=g["width_in"],
+        height=_table_available_height(theme, "table_with_points", band_height_in=band_height),
+        row_height=g["row_height_in"], max_columns=int(g["max_columns"]),
+        cell_margin_in=g["cell_margin_in"], cell_inset_in=g["cell_inset_in"],
+        labels=labels, excluded=excluded, priority=priority)
+    # 橫幅接在表格**實際**底緣之後。
+    # ⚠ 用 `used_height`（_add_table 逐列累加的真值），不是 `(shown+1) * row_height_in`
+    #   ——後者是宣告列高，內容一換行就低估，橫幅會往上壓住表格（實機 p11／p12）。
     _render_points_band(slide, theme, spec, ctx,
-                        top=min(g["points_band_top_in"], table_bottom + theme.geometry["column_gap_in"]))
+                        top=g["top_in"] + used_height + g["points_band_inset_in"],
+                        height=band_height)
     _render_footnote(slide, theme, spec, ctx,
                      _rows_note(shown, rows, int(g["max_columns"]), _visible_column_count(rows, excluded)))
 
@@ -2400,11 +2496,14 @@ def _add_table(
     labels: dict[str, str],
     excluded: set[str],
     priority: tuple[str, ...] = (),
-) -> int:
-    """把引擎 rows 畫成表格。
+) -> tuple[int, float]:
+    """把引擎 rows 畫成表格，回傳（實際顯示列數, **實際用掉的高度**）。
 
-    列數依框高與列高換算後截斷（PowerPoint 的表格列高只增不減，塞太多必溢出），
-    儲存格字數也依欄寬截斷，避免自動換行把列撐高。
+    列數依框高與**逐列實際行數**累加後截斷（PowerPoint 的表格列高只增不減）。
+
+    ⚠ 高度一定要交出來（H-1，2026-08-03）：本函式內部本來就算過 `used_height`，
+    但沒回傳，於是呼叫端拿宣告列高 `row_height_in` 自己重估一次——同一個量兩處落點，
+    而且重估的那處是錯的（宣告 0.32 vs 換行後實際 0.6），底部要點橫幅因此壓住表格。
     """
     if not rows:
         g = theme.geometry["table"]
@@ -2413,7 +2512,7 @@ def _add_table(
                   left=g["empty_text_left_in"], top=g["empty_text_top_in"],
                   width=g["empty_text_width_in"], height=g["empty_text_height_in"],
                   size=theme.size("table_body_pt"), color="muted", align=PP_ALIGN.CENTER)
-        return 0
+        return 0, height
 
     # 欄位顯示規則：排除欄與中文欄名以引擎那份為準（labels／excluded 由呼叫端備妥），
     # 欄值轉譯仍在本檔（source_field 的原始欄值不得入畫面，轉「技術／功效」）。
@@ -2488,7 +2587,7 @@ def _add_table(
             _style_cell(cell, theme, size=theme.size("table_body_pt"), color="ink", bold=True,
                         fill="paper" if r % 2 else "panel_alt",
                         margin_in=cell_margin_in, inset_in=cell_inset_in)
-    return len(display)
+    return len(display), used_height
 
 
 def _set_cell_borders(cell, theme: Theme) -> None:
@@ -2660,8 +2759,16 @@ def _expand_page_layout(report_data: dict[str, Any], charts: ChartIndex | None =
 
 
 def _split_by_channel(spec: PageSpec, report_data: dict[str, Any]) -> list[PageSpec]:
-    """rows 含多通道的報表依通道拆頁（每通道一張表；附錄總表不拆）。"""
-    if spec.is_appendix or not spec.report_keys:
+    """rows 含多通道的報表依通道拆頁（每通道一張表，**附錄也拆**）。
+
+    🔴 H-4（2026-08-03 實機）：附錄原本不拆，於是「全分類**技術**指標總表」裡
+    混進「提升訓練成效」這種功效主題——標題宣稱只有技術，內容不是。
+    使用者定案：**內頁精選、附錄放齊**；放齊的前提是兩種主題各自成表。
+
+    ⚠ 附錄的標題要**保留「附錄N」前綴**再加通道名：內頁拆頁是直接把 title 換成
+    通道名，附錄照抄會丟掉附錄身分，讀者在頁序上找不到它。
+    """
+    if not spec.report_keys:
         return [spec]
     config = CHANNEL_SPLIT_REPORTS.get(spec.report_keys[0])
     if config is None:
@@ -2672,6 +2779,14 @@ def _split_by_channel(spec: PageSpec, report_data: dict[str, Any]) -> list[PageS
                if any(str(r.get(column)) == value for r in rows)]
     if len(present) <= 1:
         return [spec]
+    if spec.is_appendix:
+        # 「附錄1：全分類技術指標總表」＋「技術主題分布」→「附錄1：技術主題分布（全表）」
+        prefix = spec.title.split("：", 1)[0]
+        return [
+            _spec_with(spec, topic=topic, title=f"{prefix}：{topic}（全表）",
+                       row_filter=((column, value),))
+            for value, topic in present
+        ]
     return [
         _spec_with(spec, topic=topic, title=topic, row_filter=((column, value),))
         for value, topic in present
@@ -3101,6 +3216,8 @@ def build_ppt(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     theme = Theme.load(theme_path)
+    # ⚠ 同一個 process 連續產兩份時要先清空，否則上一份丟掉的要點會算到這一份頭上。
+    reset_dropped_points()
     charts = ChartIndex(report_dir, output_dir / ".cache", artifact_manifest, theme)
 
     warnings: list[dict[str, Any]] = []
@@ -3218,6 +3335,17 @@ def build_ppt(
         pages.append(page_info)
 
     warnings.extend(audit_layout(prs, theme))
+
+    # 🔴 H-2：整條放不下而被丟掉的要點必須說出來。
+    # ⚠ 本專案的原則是「沒有靜默的截斷」——舊做法是截字加「…」，使用者當場抓到
+    # 「這種卡掉的敘述不要再有」。現在改成不截字，但**不代表可以默默少一條**：
+    # 正常情況這裡應該是空的（容量已由 narrative_capacity 交給 CLI），
+    # 一旦有值就代表上游容量算錯了，要當成 bug 追。
+    for label, text, _color, _emph in dropped_points():
+        warnings.append({
+            "type": "points_dropped",
+            "detail": f"要點整條未放入（版面不足，未截字）：{label}｜{text}",
+        })
 
     pptx_path = _next_available_path(output_dir, version)
     prs.save(str(pptx_path))
