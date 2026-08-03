@@ -75,5 +75,53 @@ class LabelGutterTests(unittest.TestCase):
         self.assertTrue(hasattr(cr, "LABEL_TEXT_OFFSET_PX"))
 
 
+class LabelLeftAlignedTests(unittest.TestCase):
+    """I-3：列標籤改**左對齊**，永遠不可能被畫布裁掉（2026-08-03 定案）。
+
+    🔴 為什麼換做法：字寬係數已經猜三次（0.55 → 0.62 → ?），實機仍被裁。
+    2026-08-03 從 p10 轉圖掃像素量到：真實字寬**比估算多約 13%**
+    （估 280px、實際 >316px）。估算永遠會有誤差，字型一換又不一樣。
+
+    改為 `text-anchor="start"`、x 固定在左緣留白處：
+    **標籤多長都從左緣開始畫，不存在「超出左界」這回事**。
+    ⚠ 代價：短標籤與長條之間的距離不一致。但多列掃視時「對齊左緣」其實更好讀，
+    而且「資訊完整」本來就優先於「間距整齊」。
+
+    ⚠ 只改**列標籤**（長，代碼＋技術名）。刻度標籤是數字、右對齊貼著繪圖區才對，
+    不在本項範圍。
+    """
+
+    def _bar_svg(self, tmpdir):
+        from pathlib import Path
+
+        rows = [{"ipc_main_group_symbol": "A63B-0022", "patent_count": 5},
+                {"ipc_main_group_symbol": "A63B-0069", "patent_count": 2}]
+        path = Path(tmpdir) / "bar.svg"
+        cr.render_bar_chart(path, "測試", rows, "ipc_main_group_symbol")
+        return path.read_text(encoding="utf-8")
+
+    def test_row_labels_anchor_start(self):
+        import re
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            svg = self._bar_svg(tmp)
+        rows = [m for m in re.finditer(r'<text x="([\d.]+)"[^>]*>([^<]*A63B[^<]*)</text>', svg)]
+        self.assertTrue(rows, "找不到列標籤")
+        for m in rows:
+            with self.subTest(label=m.group(2)[:20]):
+                self.assertNotIn('text-anchor="end"', m.group(0),
+                                 "列標籤仍是右對齊——長標籤會被畫布左緣裁掉")
+                self.assertGreaterEqual(float(m.group(1)), cr.LABEL_TEXT_OFFSET_PX - 1e-9,
+                                        "列標籤起點在留白之內")
+
+    def test_tick_labels_stay_right_aligned(self):
+        """刻度標籤不受本項影響——它們貼著繪圖區右對齊才讀得順。"""
+        import inspect
+
+        src = inspect.getsource(cr.render_bar_chart)
+        self.assertIn("LABEL_TEXT_OFFSET_PX", src)
+
+
 if __name__ == "__main__":
     unittest.main()

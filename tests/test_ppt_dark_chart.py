@@ -217,9 +217,19 @@ class ChartTextSizeOnSlideTests(unittest.TestCase):
         return px * 72 / 96 * scale
 
     def test_row_labels_readable_after_scaling(self):
+        """⚠ 定位方式已於 2026-08-03（I-3）更新：列標籤改**左對齊**，
+        不再有 `text-anchor="end"`——原本靠那個屬性抓，改完就抓不到任何一筆，
+        測試會以「找不到列標籤」失敗，而不是真的有東西壞掉。
+
+        改用左緣座標定位：列標籤一律畫在 `x=LABEL_TEXT_OFFSET_PX`。
+        本測試守的意圖沒變——列標籤縮放到投影片上仍要看得清楚。
+        """
+        from backend.app.reports.chart_runner import LABEL_TEXT_OFFSET_PX
+
         with tempfile.TemporaryDirectory() as tmp:
             svg = self._render_ranking(Path(tmp))
-        sizes = [int(s) for s in re.findall(r'text-anchor="end" font-size="(\d+)"', svg)]
+        sizes = [int(s) for s in re.findall(
+            rf'<text x="{LABEL_TEXT_OFFSET_PX}" y="\d+" font-size="(\d+)"', svg)]
         self.assertTrue(sizes, "找不到列標籤")
         worst = min(sizes)
         actual = self._slide_pt(svg, worst)

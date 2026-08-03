@@ -2,11 +2,21 @@
 
 ## Summary Card
 
-- 更新：2026-07-30
-- 狀態：規格草案，尚未實作
-- 已定案：瀏覽專利與分類區先讀前端快照；只有 refresh、操作提交、長任務完成後才向後端同步新快照
+- 更新：2026-08-03（三個開放問題已定案；v1 2026-07-30）
+- 狀態：規格已定案，**尚未實作**
+- 🔴 **2026-08-03 使用者定案**：
+  1. **範圍**：先做**瀏覽專利＋分類區**（即原定 5 個讀取端點），驗收過再擴到其他區塊
+  2. **更新粒度**：**區塊級**——每頁拆成獨立區塊，只重畫受影響的那一塊
+     （搜尋框內容、捲動位置、已展開的列不得因為 refresh 而丟失）
+  3. **快照儲存**：**後端檔案快照**（不做前端 IndexedDB）——多人共用同一份、
+     不會各自不同步；代價是仍有一次網路往返，但不查 DB、只讀檔
+- **使用者原話**（2026-08-03）：「所有功能都有其目的地生效的區域，確保這些功能每次
+  完成都 refresh，只在最小範圍內 refresh(不要整頁)，現在每次點頁面都是載入，
+  要做成快照映射到前端，這樣每次進到頁面就不用載入，有 refresh 就要隨即載入更新，
+  避免有前後端不同步問題」
 - 現況：目前 DB 在 Supabase，backend / worker 在 Lightning；正式上線會搬到公司伺服器
-- 下一驗收點：進入瀏覽專利與分類區時，不依賴即時後端查詢也能先顯示上一份成功快照
+- 下一驗收點：進入瀏覽專利與分類區時，不依賴即時後端查詢也能先顯示上一份成功快照，
+  且任一寫入操作完成後**只有受影響的區塊**重畫
 - 詳情：本文件定義 snapshot schema、前後端流程、API 契約、快取失效與驗收方式
 
 ## 目標
@@ -473,3 +483,212 @@ Playwright 驗收：
 2. snapshot 是否要保留最近 N 版供 rollback / debug？第一版可只保留 latest + current。
 3. 公司伺服器正式部署時，snapshot 是否由 Nginx 直接 serve static file，還是仍走 FastAPI？
 4. 是否需要背景自動 freshness check？第一版建議不要阻塞畫面，只顯示資料時間並提供 refresh。
+
+
+---
+
+## 區塊級更新（2026-08-03 補，原草案缺這一段）
+
+### 為什麼要補
+
+原草案只解決「進頁面要不要等 API」，沒解決**畫面怎麼更新**。
+現況是 `navTo()` → `renderMain()` → `m.innerHTML = ...` **整塊重寫**
+（`index.html:832-840`）。就算資料改讀快照，畫面仍整塊重畫：
+
+- 搜尋框打到一半的字沒了
+- 捲動位置回到頂端
+- 已展開的專利詳情列收合
+- 「資料維護」的收合狀態重置
+
+使用者定案：**只在最小範圍內 refresh，不要整頁**。
+
+### 區塊切分
+
+每個頁面切成數個**獨立掛載點**，各自有 id 與自己的重畫函式。
+⚠ 判準是「**會不會一起變**」——會一起變的放同一塊，各自變的拆開。
+
+**瀏覽專利**
+
+| 區塊 id | 內容 | 什麼時候重畫 |
+|---|---|---|
+| `browse-toolbar` | 搜尋框、搜尋鈕 | 幾乎不重畫（重畫就會吃掉使用者打的字） |
+| `browse-maintenance` | 文獻備註卡、公司代碼與中文名卡 | 備註任務完成、公司名操作完成 |
+| `browse-body` | 專利表格＋分頁列 | 搜尋、翻頁、剔除、公司名變更、備註產生完成 |
+
+**分類區**（2026-08-03 依實際 DOM 修正——原先只寫 4 塊，實際有 8 個掛載點）
+
+| 區塊 id | 內容 | 什麼時候重畫 | 備註 |
+|---|---|---|---|
+| `topics-header` | 通道分頁、分類鈕、重新挑選、AI 篩不相干 | 只在**任務狀態變化**時（鈕文字要在「分類中…」與「分類」間切換） | ⚠ 不因資料更新而重畫 |
+| `topic-candidates` | 分群候選卡 | calibrate／incremental 完成、進入或離開挑選狀態 | 與 `topic-tags` **互斥**（未採用／已採用） |
+| `topic-tags` | 主題標籤清單 | rename、merge／unmerge、finalize、AI 標籤完成 | 即原草案的 `topics-list` |
+| `exclusion-reviews` | AI 待複核清單 | AI 篩不相干完成、逐筆裁決後 | **有 pending 才出現**；裁決完最後一筆要整區消失 |
+| `topic-overview` | 主題概覽 | 同 `topic-tags` | |
+| `topic-advanced` | 進階操作（`<details>` 收合） | 幾乎不重畫 | 🔴 **收合狀態必須保住**——重畫就會收起來，而使用者剛展開它是為了操作 |
+| `topic-ops` ／ `topic-op-job` ／ `topic-merge-suggestions` ／ `topic-merge-history` | 進階操作的四個子區 | 各自對應的操作完成後 | 位於 `topic-advanced` 內，**分別更新**，不連坐父層 |
+| `topic-patents` | 選定主題的專利表 | 剔除、還原、切換主題、finalize | |
+
+⚠ **通道切換（技術／功效）目前會重畫整區**（`index.html:1953-1956`）。
+換通道確實換掉整組主題資料，但 `topics-header` 的分頁本身與 `topic-advanced`
+的收合狀態沒必要跟著重置——切完通道還要再展開一次進階操作，是多餘的動作。
+定案：切通道時重畫 `topic-candidates`／`topic-tags`／`topic-overview`／`topic-patents`，
+**不動** `topics-header` 與 `topic-advanced` 的收合狀態。
+
+### 重分群完成後的選取狀態（2026-08-03 使用者定案）
+
+按「分類」重跑分群並完成後，主題清單**整組換掉**（topic_code 由 runner 重編）。
+定案：**回到未選狀態**——清掉選定主題、`topic-patents` 收起，只顯示新的主題清單。
+
+⚠ 不做「對回同名主題」：同名不代表同一組專利，會讓使用者以為「還是原來那一群」
+而實際成員已經不同——那是比多點一次更貴的錯誤。
+⚠ 也不做「停在舊畫面並提示」：舊資料指向的 topic_code 在新一輪已不存在，
+繼續顯示等於展示過期內容。
+
+**報表種類**（2026-08-03 納入，🔴 **只做區塊化、不另建快照層**）
+
+⚠ **為什麼與前兩區處理方式不同**：這區的資料來源是**版本化產物**
+（`report_trial_YYYYMMDD_HHMMSS`，存 `app_layer.report_artifacts`），不是即時 DB 查詢。
+
+| | 瀏覽專利／分類區 | 報表種類 |
+|---|---|---|
+| 資料來源 | DB 即時查 | **版本化產物**（已有版本號） |
+| 「新舊」怎麼判斷 | 要比對時間戳 | **版本號本身就是** |
+| 快照要做什麼 | 產生一份快照檔 | **產物本身已經是快照** |
+
+🔴 **不再產一層快照檔**：產物已在 `report_artifacts`，再產一層是同一份資料的
+第二個落點——本專案已因「同一資訊兩處落點」反覆靜默失敗（前後端欄名、report_keys、
+workspace_id、表格欄位對照、編碼說明、column_labels）。
+本區只做：① 區塊拆分 ② 前端快取「目前選定版本的 content」，換版本才重取。
+
+| 區塊 id | 內容 | 什麼時候重畫 | 備註 |
+|---|---|---|---|
+| `reports-header` | 檢視選單、市場資料收合區、一次產全部解讀鈕 | 版本清單變動（新版本產出）、任務狀態變化 | ⚠ 選單的**選定值**要保住 |
+| `report-generate` | 產製勾選清單（15 種）＋產製鈕 | 任務狀態變化 | `<details>` **收合狀態必須保住** |
+| `report-job` | 產製任務進度 | 任務狀態變化 | |
+| `report-version-list` | 既有報表版本清單 | report_generate 完成 | |
+| `market-side-by-side` | 市場側摘要（只讀已確認現行版） | 市場摘要確認後 | ⚠ 全庫隱藏 |
+| `report-inline-view` | 專利側報表卡（圖表＋數據表＋解讀） | 切報表、切通道、切 variant、單張重產解讀完成 | 🔴 切換**不得重抓 API**——同一版本的 content 快取一份即可 |
+| `market-upload` | 市場 PDF 上傳區 | 上傳完成、摘要產出 | 位於 `reports-header` 的收合區內，**分別更新** |
+
+**匯出報告**（2026-08-03 納入）
+
+| 區塊 id | 內容 | 什麼時候重畫 | 備註 |
+|---|---|---|---|
+| `export-toolbar` | 編輯模式開關、版本下拉、四個操作鈕 | 版本清單變動、任務狀態變化 | ⚠ **編輯模式開關與版本選定值要保住** |
+| `export-job` | 任務進度 | 任務狀態變化 | |
+| `export-ppt-result` | PPT 產出結果與下載連結 | `ai:report_ppt` 完成 | |
+| `export-preview` | 整份報告預覽 | 換版本、重新載入、解讀重產完成、**人工編輯儲存後** | 與報表區共用 `renderReportContentHtml` |
+
+⚠ `export-preview` 內容量大（整份報告全部頁面），**換版本以外的操作不得整區重畫**：
+單張解讀重產只換那一張卡、人工編輯只換被編輯的那一段。
+
+### 🔴 人工編輯稿落 DB（2026-08-03 使用者定案）
+
+**現況問題**：人工編輯稿存在瀏覽器 `localStorage`
+（`patent_export_edits:{version}`，`index.html:3806-3812`）——
+換裝置、清快取就遺失，而且**後端完全不知道它存在**。
+
+⚠ 這是全站唯一「只存在前端、後端沒有對應物」的資料。
+使用者本輪的核心要求是「避免前後端不同步」，而這份資料連「同步」的對象都沒有。
+且人工改過的文案是**交付物**，不該因為換一台電腦就沒了。
+
+**定案：落 DB，納入本階段。**
+
+契約：
+
+| 項目 | 內容 |
+|---|---|
+| 主鍵 | （報表版本, report_key, variant_key） |
+| 欄位 | `manual_text`（人工稿）／`ai_original`（AI 原稿快照）／`updated_at` |
+| 分欄原則 | 🔴 **人工稿永不覆蓋 AI 稿**——沿用現有設計，`ai_original` 保留供「還原 AI 原稿」 |
+| 寫入時機 | 編輯模式下離開該欄位或按儲存時 |
+| 影響區塊 | `export-preview`（只換被編輯那一段） |
+
+⚠ **遷移**：既有 `localStorage` 內容不自動上傳——那是本機資料，
+使用者可能在多台機器有各自版本，自動合併會覆蓋掉不該覆蓋的。
+改為：偵測到本機有舊資料時提示「這台電腦有未同步的修改，要上傳嗎？」由使用者決定。
+
+### 報表種類的第二階段寫入操作（2026-08-03 起納入本階段）
+
+| 前端函式 | 動作 | 影響區塊 |
+|---|---|---|
+| `submitReports` | 產製選定報表（長任務） | `report-job`（進行中）→ 完成後 `report-version-list`、`reports-header`（選單）、`report-inline-view` |
+| `triggerExport` | 重新產製報表資料（長任務） | 同上 |
+| `runNarrative`（不帶 report_keys） | 一次產全部解讀（長任務） | `report-job` → 完成後 `report-inline-view` **全部卡** |
+| `runNarrative`（帶 report_keys） | 重產單張解讀 | `report-job` → 完成後**只換那一張卡** |
+| `uploadMarketDocument` | 上傳市場 PDF | `market-upload` |
+| `submitMarketSummary` | 產／確認市場摘要 | `market-upload`、`market-side-by-side` |
+| `resolveMarketWorkspaceId` | 新建 workspace 再上傳 | `market-upload`、workspace 下拉 |
+
+### 匯出報告的寫入操作（2026-08-03 納入本階段）
+
+| 前端函式 | 動作 | 影響區塊 |
+|---|---|---|
+| `triggerExport` | 重新產製報表資料（長任務） | `export-job` → 完成後 `export-toolbar`（版本下拉）、`export-preview` |
+| `requestExportPpt` | 產生 PPT | `export-job` → 完成後 `export-ppt-result` |
+| `runNarrativeThenExportPpt` | 無解讀時先跑 narrative 再接 PPT | `export-job`（兩段進度）→ 完成後 `export-preview`、`export-ppt-result` |
+| **（新）** 儲存人工編輯 | 人工稿落 DB | `export-preview`（**只換被編輯那一段**） |
+
+⚠ **仍不在本階段**：案件比對（`createComparison`、`saveTarget`、`saveUnderstanding`、
+`approveUnderstanding`、`saveElementAnalysis`）—— 入口已於 2026-08-03 移除，
+實作保留；恢復入口時再一併納入。
+
+### 操作 → 影響區塊對照表
+
+🔴 這張表就是使用者說的「**所有功能都有其目的地生效的區域**」。
+⚠ 每個寫入 API 的回應都要帶 `affected_snapshots[]`，前端據此決定重畫哪幾塊；
+**不得由前端自己猜**——猜錯就是前後端不同步，而且不會報錯。
+
+| 前端函式 | 動作 | 影響區塊 |
+|---|---|---|
+| `markIrrelevant` | 標不相干（剔除） | `topic-patents`、`topic-tags`（件數變）、`topic-overview` |
+| `restoreExcluded` | 還原已剔除 | `topic-patents`、`topic-tags`、`topic-overview` |
+| `postExclusionDecision` | 剔除覆核（確認／保留） | `exclusion-reviews`、`topic-patents`、`topic-tags` |
+| `renameTopic` | 主題重新命名 | `topic-tags`、`topic-ops`、`topic-patents`（標題列） |
+| `queueTopicMerge` | 合併主題 | `topic-tags`、`topic-overview`、`topic-merge-history`、`topic-patents` |
+| `submitTopicUnmerge` | 取消合併 | `topic-tags`、`topic-overview`、`topic-merge-history`、`topic-patents` |
+| `submitFinalizeCandidate` | 分群定案 | `topic-candidates`、`topic-tags`、`topic-overview`、`topic-patents`、`browse-body`（分類欄） |
+| `runClassify` | 重新分群（長任務） | `topics-header`（鈕狀態）→ 完成後同 `submitFinalizeCandidate` |
+| `requestTopicLabel` | AI 主題名稱 | `topic-label-status`（進行中）→ 完成後 `topic-tags`、`topic-overview` |
+| `runIrrelevantFilter` | AI 不相干篩選（長任務） | `topics-header`（鈕狀態）→ 完成後 `exclusion-reviews` |
+| `runPatentNotes` | 產文獻備註（長任務） | `browse-maintenance`（覆蓋率）、`browse-body`（備註欄） |
+| `confirmCompanyCodes` / `confirmPendingCodeGroup` / `renameCompanyGroup` / `deleteCompanyGroup` / `promoteCompanyCode` / `removeCompanyVariant` / `markNameNotGrouped` / `restoreNotGroupedName` | 公司代碼與中文名維護 | `browse-maintenance`、`browse-body`（申請人／專利權人／受讓人欄） |
+
+⚠ **不在本階段**（報表、匯出、比對、市場文件相關的 11 個寫入函式）：
+`submitReports`、`triggerExport`、`runNarrative`、`requestExportPpt`、
+`runNarrativeThenExportPpt`、`createComparison`、`saveTarget`、`saveUnderstanding`、
+`approveUnderstanding`、`saveElementAnalysis`、`uploadMarketDocument`、
+`submitMarketSummary`、`resolveMarketWorkspaceId`。
+它們的資料來源是**報表版本產物**（已有版本號），快照邏輯與專利清單不同，第二階段再做。
+
+### 前端契約
+
+```js
+// 寫入完成後：後端說哪些區塊髒了，前端就只重畫那幾塊
+const res = await postJson(url, body);
+for (const snap of res.affected_snapshots || []) {
+  await reloadSnapshot(snap);          // 讀新快照
+}
+refreshBlocks(blocksFor(res.affected_snapshots));   // 只重畫對應區塊
+```
+
+⚠ `blocksFor()` 的對照表是**唯一來源**，放前端一處；
+不得在每個操作的 callback 裡各寫一次「順便刷新哪裡」——那正是現在
+「有些操作忘了刷新」的成因。
+
+### 驗收判準（本節）
+
+1. 在搜尋框輸入文字→按任一維護操作→**輸入的文字還在**
+2. 展開某筆專利詳情→剔除另一筆→**展開狀態保留**
+3. 專利表捲到第 50 列→產文獻備註完成→**捲動位置不變**，備註欄有值
+4. 對照表列出的每一個操作，完成後對應區塊都有更新（可用 Playwright 逐項驗）
+5. 對照表**沒有列到**的區塊不得被重畫（避免「保險起見全刷」讓 1–3 失效）
+
+## 其餘開放問題的處置（2026-08-03）
+
+| 原開放問題 | 處置 |
+|---|---|
+| localStorage vs IndexedDB | **不適用**——已定案走後端檔案快照，前端不做本地持久化 |
+| 是否保留最近 N 版 snapshot | 依原草案建議：**只保留 latest**，需要回溯時重產 |
+| Nginx 直送 vs FastAPI | 部署期再定；第一版走 FastAPI，介面不變 |
+| 背景 freshness check | 依原草案建議：**不做**。只顯示資料時間並提供 refresh |

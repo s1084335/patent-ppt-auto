@@ -395,7 +395,9 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
         # 🔴 2026-08-02（W-2）：移除交替後五條變成完全同色，補上**依數值**的
         # 連續深淺——這個有語意，且同件數必同色。
         color = ranking_bar_color(value, max_value)
-        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 20}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{label}</text>')
+        # 🔴 I-3：列標籤**左對齊**——字寬估算猜三次仍被裁（實測真實寬度比估算多 13%），
+        # 改成從左緣固定位置開始畫，標籤多長都不可能超出左界。
+        svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + 20}" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{label}</text>')
         svg.append(f'<rect x="{left}" y="{y + 5}" width="{bar_w:.1f}" height="18" rx="2" fill="{color}"/>')
         svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{y + 20}" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{value}</text>')
     svg.append("</svg>")
@@ -480,7 +482,9 @@ def render_segmented_bar_chart(
         total_w = scale(total, 0, max_value, 0, plot_w)
         segment_w = scale(segment, 0, max_value, 0, plot_w)
         segment_x = left + max(total_w - segment_w, 0)
-        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 20}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{label}</text>')
+        # 🔴 I-3：列標籤**左對齊**——字寬估算猜三次仍被裁（實測真實寬度比估算多 13%），
+        # 改成從左緣固定位置開始畫，標籤多長都不可能超出左界。
+        svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + 20}" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{label}</text>')
         # 🔴 F-2：原本 fill="#CBD5E1"（白底淺灰藍）被 chart_recolor 當結構色轉成
         # 面板底 274A66，對深空背景只有 1.72——簡報上這根長條等於不存在。
         # 改用資料色階（依數值深淺，W-2），最淺一階對兩種背景都 ≥3.0。

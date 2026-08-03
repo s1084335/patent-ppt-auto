@@ -56,12 +56,28 @@ class JsonSafeTests(unittest.TestCase):
 
 class ListReportsTests(unittest.TestCase):
     def test_default_report_names_match_definitions(self):
-        """確認固定預設報表名單與定義順序完全一致。"""
+        """預設報表名單＝定義中**未停產**的那些，且維持定義順序。
+
+        🔴 2026-08-03 修正：原本斷言 `len == 17` 且 `== tuple(REPORT_DEFINITIONS)`。
+        兩者都已過期——`b94748e`（痛點矩陣真正停產）與 `3eb43a8`（移除失效的
+        最新受讓人排名）之後，預設名單剩 15 個，而 `REPORT_DEFINITIONS` 仍有 16 個
+        （`pain_point_quadrant` 的**定義保留**，只是不列入預設）。
+
+        ⚠ 改為「不寫死數量、比對過濾後的順序」：報表增減是常態，
+        寫死數字會讓每次增刪都紅在這裡，而不是紅在真正壞掉的地方。
+        ⚠ 今天這是第四支同類問題（另有 acquired_count、refresh_derived、
+        chart_wider_than_data）——共同成因是長期只跑 `-k` 篩選的回歸。
+        """
         self.assertIsInstance(DEFAULT_REPORT_NAMES, tuple)
-        # 14 現有屬性統計 ＋ 3 分群報表（cluster_topic_table／opportunity_quadrant／
-        # pain_point_quadrant）＝17 種全列（2026-07-24 報表種類定案）。
-        self.assertEqual(len(DEFAULT_REPORT_NAMES), 17)
-        self.assertEqual(DEFAULT_REPORT_NAMES, tuple(REPORT_DEFINITIONS))
+        selected = set(DEFAULT_REPORT_NAMES)
+        self.assertTrue(selected.issubset(set(REPORT_DEFINITIONS)),
+                        "預設名單出現未定義的報表")
+        self.assertEqual(DEFAULT_REPORT_NAMES,
+                         tuple(n for n in REPORT_DEFINITIONS if n in selected),
+                         "預設名單順序與 REPORT_DEFINITIONS 不一致")
+        # 停產的報表**定義仍在**（供既有版本讀取），但不得列入預設
+        self.assertNotIn("pain_point_quadrant", selected,
+                         "痛點矩陣已於 2026-07-29 停產，不得回到預設名單")
 
     def test_catalog_covers_all_definitions(self):
         catalog = tools_reporting.list_reports()

@@ -127,5 +127,67 @@ class NoEllipsisTests(unittest.TestCase):
                         "判讀限制被擠掉了")
 
 
+class PerVariantCapacityTests(unittest.TestCase):
+    """I-1：容量要**逐 variant** 算，不是逐 report_key（2026-08-03 第四輪實機）。
+
+    🔴 實機 #166：`points_dropped` 從 2 條暴增到 **10 條**，分布為
+    p5×1、p8×4、p10×3、p13×1、p17×1 —— p8（IPC L5）與 p10（CPC L5）
+    **全是窄側欄頁**，L4 兩頁一條都沒丟。
+
+    根因：同一個 report_key 的不同 variant 落在**不同版型**：
+
+    | 版型 | 每行字數 | 行×欄 | 容量 |
+    |---|---|---|---|
+    | `chart_wide`（L4 扁圖，底部寬橫幅） | 27 | 8×2 | 8 條 × 54 字 |
+    | `chart_hero`（L5，右側窄欄） | 13 | 15×1 | 7 條 × 26 字 |
+
+    而 `narrative_capacity` 的迴圈是「只要**任一張**圖是扁的，整個 report_key
+    就用 chart_wide 算」→ `ipc_main_distribution` 拿到 8×54，CLI 照這個寫
+    （實測每條 35–45 字），L4 放得下、**L5 每條要 3 行**、總行數爆掉。
+
+    ⚠ 不走「同一 key 取最小容量」：那會讓 L4 那種寬頁寫得比能放的少而變空，
+    等於推翻 C-9（使用者：「要的是濃縮不是丟棄」）。
+    """
+
+    @staticmethod
+    def _capacity_with_charts():
+        """帶 charts 算容量——variant 是從**圖檔名後綴**推出來的，沒有圖就沒有 variant。
+
+        ⚠ 實務上 runner 一定帶 run_dir（`load_narrative_capacity(run_dir)`），
+        所以「帶 charts」才是真實情境；不帶 charts 只是前端縮圖預覽用的降級路徑。
+        """
+        import json
+
+        cache = SKILL_DIR.parents[1] / "var" / "report_cache"
+        runs = sorted(cache.glob("report_trial_*")) if cache.is_dir() else []
+        if not runs:
+            raise unittest.SkipTest("需要 var/report_cache 內的實際報表版本")
+        run_dir = runs[-1]
+        manifest_path = run_dir / "artifact_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+        theme = _theme()
+        charts = bp.ChartIndex(run_dir, run_dir / ".cache", manifest, theme)
+        return bp.narrative_capacity(theme, charts)
+
+    def test_variant_keys_present(self):
+        cap = self._capacity_with_charts()
+        self.assertIn("ipc_main_distribution:L4", cap,
+                      "沒有逐 variant 的容量鍵——CLI 只能拿到一個混合值")
+        self.assertIn("ipc_main_distribution:L5", cap)
+
+    def test_narrow_variant_gets_smaller_capacity(self):
+        """L5（窄側欄）的每條字數上限必須明顯小於 L4（寬橫幅）。"""
+        cap = self._capacity_with_charts()
+        wide = cap["ipc_main_distribution:L4"]
+        narrow = cap["ipc_main_distribution:L5"]
+        self.assertLess(narrow["max_chars"], wide["max_chars"],
+                        "窄側欄的每條字數上限沒有比寬橫幅小——L5 頁會塞不下")
+
+    def test_report_key_fallback_kept(self):
+        """report_key 層要保留，供沒有 variant 的報表與舊資料使用。"""
+        cap = self._capacity_with_charts()
+        self.assertIn("ipc_main_distribution", cap)
+
+
 if __name__ == "__main__":
     unittest.main()

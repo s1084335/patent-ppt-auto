@@ -236,5 +236,59 @@ class AppendixPaginationTests(unittest.TestCase):
         self.assertEqual(bp._spec_with(spec, title="u").row_slice, (3, 9))
 
 
+class RowHeightSafetyMarginTests(unittest.TestCase):
+    """I-2：表格不得壓到頁尾（2026-08-03 第四輪實機 p23）。
+
+    實機：附錄2 第 1 頁最後一列「OXEFIT, INC.」與「資料來源：…」重疊。
+
+    根因：`row_height_in`＝0.32 是**宣告值**，PowerPoint 的列高只增不減
+    ——實測每列約 0.33–0.34。15 列累積差約 0.3 in，剛好越過 footnote 上緣。
+
+    ⚠ **不猜實際列高**：那要靠轉圖量測，而且字型一換就變
+    （I-3 的字寬係數已經猜了三次還沒中，不重蹈覆轍）。
+    改為**結構性保險**：可用高度預留一整列的緩衝。
+    即使每列都比宣告高 5%，15 列累積 0.24 in 仍在一列（0.32）之內。
+
+    ⚠ 代價是少放一列——但「寧可少一列，也不能壓到頁尾」：
+    少一列會誠實顯示在「顯示前 N/M 筆」，壓到頁尾則是兩段文字疊在一起、兩邊都讀不了。
+    """
+
+    def test_available_height_reserves_one_row(self):
+        """附錄頁（無要點橫幅）要預留緩衝。"""
+        theme = _theme()
+        g = theme.geometry["table"]
+        available = bp._table_available_height(theme, "table")
+        room = theme.geometry["footnote"]["top_in"] - g["top_in"]
+        self.assertLessEqual(available, room - g["row_height_in"] + 1e-9,
+                             "沒有預留列高誤差緩衝——列數一多就會壓到頁尾")
+
+    def test_band_pages_do_not_lose_a_row(self):
+        """🔴 有要點橫幅的頁**不扣**緩衝。
+
+        ⚠ 表格下方還接著 band ＋ 間距，那本身就是緩衝；再扣一列會讓技術主題頁
+        少放第 5 筆——而「5 筆全放」是使用者明確要求的
+        （「這個所有主題都放都還能放解讀，為甚麼要卡掉」）。
+        """
+        theme = _theme()
+        self.assertGreaterEqual(
+            bp._table_available_height(theme, "table_with_points", band_height_in=1.18),
+            3.84, "有橫幅的頁被多扣了一列，技術主題第 5 筆會放不下")
+
+    def test_margin_applies_to_both_call_sites(self):
+        """🔴 同型落點要一起吃到緩衝。
+
+        ⚠ `_appendix_rows_per_page`（算每頁列數）與 `_add_table`（決定顯示列數）
+        都用 `_table_available_height`；上一輪的錯誤正是「同一個假設兩處落點、
+        只修了一處」。這裡驗兩者拿到同一個值。
+        """
+        import inspect
+
+        for fn in (bp._appendix_rows_per_page, bp._render_table):
+            src = inspect.getsource(fn)
+            with self.subTest(fn=fn.__name__):
+                self.assertIn("_table_available_height", src,
+                              f"{fn.__name__} 沒有走統一的可用高度計算")
+
+
 if __name__ == "__main__":
     unittest.main()

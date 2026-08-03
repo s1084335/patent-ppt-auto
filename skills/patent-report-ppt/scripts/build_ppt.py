@@ -406,25 +406,59 @@ def narrative_capacity(theme: Theme | None = None,
         # ⚠ `chart_wide` 是**執行時依圖的長寬比**決定的，不是宣告在 PAGE_LAYOUT 裡。
         # 拿不到圖檔時只能用宣告版型估——那會低估扁圖頁（滿寬雙欄橫幅比窄側欄大得多），
         # CLI 因此寫得比實際能放的少。給了 charts 就能算準。
-        if charts is not None:
-            for name in chart_names:
-                if _kind_for_aspect(kind, (name,), charts) == "chart_wide":
-                    kind = "chart_wide"
-                    break
         # ⚠ 順序：先知道有沒有 caveat，才算得出**這頁實際的框**（H-2）。
         caveat = CAVEATS.get(spec.report_keys[0] if spec.report_keys else "", "")
-        area = _points_area(theme, kind, caveat=bool(caveat))
-        if area is None:
+
+        def _limits_for(page_kind: str) -> dict[str, int] | None:
+            """某個版型下，這一頁的要點容量。"""
+            area = _points_area(theme, page_kind, caveat=bool(caveat))
+            if area is None:
+                return None
+            width_in, height_in, columns = area
+            per_line, max_lines = _text_capacity(
+                theme, width_in=width_in, height_in=height_in, size_pt=size)
+            # ⚠ 框變小之外，警語本身還會先佔掉行數（批1 起警語不參與均分），兩者都要扣。
+            if caveat:
+                max_lines -= _lines_needed(f"{CAVEAT_LABEL}｜{caveat}", per_line)
+            return {
+                "max_points": max(1, (max_lines * columns) // NARRATIVE_POINT_LINES),
+                "max_chars": max(1, per_line * NARRATIVE_POINT_LINES),
+            }
+
+        # 🔴 I-1（2026-08-03 實機 #166）：容量必須**逐 variant** 算。
+        #
+        # 同一個 report_key 的不同 variant 會落在不同版型：IPC 的 L4 是扁圖
+        # （chart_wide，底部雙欄橫幅，8 條 × 54 字），L5 是一般圖
+        # （chart_hero，右側窄欄，7 條 × 26 字）。原本的迴圈是
+        # 「只要**任一張**圖是扁的，整個 report_key 就用 chart_wide 算」，
+        # 於是 CLI 拿到 8×54 照著寫，L4 放得下、**L5 每條要 3 行**、總行數爆掉
+        # ——實機丟了 10 條要點，其中 p8（IPC L5）4 條、p10（CPC L5）3 條。
+        #
+        # ⚠ 不走「同一 key 取最小容量」：那會讓 L4 那種寬頁寫得比能放的少而變空，
+        # 等於推翻 C-9（使用者：「要的是濃縮不是丟棄」）。
+        variant_kinds: dict[str, str] = {}
+        widest_kind = kind
+        if charts is not None:
+            for name in chart_names:
+                name_kind = _kind_for_aspect(kind, (name,), charts)
+                stem = Path(name).stem
+                for suffix in CHART_ORDER_HINTS:
+                    if stem.endswith(suffix):
+                        variant_kinds[suffix.lstrip("_")] = name_kind
+                        break
+                if name_kind == "chart_wide":
+                    widest_kind = "chart_wide"
+
+        base_limits = _limits_for(widest_kind)
+        if base_limits is None:
             continue
-        width_in, height_in, columns = area
-        per_line, max_lines = _text_capacity(theme, width_in=width_in, height_in=height_in, size_pt=size)
-        # ⚠ 框變小之外，警語本身還會先佔掉行數（批1 起警語不參與均分），兩者都要扣。
-        if caveat:
-            max_lines -= _lines_needed(f"{CAVEAT_LABEL}｜{caveat}", per_line)
-        max_points = max(1, (max_lines * columns) // NARRATIVE_POINT_LINES)
-        max_chars = max(1, per_line * NARRATIVE_POINT_LINES)
         for key in spec.report_keys:
-            capacity[key] = {"max_points": max_points, "max_chars": max_chars}
+            # report_key 層保留：沒有 variant 的報表、以及舊資料的 fallback。
+            capacity[key] = base_limits
+            for variant, variant_kind in variant_kinds.items():
+                limits = _limits_for(variant_kind)
+                if limits is not None:
+                    capacity[f"{key}:{variant}"] = limits
     return capacity
 
 
@@ -1554,7 +1588,27 @@ def _table_available_height(theme: Theme, geometry_key: str, *, band_height_in: 
     # 用 0.18 後總和 5.11，第 5 列進得來，而視覺上與橫幅內距一致、不會顯得擠。
     gap = float(theme.geometry["table_with_points"]["points_band_inset_in"]) if band_height_in else 0.0
     room = theme.geometry["footnote"]["top_in"] - g["top_in"] - gap - band_height_in
-    return max(g["height_in"], room)
+    # 🔴 I-2（2026-08-03 實機 p23）：附錄最後一列壓在頁尾文字上。
+    # `row_height_in` 是**宣告值**，PowerPoint 列高只增不減——實測每列 0.33–0.34，
+    # 15 列累積差約 0.3 in，剛好越過 footnote 上緣。
+    #
+    # ⚠ **不猜實際列高**：那要靠轉圖量測，字型一換就失準
+    # （I-3 的字寬係數猜了三次還沒中）。改為**預留一整列的緩衝**：
+    # 即使每列都比宣告高 5%，15 列累積 0.24 in 仍在一列（0.32）之內。
+    # ⚠ 代價是少放一列——但少一列會誠實顯示在「顯示前 N/M 筆」，
+    # 壓到頁尾則是兩段文字疊在一起、兩邊都讀不了。
+    #
+    # ⚠ **只在沒有要點橫幅時扣**：有 band 的頁面（`table_with_points`）表格下方
+    # 還接著 band ＋ 間距，那本身就是緩衝，再扣一列會讓技術主題頁少放第 5 筆
+    # ——而「5 筆全放」是使用者 2026-08-03 明確要求的（「所有主題都放都還能放解讀」）。
+    # 實際壓到頁尾的是**附錄頁**（`table` 版型，表格下方直接就是 footnote）。
+    if not band_height_in:
+        room -= g["row_height_in"]
+    # ⚠ 下限只保「表頭＋一列」，**不拿宣告高度當下限**：
+    # 附錄的宣告高度 4.86 比扣掉緩衝後的可用空間 4.84 還大，
+    # 用 `max(height_in, room)` 會把緩衝整個吃掉——實機 p23 壓到頁尾就是這樣來的。
+    # 宣告高度的角色是「版型預期多高」，不能凌駕「實際還剩多少」。
+    return max(g["row_height_in"] * 2, room)
 
 
 def _render_points_panel(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:

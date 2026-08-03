@@ -116,15 +116,19 @@ def validate_narrative_contract(
     capacity = capacity or {}
     warnings: list[str] = []
     for report_key, report in (narratives.get("reports") or {}).items():
-        limits = capacity.get(report_key) or {}
-        max_points = int(limits.get("max_points") or NARRATIVE_POINTS_MAX)
-        max_chars = int(limits.get("max_chars") or NARRATIVE_POINT_TEXT_MAX)
-        # 版面容量比全域上限嚴時以版面為準；比全域寬時仍守全域（55 字是可讀性上限，
-        # 不是版面上限——一條要點再長就不叫要點了）。
-        max_chars = min(max_chars, NARRATIVE_POINT_TEXT_MAX)
-        min_points = min(NARRATIVE_POINTS_MIN, max_points)
+        base_limits = capacity.get(report_key) or {}
         for variant_key, entry in (report.get("variants") or {}).items():
             where = f"{report_key}:{variant_key}"
+            # 🔴 I-1（2026-08-03）：容量**逐 variant**取，取不到才退回 report_key 層。
+            # 同一報表的 L4（扁圖、底部寬橫幅）與 L5（一般圖、右側窄欄）版面差一倍以上，
+            # 用同一個上限驗證的結果是：CLI 照寬的寫、驗證也照寬的驗，兩邊一致地錯，
+            # 直到組版端才發現放不下——實機 #166 因此丟了 10 條要點。
+            limits = capacity.get(where) or base_limits
+            max_points = int(limits.get("max_points") or NARRATIVE_POINTS_MAX)
+            max_chars = int(limits.get("max_chars") or NARRATIVE_POINT_TEXT_MAX)
+            # 版面容量比全域上限嚴時以版面為準；比全域寬時仍守全域。
+            max_chars = min(max_chars, NARRATIVE_POINT_TEXT_MAX)
+            min_points = min(NARRATIVE_POINTS_MIN, max_points)
             headline = entry.get("headline")
             points = entry.get("points")
             if not headline or not isinstance(points, list) or not points:
@@ -386,9 +390,19 @@ def build_prompt(
             for key, limits in sorted(capacity.items())
         )
         capacity_note = (
-            "   ⚠ 下列報表的要點區版面容量**小於**上述全域上限，以這裡的為準：\n"
+            "   ⚠ 下列項目的要點區版面容量**小於**上述全域上限，以這裡的為準：\n"
             f"{listed}\n"
-            "   （未列出的報表用全域上限。超出容量不會被排版成好看的樣子，只會被切掉。）\n"
+            "   ⚠ **帶冒號的 `報表:變體` 是「該變體專屬」的容量**，"
+            "對應 `reports[報表].variants[變體]`。\n"
+            "   同一報表若同時出現 `ipc_main_distribution` 與 "
+            "`ipc_main_distribution:L5` 兩行，\n"
+            "   **寫 L5 那個變體時一律以 `:L5` 那行為準**；"
+            "不帶冒號的只是沒有專屬值時的預設。\n"
+            "   ⚠ 為什麼要分開：同一報表的不同變體排在**不同版面**——L4 扁圖走底部雙欄橫幅"
+            "（每行字多），\n"
+            "   L5 走右側窄欄（每行字少約一半）。照寬的那組寫，窄的那頁會整條被丟掉"
+            "（2026-08-03 實機丟了 10 條）。\n"
+            "   （未列出的項目用全域上限。超出容量不會被排版成好看的樣子，整條會被丟掉。）\n"
             "   ⚠ 容量是**上限不是目標**：沒話講就少寫一條，不要為湊條數或湊字數灌水；\n"
             "   但也不得敷衍——該報表看得出的判讀不能因為想寫短而省略。\n"
         )
