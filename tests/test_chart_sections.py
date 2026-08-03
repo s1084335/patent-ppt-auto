@@ -1044,7 +1044,11 @@ class SelectiveRenderTests(unittest.TestCase):
         self.assertIn("僅顯示", svg, "砍了年份卻沒標明範圍")
         radii = [float(value) for value in re.findall(r' r="([0-9.]+)"', svg)]
         self.assertGreaterEqual(min(radii), 9.0)
-        self.assertGreaterEqual(max(radii), 27.0)
+        # 🔴 2026-08-03：上限由「固定 28」改為**依欄寬推導**（見
+        # test_year_matrix_bubble_fit）。橫軸補齊連續年度後欄距 43→38px，
+        # 固定半徑會讓相鄰泡泡撞在一起。這裡只驗「還放得下格內兩位數」，
+        # 不再驗死值——驗死值等於把重疊當成規格。
+        self.assertGreaterEqual(max(radii), chart_runner.BUBBLE_MIN_RADIUS_PX)
         height = float(re.search(r'<svg[^>]+height="([0-9.]+)"', svg).group(1))
         # P-2：畫布高度改為上限制（≤CHART_CANVAS_MAX_HEIGHT），不再隨列數無限長高。
         self.assertLessEqual(height, chart_runner.CHART_CANVAS_MAX_HEIGHT)

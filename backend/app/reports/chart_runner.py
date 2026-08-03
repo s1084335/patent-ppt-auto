@@ -121,6 +121,10 @@ CHART_CANVAS_WIDTH = 949
 CHART_CANVAS_MAX_HEIGHT = 460
 CHART_LABEL_PX = 18          # 列標籤／數值；縮放後約 12.2pt
 CHART_ROW_HEIGHT = 28        # 12 列 → 68+336+34 = 438px，仍在上限內
+#: 年度矩陣泡泡的最小「大泡泡」半徑——格內兩位數（18px 字）放得下的下限。
+#: ⚠ 比這更窄時不再縮泡泡（改為壓縮大小差異），否則數字會滿出來。
+BUBBLE_MIN_RADIUS_PX = 14.0
+
 # 年度矩陣顯示年數（2026-08-03 使用者定案：**16 年**，原 15）。
 # ⚠ 固定值優於「放不下才砍」——後者讓同一份報表在不同資料量下顯示不同年距，
 # 兩次產出無法對照。
@@ -928,6 +932,13 @@ def render_year_bubble_matrix_chart(
     # 靜默切掉才是不能接受的。
     years = years[-CHART_YEAR_WINDOW:]
     cell_w = max(36, grid_w // max(1, len(years)))
+    # 🔴 泡泡半徑上限由**欄寬推導**，不寫死（2026-08-03 補齊連續年度後的迴歸）。
+    # 原本固定 9+19=28：欄數 14→16 讓欄距由 43px 縮到 38px，泡泡沒跟著縮，
+    # 相鄰兩格直接撞在一起（實測 4 處、最深 5.5px）。
+    # ⚠ 半徑與欄寬是同一件事的兩個落點——各寫各的就會靜默撞上。
+    # 下限 14 是格內兩位數（18px 字）放得下的最小值；再窄寧可讓大小差異壓縮，
+    # 也不能讓數字滿出泡泡。
+    bubble_max = max(BUBBLE_MIN_RADIUS_PX, min(28.0, (cell_w - LABEL_MIN_GAP_PX) / 2))
     width = left + max(1, len(years)) * cell_w + 34
     height = top + max(1, len(row_names)) * row_h + 34
     parts = [
@@ -965,7 +976,7 @@ def render_year_bubble_matrix_chart(
             if value <= 0:
                 continue
             x = left + col_index * cell_w + cell_w / 2
-            radius = 9 + 19 * math.sqrt(value / max_value)
+            radius = 9 + (bubble_max - 9) * math.sqrt(value / max_value)
             fill, color_band = year_bubble_color(value, max_value)
             # ⚠ 位數多時縮小是為了塞進泡泡，但縮到 8px 縮放後只剩 5pt——
             # 下限拉到 CHART_LABEL_PX-4（縮放後仍 ≈9.5pt），再小就不如不標。
