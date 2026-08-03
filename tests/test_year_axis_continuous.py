@@ -46,7 +46,23 @@ class ContinuousYearAxisTests(unittest.TestCase):
 
     @staticmethod
     def _axis_years(svg: str) -> list[int]:
-        return [int(y) for y in re.findall(r'text-anchor="middle"[^>]*>(\d{4})</text>', svg)]
+        """軸上的年份。⚠ 欄寬窄時標籤印兩位數（`'11`，見
+        test_year_axis_labels_readable），這裡把它還原成四位數再比。"""
+        raw = re.findall(r"text-anchor=\"middle\"[^>]*>('?\d{2,4})</text>", svg)
+        out: list[int] = []
+        for token in raw:
+            if token.startswith("'"):
+                two = int(token[1:])
+                # 接續前一年推世紀，第一個以 20xx 起算（本專案資料都在 2000 後）。
+                prev = out[-1] if out else 2000 + two
+                century = prev - prev % 100
+                year = century + two
+                if year < prev:
+                    year += 100
+                out.append(year)
+            else:
+                out.append(int(token))
+        return out
 
     def test_gap_years_are_filled(self):
         """資料缺 2012／2014 時，軸上仍要有那兩欄（留白）。"""
@@ -62,7 +78,7 @@ class ContinuousYearAxisTests(unittest.TestCase):
         axis = self._axis_years(self._render([1995, 2026]))
         self.assertEqual(len(axis), cr.CHART_YEAR_WINDOW,
                          f"補齊後沒有套用窗口上限：{len(axis)} 欄")
-        self.assertEqual(axis[-1], 2026, "砍的應該是最舊的年份")
+        self.assertEqual(axis[-1] % 100, 26, "砍的應該是最舊的年份")
 
     def test_single_year_still_works(self):
         axis = self._axis_years(self._render([2020]))

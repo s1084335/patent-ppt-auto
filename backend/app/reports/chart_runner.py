@@ -495,8 +495,8 @@ def render_segmented_bar_chart(
         # 🔴 F-2：原本 fill="#CBD5E1"（白底淺灰藍）被 chart_recolor 當結構色轉成
         # 面板底 274A66，對深空背景只有 1.72——簡報上這根長條等於不存在。
         # 改用資料色階（依數值深淺，W-2），最淺一階對兩種背景都 ≥3.0。
-        svg.append(f'<rect class="bar-total" x="{left}" y="{y + 5}" width="{total_w:.1f}" height="18" rx="2" fill="{ranking_bar_color(total, max_value)}"/>')
-        svg.append(f'<rect class="bar-segment" x="{segment_x:.1f}" y="{y + 5}" width="{segment_w:.1f}" height="18" rx="2" fill="{COLOR_SEGMENT}"/>')
+        svg.append(f'<rect class="bar-total" x="{left}" y="{y + 5}" width="{total_w:.1f}" height="{BAR_HEIGHT_PX}" rx="2" fill="{ranking_bar_color(total, max_value)}"/>')
+        svg.append(f'<rect class="bar-segment" x="{segment_x:.1f}" y="{y + 5}" width="{segment_w:.1f}" height="{BAR_HEIGHT_PX}" rx="2" fill="{COLOR_SEGMENT}"/>')
         # 🔴 H-7（2026-08-03 實機 p13）：原本一律印「0 / 13」，讀者看不出分子是什麼
         # ——分母是件數，分子是「有最新受讓人」的件數，但數字本身沒有任何線索。
         # 改為：主數字＝總件數；有分段時才用**圖例同色**把它括在後面，
@@ -511,8 +511,14 @@ def render_segmented_bar_chart(
         # 隔了**一整個列高**，視覺上飄到下一列旁邊，讀者以為那是下一家的註記。
         # 改為緊貼自己那列的長條下方（固定小間距），歸屬一眼可辨。
         if notes[index]:
-            note_y = y + 20 + NOTE_LINE_OFFSET_PX
-            svg.append(f'<text x="{left}" y="{note_y}" font-size="{CHART_LABEL_PX - 3}" '
+            # 🔴 2026-08-03 使用者實機：註記壓在自己那列的長條上（實測 2.2px）。
+            # 原本 `y + 20 + 12` 的 12 是憑感覺挑的，沒把**長條下緣**與**註記字高**
+            # 算進去——長條佔 y+5～y+23，15px 字的上緣落在 y+20.75，必然壓上。
+            # ⚠ 改為由幾何推導：長條下緣 ＋ 字身高 ＋ 最小間距。這樣改了長條高
+            # 或字級都會自動跟上，不必第三次調那個數字。
+            note_font = CHART_LABEL_PX - 3
+            note_y = (y + 5 + BAR_HEIGHT_PX) + note_font * TEXT_ASCENT_RATIO + LABEL_MIN_GAP_PX
+            svg.append(f'<text x="{left}" y="{note_y:.1f}" font-size="{note_font}" '
                        f'fill="{COLOR_TEXT_SOFT}">{xml_text(notes[index])}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
@@ -964,9 +970,16 @@ def render_year_bubble_matrix_chart(
         parts.append(f'<text x="{legend_x + 14}" y="90" font-size="{CHART_LABEL_PX}" fill="#4B5563">'
                      f'{xml_text(text)}</text>')
         legend_x += legend_step(text, mark_width=18, mark_gap=5)
-    for col_index, year in enumerate(years):
+    year_labels = [_year_axis_label(year, cell_w) for year in years]
+    # 縮成兩位數時要說出世紀，否則 '11 讀者無從判斷是哪個一百年。
+    if any(label.startswith("'") for label in year_labels):
+        # ⚠ 字級不得低於 CHART_LABEL_PX：圖會被縮進 PPT 圖框（縮了兩次），
+        # 14px 在 949px 畫布下只剩 9.5pt，低於 12pt 下限（AGENTS.md「SVG 文字的最終字級下限」）。
+        parts.append(f'<text x="{left - 10}" y="{top - 14}" font-size="{CHART_LABEL_PX}" '
+                     f'text-anchor="end" fill="{COLOR_TEXT_SOFT}">申請年 20—</text>')
+    for col_index, label in enumerate(year_labels):
         x = left + col_index * cell_w + cell_w / 2
-        parts.append(f'<text x="{x:.1f}" y="{top - 14}" font-size="{CHART_LABEL_PX}" text-anchor="middle" fill="{COLOR_TEXT}">{year}</text>')
+        parts.append(f'<text x="{x:.1f}" y="{top - 14}" font-size="{CHART_LABEL_PX}" text-anchor="middle" fill="{COLOR_TEXT}">{label}</text>')
     for row_index, company in enumerate(row_names):
         y = top + row_index * row_h
         display = company
@@ -1049,12 +1062,32 @@ def legend_step(label: str, *, mark_width: float = 12, mark_gap: float = 8) -> f
     return mark_width + mark_gap + _text_px(label) + LEGEND_ITEM_GAP_PX
 
 
-#: 附註（如「最新受讓人：…」）距離它所屬那一列長條基線的垂直距離（px）。
+#: 排名圖長條的高度（px）。註記位置由它推導，不得各寫各的。
+BAR_HEIGHT_PX = 18
+
+#: 文字「字身上緣到 baseline」佔字級的比例，用來判斷文字會不會壓到上方元素。
+#: ⚠ 這是估算值——量的是能不能「看起來壓到」，不是精確排版。
+TEXT_ASCENT_RATIO = 0.75
+
+#: （已停用）附註距離長條基線的固定距離。
 #: 🔴 I-8：原本用整個 `row_h`（56px），註記落在兩列正中間、看起來像下一家的。
 #: ⚠ 也不能太大：實測 18 時註記距下一列只剩 23px、距自己那列 33px，仍偏向下方。
 #: 14 讓它明顯靠著自己那一列（距自己 34、距下一列 22 → 比例上更靠上），
 #: 且仍在該列多給的第二行之內。
 NOTE_LINE_OFFSET_PX = 12
+
+
+def _year_axis_label(year: int, cell_w: float, font_px: float = CHART_LABEL_PX) -> str:
+    """欄寬放得下四位數就印四位數，否則印兩位數（`'11`）。
+
+    🔴 2026-08-03：橫軸補齊連續年度後欄距由 43px 縮到 38px，四位數字寬
+    ≈ 4 × 18 × 0.62 = 44.6px **放不下**，實機印出 `201120122013…` 黏成一整串。
+    ⚠ 欄距與標籤寬是同一件事的兩個落點——改了欄數卻沒改標籤，於是靜默黏住。
+    這裡由欄寬**推導**要印幾位數，呼叫端不必判斷。
+    """
+    if _display_width(str(year)) * font_px + LABEL_MIN_GAP_PX <= cell_w:
+        return str(year)
+    return f"'{year % 100:02d}"
 
 
 def _continuous_years(years: set[int] | list[int]) -> list[int]:

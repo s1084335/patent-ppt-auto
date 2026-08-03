@@ -1040,7 +1040,9 @@ class SelectiveRenderTests(unittest.TestCase):
             self.assertNotIn(f"/ {year} /", svg)
         # 🔴 P-2：年份多到放不下時保留最新那段，並在圖上標明範圍——
         # 少資訊可以，靜默少才不行（2026-08-03 使用者定案）。
-        self.assertIn(">2029<", svg, "最新年份必須在")
+        # ⚠ 欄寬窄時年份印兩位數（見 test_year_axis_labels_readable）——
+        # 驗「最新年份在軸上」，不驗四位數字面。
+        self.assertIn(">'29<", svg, "最新年份必須在")
         self.assertIn("僅顯示", svg, "砍了年份卻沒標明範圍")
         radii = [float(value) for value in re.findall(r' r="([0-9.]+)"', svg)]
         self.assertGreaterEqual(min(radii), 9.0)
