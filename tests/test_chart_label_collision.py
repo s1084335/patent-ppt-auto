@@ -110,5 +110,92 @@ class QuadrantAspectTests(unittest.TestCase):
         self.assertTrue(hasattr(cr, "QUADRANT_TARGET_ASPECT"))
 
 
+class OverlappingPointsMergeTests(unittest.TestCase):
+    """I-4：座標相同的資料點要**合併成一個標籤**（2026-08-03）。
+
+    🔴 前一輪（H-5）我把候選方位從 4 個加到兩圈 8 個、又加了最小間距，
+    實機**完全沒改善**。量測後才發現：演算法判定「無重疊」是**對的**——
+    `2021` 與 `2011` 的框相距 71px，根本沒相交。
+
+    真正的原因是**資料點本身重疊**：實機 lifecycle 圖 14 個點中，
+    **5 個完全落在同一座標**（172,360）、另 2 個落在（254,314）。
+    那 5 個年份都是「1 家、1 件」——它們就是同一個點。
+
+    ⚠ 點重疊時，標籤怎麼避讓都沒用：讀者看到兩個並排的年份，
+    無法判斷哪個屬於哪個點——**因為它們屬於同一個點**。
+    調間距、加方位都是在解錯的問題（我連續兩輪都在解錯的問題）。
+
+    改為**合併**：同一座標的年份共用一個標籤（`2011、2017、2021…`）。
+    這是換呈現方式，不是調參數。
+    """
+
+    def test_identical_points_share_one_label(self):
+        items = [(100.0, 100.0, "2011"), (100.0, 100.0, "2017"), (100.0, 100.0, "2021")]
+        merged = cr.merge_colocated_labels(items)
+        self.assertEqual(len(merged), 1, "同一座標的三個年份沒有合併")
+        self.assertEqual(merged[0][2], "2011、2017、2021")
+
+    def test_distinct_points_kept_separate(self):
+        items = [(100.0, 100.0, "2011"), (300.0, 200.0, "2022")]
+        merged = cr.merge_colocated_labels(items)
+        self.assertEqual(len(merged), 2, "不同座標被誤併了")
+
+    def test_near_points_merge_within_tolerance(self):
+        """⚠ 幾乎重疊也要併：差 1–2px 在畫面上與完全重疊沒有分別。"""
+        items = [(100.0, 100.0, "2011"), (101.0, 100.5, "2017")]
+        merged = cr.merge_colocated_labels(items)
+        self.assertEqual(len(merged), 1)
+
+    def test_order_is_stable(self):
+        """合併後的年份要照原順序，不得因 set 而每次不同。"""
+        items = [(50.0, 50.0, "2019"), (50.0, 50.0, "2013"), (50.0, 50.0, "2026")]
+        self.assertEqual(cr.merge_colocated_labels(items)[0][2], "2019、2013、2026")
+
+    def test_tolerance_is_named(self):
+        self.assertTrue(hasattr(cr, "COLOCATED_TOLERANCE_PX"))
+
+
+class LegendLayoutSingleSourceTests(unittest.TestCase):
+    """I-6：所有圖例的起點與間距都要**算**，不得寫死（2026-08-03）。
+
+    🔴 使用者實機確認「混到了」：`件數色階■ 低 1` —— 色塊壓在「低」字上。
+
+    ⚠ H-8 那輪我只修了**象限板**的圖例，泡泡矩陣（p5／p15）與年度矩陣（p16）
+    是另外兩支渲染函式、各自寫死 `legend_x = 82` 與 `+= 132`，沒被一起改。
+    「件數色階」四個字在 x=16、實際約 72px 寬 → 右緣已到 88 > 82，必壓。
+
+    🔴 這是同型問題第三處。本輪**一次找齊三支**，全部改走 `legend_start_x()`
+    與 `legend_step()`，日後改文案不必再記得改數字。
+    """
+
+    def test_helpers_exist(self):
+        self.assertTrue(hasattr(cr, "legend_start_x"))
+        self.assertTrue(hasattr(cr, "legend_step"))
+
+    def test_start_clears_the_prefix_text(self):
+        """起點必須跨過前綴文字的右緣。"""
+        start = cr.legend_start_x(16, "件數色階")
+        self.assertGreater(start, 16 + cr._text_px("件數色階"),
+                           "圖例起點沒有跨過前綴文字，色塊會壓在字上")
+
+    def test_step_covers_widest_item(self):
+        """推進量要涵蓋色塊＋文字＋間距。"""
+        for label in ("低 1–2", "最高 9–11", "龍頭涉入≥2家"):
+            with self.subTest(label=label):
+                self.assertGreater(cr.legend_step(label, mark_width=12),
+                                   12 + cr._text_px(label))
+
+    def test_no_hardcoded_legend_x(self):
+        """三支渲染函式都不得再寫死 legend_x 起點。"""
+        import inspect
+
+        for fn in (cr.render_matrix_chart, cr.render_year_bubble_matrix_chart,
+                   cr.render_opportunity_quadrant_svg):
+            src = inspect.getsource(fn)
+            with self.subTest(fn=fn.__name__):
+                self.assertNotIn("legend_x = 82", src, "仍寫死起點 82")
+                self.assertNotIn("legend_x += 132", src, "仍寫死步進 132")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -500,8 +500,12 @@ def render_segmented_bar_chart(
         svg.append(f'<text x="{left + total_w + 8:.1f}" y="{y + 20}" font-size="{CHART_LABEL_PX}" '
                    f'fill="{COLOR_TEXT}">{total}{segment_mark}</text>')
         # 受讓人名單完整輸出、不截斷——這一列本來就多給了一行。
+        # 🔴 I-8（2026-08-03 實機 p13）：原本 y 是 `y + 20 + row_h`，
+        # 隔了**一整個列高**，視覺上飄到下一列旁邊，讀者以為那是下一家的註記。
+        # 改為緊貼自己那列的長條下方（固定小間距），歸屬一眼可辨。
         if notes[index]:
-            svg.append(f'<text x="{left}" y="{y + 20 + row_h}" font-size="{CHART_LABEL_PX - 3}" '
+            note_y = y + 20 + NOTE_LINE_OFFSET_PX
+            svg.append(f'<text x="{left}" y="{note_y}" font-size="{CHART_LABEL_PX - 3}" '
                        f'fill="{COLOR_TEXT_SOFT}">{xml_text(notes[index])}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
@@ -749,17 +753,19 @@ def render_matrix_chart(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" font-family="Segoe UI, sans-serif">',
         f'<rect width="{width}" height="{height}" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="26" font-size="{CHART_LABEL_PX}" font-weight="bold" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="16" y="56" font-size="{CHART_LABEL_PX}" font-weight="600" fill="#374151">件數色階</text>',
+        f'<text x="16" y="56" font-size="{CHART_LABEL_PX}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
     ]
     # 🔴 F-13：格子有三階顏色卻沒有任何說明（實機 p6），讀者無從對照。
     # ⚠ 圖例與格子共用 `bubble_legend_spans`——各算各的會出現
     # 「圖例說 3–5、格子其實畫到 6」這種對不上的情況。
-    legend_x = 82
+    # I-6：起點與步進都用算的，不寫死（三支渲染函式共用同一對 helper）。
+    legend_x = legend_start_x(16, LEGEND_SCALE_PREFIX)
     for legend_color, legend_label, legend_span in bubble_legend_spans(max_value):
+        text = f"{legend_label} {legend_span}"
         parts.append(f'<rect x="{legend_x}" y="{44}" width="12" height="12" rx="2" fill="{legend_color}"/>')
         parts.append(f'<text x="{legend_x + 20}" y="{56}" font-size="{CHART_LABEL_PX}" fill="#4B5563">'
-                     f'{xml_text(legend_label)} {xml_text(legend_span)}</text>')
-        legend_x += 132
+                     f'{xml_text(text)}</text>')
+        legend_x += legend_step(text, mark_gap=8)
     for col_index, col in enumerate(cols):
         x = label_width + col_index * cell_w + cell_w / 2
         parts.append(
@@ -921,7 +927,7 @@ def render_year_bubble_matrix_chart(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="28" font-size="18" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="16" y="90" font-size="{CHART_LABEL_PX}" font-weight="600" fill="#374151">件數色階</text>',
+        f'<text x="16" y="90" font-size="{CHART_LABEL_PX}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
         *([f'<text x="{width - 34}" y="{top - 14}" text-anchor="end" font-size="{CHART_LABEL_PX - 3}" '
            f'fill="{COLOR_TEXT_SOFT}">僅顯示 {years[0]}–{years[-1]}（共 {years_total} 年）</text>']
           if years_total > len(years) else []),
@@ -931,12 +937,15 @@ def render_year_bubble_matrix_chart(
     # 只寫抽象標籤時讀者無從得知，會把一頁的 1 誤讀成比另一頁的 1 更多。
     # ⚠ 不改成共用尺度：泡泡半徑也吃 max_value，共用會讓小值那張全部縮小
     # （見 shared_matrix_max 的否決理由）。標出級距是不傷鑑別度的作法。
-    legend_x = 82
+    # I-6：年度矩陣的步進原本只有 74px，比一個圖例項還窄——必然疊字。
+    # ⚠ 圓形記號的中心點就是 legend_x，所以起點要再讓出半徑，否則圓會壓到前綴。
+    legend_x = legend_start_x(16, LEGEND_SCALE_PREFIX) + 9
     for color, label, span in bubble_legend_spans(max_value):
+        text = f"{label} {span}"
         parts.append(f'<circle cx="{legend_x}" cy="86" r="9" fill="{color}"/>')
-        parts.append(f'<text x="{legend_x + 10}" y="90" font-size="{CHART_LABEL_PX}" fill="#4B5563">'
-                     f'{label} {span}</text>')
-        legend_x += 74
+        parts.append(f'<text x="{legend_x + 14}" y="90" font-size="{CHART_LABEL_PX}" fill="#4B5563">'
+                     f'{xml_text(text)}</text>')
+        legend_x += legend_step(text, mark_width=18, mark_gap=5)
     for col_index, year in enumerate(years):
         x = left + col_index * cell_w + cell_w / 2
         parts.append(f'<text x="{x:.1f}" y="{top - 14}" font-size="{CHART_LABEL_PX}" text-anchor="middle" fill="{COLOR_TEXT}">{year}</text>')
@@ -990,6 +999,7 @@ def boxes_overlap(a: tuple[float, float, float, float], b: tuple[float, float, f
 QUADRANT_TARGET_ASPECT = 1.78
 
 
+
 #: 象限板圖例前綴（唯一來源——量寬度與畫出來必須是同一個字串，
 #: 否則改了文字卻沒改寬度，又會壓在一起）。
 LEGEND_PREFIX_TEXT = "色＝龍頭涉入｜數字＝件/家"
@@ -997,10 +1007,64 @@ LEGEND_PREFIX_TEXT = "色＝龍頭涉入｜數字＝件/家"
 #: 圖例項之間的間距（px）。
 LEGEND_ITEM_GAP_PX = 24
 
+#: 矩陣類圖表的圖例前綴（唯一來源——量寬度與畫出來必須同一個字串）。
+LEGEND_SCALE_PREFIX = "件數色階"
+
 
 def _text_px(text: str) -> int:
     """文字在 `CHART_LABEL_PX` 字級下的估算寬度（px）。"""
     return int(_display_width(text) * CHART_LABEL_PX)
+
+
+def legend_start_x(prefix_x: float, prefix_text: str, gap: float | None = None) -> float:
+    """圖例第一個色塊的 x：跨過前綴文字的右緣再留間距。
+
+    🔴 I-6（2026-08-03 使用者實機「混到了」）：三支渲染函式各自寫死起點
+    （象限板 `margin_l + 200`、泡泡矩陣與年度矩陣 `82`），而「件數色階」四個字
+    從 x=16 起算實際到 88——**必壓**。寫死的數字不會跟著文案改。
+    """
+    return prefix_x + _text_px(prefix_text) + (LEGEND_ITEM_GAP_PX if gap is None else gap)
+
+
+def legend_step(label: str, *, mark_width: float = 12, mark_gap: float = 8) -> float:
+    """一個圖例項要佔的水平距離：色塊 ＋ 間隙 ＋ 文字 ＋ 項間距。"""
+    return mark_width + mark_gap + _text_px(label) + LEGEND_ITEM_GAP_PX
+
+
+#: 附註（如「最新受讓人：…」）距離它所屬那一列長條基線的垂直距離（px）。
+#: 🔴 I-8：原本用整個 `row_h`（56px），註記落在兩列正中間、看起來像下一家的。
+#: ⚠ 也不能太大：實測 18 時註記距下一列只剩 23px、距自己那列 33px，仍偏向下方。
+#: 14 讓它明顯靠著自己那一列（距自己 34、距下一列 22 → 比例上更靠上），
+#: 且仍在該列多給的第二行之內。
+NOTE_LINE_OFFSET_PX = 12
+
+
+#: 兩個資料點相距多少 px 以內視為「同一個位置」。
+#: 🔴 I-4（2026-08-03）：實機 lifecycle 圖 14 個點中，**5 個完全落在同一座標**
+#: （那幾年都是「1 家、1 件」）。點重疊時標籤怎麼避讓都沒用——
+#: 讀者看到兩個並排的年份無法判斷哪個屬於哪個點，**因為它們屬於同一個點**。
+#: ⚠ 前兩輪（E7、H-5）我都在調避讓演算法，那是在解錯的問題。
+COLOCATED_TOLERANCE_PX = 3.0
+
+
+def merge_colocated_labels(
+    items: list[tuple[float, float, str]],
+) -> list[tuple[float, float, str]]:
+    """把座標相同（或極近）的標籤合併成一個，文字以「、」連接。
+
+    ⚠ 這是**換呈現方式**不是調參數：同一個位置本來就只該有一個標籤，
+    硬把多個標籤擠在附近，讀者仍然對不出歸屬。
+    ⚠ 順序照原輸入，不用 set——年份要照時間排，且每次執行結果要一致。
+    """
+    groups: list[tuple[float, float, list[str]]] = []
+    for x, y, text in items:
+        for index, (gx, gy, texts) in enumerate(groups):
+            if abs(gx - x) <= COLOCATED_TOLERANCE_PX and abs(gy - y) <= COLOCATED_TOLERANCE_PX:
+                texts.append(text)
+                break
+        else:
+            groups.append((x, y, [text]))
+    return [(x, y, "、".join(texts)) for x, y, texts in groups]
 
 
 #: 兩個標籤之間至少要留的間距（px）。
@@ -1106,13 +1170,17 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
     # ⚠ 所有資料點都是障礙物（不只自己那一個），放不下就不標。
     label_step = max(1, math.ceil(len(data) / 12))
     wanted = [i for i in range(len(data)) if i % label_step == 0 or i == len(data) - 1]
-    items = [(coords[i][0], coords[i][1], str(data[i][0])) for i in wanted]
+    # 🔴 I-4：先合併同座標的年份，再避讓。
+    # ⚠ 順序不能反：先避讓會讓同一個點的多個年份各自找位置、彼此推開，
+    # 看起來像好幾個不同的點——那正是實機 p3「2021 2011」並排的成因。
+    items = merge_colocated_labels(
+        [(coords[i][0], coords[i][1], str(data[i][0])) for i in wanted])
     obstacles = [(x, y, 4.0) for x, y in coords]
-    for index, position in zip(wanted, place_point_labels(items, obstacles)):
+    for (_x, _y, text), position in zip(items, place_point_labels(items, obstacles)):
         if position is None:
             continue
         svg.append(f'<text x="{position[0]:.1f}" y="{position[1]:.1f}" font-size="{LABEL_FONT_SIZE}" '
-                   f'fill="{COLOR_TEXT_SOFT}">{data[index][0]}</text>')
+                   f'fill="{COLOR_TEXT_SOFT}">{xml_text(text)}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -2622,6 +2690,13 @@ def render_opportunity_quadrant_svg(
     # 格子有邊框、是內容區，格內下緣留白讀起來是「這一格東西比較少」；
     # 頁面上的空白則單純是版面沒用滿——同樣的像素，意義不同。
     target_h = width / QUADRANT_TARGET_ASPECT
+    # ⚠ I-9（2026-08-03）評估後**維持現狀不改**：
+    # 實機每格高 224px、內容約 72px（格內空 68%），我一度想給格內留白設上限，
+    # 但量測後確認**與 H-8 互斥**——要維持 1.78 比例，格高就必須是內容的 3.1 倍；
+    # 任何更小的倍率都會讓畫布變扁、頁面留白回來（實測改成 1.5 倍後畫布 2.65、
+    # 頁面空回 33%）。
+    # 🔴 使用者實機抱怨的是**頁面留白**（H-8），格內留白是我自己記的觀察、
+    # 他評為輕微。不拿他沒抱怨的去換掉他抱怨過的。
     min_row_h = max(96.0, (target_h - grid_chrome) / 2)
     top_row_h = max(_cell_h("q2"), _cell_h("q1"), min_row_h)
     bot_row_h = max(_cell_h("q3"), _cell_h("q4"), min_row_h)

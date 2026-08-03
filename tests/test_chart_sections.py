@@ -1523,26 +1523,47 @@ class LabelGutterFitsTests(unittest.TestCase):
             return path.read_text(encoding="utf-8")
 
     @staticmethod
-    def _min_text_x(svg: str) -> float:
-        xs = [float(x) for x in re.findall(r'<text x="([0-9.]+)"[^>]*text-anchor="end"', svg)]
-        return min(xs) if xs else 0.0
+    def _row_label_x(svg: str) -> list[float]:
+        """列標籤的 x 座標。
+
+        ⚠ **定位方式已於 2026-08-03（I-3）改變**：列標籤由右對齊
+        （`text-anchor="end"`）改為**左對齊**、x 固定在 `LABEL_TEXT_OFFSET_PX`。
+        原本靠 `text-anchor="end"` 抓，改完抓不到任何一筆、`min()` 回 0，
+        測試會以「起點 < 0」失敗——那不是被裁，是**選擇器過期**。
+        """
+        return [float(x) for x in re.findall(
+            rf'<text x="({chart_runner.LABEL_TEXT_OFFSET_PX})" y="[0-9.]+" font-size=', svg)]
 
     def test_long_label_is_not_clipped(self):
-        """最長標籤的起點（x − 文字寬）不得小於 0。"""
+        """列標籤不得被畫布左緣裁掉。
+
+        🔴 I-3 起改用**結構性保證**：左對齊、x 固定在留白處，
+        標籤多長都從左緣開始畫，**不存在「超出左界」這回事**。
+        （在此之前是估字寬 → 算 gutter → 右對齊，估算偏小就會被裁，猜了三次係數。）
+        """
         svg = self._render([{"ipc_main_group_symbol": "A63B-0022", "patent_count": 5}])
-        anchor = self._min_text_x(svg)
-        label = "A63B-0022　心肺與協調訓練器械"
-        # ⚠ 用引擎同一套字寬估法——測試自己另寫一套就是第二處落點，
-        # 兩邊估不一樣時「過不過」取決於誰的公式，而不是實際會不會被裁。
-        width = chart_runner._display_width(label) * chart_runner.CHART_LABEL_PX
-        self.assertGreaterEqual(anchor - width, 0,
-                                f"標籤起點 {anchor - width:.0f}px < 0，開頭會被畫布裁掉")
+        xs = self._row_label_x(svg)
+        self.assertTrue(xs, "找不到列標籤——定位方式可能又改了")
+        self.assertGreaterEqual(min(xs), 0, "列標籤起點在畫布外")
 
     def test_gutter_grows_with_content(self):
-        """短標籤不該浪費同樣的寬度——留白要還給圖。"""
+        """標籤區寬度仍要跟著內容長短走——留白要還給圖。
+
+        ⚠ 標籤本身改左對齊後，`label_gutter` 不再決定標籤起點，
+        但仍決定**長條的起點**（繪圖區左緣）。短標籤時長條該往左移，把空間讓給圖。
+        """
         short = self._render([{"ipc_main_group_symbol": "A63B", "patent_count": 5}])
-        long = self._render([{"ipc_main_group_symbol": "A63B-0022", "patent_count": 5}])
-        self.assertLess(self._min_text_x(short), self._min_text_x(long))
+        long = self._render([{"ipc_main_group_symbol": "A63B-0022　心肺與協調訓練器械",
+                              "patent_count": 5}])
+
+        def bar_left(svg: str) -> float:
+            # ⚠ 一般長條圖的 rect 沒有 class（`bar-total` 是分段排名圖專用），
+            # 取第一個有寬度的 rect 即長條本體。
+            return min(float(x) for x, _w in re.findall(
+                r'<rect x="([0-9.]+)" y="[0-9.]+" width="([0-9.]+)"', svg))
+
+        self.assertLess(bar_left(short), bar_left(long),
+                        "標籤變長時長條沒有右移——標籤區寬度沒跟著內容走")
 
     def test_canvas_width_still_capped(self):
         """⚠ 標籤再長也不得把畫布撐爆——那會讓整張圖被縮小（P-2 的老問題）。"""

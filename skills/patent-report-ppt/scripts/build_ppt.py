@@ -537,13 +537,36 @@ def _fit_text(theme: Theme, text: str, *, width_in: float, height_in: float, siz
     return text[: max(1, budget - 1)].rstrip("，、。；：") + "…", True
 
 
+#: 半形英數的字寬（em）。
+#: 🔴 2026-08-03：原本 0.55，與 `chart_runner._display_width` **各寫一份**，
+#: 而後者已於 I-3 依實測改為 0.62（轉圖掃像素量到真實字寬比估算多約 13%）
+#: ——同一個估算兩處落點、只改了一邊，於是表格欄寬照舊被低估，
+#: 實機 p22 把專利號 `121754861` 折成兩行（本專案第 8 次兩處落點）。
+#: ⚠ 兩處必須同值；有測試 `test_display_width_matches_chart_runner` 釘住。
+ALNUM_EM_WIDTH = 0.62
+
+
 def _display_width(text: str) -> float:
-    """字串的顯示寬度（em）。中文、全形符號約 1 em，半形英數約 0.55 em。
+    """字串的顯示寬度（em）。中文、全形符號約 1 em，半形英數約 `ALNUM_EM_WIDTH`。
 
     表格欄位混排 `applicant_display_name` 與中文公司名，一律當全形算會把英文
     表頭砍成一半；一律當半形算又會讓中文撐爆欄寬。
     """
-    return sum(0.55 if ord(ch) < 0x2E80 else 1.0 for ch in text)
+    return sum(ALNUM_EM_WIDTH if ord(ch) < 0x2E80 else 1.0 for ch in text)
+
+
+#: 儲存格內視為「不可拆」的 token 分隔符。
+#: ⚠ 專利號、代碼這類 token 一旦被折行，語意就毀了（`121754861` → `12175486`／`61`
+#: 會被讀成兩個號碼），與一般文字換行不同——欄寬必須保障它們完整。
+_TOKEN_SEPARATORS = ("、", "；", ";", " ")
+
+
+def _longest_token_em(text: str) -> float:
+    """字串中最長的不可拆 token 寬度（em）。"""
+    parts = [text]
+    for sep in _TOKEN_SEPARATORS:
+        parts = [piece for part in parts for piece in part.split(sep)]
+    return max((_display_width(p) for p in parts if p), default=0.0)
 
 
 def _column_widths(
@@ -587,9 +610,18 @@ def _column_widths(
                 value = "、".join(str(v) for v in value)
             content = max(content, _display_width("" if value is None else str(value)) * per_char)
         demands.append(max(header, content + padding))
+        # 🔴 最長不可拆 token 也是下限（2026-08-03 實機 p22）：
+        # 專利號 `121754861` 被折成 `12175486`／`61`，讀者會當成兩個號碼。
+        # 一般文字換行沒關係，**token 斷開語意就毀了**。
+        token = 0.0
+        for row in rows:
+            value = row.get(name)
+            if isinstance(value, list):
+                value = "、".join(str(v) for v in value)
+            token = max(token, _longest_token_em("" if value is None else str(value)) * per_char)
         # ⚠ 欄頭寬需求可能本身就超過等分寬（欄多時常見），此時只能讓步到等分寬，
-        # 否則所有欄的下限加起來會超出表寬。
-        minimums.append(min(header, equal))
+        # 否則所有欄的下限加起來會超出表寬。token 下限同理設上限。
+        minimums.append(min(max(header, token + padding), equal))
 
     floor_total = sum(minimums)
     spare = total_width_in - floor_total
@@ -2875,6 +2907,27 @@ def _expand_page_layout(report_data: dict[str, Any], charts: ChartIndex | None =
     return [_spec_with(spec, page=index) for index, spec in enumerate(merged, start=1)]
 
 
+def split_rows_evenly(total: int, *, per_page: int) -> list[int]:
+    """把 total 列切成每頁不超過 per_page 的**平均**份數。
+
+    🔴 I-5（2026-08-03 實機 p21／p22）：原本「每頁塞滿 per_page 筆」，
+    最後一頁拿到餘數——8 筆、每頁 7 筆切成 **7＋1**，
+    第 2 頁只有一列、整頁 90% 空白，而且兩頁欄寬還不一樣（各自算）。
+
+    改為**先算頁數、再平均攤**：8 筆 2 頁 → 4＋4。
+    ⚠ 每頁仍不得超過 `per_page`（版面放得下的量）——平均只在頁數確定後攤平，
+    不會因為攤平而讓某頁塞爆。
+    """
+    if total <= 0:
+        return []
+    if total <= per_page:
+        return [total]
+    pages = math.ceil(total / per_page)
+    base, extra = divmod(total, pages)
+    # 前 extra 頁各多一列——差距最多 1，不會出現「7＋1」這種懸殊分配。
+    return [base + (1 if i < extra else 0) for i in range(pages)]
+
+
 def _paginate_appendix(
     specs: list[PageSpec],
     report_data: dict[str, Any],
@@ -2902,14 +2955,16 @@ def _paginate_appendix(
         if per_page >= len(rows):
             out.append(spec)
             continue
-        total_pages = math.ceil(len(rows) / per_page)
-        for index in range(total_pages):
-            start = index * per_page
+        sizes = split_rows_evenly(len(rows), per_page=per_page)
+        total_pages = len(sizes)
+        start = 0
+        for index, size in enumerate(sizes):
             out.append(_spec_with(
                 spec,
                 title=f"{spec.title}（{index + 1}/{total_pages}）",
-                row_slice=(start, start + per_page),
+                row_slice=(start, start + size),
             ))
+            start += size
     return out
 
 

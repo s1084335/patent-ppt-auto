@@ -290,5 +290,84 @@ class RowHeightSafetyMarginTests(unittest.TestCase):
                               f"{fn.__name__} 沒有走統一的可用高度計算")
 
 
+class AppendixEvenSplitTests(unittest.TestCase):
+    """I-5：附錄分頁要**平均分配**，不是塞滿再溢出（2026-08-03 實機 p21／p22）。
+
+    實機：附錄1 功效 8 筆被切成 **7＋1**，第 2 頁只有一列、整頁 90% 空白。
+
+    ⚠ 原因是 `_paginate_appendix` 用「每頁塞滿 per_page 筆」切——
+    最後一頁拿到的是餘數。8 筆、每頁 7 筆 → 7＋1。
+    改為**先算頁數、再平均分**：8 筆 2 頁 → 4＋4。
+
+    ⚠ 每頁上限仍是 `per_page`（版面放得下的量），平均只是在頁數確定後
+    把筆數攤平——不會因為攤平而讓某頁放不下。
+    """
+
+    def _rows(self, n):
+        return [{"topic_code": f"T{i:03d}", "label": f"主題名稱{i}" * 3,
+                 "source_field": "wips_independent_claims",
+                 "patent_count": n - i, "applicant_count": 3, "top3_share": 50,
+                 "representative": f"CN{i:07d}、US{i:07d}、EP{i:07d}"} for i in range(n)]
+
+    def test_even_split(self):
+        """8 筆分 2 頁要是 4＋4，不是 7＋1。"""
+        sizes = bp.split_rows_evenly(8, per_page=7)
+        self.assertEqual(sizes, [4, 4], f"分頁不平均：{sizes}")
+
+    def test_never_exceeds_per_page(self):
+        """平均後每頁都不得超過版面上限。"""
+        for total, per_page in ((8, 7), (20, 15), (30, 7), (13, 5), (100, 9)):
+            sizes = bp.split_rows_evenly(total, per_page=per_page)
+            with self.subTest(total=total, per_page=per_page):
+                self.assertEqual(sum(sizes), total, "有列被漏掉或重複")
+                self.assertTrue(all(0 < n <= per_page for n in sizes), f"{sizes} 超出上限")
+                self.assertLessEqual(max(sizes) - min(sizes), 1, f"{sizes} 不夠平均")
+
+    def test_single_page_when_fits(self):
+        self.assertEqual(bp.split_rows_evenly(5, per_page=7), [5])
+
+    def test_appendix_uses_even_split(self):
+        """`_paginate_appendix` 要走這支，不自己算餘數。"""
+        import inspect
+
+        self.assertIn("split_rows_evenly", inspect.getsource(bp._paginate_appendix))
+
+
+class UnbreakableTokenTests(unittest.TestCase):
+    """表格欄寬要放得下**最長的不可斷 token**（2026-08-03 實機 p22）。
+
+    實機：附錄1 功效表的「代表專利」欄把 `121754861` 折成 `12175486` / `61`
+    ——那是**一個專利號**，中間斷開會被讀成兩個號碼。
+
+    ⚠ 兩個成因疊在一起：
+    ① `build_ppt._display_width` 的英數係數是 **0.55**，而 `chart_runner` 那份
+       已於 I-3 依實測改為 **0.62**（真實字寬比估算多約 13%）
+       ——**同一個估算在兩處各寫一份，只改了一邊**（本專案第 8 次兩處落點）。
+    ② 欄寬只看「整串內容」的比例需求，沒有保障**單一 token 不被拆開**。
+
+    ⚠ 專利號、代碼這類 token 斷開後語意就毀了，與一般文字換行不同。
+    """
+
+    def test_display_width_matches_chart_runner(self):
+        """兩份估算要同一個係數——只改一邊就是下一個 bug。"""
+        from backend.app.reports import chart_runner as cr
+
+        for text in ("A63B-0022", "121754861", "HUSQVARNA AB"):
+            with self.subTest(text=text):
+                self.assertAlmostEqual(bp._display_width(text), cr._display_width(text),
+                                       places=6, msg="兩處字寬估算不一致")
+
+    def test_longest_token_fits(self):
+        """欄寬需求要涵蓋最長 token，不能只看整串比例。"""
+        rows = [{"code": "121754861、4104909、2026-0158353"},
+                {"code": "3628018"}]
+        widths = bp._column_widths(["code"], rows, {"code": "代表專利"}, 4.0,
+                                   size_pt=11, inset_in=0.08)
+        longest = max(bp._display_width(t) for t in "121754861、4104909、2026-0158353".split("、"))
+        need_in = longest * (11 / 72.0) + 0.08 * 2
+        self.assertGreaterEqual(widths[0], need_in,
+                                f"欄寬 {widths[0]:.2f} 放不下最長 token（需 {need_in:.2f}）")
+
+
 if __name__ == "__main__":
     unittest.main()
