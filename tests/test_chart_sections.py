@@ -743,13 +743,12 @@ class NarrativeRefreshTests(unittest.TestCase):
         解讀查找須退基底鍵（2026-07-22 v2 首跑 4 變體待解讀 regression）。"""
         narrs = {"ipc_main_distribution": {"variants": {
             "L4": {"text": "四階解讀"}, "L5": {"text": "五階解讀"}}}}
-        entry = chart_runner._narrative_entry(narrs, "ipc_main_distribution_L4")
-        self.assertEqual(chart_runner._narrative_text(entry, "L4"), "四階解讀")
-        self.assertEqual(chart_runner._narrative_text(entry, "L5"), "五階解讀")
+        text = chart_runner._variant_narrative_text
+        self.assertEqual(text(narrs, "ipc_main_distribution_L4", "L4"), "四階解讀")
+        self.assertEqual(text(narrs, "ipc_main_distribution_L4", "L5"), "五階解讀")
         # 精確鍵優先：同名精確鍵存在時不退基底
         narrs2 = {"foo_L4": {"text": "精確"}, "foo": {"text": "基底"}}
-        self.assertEqual(chart_runner._narrative_text(
-            chart_runner._narrative_entry(narrs2, "foo_L4"), "default"), "精確")
+        self.assertEqual(text(narrs2, "foo_L4", "default"), "精確")
 
     def test_refresh_index_version_mismatch_shows_expired(self):
         with tempfile.TemporaryDirectory() as tmp:

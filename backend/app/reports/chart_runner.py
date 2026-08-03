@@ -121,10 +121,13 @@ CHART_CANVAS_WIDTH = 949
 CHART_CANVAS_MAX_HEIGHT = 460
 CHART_LABEL_PX = 18          # 列標籤／數值；縮放後約 12.2pt
 CHART_ROW_HEIGHT = 28        # 12 列 → 68+336+34 = 438px，仍在上限內
-# 年度矩陣顯示年數（2026-08-03 使用者定案：固定 15 年）。
+# 年度矩陣顯示年數（2026-08-03 使用者定案：**16 年**，原 15）。
 # ⚠ 固定值優於「放不下才砍」——後者讓同一份報表在不同資料量下顯示不同年距，
-# 兩次產出無法對照。15 年在 949px 畫布下每欄約 41px，泡泡與數字都放得下。
-CHART_YEAR_WINDOW = 15
+# 兩次產出無法對照。
+# 🔴 改 16 的原因：本案資料橫跨 2011–2026 正好 16 年，15 會砍掉最舊那年。
+# 而 15 這個數字當初是**拍的、不是量出來的**；實測 949px 畫布下 16 欄每欄 57px，
+# 泡泡與數字都放得下。
+CHART_YEAR_WINDOW = 16
 
 COLOR_BAR = "#006DF5"
 # ⚠ 不得與 COLOR_TEXT_SOFT 共用色值：轉色表以**色碼**為鍵，兩個角色撞同一個
@@ -825,7 +828,11 @@ def year_bubble_matrix_layout(
         values[(company, year)] = values.get((company, year), 0) + value
         totals[company] = totals.get(company, 0) + value
     top_rows = [name for name, _ in sorted(totals.items(), key=lambda item: (-item[1], item[0]))[:row_limit]]
-    ordered_years = sorted(years)[-25:]
+    # 🔴 橫軸補齊**連續年度**（2026-08-03 使用者：「你把我的 2012、2014 犧牲掉幹嘛？」）。
+    # 原本只列「有資料的年」，空年直接消失——2011 的下一欄就是 2013，
+    # **時間軸的間距是騙人的**：「連續三年布局」與「隔年才有一次」在圖上長得一樣。
+    # ⚠ 那兩年其實全庫無資料（不是被砍），但軸不連續一樣會誤導趨勢判讀。
+    ordered_years = _continuous_years(years)[-25:]
     max_value = max([values.get((company, year), 0) for company in top_rows for year in ordered_years] + [1])
     return {"top_rows": top_rows, "years": ordered_years, "values": values, "max_value": max_value, "rows_total": len(totals)}
 
@@ -1037,6 +1044,17 @@ def legend_step(label: str, *, mark_width: float = 12, mark_gap: float = 8) -> f
 #: 14 讓它明顯靠著自己那一列（距自己 34、距下一列 22 → 比例上更靠上），
 #: 且仍在該列多給的第二行之內。
 NOTE_LINE_OFFSET_PX = 12
+
+
+def _continuous_years(years: set[int] | list[int]) -> list[int]:
+    """把年份集合補成連續區間（最小年 → 最大年），空年也列出來。
+
+    ⚠ 空年要有欄位（留白），不能跳過——跳過會讓橫軸的間距失真。
+    """
+    if not years:
+        return []
+    lo, hi = min(years), max(years)
+    return list(range(lo, hi + 1))
 
 
 #: 兩個資料點相距多少 px 以內視為「同一個位置」。
@@ -1665,17 +1683,67 @@ CHART_ENCODING_NOTES: dict[str, str] = {
 }
 
 
+# 卡片變體 → 解讀掛點的對照。**唯一定義處**。
+#
+# 🔴 2026-08-03：只列「兩邊不同名」的，同名不必列。
+# 兩個 key 空間會不同名是歷史造成的：
+# - `annual_trend` 是一張圖合併兩份報表（申請＋公告），解讀掛在 `application_trend`
+# - 機會板的解讀由 ai:narrative 掛在 `opportunity_quadrant`，但圖排在分群卡裡
+#
+# ⚠ 這份對照原本只寫在 PPT 端（`build_ppt.NARRATIVE_ALIASES`），網頁端沒有，
+# 於是同樣三張卡在 PPT 有解讀、在網頁顯示「AI 解讀尚未產生」。
+# **誰把解讀掛上這張卡，誰才知道掛在哪**——所以定義處在引擎，消費端只讀不推導。
+SECTION_NARRATIVE_SOURCES: dict[tuple[str, str], str] = {
+    ("annual_trend", "default"): "application_trend:default",
+    ("cluster_topic_table", "opportunity_tech"): "opportunity_quadrant:tech",
+    ("cluster_topic_table", "opportunity_effect"): "opportunity_quadrant:effect",
+}
+
+
+def variant_narrative_ref(report_key: str, variant_key: str) -> str:
+    """這個卡片變體的解讀掛在 narratives 的哪裡，回傳 `"key:variant"`。
+
+    三段規則：① 顯式對照 ② 鍵帶層級尾巴（`_L<n>`）時退基底鍵 ③ 其餘原樣。
+    ⚠ 第 ② 段是因為沒寫 report_key 的 IPC／CPC 卡由檔名 fallback 帶了 `_L4`，
+    而 narratives 契約鍵不帶層級。
+    """
+    explicit = SECTION_NARRATIVE_SOURCES.get((report_key, variant_key))
+    if explicit:
+        return explicit
+    base, sep, tail = report_key.rpartition("_L")
+    if sep and tail.isdigit():
+        report_key = base
+    return f"{report_key}:{variant_key}"
+
+
 SECTION_PERSIST_KEYS = (
     "title", "report_key", "variants", "more_variants", "more_label", "note", "stacked", "links",
 )
 
 
 def persistable_sections(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """把 sections 過濾成可序列化的持久化形狀（缺的欄位不補、不猜）。"""
-    return [
-        {key: section[key] for key in SECTION_PERSIST_KEYS if key in section}
-        for section in sections
-    ]
+    """把 sections 過濾成可序列化的持久化形狀。
+
+    ⚠ 兩個欄位會**寫實**而非原樣搬運，讓消費端（網頁 API、PPT 組版）不必各自推導：
+    - `report_key`：沒寫的用第一個圖檔主檔名補上
+    - 每個變體的 `narrative_key`：解讀實際掛在 narratives 的哪個 `key:variant`
+    其餘欄位缺就是缺，不補不猜。
+    """
+    out: list[dict[str, Any]] = []
+    for section in sections:
+        item = {key: section[key] for key in SECTION_PERSIST_KEYS if key in section}
+        report_key = _section_report_name(section)
+        item["report_key"] = report_key
+        for field in ("variants", "more_variants"):
+            if field not in item:
+                continue
+            item[field] = [
+                {**variant,
+                 "narrative_key": variant_narrative_ref(report_key, variant.get("variant_key", "default"))}
+                for variant in item[field]
+            ]
+        out.append(item)
+    return out
 
 
 def refresh_index(run_dir: Path) -> dict[str, Any]:
@@ -1714,12 +1782,11 @@ def refresh_index(run_dir: Path) -> dict[str, Any]:
     pending_variants: list[str] = []
     for s in sections:
         report_key = _section_report_name(s)
-        entry = _narrative_entry(narratives, report_key)
         all_variants = list(s.get("variants", [])) + list(s.get("more_variants", []))
         for v in all_variants:
             total_variants += 1
             vk = v.get("variant_key", "default")
-            text = _narrative_text(entry, vk) if not expired else None
+            text = None if expired else _variant_narrative_text(narratives, report_key, vk)
             if text:
                 narrated_variants += 1
             else:
@@ -1735,16 +1802,23 @@ def refresh_index(run_dir: Path) -> dict[str, Any]:
     }
 
 
-def _narrative_entry(narratives: dict[str, Any], report_key: str) -> dict[str, Any]:
-    """解讀查找：先精確鍵；查無且鍵帶層級尾巴（_L<n>）時退基底鍵。
-    IPC/CPC 卡的查找鍵由檔名 fallback 帶 _L4/_L5，narratives 契約鍵不帶層級。"""
-    entry = narratives.get(report_key)
-    if entry:
-        return entry
-    base, sep, tail = report_key.rpartition("_L")
-    if sep and tail.isdigit():
-        return narratives.get(base, {}) or {}
-    return {}
+def _variant_narrative_text(
+    narratives: dict[str, Any], report_key: str, variant_key: str
+) -> str | None:
+    """取這個卡片變體的解讀文字。掛點一律問 `variant_narrative_ref`（唯一來源）。
+
+    ⚠ 不要改成「整張卡取一個 entry、變體再從裡面挑」——`annual_trend` 與機會板
+    兩個變體的解讀掛在**別的 report key** 底下，整卡共用 entry 就永遠查不到。
+
+    ⚠ 精確鍵優先於對照：narratives 真的有這個鍵時就用它，別繞去對照表指的地方。
+    對照是「本來查不到才要的橋」，不是覆寫。
+    """
+    direct = _narrative_text(narratives.get(report_key) or {}, variant_key)
+    if direct:
+        return direct
+    ref = variant_narrative_ref(report_key, variant_key)
+    key, _, variant = ref.rpartition(":")
+    return _narrative_text(narratives.get(key) or {}, variant)
 
 
 def _narrative_text(entry: dict[str, Any] | None, variant_key: str) -> str | None:
@@ -1782,7 +1856,6 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             continue
         title = section.get("title", "")
         report_name = _section_report_name(section)
-        entry = _narrative_entry(narratives, report_name)
 
         # 1. Data table
         report_data_json = run_dir / "report_data.json"
@@ -1819,7 +1892,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             vk = variant.get("variant_key", "default")
             if narr_expired:
                 return '<div class="explanation expired">⚠️ 解讀版本過期</div>'
-            text = _narrative_text(entry, vk)
+            text = _variant_narrative_text(narratives, report_name, vk)
             if text:
                 return f'<div class="explanation"><p>{xml_text(text)}</p></div>'
             return '<div class="explanation pending">⏳ 待解讀</div>'
