@@ -133,6 +133,26 @@
 （深模組／接縫／刪除測試等用語取自 Ousterhout《A Philosophy of Software Design》
 與 Feathers 的 seam 概念；整理參考 `mattpocock/skills` 的 `codebase-design`。）
 
+## 回歸只跑範圍（2026-08-03 使用者定案）
+
+**預設跑範圍回歸，不跑完整回歸。**
+
+```
+uv run python -m pytest tests -q -p no:cacheprovider -k "<本次改動相關的關鍵字>" --ignore=tests/test_clustering_database.py --ignore=tests/test_report_artifact_store.py --ignore=tests/test_api_report_versions.py --ignore=tests/test_api_exclude_patents.py --ignore=tests/test_api_exclusion_reviews.py --deselect tests/test_per_channel_topic_labels.py
+```
+
+⚠ 那 13 支**全部依賴本機 postgres**（2026-08-03 由獨立 sub agent 兩輪完整回歸查證）。
+本機沒起 DB 時每支空等 **30 秒 pool timeout**，是總時長的主因
+——實測排除後由 **40 分鐘降到 6 分鐘**，同一批 893 個測試。
+
+🔴 **不要為了跑測試去起本機 postgres**（使用者明示「不要亂起」）。排除即可。
+
+⚠ **回歸跑到一半不要改檔**：pytest 在 collection 階段匯入模組，
+中途改檔會讓它拿到改到一半的版本，紅出來的**不是真迴歸**
+（2026-08-03 發生兩次：一次害 `test_default_report_names_match_definitions` 假紅、
+一次害 `test_signature_returns_pair` 與 `test_appendix_uses_even_split` 假紅）。
+範圍回歸只要 6 分鐘，暴露窗口本來就小——真要跑長的就先 commit 再跑。
+
 ## Token 節制（本專案試行，自 2026-07-21）
 
 - 小型**已定位**任務以約 3,000 output tokens 為軟目標；migration、跨表、資料安全相關工作以**安全完成優先，不設硬上限**。
