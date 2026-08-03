@@ -79,5 +79,36 @@ class QuadrantLegendTests(unittest.TestCase):
         self.assertNotIn("legend_x = margin_l + 200", src, "還在用寫死的起點")
 
 
+class QuadrantAspectTests(unittest.TestCase):
+    """H-8 留白：象限板畫布要接近圖框比例，否則等比縮放後上下空掉兩成。"""
+
+    def _svg(self, tmpdir, n_topics=3):
+        from pathlib import Path
+
+        rows = [{"topic_code": f"T{i:03d}", "label": f"主題{i}", "patent_count": 10 - i,
+                 "applicant_count": 5 - (i % 3), "leading_applicant_count": i % 3,
+                 "leading_applicants_involved": []} for i in range(n_topics)]
+        data = {"rows": rows, "patent_count_median": 6.0, "applicant_count_median": 3.0}
+        path = Path(tmpdir) / "q.svg"
+        cr.render_opportunity_quadrant_svg(path, "機會四象限", data)
+        return path.read_text(encoding="utf-8")
+
+    def test_canvas_aspect_close_to_frame(self):
+        import re
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            svg = self._svg(tmp)
+        m = re.search(r'<svg[^>]*width="(\d+)"[^>]*height="(\d+)"', svg)
+        self.assertIsNotNone(m)
+        w, h = int(m.group(1)), int(m.group(2))
+        aspect = w / h
+        self.assertLessEqual(aspect, cr.QUADRANT_TARGET_ASPECT + 0.15,
+                             f"畫布比例 {aspect:.2f} 仍比圖框扁太多，縮放後上下會留白")
+
+    def test_target_aspect_is_named(self):
+        self.assertTrue(hasattr(cr, "QUADRANT_TARGET_ASPECT"))
+
+
 if __name__ == "__main__":
     unittest.main()

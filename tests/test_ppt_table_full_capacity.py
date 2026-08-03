@@ -179,5 +179,62 @@ class AppendixSplitByChannelTests(unittest.TestCase):
         self.assertNotEqual(pages[0].title, pages[1].title, "兩頁標題不得相同")
 
 
+class AppendixPaginationTests(unittest.TestCase):
+    """附錄放不下一頁時要自動分頁——**附錄要放齊**（2026-08-03 使用者定案）。
+
+    ⚠ 只切附錄：內頁是「精選」，少列是刻意的；附錄的職責才是「完整」。
+    ⚠ 每頁列數用 `_appendix_rows_per_page`，與渲染端共用 `_table_line_plan`——
+    分頁端另寫一套估法的話，切出來的頁數與實際放得下的列數會對不起來。
+    """
+
+    def _rows(self, n):
+        return [{"topic_code": f"T{i:03d}", "label": f"主題名稱{i}" * 3,
+                 "source_field": "wips_independent_claims",
+                 "patent_count": n - i, "applicant_count": 3,
+                 "top3_share": 50, "representative": f"CN{i:07d}、US{i:07d}、EP{i:07d}"}
+                for i in range(n)]
+
+    def _report_data(self, n):
+        return {"reports": {"cluster_topic_table": {"rows": self._rows(n), "row_count": n}}}
+
+    def test_long_appendix_is_split(self):
+        theme = _theme()
+        data = self._report_data(40)
+        pages = bp._expand_page_layout(data, None, theme)
+        appendix = [p for p in pages if p.is_appendix and "cluster_topic_table" in p.report_keys]
+        self.assertGreater(len(appendix), 1, "40 列的附錄仍擠在一頁——放不下的會被截掉")
+        self.assertTrue(all(p.row_slice for p in appendix), "分頁後每頁要帶列切片")
+
+    def test_slices_cover_every_row_without_overlap(self):
+        """切片要**無縫也無重疊**：漏一列就是沒放齊，重複一列則是同一筆印兩次。"""
+        theme = _theme()
+        data = self._report_data(40)
+        pages = [p for p in bp._expand_page_layout(data, None, theme)
+                 if p.is_appendix and "cluster_topic_table" in p.report_keys]
+        covered: list[int] = []
+        for page in pages:
+            start, stop = page.row_slice
+            covered.extend(range(start, stop))
+        self.assertEqual(covered[:40], list(range(40)), "切片沒有覆蓋全部列或有重疊")
+
+    def test_short_appendix_not_split(self):
+        """放得下就不切——為了分頁而分頁只是多一張空頁。"""
+        theme = _theme()
+        pages = bp._expand_page_layout(self._report_data(3), None, theme)
+        appendix = [p for p in pages if p.is_appendix and "cluster_topic_table" in p.report_keys]
+        self.assertEqual(len(appendix), 1)
+        self.assertIsNone(appendix[0].row_slice)
+
+    def test_spec_with_keeps_new_fields(self):
+        """🔴 `_spec_with` 要自動帶上所有欄位。
+
+        原本是手寫 dict，新增 `row_slice` 若忘了同步就會被**靜默**洗回預設值
+        ——後面任何一次 `_spec_with(spec, topic=...)` 都會發生，而且不報錯。
+        """
+        spec = bp.PageSpec(page=1, kind="table", title="t", topic="t",
+                           report_keys=("x",), is_appendix=True, row_slice=(3, 9))
+        self.assertEqual(bp._spec_with(spec, title="u").row_slice, (3, 9))
+
+
 if __name__ == "__main__":
     unittest.main()

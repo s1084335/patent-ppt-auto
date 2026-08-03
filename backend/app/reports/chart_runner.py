@@ -981,6 +981,11 @@ def boxes_overlap(a: tuple[float, float, float, float], b: tuple[float, float, f
     return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
 
 
+#: 象限板畫布的目標長寬比——對齊 `chart_hero` 圖框（8.9×5.0 in ≈ 1.78）。
+#: ⚠ 圖比框「更扁」時等比縮放會在上下留白，而那是**版面沒用滿**，不是內容少。
+QUADRANT_TARGET_ASPECT = 1.78
+
+
 #: 象限板圖例前綴（唯一來源——量寬度與畫出來必須是同一個字串，
 #: 否則改了文字卻沒改寬度，又會壓在一起）。
 LEGEND_PREFIX_TEXT = "色＝龍頭涉入｜數字＝件/家"
@@ -2604,9 +2609,18 @@ def render_opportunity_quadrant_svg(
         chips_h = placed[q][1]
         return header_h + (chips_h if chips_h else 20.0) + inner_pad
 
-    top_row_h = max(_cell_h("q2"), _cell_h("q1"), 96.0)
-    bot_row_h = max(_cell_h("q3"), _cell_h("q4"), 96.0)
     grid_top = 104.0
+    grid_chrome = grid_top + cell_gap + 64  # 標題區＋列間距＋底部說明
+    # 🔴 H-8（2026-08-03 實機 p17／p18）：象限板實測 1120×374＝比例 2.99，
+    # 而 chart_hero 圖框是 1.78——等比縮放後圖只佔框高六成，上下各空兩成。
+    # ⚠ 修法不是把圖拉大（那會超出框寬），是**讓畫布本身接近圖框比例**：
+    # 列高的下限由目標比例回推，多出來的空間留在**格子內**。
+    # 格子有邊框、是內容區，格內下緣留白讀起來是「這一格東西比較少」；
+    # 頁面上的空白則單純是版面沒用滿——同樣的像素，意義不同。
+    target_h = width / QUADRANT_TARGET_ASPECT
+    min_row_h = max(96.0, (target_h - grid_chrome) / 2)
+    top_row_h = max(_cell_h("q2"), _cell_h("q1"), min_row_h)
+    bot_row_h = max(_cell_h("q3"), _cell_h("q4"), min_row_h)
     grid_bottom = grid_top + top_row_h + cell_gap + bot_row_h
     height = int(grid_bottom + 64)
 

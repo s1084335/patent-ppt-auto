@@ -31,6 +31,7 @@ import json
 import math
 import re
 import sys
+import dataclasses
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -93,23 +94,19 @@ class PageSpec:
     # 分技術／功效兩張表），該頁只取匹配的列。空 dict＝不過濾。
     # ⚠ 用 tuple of pairs 保持 frozen dataclass 可雜湊；讀取端用 dict(spec.row_filter)。
     row_filter: tuple[tuple[str, str], ...] = ()
+    #: 附錄分頁用的列切片（起、訖）。⚠ 只在附錄放不下一頁時才設；
+    #: 一般頁維持 None，行為與加這個欄位之前完全相同。
+    row_slice: tuple[int, int] | None = None
 
 
 def _spec_with(spec: PageSpec, **changes: Any) -> PageSpec:
-    """PageSpec 是 frozen，改欄位一律走這裡建新物件。"""
-    fields = {
-        "page": spec.page,
-        "kind": spec.kind,
-        "title": spec.title,
-        "topic": spec.topic,
-        "report_keys": spec.report_keys,
-        "charts": spec.charts,
-        "slots": spec.slots,
-        "subtitle": spec.subtitle,
-        "is_appendix": spec.is_appendix,
-        "degraded_from": spec.degraded_from,
-        "row_filter": spec.row_filter,
-    }
+    """PageSpec 是 frozen，改欄位一律走這裡建新物件。
+
+    ⚠ 欄位**自動列舉**，不手寫清單（2026-08-03）：原本是逐一列出的 dict，
+    新增 `row_slice` 時忘了同步就會被靜默丟掉——後面任何一次
+    `_spec_with(spec, topic=...)` 都會把它洗回預設值，而且不報錯。
+    """
+    fields = {f.name: getattr(spec, f.name) for f in dataclasses.fields(spec)}
     fields.update(changes)
     return PageSpec(**fields)
 
@@ -1655,17 +1652,29 @@ def _render_points_band(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]
 # `_trim_blocks` 有 7 個呼叫端，改回傳形狀等於逼每一處都跟著改，而它們全都
 # 只關心「要畫哪些條」。build_ppt() 收尾時把這裡的內容併進 manifest warnings，
 # 所以丟棄仍然說得出來、不是靜默。
-_DROPPED_POINTS: list[tuple[str, str, str, bool]] = []
+_DROPPED_POINTS: list[tuple[int | None, tuple[str, str, str, bool]]] = []
+
+#: 目前正在渲染的頁碼。
+#: ⚠ 為什麼用模組級狀態而不是給 `_trim_blocks` 加參數：它有 7 個呼叫端，
+#: 全都只關心「要畫哪些條」，為了一句警告文字讓 7 處都改簽名並不划算。
+#: 頁碼在**分派處**（RENDERERS[spec.kind] 那一行前）設定一次，呼叫端零修改。
+_CURRENT_PAGE: int | None = None
 
 
-def dropped_points() -> list[tuple[str, str, str, bool]]:
-    """本次組版被整條丟掉的要點（供 QA 與測試查驗）。"""
+def dropped_points() -> list[tuple[int | None, tuple[str, str, str, bool]]]:
+    """本次組版被整條丟掉的要點 [(頁碼, 要點)]（供 QA 與測試查驗）。"""
     return list(_DROPPED_POINTS)
 
 
 def reset_dropped_points() -> None:
     """每次組版開始前清空——否則同一個 process 連續產兩份會互相污染。"""
     _DROPPED_POINTS.clear()
+
+
+def set_current_page(page: int | None) -> None:
+    """記下正在渲染哪一頁，讓丟棄警告說得出頁碼。"""
+    global _CURRENT_PAGE
+    _CURRENT_PAGE = page
 
 
 def _trim_blocks(
@@ -1715,7 +1724,7 @@ def _trim_blocks(
         used += needs[index]
     dropped = [blocks[index] for index in others if index not in kept]
     if dropped:
-        _DROPPED_POINTS.extend(dropped)
+        _DROPPED_POINTS.extend((_CURRENT_PAGE, block) for block in dropped)
     return [block for index, block in enumerate(blocks)
             if index in protected or index in kept]
 
@@ -2451,6 +2460,11 @@ def _first_rows(spec: PageSpec, ctx: dict[str, Any]) -> list[dict[str, Any]]:
             rows = [r for r in rows
                     if all(str(r.get(col)) == value for col, value in filters.items())]
         if rows:
+            # 附錄分頁的列切片（2026-08-03）——⚠ 必須在**過濾之後**才切：
+            # 先切再過濾會讓每頁的可見列數對不上分頁時算的那一份。
+            if spec.row_slice:
+                start, stop = spec.row_slice
+                return rows[start:stop]
             return rows
     return []
 
@@ -2478,6 +2492,70 @@ def _ordered_columns(
     ordered = [name for name in priority if name in available]
     ordered += [name for name in available if name not in ordered]
     return ordered[:limit]
+
+
+def _table_line_plan(
+    theme: Theme,
+    rows: list[dict[str, Any]],
+    columns: list[str],
+    labels: dict[str, str],
+    width: float,
+    *,
+    cell_inset_in: float,
+) -> tuple[list[float], int, list[int]]:
+    """算出欄寬、表頭行數、以及**每一列各佔幾行**。
+
+    ⚠ 抽出來的理由（2026-08-03）：附錄分頁要在 `_expand_page_layout` 階段就知道
+    「一頁放得下幾列」，而那個答案只有這段邏輯算得準。留在 `_add_table` 裡面
+    等於逼分頁端另寫一套估法——本專案已因「同一資訊兩處落點」靜默失敗六次。
+    """
+    col_widths = _column_widths(columns, rows, labels, width,
+                                size_pt=theme.size("table_body_pt"), inset_in=cell_inset_in)
+    text_widths = [w - cell_inset_in * 2 for w in col_widths]
+    body_pt = theme.size("table_body_pt")
+
+    def _lines_for(row: dict[str, Any]) -> int:
+        needed = 1
+        for index, name in enumerate(columns):
+            value = row.get(name)
+            if isinstance(value, list):
+                value = "、".join(str(v) for v in value)
+            text = "" if value is None else str(value)
+            span = _display_width(text) * (body_pt / 72.0)
+            needed = max(needed, math.ceil(span / max(text_widths[index], 1e-6)))
+        return needed
+
+    header_lines = max(
+        (math.ceil(_display_width(labels.get(str(n), str(n))) * (theme.size("table_header_pt") / 72.0)
+                   / max(text_widths[i], 1e-6)) for i, n in enumerate(columns)), default=1)
+    return col_widths, max(1, header_lines), [_lines_for(row) for row in rows]
+
+
+def _appendix_rows_per_page(
+    theme: Theme,
+    rows: list[dict[str, Any]],
+    labels: dict[str, str],
+    excluded: set[str],
+    priority: tuple[str, ...],
+) -> int:
+    """附錄一頁放得下幾列（用與渲染端同一套行數估算）。"""
+    if not rows:
+        return 0
+    g = theme.geometry["table"]
+    columns = _ordered_columns(rows, excluded=excluded, priority=priority,
+                               limit=int(g["max_columns"]))
+    _widths, header_lines, line_counts = _table_line_plan(
+        theme, rows, columns, labels, g["width_in"], cell_inset_in=g["cell_inset_in"])
+    height = _table_available_height(theme, "table")
+    row_height = g["row_height_in"]
+    used = header_lines * row_height
+    count = 0
+    for lines in line_counts:
+        if used + lines * row_height > height and count:
+            break
+        used += lines * row_height
+        count += 1
+    return max(1, count)
 
 
 def _add_table(
@@ -2523,33 +2601,14 @@ def _add_table(
     # 原本是「放不下就切掉加『…』」——讀者既不知道被切掉什麼，也無從查證。
     # 改為：欄寬依內容分配 → 放不下就換行 → **列高跟著長**；
     # 真的塞不進框時少顯示幾列（完整版在附錄），但**顯示出來的每一格都完整**。
-    col_widths = _column_widths(columns, rows, labels, width,
-                                size_pt=theme.size("table_body_pt"), inset_in=cell_inset_in)
-    text_widths = [w - cell_inset_in * 2 for w in col_widths]
-    body_pt = theme.size("table_body_pt")
-
-    def _lines_for(row: dict[str, Any]) -> int:
-        needed = 1
-        for index, name in enumerate(columns):
-            value = row.get(name)
-            if isinstance(value, list):
-                value = "、".join(str(v) for v in value)
-            text = "" if value is None else str(value)
-            span = _display_width(text) * (body_pt / 72.0)
-            needed = max(needed, math.ceil(span / max(text_widths[index], 1e-6)))
-        return needed
-
-    header_lines = max(
-        (math.ceil(_display_width(labels.get(str(n), str(n))) * (theme.size("table_header_pt") / 72.0)
-                   / max(text_widths[i], 1e-6)) for i, n in enumerate(columns)), default=1)
-    header_lines = max(1, header_lines)
+    col_widths, header_lines, row_line_counts_all = _table_line_plan(
+        theme, rows, columns, labels, width, cell_inset_in=cell_inset_in)
 
     # 逐列累加實際高度，超過框就停——不是用 height/row_height 平均估。
     display: list[dict[str, Any]] = []
     row_line_counts: list[int] = []
     used = header_lines * row_height
-    for row in rows:
-        lines = _lines_for(row)
+    for row, lines in zip(rows, row_line_counts_all):
         if used + lines * row_height > height and display:
             break
         display.append(row)
@@ -2701,7 +2760,8 @@ def _evidence_rank(spec: PageSpec) -> int:
     return len(EVIDENCE_ORDER)
 
 
-def _expand_page_layout(report_data: dict[str, Any], charts: ChartIndex | None = None) -> list[PageSpec]:
+def _expand_page_layout(report_data: dict[str, Any], charts: ChartIndex | None = None,
+                        theme: Theme | None = None) -> list[PageSpec]:
     """選擇驅動出頁：把有資料的報表展開成頁面清單，頁碼重新連號。
 
     `charts` 省略時（前端縮圖預覽只拿得到 report_data）僅回頁面骨架，
@@ -2748,6 +2808,9 @@ def _expand_page_layout(report_data: dict[str, Any], charts: ChartIndex | None =
     evidence.sort(key=_evidence_rank)
     merged = head + evidence + base[anchor:]
     merged = _split_pairs_by_policy(merged, charts)
+    # ⚠ theme 省略時不分頁：既有呼叫端（前端縮圖預覽只拿得到 report_data）行為不變。
+    if theme is not None:
+        merged = _paginate_appendix(merged, report_data, theme)
     # 🔴 拆頁後補回分類系統與階層（F-8 移除 SVG 標題後，頁標題必須自己講清楚
     # 這是 IPC 還是 CPC、哪一階——否則四頁併排讀者分不出誰是誰）。
     merged = [_spec_with(spec, topic=_chart_page_topic(spec, report_data)) for spec in merged]
@@ -2756,6 +2819,44 @@ def _expand_page_layout(report_data: dict[str, Any], charts: ChartIndex | None =
     merged = [_spec_with(spec, kind=_kind_for_aspect(spec.kind, spec.charts, charts))
               for spec in merged]
     return [_spec_with(spec, page=index) for index, spec in enumerate(merged, start=1)]
+
+
+def _paginate_appendix(
+    specs: list[PageSpec],
+    report_data: dict[str, Any],
+    theme: Theme,
+) -> list[PageSpec]:
+    """附錄放不下一頁時切成多頁——**附錄要放齊**（2026-08-03 使用者定案）。
+
+    ⚠ 只切附錄：內頁是「精選」，少列是刻意的；附錄的職責才是「完整」。
+    ⚠ 每頁能放幾列用 `_appendix_rows_per_page`，與渲染端同一套行數估算——
+    分頁端另寫一套的話，切出來的頁數與實際放得下的列數會對不起來。
+    ⚠ 標題加「（N/M）」讓讀者知道還有下一頁；只有一頁時不加，避免無謂的雜訊。
+    """
+    ctx = {"report_data": report_data}
+    out: list[PageSpec] = []
+    for spec in specs:
+        if not spec.is_appendix or spec.kind != "table":
+            out.append(spec)
+            continue
+        rows = _first_rows(spec, ctx)
+        if not rows:
+            out.append(spec)
+            continue
+        labels, excluded, priority = _table_display(ctx, spec)
+        per_page = _appendix_rows_per_page(theme, rows, labels, excluded, priority)
+        if per_page >= len(rows):
+            out.append(spec)
+            continue
+        total_pages = math.ceil(len(rows) / per_page)
+        for index in range(total_pages):
+            start = index * per_page
+            out.append(_spec_with(
+                spec,
+                title=f"{spec.title}（{index + 1}/{total_pages}）",
+                row_slice=(start, start + per_page),
+            ))
+    return out
 
 
 def _split_by_channel(spec: PageSpec, report_data: dict[str, Any]) -> list[PageSpec]:
@@ -3235,7 +3336,7 @@ def build_ppt(
                       "重跑 ai:report_ppt 產新契約後將呈現色塊流程＋題目卡。",
         })
 
-    layout = _expand_page_layout(report_data, charts)
+    layout = _expand_page_layout(report_data, charts, theme)
     layout = _apply_layout_overrides(layout, _clean_layout_overrides(approvals.get("layout_overrides")), charts)
     layout = _apply_chart_degradation(layout, charts)
 
@@ -3310,6 +3411,7 @@ def build_ppt(
         # 背景先畫＝壓在最底層；封面用滿密度，內頁調淡避免星點被當成圖表資料點。
         _add_background(slide, theme, charts.cache_dir,
                         density=1.0 if spec.kind in {"cover", "section_divider"} else inner_density)
+        set_current_page(spec.page)
         RENDERERS[spec.kind](slide, theme, spec, ctx)
         page_info: dict[str, Any] = {
             "page": spec.page,
@@ -3341,11 +3443,14 @@ def build_ppt(
     # 「這種卡掉的敘述不要再有」。現在改成不截字，但**不代表可以默默少一條**：
     # 正常情況這裡應該是空的（容量已由 narrative_capacity 交給 CLI），
     # 一旦有值就代表上游容量算錯了，要當成 bug 追。
-    for label, text, _color, _emph in dropped_points():
-        warnings.append({
+    for page, (label, text, _color, _emph) in dropped_points():
+        entry: dict[str, Any] = {
             "type": "points_dropped",
             "detail": f"要點整條未放入（版面不足，未截字）：{label}｜{text}",
-        })
+        }
+        if page is not None:
+            entry["page"] = page
+        warnings.append(entry)
 
     pptx_path = _next_available_path(output_dir, version)
     prs.save(str(pptx_path))

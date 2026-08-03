@@ -104,6 +104,20 @@ class NoEllipsisTests(unittest.TestCase):
         bp._trim_blocks(theme, self._blocks(count=8), width_in=3.4, height_in=1.2, size_pt=15)
         self.assertTrue(bp.dropped_points(), "放不下卻沒有任何紀錄＝靜默丟棄")
 
+    def test_dropped_records_carry_page_number(self):
+        """紀錄要說得出**哪一頁**——只說丟了哪條，看的人還得自己翻 22 頁去找。
+
+        ⚠ 頁碼由分派處（`RENDERERS[spec.kind]` 前）設定，`_trim_blocks` 不加參數：
+        它有 7 個呼叫端，全都只關心「要畫哪些條」。
+        """
+        theme = _theme()
+        bp.reset_dropped_points()
+        bp.set_current_page(12)
+        bp._trim_blocks(theme, self._blocks(count=8), width_in=3.4, height_in=1.2, size_pt=15)
+        pages = {page for page, _block in bp.dropped_points()}
+        self.assertEqual(pages, {12}, "丟棄紀錄沒有帶頁碼")
+        bp.set_current_page(None)
+
     def test_caveat_still_protected(self):
         """判讀限制那條照舊優先保留（警語講一半比不講更糟）。"""
         theme = _theme()

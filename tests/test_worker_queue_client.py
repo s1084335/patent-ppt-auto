@@ -69,6 +69,11 @@ class HandlerContractTests(unittest.TestCase):
                 "topic_merge",
                 "topic_unmerge",
                 "ai:narrative",
+                # 2026-08-03 補 refresh_derived：該 handler 早在 `29c8e1f`
+                # （匯入後自動 refresh report_patent_base）就上線，本契約集合漏更新。
+                # ⚠ 它紅了很久卻沒被看見——我一直用 `-k` 篩選跑回歸，
+                # 完整回歸才會執行到這支。長期紅的測試會從警訊退化成背景雜訊。
+                "refresh_derived",
             },
         )
 
