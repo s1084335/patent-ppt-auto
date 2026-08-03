@@ -563,7 +563,11 @@ table.data td.cell-wrap, table.data th.cell-wrap {
     <button class="nav-item" data-nav="reports" onclick="navTo('reports')">報表種類</button>
     <button class="nav-item" data-nav="export" onclick="navTo('export')">匯出報告</button>
     <div class="nav-section-label">進階</div>
-    <button class="nav-item" data-nav="comparison" onclick="navTo('comparison')">案件比對</button>
+    <!-- 🔴 2026-08-03 使用者：「案件比對區塊先移除掉」——只收**入口**。
+         renderComparison()、navTo 的 comparison 分支、後端 /api/comparison
+         與所有表單 DOM 全部保留（測試 test_comparison_has_create_form 守著）。
+         恢復方式：在此加回一個 nav-item 按鈕，data-nav 與 onclick 皆指向 comparison。
+         ⚠ 不要連實作一起刪——「先移除」的『先』就是指之後還要用。 -->
     <button class="nav-item" data-nav="status" onclick="navTo('status')">系統狀態</button>
   </nav>
 
@@ -629,7 +633,9 @@ table.data td.cell-wrap, table.data th.cell-wrap {
         <label class="form-label" for="import-purpose">用途</label>
         <select id="import-purpose" class="text-input full">
           <option value="general" selected>一般情報分析（general）</option>
-          <option value="case_comparison">案件比對（case_comparison）</option>
+          <!-- 🔴 2026-08-03 隨案件比對入口一併收起——選了也沒地方可以比對。
+               ⚠ 後端 IMPORT_PURPOSES 仍接受 case_comparison，既有資料的標記不受影響；
+               恢復時在此加回一個 value="case_comparison" 的 option 即可。 -->
         </select>
       </div>
 

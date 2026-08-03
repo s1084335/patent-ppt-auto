@@ -449,6 +449,36 @@ class NarrativeContractV6Tests(unittest.TestCase):
                            key="cpc_main_distribution")
         self.assertFalse(self._pick(warns, "未與"))
 
+    def test_too_little_content_is_flagged(self):
+        """🔴 C-9：版面給 432 字只寫 81 字（18.8%）——資訊在寫的時候就沒進去。
+
+        ⚠ 實測沒有任何一頁被版面裁掉。根因是我 07-31 寫的「容量是上限，不是目標」
+        被當成鼓勵留白，而且沒有相對的下限要求。使用者定調：要的是**濃縮**
+        （同一段版面塞進更多判讀），不是**丟棄**（把該講的省略掉）。
+        """
+        cap = {"ipc_main_distribution": {"max_points": 8, "max_chars": 54}}
+        points = [{"label": "現況", "text": f"第{i}類達{i}件"} for i in range(1, 4)]
+        points.append({"label": "意涵", "text": "布局集中"})
+        body = chr(10).join(p["text"] for p in points)
+        narratives = {"reports": {"ipc_main_distribution": {"variants": {"L4": {
+            "headline": "測試", "points": points, "text": body}}}}}
+        warns = ai_narrative_runner.validate_narrative_contract(narratives, cap)
+        self.assertTrue([w for w in warns if "偏低" in w or "用量" in w],
+                        f"寫太少沒有被標記：{warns}")
+
+    def test_full_enough_content_passes(self):
+        """寫到容量六成以上就不該被嫌少——下限不是要求寫滿。"""
+        cap = {"ipc_main_distribution": {"max_points": 4, "max_chars": 30}}
+        points = [{"label": "現況", "text": "A63B體育訓練器材次分類達47件為絕對主體"},
+                  {"label": "意涵", "text": "技術布局幾乎全落在運動訓練器材這一線"},
+                  {"label": "後續", "text": "跨領域延伸僅2件尚未形成第二布局線"},
+                  {"label": "現況", "text": "F03G彈力發動機僅2件為唯一跨界分類"}]
+        body = chr(10).join(p["text"] for p in points)
+        narratives = {"reports": {"ipc_main_distribution": {"variants": {"L4": {
+            "headline": "測試", "points": points, "text": body}}}}}
+        warns = ai_narrative_runner.validate_narrative_contract(narratives, cap)
+        self.assertFalse([w for w in warns if "偏低" in w or "用量" in w], warns)
+
     def test_other_reports_are_not_asked_to_mention_ipc(self):
         """⚠ 只有 CPC 需要對照 IPC；別的報表不得被這條規則波及。"""
         points = [{"label": "現況", "text": "CN受理39件"},

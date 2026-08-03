@@ -127,7 +127,8 @@
       "0B4FB8": "E8A445",
       "1268D6": "D0913D",
       "2E86E0": "B87E35",
-      "4A97E3": "A06B2D"
+      "4A97E3": "A06B2D",
+      "0891B2": "2F9FD8"
     },
     "_keep_comment": "刻意不換的顏色，兩者都是**畫在圖元上的文字**、由 data-on-fill 配對機制在轉色後重算，不該進 map：FFFFFF（深底上的白字）、1A1A1A（淺底上的深字，引擎 TEXT_ON_LIGHT）。⚠ 若把它們放進 map，會在重算之前就被換掉，配對機制反而失效。整版白底矩形另由 strip_background 處理。",
     "keep": [
@@ -203,7 +204,7 @@
       "left_in": 8.9,
       "top_in": 1.62,
       "width_in": 3.83,
-      "height_in": 4.86,
+      "height_in": 5.0,
       "height_with_caveat_in": 3.3,
       "header_inset_left_in": 0.18,
       "header_top_offset_in": 0.14,
@@ -309,7 +310,7 @@
       "width_in": 12.13,
       "height_in": 4.86,
       "row_height_in": 0.32,
-      "max_columns": 6,
+      "max_columns": 7,
       "empty_text_left_in": 0.8,
       "empty_text_top_in": 3.7,
       "empty_text_width_in": 11.73,
@@ -325,7 +326,7 @@
       "width_in": 12.13,
       "height_in": 2.88,
       "row_height_in": 0.32,
-      "max_columns": 6,
+      "max_columns": 7,
       "cell_margin_in": 0.02,
       "cell_inset_in": 0.08,
       "points_band_left_in": 0.6,
@@ -448,21 +449,16 @@
       "image_left_in": 0.6,
       "image_top_in": 1.86,
       "image_width_in": 8.9,
-      "image_height_in": 4.32,
+      "image_height_in": 5.0,
       "panel_left_in": 9.61,
       "panel_top_in": 1.86,
       "panel_width_in": 3.12,
-      "panel_height_in": 4.32,
+      "panel_height_in": 5.0,
       "panel_inset_in": 0.16,
       "panel_header_top_offset_in": 0.12,
       "panel_header_height_in": 0.3,
       "panel_text_top_offset_in": 0.5,
-      "conclusion_left_in": 0.6,
-      "conclusion_top_in": 6.24,
-      "conclusion_width_in": 12.13,
-      "conclusion_height_in": 0.5,
-      "conclusion_inset_left_in": 0.25,
-      "conclusion_text_top_offset_in": 0.08
+      "_height_comment": "4.32 → 5.0（2026-08-03）：底部「核心結論」橫幅取消後把空間讓給圖。使用者定案『判讀區塊那裡要能帶出核心結論，不是每頁都要有』＋『圖表要大一點』——同一個改動解掉兩件事。⚠ 面板高度必須跟著，否則圖與面板下緣不齊。"
     },
     "_chart_wide_comment": "扁圖版型（ratio ≥3.5）：圖佔滿寬置頂，要點改底部橫幅並**跟著圖的實際底緣**走。⚠ 圖高是上限不是固定值——扁圖自然高度只有 1.6–3.1 in，固定高度會在圖與要點之間留一大塊空白（IPC 四階分布實測只用到 1.5 in）。band_min_top 保證要點不會貼在標題下方。",
     "chart_wide": {
@@ -519,7 +515,8 @@
       "conclusion_height_in": 0.6,
       "conclusion_inset_in": 0.25,
       "conclusion_text_top_offset_in": 0.1
-    }
+    },
+    "_max_columns_comment": "6 → 7（2026-08-03）：技術狀態在優先序第 4、代表專利第 7，維持 6 會剛好卡掉代表專利——使用者定案「兩個通道各自要做的都要能顯示，不要再被卡掉」。欄位順序由引擎的 priority_columns 決定，放不下時砍尾巴不砍中間。"
   },
   "_qa_comment": "產後溢出／重疊／邊距自檢的門檻。tolerance 給文字框內距與四捨五入留餘裕，不是用來吃掉真的溢出；line_height_ratio 與 cjk_char_width_ratio 用來估算文字框容量（中文字寬約等於字級），估到裝不下就寫 warning。",
   "qa": {

@@ -104,10 +104,18 @@ class B3PainPointRequiresMarketTests(unittest.TestCase):
 
 
 class B4SideBySideLayoutTests(unittest.TestCase):
-    """左右分欄 45/55（推翻稍早的圖滿寬）。"""
+    """左右分欄 45/55（2026-07-29 推翻稍早的圖滿寬）。
 
-    def test_ratio_45_55(self):
+    🔴 2026-08-03 **再次翻回圖滿寬**：4 列的扁圖在 55% 欄裡被縮到軸標籤只剩 7.6px，
+    實測看不清楚。⚠ 兩次的前提不同——07-29 時圖上的字是 13px，本次是 7.6px。
+    測試改為條件式而非刪除：只要有人改回兩欄，45/55 這個比例就必須重新成立。
+    """
+
+    def test_ratio_45_55_when_side_by_side(self):
         html = INDEX_HTML.read_text(encoding="utf-8")
+        container = " ".join(re.findall(r"\.report-single\s*\{([^}]*)\}", html))
+        if "flex-direction: column" in container:
+            self.skipTest("目前是單欄版面（圖滿寬、表格排下方），45/55 不適用")
         for sel, pct in ((".report-single-data", "45%"), (".report-single-chart", "55%")):
             m = re.search(re.escape(sel) + r"\s*\{([^}]*)\}", html)
             self.assertIsNotNone(m, f"找不到 {sel}")

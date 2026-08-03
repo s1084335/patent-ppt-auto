@@ -395,10 +395,13 @@ def test_points_render_as_bullets_with_emphasis(built):
         for para in shape.text_frame.paragraphs
         for run in para.runs
     ]
-    # P1-1 chart_hero：emphasis 那條升級成底部「核心結論」深藍條（白字粗體），
-    # 不再以紅字混在要點裡——最重要的一句要有自己的位置。
+    # 🔴 2026-08-03 規格變更：底部「核心結論」條取消，結論回到判讀要點裡
+    # （使用者：「判讀區塊那裡要能帶出核心結論，**還有不是每頁都要有核心結論**」）。
+    # 讓出的 0.5in 給了圖框（4.32 → 5.0 in）——同一個改動也解掉「圖表要大一點」。
+    # ⚠ 這裡改驗**結論沒有消失**：它應該仍在要點中並被強調，而不是另立一條橫幅。
     texts = " ".join(run.text for run in runs)
-    assert "核心結論" in texts, "hero 頁缺底部核心結論條"
+    assert "核心結論：" not in texts, "底部結論橫幅仍在（應已取消）"
+    assert texts.strip(), "hero 頁一個字都沒有"
     assert any(run.font.bold and any(ch.isdigit() for ch in run.text) for run in runs), (
         "關鍵數字沒有粗體"
     )

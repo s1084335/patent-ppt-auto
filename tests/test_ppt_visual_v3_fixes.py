@@ -370,6 +370,160 @@ class PanelHeightFitsContentTests(unittest.TestCase):
         self.assertGreater(bp._points_panel_height(theme, [], width_in=width), 0.5)
 
 
+class SplitPageTitleTests(unittest.TestCase):
+    """🔴 2026-08-03 使用者：**IPC/CPC 標題沒寫，看的人會搞混**。
+
+    這是 F-8 的後遺症——我把 SVG 內建標題（「IPC 主分類分布 - Level 4」）移除時
+    判斷「headline 已經能區分」，實測**不能**：
+      p7「技術分類布局：A63B次分類達47件」← 完全沒說這是 IPC
+      p8「技術分類布局：特殊訓練器械19件居首」← 也沒有，階層也不見了
+    四頁併排時讀者分不出 IPC/CPC、也分不出 subclass/main group。
+
+    ⚠ 移除重複資訊時，必須確認**剩下的那份真的講得完整**——
+    我當時把「取捨待驗收時看」寫進紀錄就放行，那是把驗證延後而不是做掉。
+
+    修法：拆頁時頁標題帶上引擎的 section 標題與 variant 顯示名（唯一來源，
+    不在組版端另寫一份對照表）。
+    """
+
+    SECTIONS = [{
+        "title": "IPC 主分類分布",
+        "report_key": "ipc_main_distribution",
+        "variants": [
+            {"label": "4 階 · Subclass", "file": "ipc_main_distribution_L4.svg", "variant_key": "L4"},
+            {"label": "5 階 · Main Group", "file": "ipc_main_distribution_L5.svg", "variant_key": "L5"},
+        ],
+    }, {
+        "title": "CPC 主分類分布",
+        "report_key": "cpc_main_distribution",
+        "variants": [
+            {"label": "4 階 · Subclass", "file": "cpc_main_distribution_L4.svg", "variant_key": "L4"},
+            {"label": "5 階 · Main Group", "file": "cpc_main_distribution_L5.svg", "variant_key": "L5"},
+        ],
+    }]
+
+    def _topic_of(self, chart: str) -> str:
+        spec = bp.PageSpec(page=1, kind="chart_hero", title="技術分類布局",
+                           topic="技術分類布局", report_keys=("ipc_main_distribution",),
+                           charts=(chart,))
+        return bp._chart_page_topic(spec, {"sections": self.SECTIONS})
+
+    def test_ipc_page_says_ipc(self):
+        self.assertIn("IPC", self._topic_of("ipc_main_distribution_L4.svg"))
+
+    def test_cpc_page_says_cpc(self):
+        self.assertIn("CPC", self._topic_of("cpc_main_distribution_L4.svg"))
+
+    def test_level_is_visible(self):
+        l4 = self._topic_of("ipc_main_distribution_L4.svg")
+        l5 = self._topic_of("ipc_main_distribution_L5.svg")
+        self.assertIn("4", l4)
+        self.assertIn("5", l5)
+        self.assertNotEqual(l4, l5, "兩個階層的頁標題一模一樣，讀者分不出來")
+
+    def test_unknown_chart_keeps_original_topic(self):
+        """⚠ 對不到 section 時維持原標題，不得產生空白或半截標題。"""
+        spec = bp.PageSpec(page=1, kind="chart_hero", title="競爭者佈局", topic="競爭者佈局",
+                           report_keys=("applicant_ranking",), charts=("applicant_ranking.svg",))
+        self.assertEqual(bp._chart_page_topic(spec, {"sections": self.SECTIONS}), "競爭者佈局")
+
+    def test_no_chart_keeps_original_topic(self):
+        spec = bp.PageSpec(page=1, kind="table", title="附錄", topic="附錄",
+                           report_keys=("cluster_topic_table",))
+        self.assertEqual(bp._chart_page_topic(spec, {"sections": self.SECTIONS}), "附錄")
+
+
+class ConclusionInPanelTests(unittest.TestCase):
+    """🔴 2026-08-03 使用者：「判讀區塊那裡要能帶出核心結論，**還有不是每頁都要有核心結論**」。
+
+    原本每頁底部固定一條「核心結論：…」橫幅，且結論那條會**從判讀面板移除**
+    （`listed = [p for p in points if text != conclusion]`）——結論與依據被拆到兩處。
+
+    改法：結論留在判讀面板（標 `emphasis`），底部橫幅取消。
+    ⚠ 附帶效果正是使用者要的「圖表大一點」：橫幅讓出 0.5in＋間距，圖框得以加高。
+    """
+
+    def _theme(self):
+        return bp.Theme.load(THEME_PATH)
+
+    def test_conclusion_stays_in_the_points_list(self):
+        """結論不得被排除在判讀面板之外——它是要點之一，不是附註。"""
+        points = [{"label": "現況", "text": "A63B達47件", "emphasis": False},
+                  {"label": "意涵", "text": "布局集中訓練器材", "emphasis": True}]
+        kept = bp._points_for_panel(points)
+        self.assertEqual(len(kept), 2, "結論那條被從面板拿掉了")
+        self.assertIn("布局集中訓練器材", [p["text"] for p in kept])
+
+    def test_conclusion_band_is_gone_from_chart_pages(self):
+        """圖表頁的底部橫幅取消——不是每頁都要有核心結論。
+
+        ⚠ 只針對圖表頁：研發方向建議頁**本身就是結論**，那條保留。
+        """
+        source = Path(bp.__file__).read_text(encoding="utf-8")
+        start = source.index("def _render_chart_hero")
+        body = source[start:source.index("def _render_chart_with_points")]
+        self.assertNotIn("核心結論：", body,
+                         "圖表頁仍畫結論橫幅；結論應由判讀面板的 emphasis 那條承擔")
+
+    def test_chart_box_is_taller_than_before(self):
+        """橫幅讓出的空間要真的給圖——否則只是少了東西、圖沒變大。"""
+        g = self._theme().geometry["chart_hero"]
+        self.assertGreaterEqual(g["image_height_in"], 4.9,
+                                f"圖框仍是 {g['image_height_in']} in，沒吃到橫幅讓出的空間")
+
+    def test_panel_height_follows_the_chart(self):
+        """右側判讀面板要跟著加高，否則兩邊不齊。"""
+        g = self._theme().geometry["chart_hero"]
+        self.assertAlmostEqual(g["panel_height_in"], g["image_height_in"], places=2)
+
+
+class ColumnPriorityAppliedTests(unittest.TestCase):
+    """G-2：欄位放不下時要**砍尾巴**，不是照 rows 的鍵順序砍。
+
+    🔴 實機 p11／p12／p20：`status`（技術狀態）排在 rows 的第 7 位，
+    被 `max_columns=6` 擋掉——S2 整輪的重點功能一格都沒顯示。
+    ⚠ 而且頁尾寫「完整欄位見附錄」，附錄也只有 6 欄——承諾了不存在的去處。
+
+    引擎已用 `priority_columns` 宣告重要性順序；組版端必須照它取欄。
+    """
+
+    ROWS = [{
+        "label": "拉繩捲輪回收機構", "patent_count": 15, "applicant_count": 13,
+        "top3_share": 33, "top_applicants": "祺驊 3", "status": "成長技術",
+        "representative": "CN123456 拉繩捲輪回收",
+    }]
+    LABELS = {"label": "主題標籤", "patent_count": "專利件數", "applicant_count": "申請人家數",
+              "top3_share": "前三大占比(%)", "top_applicants": "前三大申請人",
+              "status": "技術狀態", "representative": "代表專利"}
+    PRIORITY = ("label", "patent_count", "applicant_count", "status",
+                "top3_share", "top_applicants", "representative")
+
+    def test_status_survives_when_columns_are_cut(self):
+        """🔴 只放得下 4 欄時，技術狀態必須還在——它排在優先序第 4。"""
+        cols = bp._ordered_columns(self.ROWS, excluded=set(), priority=self.PRIORITY, limit=4)
+        self.assertIn("status", cols)
+
+    def test_order_follows_priority_not_dict_order(self):
+        cols = bp._ordered_columns(self.ROWS, excluded=set(), priority=self.PRIORITY, limit=7)
+        self.assertEqual(cols[:4], ["label", "patent_count", "applicant_count", "status"])
+
+    def test_unlisted_columns_come_after_priority(self):
+        """⚠ 沒列進優先序的欄位不得消失——排在後面，一樣受 limit 約束。"""
+        rows = [{**self.ROWS[0], "未列的欄": "x"}]
+        cols = bp._ordered_columns(rows, excluded=set(), priority=self.PRIORITY, limit=8)
+        self.assertEqual(cols[-1], "未列的欄")
+
+    def test_excluded_still_wins(self):
+        """排除清單優先於優先序——兩者衝突時不顯示。"""
+        cols = bp._ordered_columns(self.ROWS, excluded={"status"},
+                                   priority=self.PRIORITY, limit=7)
+        self.assertNotIn("status", cols)
+
+    def test_no_priority_falls_back_to_row_order(self):
+        cols = bp._ordered_columns(self.ROWS, excluded=set(), priority=(), limit=3)
+        self.assertEqual(cols, list(self.ROWS[0])[:3])
+
+
 class NoTruncatedInformationTests(unittest.TestCase):
     """🔴 使用者定案（2026-08-03）：**資訊不能有被截斷的**。
 

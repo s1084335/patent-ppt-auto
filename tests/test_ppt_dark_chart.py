@@ -244,6 +244,88 @@ class ChartTextSizeOnSlideTests(unittest.TestCase):
         self.assertGreaterEqual(self._slide_pt(svg, min(body)), self.MIN_SLIDE_PT)
 
 
+class AllChartsReadableOnSlideTests(unittest.TestCase):
+    """🔴 2026-08-03 使用者：「ppt 13 頁以後的內容，圖表以及圖表的字大小都不過關」
+    ＋「公司×國家那頁的表的大小」。
+
+    ⚠ P-2 我只改了兩支排名圖，**矩陣圖與象限圖完全沒動**——做了一半。
+    共同瓶頸都是**高度**：列數 × 列高把畫布撐高，塞進 4.32in 的圖框就整張縮小，
+    字級是等比縮的，於是 11px 變成 5pt。
+
+    這支測試涵蓋**每一支會上投影片的渲染函式**，判準一律是「縮放後的 pt」。
+    ⚠ 逐張修完再補測試會漏掉下一張；先把網張好，再逐一填綠。
+    """
+
+    MIN_SLIDE_PT = 12.0
+
+    def setUp(self):
+        self.theme = json.loads(THEME_PATH.read_text(encoding="utf-8"))
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+    def _slide_pt(self, svg: str, px: int) -> float:
+        g = self.theme["geometry"]["chart_hero"]
+        m = re.search(r'width="(\d+)" height="(\d+)"', svg)
+        w_in, h_in = int(m.group(1)) / 96, int(m.group(2)) / 96
+        scale = min(g["image_width_in"] / w_in, g["image_height_in"] / h_in)
+        return px * 72 / 96 * scale
+
+    def _check(self, svg: str, label: str):
+        # 標題類大字（≥20px）不列入——它們本來就大，且組版端會移除
+        sizes = [int(s) for s in re.findall(r'font-size="(\d+)"', svg) if int(s) < 20]
+        self.assertTrue(sizes, f"{label}: 找不到內文字級")
+        worst = min(sizes)
+        actual = self._slide_pt(svg, worst)
+        m = re.search(r'width="(\d+)" height="(\d+)"', svg)
+        self.assertGreaterEqual(
+            actual, self.MIN_SLIDE_PT,
+            f"{label}: 最小 {worst}px 縮放後僅 {actual:.1f}pt（下限 {self.MIN_SLIDE_PT}pt）"
+            f"；畫布 {m.group(1)}x{m.group(2)}px")
+
+    def test_company_country_matrix(self):
+        """p5 公司×國家交叉表——22 列讓畫布高 688px，字掉到約 5pt。"""
+        from backend.app.reports import chart_runner as cr
+        rows = [{"applicant_display_name": f"申請人公司名稱{i}", "jurisdiction": j,
+                 "patent_count": (i % 4) + 1}
+                for i in range(22) for j in ("CN", "TW", "US", "EP")]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "m.svg"
+            cr.render_matrix_chart(path, "公司×國家交叉表", rows,
+                                   "applicant_display_name", "jurisdiction")
+            self._check(path.read_text(encoding="utf-8"), "公司×國家交叉表")
+
+    def test_year_bubble_matrix(self):
+        """p15／p16 年度矩陣。"""
+        from backend.app.reports import chart_runner as cr
+        rows = [{"applicant_display_name": f"申請人{i}", "application_year": 2011 + y,
+                 "patent_count": (i + y) % 5 + 1}
+                for i in range(10) for y in range(0, 15, 2)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "y.svg"
+            layout = cr.year_bubble_matrix_layout(rows, "applicant_display_name")
+            cr.render_year_bubble_matrix_chart(path, "申請人年度專利分布矩陣", layout,
+                                               layout["top_rows"])
+            self._check(path.read_text(encoding="utf-8"), "年度泡泡矩陣")
+
+    def test_line_chart(self):
+        """p2 申請趨勢。"""
+        from backend.app.reports import chart_runner as cr
+        rows = [{"application_year": 2011 + i, "patent_count": (i * 3) % 16} for i in range(16)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "l.svg"
+            cr.render_line_chart(path, "專利申請趨勢", rows, [])
+            self._check(path.read_text(encoding="utf-8"), "申請趨勢折線")
+
+    def test_lifecycle_chart(self):
+        """p3 生命週期。"""
+        from backend.app.reports import chart_runner as cr
+        rows = [{"application_year": 2011 + i, "applicant_count": i % 8 + 1,
+                 "patent_count": (i * 2) % 16 + 1} for i in range(15)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.svg"
+            cr.render_lifecycle_chart(path, "專利生命週期", rows)
+            self._check(path.read_text(encoding="utf-8"), "生命週期軌跡")
+
+
 class ChartTitleStrippedOnSlideTests(unittest.TestCase):
     """F-8：頁標題與圖表內建標題講同一件事，上下兩行重複。
 
@@ -292,6 +374,57 @@ def _luminance(hex_color: str) -> float:
 def _contrast(a: str, b: str) -> float:
     la, lb = _luminance(a), _luminance(b)
     return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def _hue(hex_color: str) -> float:
+    """色相角（度）——判斷兩色是不是「同一種顏色」比亮度更貼近人眼。"""
+    import colorsys
+    v = hex_color.lstrip("#")
+    r, g, b = (int(v[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    return colorsys.rgb_to_hls(r, g, b)[0] * 360
+
+
+class NoColourCollisionTests(unittest.TestCase):
+    """🔴 G-8：轉色後兩個**不同語意**的來源色變成同一個顏色。
+
+    實機 p13「全部專利」與「有最新受讓人」在深空頁上是同一個橘色，圖例分不出來：
+
+        0A3A80 → FFB74D   ← W-2 新加的排名色階最深階（總長條）
+        006DF5 → FFB74D   ← 既有的 COLOR_APPLICATION（受讓人區段）
+
+    ⚠ 我加色階時**沒檢查目標色是否已被占用**。既有的
+    `test_every_engine_colour_is_mapped_or_kept` 只驗「有沒有對照」，
+    不驗「兩個來源是否撞到同一目標」——所以測試全綠卻撞色。
+
+    ⚠ 不是所有共用都算錯：一群灰階結構色一起對到面板底是刻意的。
+    只有**同時出現在同一張圖、且語意不同**的那些不得相撞。
+    """
+
+    # 同一張圖裡並存、必須看得出差別的成對色（來源色）。
+    MUST_DIFFER = [
+        ("0A3A80", "0891B2", "排名圖：全部專利 vs 有最新受讓人"),
+    ]
+
+    def test_pairs_do_not_map_to_same_colour(self):
+        theme = json.loads(THEME_PATH.read_text(encoding="utf-8"))
+        mapping = {k.upper(): v.upper() for k, v in theme["chart_recolor"]["map"].items()}
+        for a, b, why in self.MUST_DIFFER:
+            ta, tb = mapping.get(a.upper()), mapping.get(b.upper())
+            self.assertIsNotNone(ta, f"{a} 沒有對照")
+            self.assertIsNotNone(tb, f"{b} 沒有對照")
+            self.assertNotEqual(ta, tb, f"{why}：{a} 與 {b} 都對到 {ta}，讀者分不出來")
+
+    def test_pairs_are_visibly_different(self):
+        """⚠ 不同色碼還不夠——要**看得出**不同（對比 ≥1.5 或色相差 ≥30°）。"""
+        theme = json.loads(THEME_PATH.read_text(encoding="utf-8"))
+        mapping = {k.upper(): v.upper() for k, v in theme["chart_recolor"]["map"].items()}
+        for a, b, why in self.MUST_DIFFER:
+            ta, tb = mapping[a.upper()], mapping[b.upper()]
+            ratio = _contrast(ta, tb)
+            hue_gap = abs(_hue(ta) - _hue(tb))
+            hue_gap = min(hue_gap, 360 - hue_gap)
+            self.assertTrue(ratio >= 1.5 or hue_gap >= 30,
+                            f"{why}：{ta} 與 {tb} 對比 {ratio:.2f}、色相差 {hue_gap:.0f}°，仍難分辨")
 
 
 class RankingScaleOnDarkTests(unittest.TestCase):

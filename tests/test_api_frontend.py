@@ -69,21 +69,31 @@ class FrontendSkeletonTests(unittest.TestCase):
                 self.assertRegex(self.html, rf'id="{region_id}"')
 
     def test_nav_items_present(self):
-        """左導覽（workspace 內功能）：分類區 / 報表種類 / 案件比對 / 匯出報告 / 系統狀態。
+        """左導覽（workspace 內功能）：分類區 / 報表種類 / 匯出報告 / 系統狀態。
 
         （分群任務已移除：分群改為匯入後自動背景觸發，使用者不需手動點。）
         （專利總覽於 2026-07-24 移至頂列：它是跨 workspace 的全庫視角，與左導覽的
         workspace 內功能不同層——見 test_overview_moved_to_topbar_not_nav。）
+        （🔴 案件比對於 2026-08-03 使用者定案**先移除入口**——見
+        test_comparison_entry_removed。後端 API 與前端渲染程式保留，只收起入口。）
         """
         for nav_key in (
             "topics",      # 分類區
             "reports",     # 報表種類勾選
-            "comparison",  # 案件比對
             "export",      # 匯出報告
             "status",      # 系統狀態
         ):
             with self.subTest(nav_key=nav_key):
                 self.assertRegex(self.html, rf'data-nav="{nav_key}"')
+
+    def test_comparison_entry_removed(self):
+        """🔴 2026-08-03 使用者：「案件比對區塊先移除掉」。
+
+        ⚠ 只收**入口**：`renderComparison()` 與後端 `/api/comparison` 都保留，
+        要恢復時把導覽鈕加回來即可。刪掉整條線的話，之後要用得重寫。
+        """
+        self.assertNotRegex(self.html, r'data-nav="comparison"',
+                            "案件比對導覽鈕仍在")
 
     def test_theme_toggle_and_dark_styles(self):
         """亮暗雙主題：切換鈕與 dark 主題樣式都在。"""
@@ -151,7 +161,11 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertNotRegex(self.html, r"Bearer\s+[A-Za-z0-9_\-]{8,}")
 
     def test_comparison_has_create_form(self):
-        """案件比對有建立比對案件表單（案件名稱、文字、建立按鈕）。"""
+        """案件比對的建立表單仍在（入口雖已收起，實作不得被刪）。
+
+        ⚠ 2026-08-03 移除的是導覽入口，不是功能本身——這支測試因此仍然有效，
+        它守的正是「先移除」的『先』：之後要恢復時東西還在。
+        """
         for needle in (
             "btn-create-comparison",
             "comp-case-title",
@@ -296,11 +310,20 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("/workspaces", self.html)
 
     def test_import_panel_has_purpose_options(self):
-        """用途下拉：general／case_comparison（預設 general），對齊後端 IMPORT_PURPOSES。"""
+        """用途下拉：目前只有 general。
+
+        🔴 2026-08-03 使用者定案：case_comparison 隨案件比對入口一併收起——
+        選得到卻沒地方比對是更糟的狀態。
+        ⚠ 後端 `IMPORT_PURPOSES` 仍接受 case_comparison，既有資料的標記不受影響；
+        這裡收的只是**前端選項**。
+        ⚠ 用 `<option value=...>` 精準比對，不用整份 HTML 搜字串——
+        後者會被註解裡的說明文字騙過去（本次實際發生）。
+        """
         self.assertIn("import-purpose", self.html)
-        for needle in ("general", "case_comparison", "一般情報分析", "案件比對"):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, self.html)
+        options = re.findall(r'<option value="([^"]+)"', self.html)
+        self.assertIn("general", options)
+        self.assertNotIn("case_comparison", options,
+                         "案件比對用途仍在下拉選項中")
 
     def test_import_calls_imports_endpoint(self):
         """開始匯入以 raw body 呼叫 POST /api/v1/imports（帶 filename/purpose/workspace 參數）。"""
@@ -546,7 +569,9 @@ class FrontendSkeletonTests(unittest.TestCase):
         nav = re.search(r'<nav id="nav-panel">(.*?)</nav>', self.html, re.S)
         self.assertIsNotNone(nav, "找不到 nav-panel")
         self.assertNotIn('data-nav="patents"', nav.group(1))
-        for nav_key in ("topics", "reports", "export", "comparison", "status"):
+        # ⚠ comparison 於 2026-08-03 收起入口（見 test_comparison_entry_removed），
+        # 故不列入；其餘 workspace 內功能仍須留在左導覽。
+        for nav_key in ("topics", "reports", "export", "status"):
             with self.subTest(nav_key=nav_key):
                 self.assertIn(f'data-nav="{nav_key}"', nav.group(1))
 

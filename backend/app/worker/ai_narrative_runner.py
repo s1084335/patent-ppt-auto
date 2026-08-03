@@ -55,7 +55,9 @@ SKILL_PATH = _resolve_skill_path()
 # 讓 CLI 只能砍掉數字（實測 points 只用 4 條 × 19 字，容量卻有 8 條 × 54 字）——
 # 規則本身是 W-1 的根因。改為句號 ≤1／逗號 ≤2，同時新增三道內容鎖：
 # 現況必須帶數字、每頁至少一條意涵、CPC 必須與 IPC 對照。
-PROMPT_VERSION = "report_narrative_v6"
+# v7（2026-08-03）：版面用量下限（要濃縮不要丟棄）＋敘述措辭四層
+# （客觀描述 → 專利數據解讀 → 合理推論 → 分析限制）＋結論回到要點（標 emphasis）。
+PROMPT_VERSION = "report_narrative_v7"
 
 # ── 三件套契約上限（v4；單一來源，skill 條文與驗證都以此為準）──
 # ⚠ 暫定值：理想上由 theme.json v2 的要點框尺寸換算，v2（skill creator 重建中）
@@ -85,6 +87,15 @@ NARRATIVE_IMPLICATION_LABELS = ("意涵",)   # 這一類在講意義 → 每頁�
 # 沒有的分類及其意義。實機 p10／p11 與 p8／p9 逐字相同，F-4 修好的只是
 # 「取到對的 variant」這個機制，內容上該講什麼差異是這一層的事。
 NARRATIVE_CONTRAST_WITH = {"cpc_main_distribution": "IPC"}
+
+# 🔴 C-9（2026-08-03）：版面用量下限。
+# 實測 IPC L4 頁容量 8 條 × 54 字＝432 字，實際只寫 81 字（**18.8%**），
+# 而且**沒有任何一頁被版面裁掉**——資訊是在寫的時候就沒進去。
+# ⚠ 根因是我 07-31 寫的「容量是上限，不是目標」被當成鼓勵留白，
+# 且沒有相對的下限要求。使用者定調：要的是**濃縮**（同一段版面塞進更多判讀），
+# 不是**丟棄**（把該講的省略掉）。
+# 0.6 不是要求寫滿——留四成餘裕給「這張圖確實只看得出兩件事」的情況。
+NARRATIVE_MIN_FILL_RATIO = 0.6
 
 
 def validate_narrative_contract(
@@ -167,6 +178,18 @@ def validate_narrative_contract(
             if not any(label in NARRATIVE_IMPLICATION_LABELS for label in labels):
                 warnings.append(
                     f"{where} 沒有任何「意涵」——只描述數據不說意義，停在「看到什麼數據」那一層")
+            # 鎖七·版面用量不得過低（C-9）。
+            # ⚠ 量的是**該頁實際容量**，不是全域上限——側欄頁與滿寬頁差 4 倍，
+            # 用同一個絕對字數當門檻會讓側欄頁永遠不合格。
+            # ⚠ 只在**知道該頁實際容量**時才判——沒有 capacity 就不知道版面多大，
+            # 拿全域上限（7×55＝385）當分母會讓側欄頁永遠不合格。
+            room = (limits.get("max_points") or 0) * (limits.get("max_chars") or 0)
+            used = sum(len(str((p or {}).get("text") or "")) for p in points)
+            if room and used < room * NARRATIVE_MIN_FILL_RATIO:
+                warnings.append(
+                    f"{where} 版面用量偏低（{used}/{room} 字＝{used / room:.0%}，"
+                    f"下限 {NARRATIVE_MIN_FILL_RATIO:.0%}）——"
+                    "這張圖看得出的事沒講完；要的是濃縮不是省略")
             # 鎖六·該對照的要對照著講（CPC vs IPC）。
             counterpart = NARRATIVE_CONTRAST_WITH.get(report_key)
             if counterpart:

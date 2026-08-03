@@ -1747,6 +1747,16 @@ def _render_section_divider(slide, theme: Theme, spec: PageSpec, ctx: dict[str, 
                   size=theme.size("section_subtitle_pt"), color="on_dark_soft")
 
 
+def _points_for_panel(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """判讀面板要顯示的要點——**結論也在裡面**。
+
+    🔴 2026-08-03：原本結論那條會被濾掉（它被抽去底部「核心結論」橫幅），
+    造成結論與支撐它的依據分處兩地。使用者定案：結論回到判讀區塊，
+    且**不是每頁都要有**——沒有結論性的那條就不標 `emphasis`，不硬湊。
+    """
+    return list(points)
+
+
 def _conclusion_text(headline: str, points: list[dict[str, Any]]) -> str:
     """核心結論條的文字：emphasis 那條 → 「意涵」那條 → headline。
 
@@ -1787,10 +1797,11 @@ def _render_chart_hero(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any])
                             width=g["image_width_in"], height=g["image_height_in"])
 
     headline, points, _ = ctx["narratives_by_page"].get(spec.page, ("", [], False))
-    conclusion = _conclusion_text(headline, points)
-    # 右欄＝完整要點面板（2026-07-31 二輪回饋「字太省」：原本固定 3 張小卡
-    # 塞不下 4–6 條判讀）。結論那條不重複（已在底部條）；判讀限制作尾條。
-    listed = [p for p in points if str(p.get("text") or "") != conclusion]
+    # 🔴 2026-08-03 使用者：「判讀區塊那裡要能帶出核心結論，**還有不是每頁都要有
+    # 核心結論**」。原本結論被抽去底部橫幅、並從面板濾掉——結論與依據拆在兩處，
+    # 而且每頁都硬要有一條。改為結論留在面板（由 `emphasis` 標示），橫幅取消。
+    # ⚠ 附帶效果正是「圖表要大一點」：橫幅讓出的空間全部給圖框。
+    listed = _points_for_panel(points)
     if not listed and not points:
         listed = [{"label": label, "text": text, "emphasis": False}
                   for label, text in _row_highlights(spec, ctx)]
@@ -1818,19 +1829,6 @@ def _render_chart_hero(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any])
                           top=g["panel_top_in"] + g["panel_text_top_offset_in"],
                           width=text_width, height=text_height, size=size)
 
-    if conclusion:
-        _add_band(slide, theme, g["conclusion_left_in"], g["conclusion_top_in"],
-                  g["conclusion_width_in"], g["conclusion_height_in"], "panel_deep", rounded=True)
-        text_width = g["conclusion_width_in"] - g["conclusion_inset_left_in"] * 2
-        body, _ = _fit_text(theme, f"核心結論：{conclusion}", width_in=text_width,
-                            height_in=g["conclusion_height_in"] - g["conclusion_text_top_offset_in"] * 2,
-                            size_pt=theme.size("conclusion_pt"))
-        _add_text(slide, theme, body,
-                  left=g["conclusion_left_in"] + g["conclusion_inset_left_in"],
-                  top=g["conclusion_top_in"] + g["conclusion_text_top_offset_in"],
-                  width=text_width,
-                  height=g["conclusion_height_in"] - g["conclusion_text_top_offset_in"] * 2,
-                  size=theme.size("conclusion_pt"), color="on_dark", bold=True)
     _render_footnote(slide, theme, spec, ctx)
 
 
@@ -2015,12 +2013,12 @@ def _render_table(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> N
     _render_header(slide, theme, spec, ctx)
     g = theme.geometry["table"]
     rows = _first_rows(spec, ctx)
-    labels, excluded = _table_display(ctx, spec)
+    labels, excluded, priority = _table_display(ctx, spec)
     shown = _add_table(slide, theme, rows,
                        left=g["left_in"], top=g["top_in"], width=g["width_in"], height=g["height_in"],
                        row_height=g["row_height_in"], max_columns=int(g["max_columns"]),
                        cell_margin_in=g["cell_margin_in"], cell_inset_in=g["cell_inset_in"],
-                       labels=labels, excluded=excluded)
+                       labels=labels, excluded=excluded, priority=priority)
     _render_footnote(slide, theme, spec, ctx,
                      _rows_note(shown, rows, int(g["max_columns"]), _visible_column_count(rows, excluded)))
 
@@ -2035,12 +2033,12 @@ def _render_table_with_points(slide, theme: Theme, spec: PageSpec, ctx: dict[str
     _render_header(slide, theme, spec, ctx)
     g = theme.geometry["table_with_points"]
     rows = _first_rows(spec, ctx)
-    labels, excluded = _table_display(ctx, spec)
+    labels, excluded, priority = _table_display(ctx, spec)
     shown = _add_table(slide, theme, rows,
                        left=g["left_in"], top=g["top_in"], width=g["width_in"], height=g["height_in"],
                        row_height=g["row_height_in"], max_columns=int(g["max_columns"]),
                        cell_margin_in=g["cell_margin_in"], cell_inset_in=g["cell_inset_in"],
-                       labels=labels, excluded=excluded)
+                       labels=labels, excluded=excluded, priority=priority)
     # 要點橫幅跟著表格底緣走：表高會依實際列數收縮（主題常只有 5–8 列），
     # 橫幅若固定在「排滿 10 列」的位置，中間會空一大塊（實機轉圖驗到）。
     # ⚠ 只往上收、不往下移：theme 的 top 是**最低**位置，超過就會壓到頁尾。
@@ -2303,19 +2301,28 @@ def _render_direction(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) 
     _render_footnote(slide, theme, spec, ctx)
 
 
-def _table_display(ctx: dict[str, Any], spec: PageSpec) -> tuple[dict[str, str], set[str]]:
-    """本頁表格的欄名對照與排除欄：引擎那份優先，缺鍵才用本檔 fallback。
+def _table_display(ctx: dict[str, Any], spec: PageSpec) -> tuple[dict[str, str], set[str], tuple[str, ...]]:
+    """本頁表格的欄名對照、排除欄與**顯示優先序**：引擎那份優先，缺鍵才用本檔 fallback。
 
     排除欄是**逐報表**的（同一欄在 A 報表要藏、在 B 報表要顯示），故依本頁掛的
     report_keys 逐一併集。
+
+    🔴 優先序（2026-08-03）：欄位放不下時砍尾巴不砍中間。上一輪 `status`
+    排在 rows 第 7 位被 `max_columns` 依鍵順序切掉，整輪重點功能一格沒顯示（G-2）。
+    ⚠ 哪一欄重要是**資料語意**，故順序由引擎宣告，組版端只照著取。
     """
     display = ctx["report_data"].get("table_display") or {}
     labels = {**TABLE_COLUMN_LABELS, **(display.get("column_labels") or {})}
     excluded = set(TABLE_EXCLUDED_COLUMNS)
     per_report = display.get("excluded_columns") or {}
+    priority: list[str] = []
+    per_report_priority = display.get("priority_columns") or {}
     for key in spec.report_keys:
         excluded.update(per_report.get(key) or ())
-    return labels, excluded
+        for name in per_report_priority.get(key) or ():
+            if name not in priority:
+                priority.append(name)
+    return labels, excluded, tuple(priority)
 
 
 def _rows_note(shown: int, rows: list[dict[str, Any]], max_columns: int, visible_columns: int) -> str:
@@ -2352,6 +2359,31 @@ def _first_rows(spec: PageSpec, ctx: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def _ordered_columns(
+    rows: list[dict[str, Any]],
+    *,
+    excluded: set[str],
+    priority: tuple[str, ...] | list[str],
+    limit: int,
+) -> list[str]:
+    """決定表格要顯示哪幾欄、以什麼順序——**放不下時砍尾巴，不砍中間**。
+
+    🔴 G-2（2026-08-03 實機）：`status`（技術狀態）在 rows 裡排第 7，
+    被 `max_columns=6` 依鍵順序切掉——S2 整輪的重點功能一格都沒顯示出來，
+    而頁尾還寫著「完整欄位見附錄」，附錄同樣只有 6 欄。
+
+    ⚠ 順序取自引擎的 `priority_columns`（唯一來源），組版端不自己排——
+    哪一欄重要是資料語意，不是版面問題。
+    ⚠ 沒列進優先序的欄位排在後面但**不消失**，否則新增欄位會被靜默吞掉。
+    """
+    if not rows:
+        return []
+    available = [name for name in rows[0] if str(name) not in excluded]
+    ordered = [name for name in priority if name in available]
+    ordered += [name for name in available if name not in ordered]
+    return ordered[:limit]
+
+
 def _add_table(
     slide,
     theme: Theme,
@@ -2367,6 +2399,7 @@ def _add_table(
     cell_inset_in: float,
     labels: dict[str, str],
     excluded: set[str],
+    priority: tuple[str, ...] = (),
 ) -> int:
     """把引擎 rows 畫成表格。
 
@@ -2384,7 +2417,8 @@ def _add_table(
 
     # 欄位顯示規則：排除欄與中文欄名以引擎那份為準（labels／excluded 由呼叫端備妥），
     # 欄值轉譯仍在本檔（source_field 的原始欄值不得入畫面，轉「技術／功效」）。
-    columns = [name for name in rows[0] if str(name) not in excluded][:max_columns]
+    columns = _ordered_columns(rows, excluded=excluded, priority=priority,
+                               limit=max_columns)
 
     # 🔴 2026-08-03 使用者定案：**資訊不能有被截斷的**。
     # 原本是「放不下就切掉加『…』」——讀者既不知道被切掉什麼，也無從查證。
@@ -2615,6 +2649,9 @@ def _expand_page_layout(report_data: dict[str, Any], charts: ChartIndex | None =
     evidence.sort(key=_evidence_rank)
     merged = head + evidence + base[anchor:]
     merged = _split_pairs_by_policy(merged, charts)
+    # 🔴 拆頁後補回分類系統與階層（F-8 移除 SVG 標題後，頁標題必須自己講清楚
+    # 這是 IPC 還是 CPC、哪一階——否則四頁併排讀者分不出誰是誰）。
+    merged = [_spec_with(spec, topic=_chart_page_topic(spec, report_data)) for spec in merged]
     # ⚠ 版型的長寬比調整要在**拆頁之後**：多圖頁要拆完才知道每頁只有一張圖，
     # 且動態插頁走 `_kind_for_report` 不經基礎迴圈——放在這裡才涵蓋全部頁面。
     merged = [_spec_with(spec, kind=_kind_for_aspect(spec.kind, spec.charts, charts))
@@ -2644,6 +2681,33 @@ def _split_by_channel(spec: PageSpec, report_data: dict[str, Any]) -> list[PageS
 def theme_comparison_columns() -> list[float]:
     """並排版型的欄位左緣（欄數＝len）。⚠ 取自 theme，不在程式寫死欄數。"""
     return list(Theme.load().geometry["comparison"]["column_left_in"])
+
+
+def _chart_page_topic(spec: PageSpec, report_data: dict[str, Any]) -> str:
+    """拆頁後的頁標題主題——帶上分類系統與階層。
+
+    🔴 2026-08-03 使用者：「IPC/CPC 標題沒寫，看的人會搞混」。
+    F-8 移除 SVG 內建標題（「IPC 主分類分布 - Level 4」）時，我判斷
+    「headline 已經能區分」——實測**不能**：p7「技術分類布局：A63B次分類達47件」
+    完全沒說這是 IPC，階層也不見了。四頁併排讀者分不出誰是誰。
+
+    ⚠ 顯示名取自引擎的 section title 與 variant label（**唯一來源**），
+    不在組版端另寫一份 L4→「次分類」的對照表——那就是第二處落點。
+    ⚠ 對不到 section 時回原 topic，不得產生半截標題。
+    """
+    if not spec.charts:
+        return spec.topic
+    wanted = str(spec.charts[0])
+    for section in (report_data.get("sections") or []):
+        for variant in (section.get("variants") or []):
+            if str(variant.get("file") or "") != wanted:
+                continue
+            title = str(section.get("title") or "").strip()
+            label = str(variant.get("label") or "").strip()
+            if title and label:
+                return f"{title}（{label}）"
+            return title or spec.topic
+    return spec.topic
 
 
 def _split_pairs_by_policy(layout: list[PageSpec], charts: ChartIndex | None = None) -> list[PageSpec]:

@@ -55,6 +55,10 @@ STATUS_STAGNANT_BAND = (0.59, 0.79)
 # 但那是噪音不是訊號；本案 13 個主題有 3 個落在這裡。
 STATUS_MIN_SAMPLE = 5
 
+# 代表專利取幾件：前三大申請人各一件。⚠ 上限與 `_compute_top_applicants` 的前三大
+# 對齊——取多於它就會開始取到沒列在表上的申請人，讀者對不起來。
+REPRESENTATIVE_MAX = 3
+
 
 def classify_topic_status(metrics: dict[str, Any], median_count: float) -> str:
     """依五類條件判定技術狀態；判定優先序見下。
@@ -148,22 +152,35 @@ def _pick_representative(
     ⚠ 選法必須**確定性可重現**：最大申請人 → 申請年最新 → patent_id 最小。
     同一份資料重跑必須挑到同一件，否則兩次報表對不起來、使用者無從查證。
     """
-    empty = {"representative_patent": "", "representative_applicant": "",
-             "representative_title": ""}
     if not top_applicants:
-        return empty
-    leader = top_applicants[0]["name"]
-    owned = [pid for pid in topic_patents if leader in app_by_patent.get(pid, set())]
-    if not owned:
-        return empty
-    # 年份缺漏者排最後（-1），不因為沒年份就被當成最新
-    best = max(owned, key=lambda pid: (int(patents.get(pid, {}).get("application_year") or -1), -pid))
-    meta = patents.get(best, {})
-    return {
-        "representative_patent": str(meta.get("number") or ""),
-        "representative_applicant": leader,
-        "representative_title": str(meta.get("title") or ""),
-    }
+        return {"representative": ""}
+    # ⚠ **前三大申請人各取一件**（2026-08-03 使用者：「專利號可以取多個」）。
+    # 取同一家的三件只代表那一家；各取一件才代表這個主題的主要玩家分別在做什麼，
+    # 解讀端也才有素材講出「A 做 X、B 做 Y」的布局差異。
+    numbers: list[str] = []
+    for applicant in top_applicants[:REPRESENTATIVE_MAX]:
+        owned = [pid for pid in topic_patents
+                 if applicant["name"] in app_by_patent.get(pid, set())]
+        if not owned:
+            continue
+        # 年份缺漏者排最後（-1），不因為沒年份就被當成最新
+        best = max(owned, key=lambda pid: (int(patents.get(pid, {}).get("application_year") or -1), -pid))
+        number = str(patents.get(best, {}).get("number") or "")
+        if number and number not in numbers:
+            numbers.append(number)
+    # ⚠ 表格欄**只放專利號**（2026-08-03 使用者定案）。
+    #
+    # 一度改成「專利號＋文獻備註」，實算後行不通：文獻備註是 **60 字目標線、
+    # 100 字上限**的完整句子（`ai_patent_note_runner`），欄寬 2.5in 時每列要 4–7 行，
+    # 技術表 5 列就需 6.4–11.2 in，而表格區只有 2.88 in——差 2–4 倍。
+    # ⚠ 它也不是欄位值，是句子；且 `ai:patent_note` 是**手動觸發、只補空值**，
+    # 沒跑過就是空的，表格會出現整欄空白。
+    #
+    # 「這幾件專利做了什麼」改由**判讀要點**講——那裡本來就要提代表性專利，
+    # 而且不受 60 字與欄寬限制。專利號留在表格供查證，兩邊各司其職。
+    # 也不回傳申請人——「前三大申請人」欄已經列出誰在這個主題。
+    # `note`（文獻備註）仍在 patents 資料裡供解讀端引用，只是不進表格欄。
+    return {"representative": "、".join(numbers)}
 
 
 def build_topic_effect_table(

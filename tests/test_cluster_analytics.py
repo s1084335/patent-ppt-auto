@@ -369,13 +369,13 @@ class TopicTableWithPatentsTests(unittest.TestCase):
     @staticmethod
     def _patents(years):
         return {pid: {"application_year": year, "number": f"CN{pid:06d}",
-                      "title": f"標題{pid}"} for pid, year in years.items()}
+                      "note": f"備註{pid}"} for pid, year in years.items()}
 
     def test_without_patents_keeps_old_shape(self):
         row = self._rows()[0]
         self.assertEqual(row["patent_count"], 10)
         self.assertNotIn("status", row)
-        self.assertNotIn("representative_patent", row)
+        self.assertNotIn("representative", row)
 
     def test_with_patents_emits_status(self):
         row = self._rows(self._patents({pid: (2022 if pid > 3 else 2015)
@@ -391,32 +391,39 @@ class TopicTableWithPatentsTests(unittest.TestCase):
         self.assertEqual(row["recent_count"], 8)
         self.assertEqual(row["early_count"], 0)
 
-    def test_representative_patent_is_from_largest_applicant(self):
-        """代表專利＝該主題內**件數最多的申請人**的專利，取申請年最新那件。
+    def test_representative_takes_one_patent_per_top_applicant(self):
+        """代表專利＝**前三大申請人各一件**（2026-08-03 使用者：專利號可以取多個）。
 
-        🔴 使用者：「分類有了，但缺證據」。代表專利就是證據——
-        說「馬達自鎖技術集中」的下一頁要能指出是哪一件、誰的、講什麼。
-        ⚠ 選法必須確定性可重現：最大申請人 → 申請年最新 → patent_id 最小。
+        🔴 使用者：「分類有了，但缺證據」。代表專利就是證據。
+        ⚠ 取同一家的三件只代表那一家；各取一件才代表這個主題的主要玩家分別在做什麼，
+        解讀端才有素材講「A 做 X、B 做 Y」的布局差異。
+        ⚠ 表格欄只放專利號——文獻備註 60–100 字放不進欄位（每列要 4–7 行、
+        表格區只有 2.88 in），內容由判讀要點講。
+        ⚠ 選法必須確定性可重現：每家取申請年最新 → patent_id 最小。
         """
-        # A1 拿到 pid 1/5/9（%4==1），其中 9 最新
         patents = self._patents({pid: (2020 + pid % 5) for pid in range(1, 11)})
         row = self._rows(patents)[0]
-        self.assertEqual(row["representative_applicant"], "A1")
-        self.assertEqual(row["representative_patent"], "CN000009")
-        self.assertEqual(row["representative_title"], "標題9")
+        numbers = row["representative"].split("、")
+        self.assertEqual(len(numbers), 3, f"應取前三大申請人各一件，實得 {numbers}")
+        self.assertEqual(len(set(numbers)), 3, "同一件不得重複出現")
+        self.assertTrue(all(n.startswith("CN") for n in numbers), numbers)
 
     def test_representative_is_stable_across_runs(self):
         patents = self._patents({pid: 2022 for pid in range(1, 11)})
-        first = self._rows(patents)[0]["representative_patent"]
+        first = self._rows(patents)[0]["representative"]
         for _ in range(3):
-            self.assertEqual(self._rows(patents)[0]["representative_patent"], first)
+            self.assertEqual(self._rows(patents)[0]["representative"], first)
 
     def test_missing_patent_meta_degrades_quietly(self):
-        """只有年份、沒有專利號時不得炸——代表專利留空即可。"""
+        """只有年份、沒有專利號與備註時不得炸——代表專利留空即可。
+
+        ⚠ 「文獻備註」在 `core_layer.patents`，不在 report_patent_base，
+        靠 LEFT JOIN 取回；JOIN 不到時要安靜降級，不能讓整張報表產不出來。
+        """
         patents = {pid: {"application_year": 2022} for pid in range(1, 11)}
         row = self._rows(patents)[0]
         self.assertIn("status", row)
-        self.assertEqual(row["representative_patent"], "")
+        self.assertEqual(row["representative"], "")
 
 
 if __name__ == "__main__":

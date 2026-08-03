@@ -93,12 +93,17 @@ def load_cluster_workspace_data(
     if all_patent_ids:
         # ⚠ 申請年、專利號、名稱併進**同一個查詢**帶回：技術狀態分類與代表專利
         # 都要用，另開查詢等於為同一批 patent_id 走兩三趟 DB。
+        # ⚠ 「文獻備註」在 `core_layer.patents`，**不在** report_patent_base
+        # （後者是 legacy_0021 的相容 VIEW；0039 加的 abstract 是產生備註的輸入，
+        # 不是備註本身）。故 LEFT JOIN 取回——取不到時為 NULL，代表專利只顯示號碼。
         cur.execute(
-            'SELECT DISTINCT patent_id, applicant_display_name, application_year, '
-            '       "未審查的公開號" AS patent_number, title '
-            "FROM derived_layer.report_patent_base "
-            "WHERE patent_id = ANY(%s) AND applicant_display_name IS NOT NULL "
-            "  AND applicant_display_name != ''",
+            'SELECT DISTINCT b.patent_id, b.applicant_display_name, b.application_year, '
+            '       b."未審查的公開號" AS patent_number, b.title, '
+            '       p."文獻備註" AS patent_note '
+            "FROM derived_layer.report_patent_base b "
+            "LEFT JOIN core_layer.patents p ON p.id = b.patent_id "
+            "WHERE b.patent_id = ANY(%s) AND b.applicant_display_name IS NOT NULL "
+            "  AND b.applicant_display_name != ''",
             (all_patent_ids,),
         )
         applicant_rows = cur.fetchall()
@@ -117,6 +122,7 @@ def load_cluster_workspace_data(
             "application_year": r.get("application_year"),
             "number": r.get("patent_number") or "",
             "title": r.get("title") or "",
+            "note": r.get("patent_note") or "",
         }
         for r in applicant_rows
     }
