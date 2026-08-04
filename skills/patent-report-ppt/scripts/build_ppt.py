@@ -417,7 +417,8 @@ def _points_area(theme: Theme, kind: str) -> tuple[float, float, int] | None:
 
 
 def narrative_capacity(theme: Theme | None = None,
-                       charts: ChartIndex | None = None) -> dict[str, dict[str, int]]:
+                       charts: ChartIndex | None = None,
+                       report_data: dict[str, Any] | None = None) -> dict[str, dict[str, int]]:
     """每張報表的要點區實際容量：{report_key: {max_points, max_chars}}。
 
     ⚠ 為什麼要這個（2026-07-31）：解讀 CLI 原本只拿到一組全域上限（4–7 條 ×55 字），
@@ -432,9 +433,18 @@ def narrative_capacity(theme: Theme | None = None,
     theme = theme or Theme.load()
     size = theme.size("point_text_pt")
     capacity: dict[str, dict[str, int]] = {}
-    for spec in PAGE_LAYOUT:
-        if spec.is_appendix:
-            continue
+    # 🔴 K-1（2026-08-04）：能拿到 report_data 就用**最終版面**逐頁算——
+    # lifecycle／公司×國家／家族佈局／年度矩陣是動態插頁，不在 PAGE_LAYOUT 裡，
+    # 舊迴圈完全沒給它們容量 → 契約退回全域 55 字、版面實際 33 字 →
+    # CLI 照 55 寫、組版把「後續」整條丟掉（第六輪實機 p3/p5/p6/p15）。
+    # resolve_layout 已含動態插頁、政策拆頁與扁圖長寬比判定，與渲染同一份決策。
+    specs: list[PageSpec]
+    if report_data is not None and charts is not None:
+        specs = [spec for spec in resolve_layout(report_data, charts, theme, {})
+                 if not spec.is_appendix and spec.kind not in {"cover", "direction"}]
+    else:
+        specs = [spec for spec in PAGE_LAYOUT if not spec.is_appendix]
+    for spec in specs:
         # ⚠ 用**實際渲染時**的版型算，不是宣告的版型：列在 SPLIT_PAIR_REPORTS 的
         # comparison 頁會被 `_split_pairs_by_policy` 拆成一圖一頁的 chart_hero，
         # 拿 comparison 的窄長條去算會嚴重低估（實測只算得出 1 條）。
@@ -1255,6 +1265,14 @@ def _new_textbox(slide, *, left: float, top: float, width: float, height: float)
     box = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(width), Inches(height))
     frame = box.text_frame
     frame.word_wrap = True
+    # 🔴 K-2（2026-08-04）：內距一律歸零。python-pptx 文字框預設左右內距各 0.1in，
+    # 而容量估算（_text_capacity）假設可用寬＝傳入寬——16pt 中文一字 0.222in，
+    # 等於每行少約 1 字，多段累積就溢出 1～2 行（p4/p13/p16 溢框、p3/p5/p6/p15
+    # 丟「後續」的共同殘差）。歸零後估算與實排在同一個座標系。
+    frame.margin_left = 0
+    frame.margin_right = 0
+    frame.margin_top = 0
+    frame.margin_bottom = 0
     return box, frame
 
 
@@ -1710,7 +1728,9 @@ def _render_points_panel(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any
                           height_in=trim_height, size_pt=theme.size("point_text_pt"))
     panel_height = _points_panel_height(
         theme, fitted, width_in=g["width_in"] - g["text_inset_right_in"], max_height_in=declared)
-    _add_band(slide, theme, g["left_in"], g["top_in"], g["width_in"], panel_height, "panel", rounded=True)
+    # 🔴 K-11（2026-08-04 使用者定案）：判讀要點**去框**（面板底色＋邊框移除）——
+    # 字超出框線是最醜的破版形態；p19 研發方向的卡片維持有框（使用者指名例外）。
+    # panel_height 仍供下方文字區高度計算使用，只是不再畫底框。
     _add_text(slide, theme, "判讀要點",
               left=g["left_in"] + g["header_inset_left_in"], top=g["top_in"] + g["header_top_offset_in"],
               width=g["width_in"] - g["text_inset_right_in"], height=g["header_height_in"],
@@ -1763,7 +1783,7 @@ def _render_points_band(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]
     # height 省略時回到宣告值——舊呼叫端（若有）行為不變。
     height = g["points_band_height_in"] if height is None else height
     inset = g["points_band_inset_in"]
-    _add_band(slide, theme, left, top, width, height, "panel", rounded=True)
+    # 🔴 K-11：去框（同側欄面板）。
     _add_text(slide, theme, "判讀要點",
               left=left + inset, top=top + g["points_band_header_top_offset_in"],
               width=width - inset - inset, height=g["points_band_header_height_in"],
@@ -2047,8 +2067,8 @@ def _render_chart_hero(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any])
     caveat = _caveat_of(spec)
     if caveat:
         blocks = blocks + [(CAVEAT_LABEL, caveat, "muted", False)]
-    _add_band(slide, theme, g["panel_left_in"], g["panel_top_in"],
-              g["panel_width_in"], g["panel_height_in"], "panel", rounded=True)
+    # 🔴 K-11（2026-08-04 使用者定案）：判讀要點**去框**——字超出框線是最醜的
+    # 破版形態；p19 研發方向的卡片維持有框（使用者指名例外）。
     _add_text(slide, theme, "判讀要點",
               left=g["panel_left_in"] + g["panel_inset_in"],
               top=g["panel_top_in"] + g["panel_header_top_offset_in"],
@@ -2113,7 +2133,7 @@ def _render_comparison(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any])
         if image is not None:
             _add_picture_fitted(slide, image,
                                 left=left, top=g["image_top_in"], width=width, height=g["image_height_in"])
-        _add_band(slide, theme, left, g["points_top_in"], width, g["points_height_in"], "panel", rounded=True)
+        # K-11：去框（同 chart_hero）。
         text_width = width - g["points_inset_right_in"]
         text_height = g["points_height_in"] - g["points_top_offset_in"] - g["points_bottom_pad_in"]
         size = theme.size("point_text_pt")
@@ -2167,8 +2187,7 @@ def _render_stat_callout(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any
 
     panel = theme.geometry["points_panel"]
     caveat = _caveat_of(spec)
-    _add_band(slide, theme, g["points_left_in"], g["points_top_in"],
-              g["points_width_in"], g["points_height_in"], "panel", rounded=True)
+    # K-11：去框（同 chart_hero）。
     _add_text(slide, theme, "判讀要點",
               left=g["points_left_in"] + panel["header_inset_left_in"],
               top=g["points_top_in"] + panel["header_top_offset_in"],
@@ -2271,6 +2290,14 @@ def _render_table_with_points(slide, theme: Theme, spec: PageSpec, ctx: dict[str
     _render_header(slide, theme, spec, ctx)
     g = theme.geometry["table_with_points"]
     rows = _first_rows(spec, ctx)
+    # 🔴 K-9（2026-08-04 使用者定案）：**內頁**代表專利只放 1 件（引擎排序後的首件）。
+    # 3 個號碼 × U+2011 不可拆＝3 行，把每列撐到 0.96in，可用高 3.03in 只塞得下
+    # 2 列（實機功效表 2/8）。附錄全表（_render_table）維持 3 件——「內頁精選、附錄放齊」。
+    rows = [
+        {**row, "representative": str(row.get("representative", "")).split("、")[0]}
+        if row.get("representative") else row
+        for row in rows
+    ]
     labels, excluded, priority = _table_display(ctx, spec)
     # 🔴 H-1（2026-08-03）：先算要點區**實際**要多高，剩下的全給表格。
     # ⚠ 順序不能反：表格能放幾列取決於剩多少空間，而剩多少取決於要點內容——
@@ -2397,7 +2424,7 @@ def _render_wide_points_band(slide, theme: Theme, spec: PageSpec, ctx: dict[str,
               + per_column_lines * size_pt / 72.0 * point_line_ratio(theme))
     height = min(g["band_bottom_in"] - top,
                  max(g["band_header_height_in"] + inset + inset, needed))
-    _add_band(slide, theme, g["band_left_in"], top, g["band_width_in"], height, "panel", rounded=True)
+    # 🔴 K-11：去框（同側欄面板）。
     _add_text(slide, theme, "判讀要點",
               left=g["band_left_in"] + inset, top=top + g["band_header_top_offset_in"],
               width=g["band_width_in"] - inset - inset, height=g["band_header_height_in"],
@@ -2408,9 +2435,28 @@ def _render_wide_points_band(slide, theme: Theme, spec: PageSpec, ctx: dict[str,
     text_height = height - g["band_text_top_offset_in"] - inset
     blocks = _trim_blocks(theme, _points_for(spec, ctx),
                           width_in=col_width, height_in=text_height * columns, size_pt=size)
-    per_column = max(1, math.ceil(len(blocks) / columns)) if blocks else 1
-    for index in range(columns):
-        chunk = blocks[index * per_column:(index + 1) * per_column]
+    # 🔴 K-3（2026-08-04）：分欄改**按行數**貪婪均分。原本按條數對半（3 條→左 2 右 1），
+    # 三層制後段長差異大——左欄（現況＋意涵）行數遠超右欄（後續），
+    # 實機 p7 左欄溢出壓到頁尾資料來源、p9 貼底。
+    per_line_band, _ = _text_capacity(theme, width_in=col_width, height_in=text_height,
+                                      size_pt=size, line_ratio=point_line_ratio(theme))
+    needs = [_lines_needed(f"{label}｜{text}" if label else text, per_line_band)
+             for label, text, _c, _e in blocks]
+    total_lines = sum(needs)
+    chunks: list[list[tuple[str, str, str, bool]]] = []
+    start = 0
+    acc = 0
+    for index, need in enumerate(needs):
+        # 加了這段會超過均分行數就先換欄（⚠ 加完才斷會把長段整段堆在左欄，
+        # 左欄溢出、右欄空一半——驗證時 p7 實際發生）。
+        if (len(chunks) < columns - 1 and acc > 0
+                and acc + need > total_lines / columns):
+            chunks.append(blocks[start:index])
+            start = index
+            acc = 0
+        acc += need
+    chunks.append(blocks[start:])
+    for index, chunk in enumerate(chunks[:columns]):
         if not chunk:
             continue
         _add_number_bold_text(slide, theme, chunk,

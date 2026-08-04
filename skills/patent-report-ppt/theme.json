@@ -8,7 +8,7 @@
     "width_in": 13.333,
     "height_in": 7.5
   },
-  "_font_comment": "字體全微軟正黑體（Microsoft JhengHei），含英數字不混排西文字體；build_ppt 會同時寫 latin／ea／cs 三個 typeface，否則中文會被 PowerPoint 退回新細明體。所有字級下限 12pt（2026-07-30 使用者定案），不得再往下調。",
+  "_font_comment": "字體全微軟正黑體（Microsoft JhengHei），含英數字不混排西文字體；build_ppt 會同時寫 latin／ea／cs 三個 typeface，否則中文會被 PowerPoint 退回新細明體。所有字級下限 12pt（2026-07-30 使用者定案），不得再往下調。 🔴 2026-08-04 使用者定案：內容文字一律 16pt（body/conclusion/flow/topic 全家族）；表格 12 與註記／圖例 12 維持——表格改 16 會讓內頁列數更少。",
   "font": {
     "family": "Microsoft JhengHei",
     "min_pt": 12.0,
@@ -19,7 +19,7 @@
     "section_subtitle_pt": 16.0,
     "title_pt": 26.0,
     "subtitle_pt": 14.0,
-    "body_pt": 15.0,
+    "body_pt": 16.0,
     "point_label_pt": 13.0,
     "point_text_pt": 16.0,
     "caveat_title_pt": 13.0,
@@ -42,12 +42,12 @@
     "panel_header_pt": 13.0,
     "page_number_pt": 12.0,
     "footnote_pt": 12.0,
-    "conclusion_pt": 15.0,
-    "flow_label_pt": 14.0,
-    "flow_text_pt": 13.0,
+    "conclusion_pt": 16.0,
+    "flow_label_pt": 16.0,
+    "flow_text_pt": 16.0,
     "flow_arrow_pt": 22.0,
-    "topic_name_pt": 15.0,
-    "topic_text_pt": 12.5,
+    "topic_name_pt": 16.0,
+    "topic_text_pt": 16.0,
     "_panel_border_comment": "面板邊框線寬（pt）。批2：圓角面板一律補 hairline 邊框，見 build_ppt._add_band。",
     "panel_border_pt": 1.0
   },
@@ -333,12 +333,13 @@
       "points_band_top_in": 4.62,
       "points_band_width_in": 12.13,
       "points_band_height_in": 1.75,
-      "points_band_inset_in": 0.18,
+      "points_band_inset_in": 0.26,
       "points_band_header_top_offset_in": 0.1,
       "points_band_header_height_in": 0.26,
       "points_band_text_top_offset_in": 0.42,
       "points_band_columns": 2,
-      "points_band_column_gap_in": 0.3
+      "points_band_column_gap_in": 0.3,
+      "_points_band_inset_comment": "2026-08-04 K-9 驗證：0.18 時表格末列在 COM 轉圖壓到「判讀要點」約 0.14in——列高是最小值、PowerPoint 實排會自長。0.26 是「技術主題 5 列要放得下」(test_ppt_table_full_capacity 3.84in) 允許的最大緩衝；行數屬轉圖驗不準項目，實機驗收若仍壓線再回來調（勿只憑轉圖判定）。"
     },
     "direction": {
       "body_left_in": 0.6,
