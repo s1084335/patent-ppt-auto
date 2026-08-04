@@ -32,6 +32,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from backend.app.db.connection import get_connection_kwargs
+from backend.app.transforms.patent_numbers import display_number_sql
 
 from .model import (
     EmbeddingMatrix,
@@ -395,19 +396,16 @@ def load_clustering_corpus(
         """
         parameters = (workspace_id,)
 
+    # 顯示號鏈唯一定義處＝transforms.patent_numbers（2026-08-04 治本收斂）。
+    # 本查詢走 psycopg sql.SQL 的 {} 佔位，故以字串串接嵌入靜態鏈，不用 f-string。
     query = sql.SQL(
         """
         SELECT
             p.id AS patent_id,
             p.{source_column} AS source_text,
-            COALESCE(
-                NULLIF(BTRIM(p."授權公告號"), ''),
-                NULLIF(BTRIM(p."審查的公告號"), ''),
-                NULLIF(BTRIM(p."未審查的公開號(轉換後)"), ''),
-                NULLIF(BTRIM(p."未審查的公開號"), ''),
-                NULLIF(BTRIM(p."申請號(轉換後)"), ''),
-                NULLIF(BTRIM(p."申請號"), '')
-            ) AS patent_number,
+            """
+        + display_number_sql("p")
+        + """ AS patent_number,
             e.embedding_model,
             e.model_version,
             e.preprocessing_version,

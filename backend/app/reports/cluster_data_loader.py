@@ -18,6 +18,7 @@ from psycopg.types.json import Jsonb
 
 from backend.app.db.connection import get_connection_kwargs
 from backend.app.reports.chart_runner import run_chart_trial
+from backend.app.transforms.patent_numbers import display_number_sql
 from backend.app.reports.cluster_analytics import (
     build_opportunity_matrix,
     build_topic_effect_table,
@@ -95,10 +96,13 @@ def load_cluster_workspace_data(
         # ⚠ 「文獻備註」在 `core_layer.patents`，**不在** report_patent_base
         # （後者是 legacy_0021 的相容 VIEW；0039 加的 abstract 是產生備註的輸入，
         # 不是備註本身）。故 LEFT JOIN 取回——取不到時為 NULL，代表專利只顯示號碼。
+        # 🔴 2026-08-04 治本：專利號走 display_number_sql 唯一定義處。
+        # 原本單取原值公開號——TW 案顯示西元前綴（202421229 而非扣 1911 的
+        # 11321229）、M 開頭授權案（公開號 NULL）代表專利直接空白。
         cur.execute(
-            'SELECT DISTINCT b.patent_id, b.applicant_display_name, b.application_year, '
-            '       b."未審查的公開號" AS patent_number, b.title, '
-            '       p."文獻備註" AS patent_note '
+            f'SELECT DISTINCT b.patent_id, b.applicant_display_name, b.application_year, '
+            f'       {display_number_sql("b")} AS patent_number, b.title, '
+            f'       p."文獻備註" AS patent_note '
             "FROM derived_layer.report_patent_base b "
             "LEFT JOIN core_layer.patents p ON p.id = b.patent_id "
             "WHERE b.patent_id = ANY(%s) AND b.applicant_display_name IS NOT NULL "

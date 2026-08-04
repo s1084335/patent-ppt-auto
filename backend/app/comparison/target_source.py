@@ -18,8 +18,15 @@ from __future__ import annotations
 
 from typing import Any
 
-# 專利號查找順序（第一個非空者作 patent_number）
-PATENT_NUMBER_COLUMNS = ["授權公告號", "審查的公告號", "未審查的公開號(轉換後)", "申請號(轉換後)"]
+from backend.app.transforms.patent_numbers import DISPLAY_NUMBER_PRIORITY
+
+# 專利號查找順序（第一個非空者作 patent_number）。
+# 2026-08-04 治本收斂：從顯示鏈唯一定義處**推導**——比對標的只認公告號與轉換後
+# （0020 定案，不含原值公開號／申請號），故過濾掉原值欄而非另抄一份順序。
+PATENT_NUMBER_COLUMNS = [
+    column for column in DISPLAY_NUMBER_PRIORITY
+    if column not in ("未審查的公開號", "申請號")
+]
 COL_PDF_URL = "文圖像文件(PDF)連結"
 
 
