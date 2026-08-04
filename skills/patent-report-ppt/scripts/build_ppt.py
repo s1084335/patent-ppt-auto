@@ -3697,10 +3697,14 @@ def build_ppt(
         "slot_total": len(all_slot_keys()),
         "slot_filled": sum(len(p["filled_slots"]) for p in pages),
         "missing_slots": sorted({s for p in pages for s in p["missing_slots"]}),
+        # M-5（2026-08-04）：扣掉 EXCLUDED_FROM_PPT——那些是「刻意不進 PPT」
+        # （07-31 定案，如 family_quality_detail），列進 missing_reports 會把
+        # 「不放」誤報成「缺料」，讓監控與驗收把正常狀態當問題追。
         "missing_reports": sorted(
-            {str(key) for key in selected if not _report_key_has_data(report_data, str(key))}
-            | {key for p in pages for key in p["missing_reports"]}
-            | {str(key) for key in selected if str(key) not in rendered_keys and _report_key_has_data(report_data, str(key))}
+            ({str(key) for key in selected if not _report_key_has_data(report_data, str(key))}
+             | {key for p in pages for key in p["missing_reports"]}
+             | {str(key) for key in selected if str(key) not in rendered_keys and _report_key_has_data(report_data, str(key))})
+            - EXCLUDED_FROM_PPT
         ),
         "metadata": {
             key: (report_data.get("parameters") or {}).get(key)

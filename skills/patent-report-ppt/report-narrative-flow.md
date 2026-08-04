@@ -58,7 +58,7 @@
           "headline": "從上列要點挑最重要一條，濃縮成 ≤20 字",
           "text": "繁體中文完整長文解讀，由上列要點逐條展開",
           "ai_model": "<模型名稱或空字串>",
-          "prompt_version": "report_narrative_v7",
+          "prompt_version": "（照任務提示指定的現行版本填；系統仍會以 runner 版本蓋章）",
           "generated_at": "<ISO-8601 時間>"
         }
       }
