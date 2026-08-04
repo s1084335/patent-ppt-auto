@@ -436,24 +436,33 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
     # 🔴 G-7：列少時把列高撐開，否則圖只有一小條、框空掉一半
     # （實機 p9 CPC L4 只有 1 列，圖高 130px 放進 3.2in 的框，空 48%）。
     # ⚠ 有上限：無限放大會讓單列長條變成一整塊色帶，也不成圖。
-    row_h = _fill_row_height(len(data), top=top, bottom=34)
-    # G-3：標籤區依實際最長標籤決定（含 IPC 技術名），不寫死——否則長標籤被畫布裁掉。
-    left = label_gutter([
-        (lambda raw: raw if tech_name(raw) == raw else f"{raw}　{tech_name(raw)}")(
-            str(row.get(label_key) or "")) for row in data])
-    # right 留給列尾數值：18px 字要放得下「1,234」而不撞出畫布。
     right = 150
     bottom = 34
     # 🔴 2026-08-04：字級由「這張畫布會被縮多少」反推（資料 14pt／註記 12pt）。
     # ⚠ 畫布高度又依字級而變，故迭代求解（見 solve_chart_font）。
-    def _canvas_height(font_px: float) -> float:
+    def _row_h(font_px: float) -> int:
         rh = _fill_row_height(len(data), top=top, bottom=bottom,
                               base=int(round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX)))
-        return top + bottom + max(1, len(data)) * rh
+        # ⚠ 列多時字級縮放會把總高撐過畫布上限（P-2：畫布過高整張圖被縮小）——
+        # 上限內裝不下就壓回平均列高，字仍讀得到（row ≥ font×1.25 由 20 列上限保證）。
+        cap = int((CHART_CANVAS_MAX_HEIGHT - top - bottom) / max(1, len(data)))
+        return max(1, min(rh, cap))
+
+    def _canvas_height(font_px: float) -> float:
+        return top + bottom + max(1, len(data)) * _row_h(font_px)
 
     label_px, _ = solve_chart_font(width, _canvas_height)
     note_px = chart_font_px(width, _canvas_height(label_px), target_pt=CHART_NOTE_TARGET_PT)
-    height = top + bottom + max(1, len(data)) * row_h
+    # 🔴 K-8（2026-08-04 實機 p9）：實際列高與縮放假設要用**同一組**字級縮放值。
+    # 原本 height 用未縮放 row_h、solve 用縮放後 rh——兩套不一致，單長條頁下方留白。
+    row_h = _row_h(label_px)
+    # G-3：標籤區依實際最長標籤決定（含 IPC 技術名），不寫死——否則長標籤被畫布裁掉。
+    # 🔴 K-6（2026-08-04 實機 p8）：必須帶實際 label_px——原本用預設 18px 量寬、
+    # 20.7px 畫字，最長標籤比量出來的寬約 15%，字尾直接貼到長條。
+    left = label_gutter([
+        (lambda raw: raw if tech_name(raw) == raw else f"{raw}　{tech_name(raw)}")(
+            str(row.get(label_key) or "")) for row in data], font_px=label_px)
+    height = int(_canvas_height(label_px))
     plot_w = width - left - right
     max_value = max([int(row[value_key]) for row in data] + [1])
     svg = [
@@ -1268,6 +1277,7 @@ def place_point_labels(
     items: list[tuple[float, float, str]],
     obstacles: list[tuple[float, float, float]],
     font_px: float = LABEL_FONT_SIZE,
+    min_x: float | None = None,
 ) -> list[tuple[float, float] | None]:
     """替資料點標籤挑位置：四個候選方位輪流試，都撞就放棄該標籤。
 
@@ -1301,6 +1311,10 @@ def place_point_labels(
         for dx, dy in candidates:
             lx = x + dx if dx > 0 else x + dx - width
             ly = y + dy
+            # 🔴 K-7（2026-08-04 實機 p3）：左側候選位可能整段跑出 y 軸外
+            # （左下角年份點 x≈left，往左放就出界）。設左界，出界的候選直接跳過。
+            if min_x is not None and lx < min_x:
+                continue
             box = label_box(lx, ly, text, font_px)
             grown = (box[0] - LABEL_MIN_GAP_PX, box[1] - LABEL_MIN_GAP_PX,
                      box[2] + LABEL_MIN_GAP_PX, box[3] + LABEL_MIN_GAP_PX)
@@ -1382,7 +1396,8 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
     ] + [
         (left + plot_w * i / 12, top + plot_h + 2, 6.0) for i in range(13)
     ]
-    for (_x, _y, text), position in zip(items, place_point_labels(items, obstacles, label_px)):
+    for (_x, _y, text), position in zip(
+            items, place_point_labels(items, obstacles, label_px, min_x=left + 2)):
         if position is None:
             continue
         svg.append(f'<text x="{position[0]:.1f}" y="{position[1]:.1f}" font-size="{label_px:.1f}" '
@@ -2928,8 +2943,9 @@ def render_opportunity_quadrant_svg(
     area_w = cell_w - 2 * inner_pad
 
     qcolors = {"q1": "#10B981", "q2": "#3B82F6", "q3": "#9CA3AF", "q4": "#F59E0B"}
-    density_tags = {"q1": "高密度 · 高廣度", "q2": "低密度 · 高廣度",
-                    "q3": "低密度 · 低廣度", "q4": "高密度 · 低廣度"}
+    # 🔴 K-4（2026-08-04 實機 p17/p18）：原本每格 header 有兩行——灰色密度標籤
+    # （「低密度．高廣度」）＋象限名。改名後象限名（「低件數·多申請人」）已把同一
+    # 資訊講完，灰行是舊寫法殘留；字級放大後兩行直接相疊。**刪灰行**，一格一行。
     # 以象限代表點反查 _qlabel，戰場語言＋行動指引不在此重複定義
     probes = {"q1": (1.0, 1.0), "q2": (0.0, 1.0), "q3": (0.0, 0.0), "q4": (1.0, 0.0)}
 
@@ -2941,7 +2957,6 @@ def render_opportunity_quadrant_svg(
         q = "q1" if (hi_x and hi_y) else "q2" if hi_y else "q4" if hi_x else "q3"
         cell_rows[q].append(r)
 
-    header_h = 44  # 格 header：密度標籤行＋象限名稱行
 
     # chip 內容先組好（與字級無關），佈局與高度才依字級算。
     chips_of: dict[str, list[dict[str, Any]]] = {}
@@ -2962,10 +2977,43 @@ def render_opportunity_quadrant_svg(
             })
         chips_of[q] = bucket
 
-    grid_top = 104.0
-    grid_chrome = grid_top + cell_gap + 64  # 標題區＋列間距＋底部說明
+    # 🔴 K-5（2026-08-04 實機 p17/p18）：頂部三行（標題／防呆註／圖例）、格 header、
+    # 底部兩行（軸說明／FTO 註）的 y 全部寫死在 24px 字級時代——字級放大後
+    # 行距不足互相壓疊。全改**由字級推導**；note 字級與 label 成固定比
+    # （同一縮放 × 目標 pt 比），layout 迭代期間可由 label_px 直接換算。
+    _note_ratio = CHART_NOTE_TARGET_PT / CHART_DATA_TARGET_PT
+    _legend_items = [("lead≥2", "主要申請人涉入≥2家"), ("lead=1", "主要申請人涉入1家"),
+                     ("lead=0", "無主要申請人涉入")]
+
+    def _chrome(font_px: float) -> dict[str, float]:
+        note = font_px * _note_ratio
+        title_y = font_px * 1.4
+        note_y = title_y + note * 1.6
+        legend_y = note_y + note * 1.8
+        # ⚠ 圖例一行放不下時（字級放大後前綴＋三項超過畫布寬），三項換到前綴下一行
+        # ——否則最後一項被右緣裁掉（K-5 驗證時實際發生）。
+        legend_w = (_text_px(LEGEND_PREFIX_TEXT, note) + LEGEND_ITEM_GAP_PX
+                    + sum(18 + _text_px(desc, note) + LEGEND_ITEM_GAP_PX
+                          for _k, desc in _legend_items))
+        wrap = margin_l + legend_w > width - margin_r
+        items_y = legend_y + note * 1.6 if wrap else legend_y
+        return {
+            "note": note,
+            "title_y": title_y,
+            "note_y": note_y,
+            "legend_y": legend_y,
+            "items_y": items_y,
+            "wrap": 1.0 if wrap else 0.0,
+            "grid_top": items_y + font_px * 1.1,
+            # 格 header：象限名一行＋行動建議一行（K-4 刪密度灰行後仍需兩行——
+            # 「象限名 → 行動」併一行在放大字級下超出格寬、壓到隔壁格，驗證實測）。
+            # 行動用註記字級，兩行行高都由字級推導，不會重疊。
+            "header_h": font_px * 1.5 + note * 1.6 + font_px * 0.3,
+            "bottom_h": font_px * 1.5 + note * 1.7 + note * 0.8,  # 軸說明＋FTO 註
+        }
+
     target_h = width / QUADRANT_TARGET_ASPECT
-    min_row_h = max(96.0, (target_h - grid_chrome) / 2)
+    min_row_h = max(96.0, (target_h - 104.0 - cell_gap - 64) / 2)
 
     def _layout(font_px: float) -> tuple[dict[str, tuple[list[dict[str, Any]], float]], float, float, float]:
         """依字級算出 chip 佈局與畫布高度，回傳 (placed, 上列高, 下列高, 畫布高)。
@@ -2976,38 +3024,47 @@ def render_opportunity_quadrant_svg(
         內容一多就超過，字級用預估高度算出來會偏大，實際縮放後只剩 10.9pt。
         """
         laid = {q: _flow_chips(chips_of[q], area_w, font_px) for q in qcolors}
+        ch = _chrome(font_px)
         def cell_h(q: str) -> float:
             chips_h = laid[q][1]
-            return header_h + (chips_h if chips_h else 20.0) + inner_pad
+            return ch["header_h"] + (chips_h if chips_h else 20.0) + inner_pad
         top_h = max(cell_h("q2"), cell_h("q1"), min_row_h)
         bot_h = max(cell_h("q3"), cell_h("q4"), min_row_h)
-        return laid, top_h, bot_h, grid_top + top_h + cell_gap + bot_h + 64
+        return laid, top_h, bot_h, ch["grid_top"] + top_h + cell_gap + bot_h + ch["bottom_h"]
 
     label_px, _ = solve_chart_font(width, lambda f: _layout(f)[3])
     note_px = chart_font_px(width, _layout(label_px)[3], target_pt=CHART_NOTE_TARGET_PT)
     placed, top_row_h, bot_row_h, _canvas_h = _layout(label_px)
 
+    chrome = _chrome(label_px)
+    grid_top = chrome["grid_top"]
+    header_h = chrome["header_h"]
     grid_bottom = grid_top + top_row_h + cell_gap + bot_row_h
-    height = int(grid_bottom + 64)
+    height = int(grid_bottom + chrome["bottom_h"])
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text data-role="chart-title" x="{margin_l}" y="34" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text data-role="chart-title" x="{margin_l}" y="{chrome["title_y"]:.0f}" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         # Y 軸口徑防呆註（沿用散點版文案）
-        f'<text x="{margin_l}" y="56" font-size="{note_px:.1f}" fill="#9CA3AF">※ 純專利訊號(申請人家數)＝衡量申請人是否已投入布局，不等於產品核心度</text>',
+        f'<text x="{margin_l}" y="{chrome["note_y"]:.0f}" font-size="{note_px:.1f}" fill="#9CA3AF">※ 純專利訊號(申請人家數)＝衡量申請人是否已投入布局，不等於產品核心度</text>',
         # 圖例：色＝龍頭涉入三級｜數字＝件/家
-        f'<text x="{margin_l}" y="86" font-size="{note_px:.1f}" font-weight="600" fill="{COLOR_TEXT}">{LEGEND_PREFIX_TEXT}</text>',
+        f'<text x="{margin_l}" y="{chrome["legend_y"]:.0f}" font-size="{note_px:.1f}" font-weight="600" fill="{COLOR_TEXT}">{LEGEND_PREFIX_TEXT}</text>',
     ]
     # 🔴 H-8（2026-08-03 實機 p17／p18）：圖例方塊壓在「數字＝件/家」上面。
     # 原本 `margin_l + 200` 與 `+= 130` 都是寫死的——前綴實際約 234px、
     # 每個圖例項約 144px，兩個數字都不夠。改為依**實際文字寬度**推進，
     # 與標籤區用同一支 `_display_width`，不另立估法。
-    legend_x = margin_l + _text_px(LEGEND_PREFIX_TEXT) + LEGEND_ITEM_GAP_PX
-    for key, desc in [("lead≥2", "主要申請人涉入≥2家"), ("lead=1", "主要申請人涉入1家"), ("lead=0", "無主要申請人涉入")]:
-        parts.append(f'<rect x="{legend_x}" y="{76}" width="12" height="12" fill="{_TIER_COLORS[key]}" rx="2"/>')
-        parts.append(f'<text x="{legend_x + 18}" y="87" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(desc)}</text>')
-        legend_x += 18 + _text_px(desc) + LEGEND_ITEM_GAP_PX
+    # 🔴 K-5：寬度量測必須帶**實際 note_px**——原本用預設 18px 量、24.5px 畫，
+    # 前綴實寬比量出來的多三成，第一個色塊直接壓進「件/家」（實機 p17/p18）。
+    legend_x = (margin_l if chrome["wrap"] else
+                margin_l + _text_px(LEGEND_PREFIX_TEXT, note_px) + LEGEND_ITEM_GAP_PX)
+    items_y = chrome["items_y"]
+    swatch_y = items_y - 11
+    for key, desc in _legend_items:
+        parts.append(f'<rect x="{legend_x:.0f}" y="{swatch_y:.0f}" width="12" height="12" fill="{_TIER_COLORS[key]}" rx="2"/>')
+        parts.append(f'<text x="{legend_x + 18:.0f}" y="{items_y:.0f}" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(desc)}</text>')
+        legend_x += 18 + _text_px(desc, note_px) + LEGEND_ITEM_GAP_PX
 
     cell_pos = {
         "q2": (margin_l, grid_top, top_row_h),
@@ -3020,11 +3077,13 @@ def render_opportunity_quadrant_svg(
         parts.append(
             f'<rect x="{cx:.1f}" y="{cy:.1f}" width="{cell_w:.1f}" height="{ch:.1f}" rx="10" '
             f'fill="{qcolors[q]}" fill-opacity="0.07" stroke="#E5E7EB"/>')
+        # K-4：象限名＋行動建議兩行（密度灰行已刪；併一行會超出格寬，見 _chrome）。
         parts.append(
-            f'<text x="{cx + inner_pad:.1f}" y="{cy + 18:.1f}" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{xml_text(density_tags[q])}</text>')
+            f'<text x="{cx + inner_pad:.1f}" y="{cy + label_px * 1.35:.1f}" font-size="{label_px:.1f}" font-weight="600" '
+            f'fill="{qcolors[q]}">{xml_text(battle)}</text>')
         parts.append(
-            f'<text x="{cx + inner_pad:.1f}" y="{cy + 37:.1f}" font-size="{label_px:.1f}" font-weight="600" '
-            f'fill="{qcolors[q]}">{xml_text(f"{battle} → {action}")}</text>')
+            f'<text x="{cx + inner_pad:.1f}" y="{cy + label_px * 1.5 + note_px * 1.3:.1f}" font-size="{note_px:.1f}" '
+            f'fill="{qcolors[q]}">{xml_text(f"→ {action}")}</text>')
         chips, _chips_h = placed[q]
         if chips:
             for chip in chips:
@@ -3038,16 +3097,19 @@ def render_opportunity_quadrant_svg(
 
     # 語意方向軸標籤（無數值刻度）
     mid_x = margin_l + (width - margin_l - margin_r) / 2
+    axis_y = grid_bottom + label_px * 1.3
     parts.append(
-        f'<text x="{mid_x:.0f}" y="{grid_bottom + 26:.0f}" text-anchor="middle" font-size="{label_px:.1f}" '
+        f'<text x="{mid_x:.0f}" y="{axis_y:.0f}" text-anchor="middle" font-size="{label_px:.1f}" '
         f'fill="{COLOR_TEXT}">低密度  ←  專利密度(件數)  →  高密度</text>')
     mid_y = grid_top + (grid_bottom - grid_top) / 2
     parts.append(
         f'<text x="26" y="{mid_y:.0f}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}" '
         f'transform="rotate(-90,26,{mid_y:.0f})">低  ←  申請人家數(廣度)  →  高</text>')
     # 腳註 FTO 聲明（沿用）
+    # K-5：FTO 註是註記類 → note_px；y 排在軸說明下一行（原 26/48 兩行在
+    # 24.5px 字級下行距只剩 22px，字高 34px 直接相疊）。
     parts.append(
-        f'<text x="{margin_l}" y="{grid_bottom + 48:.0f}" font-size="{label_px:.1f}" fill="#9CA3AF">'
+        f'<text x="{margin_l}" y="{axis_y + note_px * 1.7:.0f}" font-size="{note_px:.1f}" fill="#9CA3AF">'
         f'本分析非侵權迴避(FTO)結論｜資料依公開專利資訊整理</text>')
 
     parts.append("</svg>")

@@ -76,7 +76,7 @@ class NarrativeInstructionTests(unittest.TestCase):
         ⚠ 這支長期斷言 v3、程式卻早在 v4——2026-07-31 發現時已是既有失敗。
         改對齊 runner 的單一來源常數，日後升版不必再改兩處。
         """
-        self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v8")
+        self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v9")
 
 
 if __name__ == "__main__":

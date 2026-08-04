@@ -74,7 +74,7 @@ class ContractConstantsTests(unittest.TestCase):
         self.assertEqual(runner.NARRATIVE_POINTS_MAX, 3)
 
     def test_prompt_version_bumped(self):
-        self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v8")
+        self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v9")
 
 
 class SkillRulesTests(unittest.TestCase):

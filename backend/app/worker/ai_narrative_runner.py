@@ -59,7 +59,7 @@ SKILL_PATH = _resolve_skill_path()
 # （客觀描述 → 專利數據解讀 → 合理推論 → 分析限制）＋結論回到要點（標 emphasis）。
 # v8（2026-08-04）：**移除版面用量下限**（v7 加的那道鎖是丟棄要點的根因，見下方
 # 說明）＋ `max_chars` 改為扣掉標籤成本後的正文字數。契約實質改變，故升版供追溯。
-PROMPT_VERSION = "report_narrative_v8"
+PROMPT_VERSION = "report_narrative_v9"
 
 # ── 三件套契約上限（v4；單一來源，skill 條文與驗證都以此為準）──
 # ⚠ 暫定值：理想上由 theme.json v2 的要點框尺寸換算，v2（skill creator 重建中）
@@ -87,6 +87,11 @@ _NUMBER_PATTERN = re.compile(r"\d+(?:[.,]\d+)*%?")
 #   （known-issues-optimization C-1 的教訓）。以下三件是可程式化的部分。
 NARRATIVE_EVIDENCE_LABELS = ("現況",)      # 這一類在講數據 → 必須有數字
 NARRATIVE_IMPLICATION_LABELS = ("意涵",)   # 這一類在講意義 → 每頁至少要有一條
+
+# 🔴 濃縮五規則的可程式化部分（2026-08-04 使用者定案「不走硬性字數路線」）：
+# 填充詞禁詞——刪掉後句意不變的詞，出現即代表還有濃縮空間。
+# ⚠ 清單是定案內容，增刪要先過使用者（test_narrative_condense_locks 鎖著）。
+NARRATIVE_FILLER_WORDS = ("值得注意的是", "整體而言", "此外", "同時", "進行", "相關", "方面")
 
 # 需要與另一張圖對照著講的報表。
 # 🔴 參考報告（附件3 電輔自行車）的 CPC 段落寫的是「**與 IPC 分布圖不同的是**…
@@ -190,6 +195,25 @@ def validate_narrative_contract(
                     if body and number not in body:
                         warnings.append(
                             f"{where} points[{i}] 的數字 {number} 未出現在長文——兩邊會對不上")
+                # 鎖九·填充詞（濃縮五規則，2026-08-04）：刪掉後句意不變的詞
+                # 不准出現——版面以字算租金，「進行維護」與「維護」是同一句話。
+                for filler in NARRATIVE_FILLER_WORDS:
+                    if filler in text:
+                        warnings.append(
+                            f"{where} points[{i}] 含填充詞「{filler}」——刪掉後句意不變，"
+                            f"改寫更短的說法")
+            # 鎖八·同頁數字不重複（濃縮五規則，2026-08-04）：意涵／後續複述
+            # 現況的數字＝同一份資訊佔兩份版面。現況帶數字（鎖四），其他段講
+            # 意義與行動，不再抄數字。
+            seen_numbers: dict[str, int] = {}
+            for i, point in enumerate(points):
+                for number in _NUMBER_PATTERN.findall(str((point or {}).get("text") or "")):
+                    if number in seen_numbers:
+                        warnings.append(
+                            f"{where} points[{i}] 重複了 points[{seen_numbers[number]}] 的"
+                            f"數字 {number}——同頁數字只寫一次，其他段講意義不抄數字")
+                    else:
+                        seen_numbers[number] = i
             # 鎖五·每頁至少一條「意涵」（C-6）。
             # ⚠ 全部都是「現況」＝把數據複述一遍就交差，讀者仍要自己想「所以呢」。
             labels = [str((p or {}).get("label") or "") for p in points]
@@ -354,7 +378,10 @@ def load_narrative_capacity(run_dir: Path | None = None) -> dict[str, dict[str, 
         manifest = _json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
         theme = builder.Theme.load()
         charts = builder.ChartIndex(run_dir, run_dir / ".cache", manifest, theme)
-        return builder.narrative_capacity(theme, charts)
+        # K-1：帶 report_data 讓動態插頁也拿到容量（見 build_ppt.narrative_capacity）。
+        rd_path = run_dir / "report_data.json"
+        report_data = _json.loads(rd_path.read_text(encoding="utf-8")) if rd_path.exists() else None
+        return builder.narrative_capacity(theme, charts, report_data)
     except Exception:
         return {}
 
@@ -465,6 +492,16 @@ def build_prompt(
         "   Y 是待釐清的專利問題；不寫商業行動、不寫「應優先布局」。\n"
         "   CPC 分類那一頁要講的是**與 IPC 的差異**（哪些分類 IPC 沒有、代表什麼），\n"
         "   不是把 IPC 那段重講一次。\n"
+        "   🔴 **濃縮五規則（2026-08-04 使用者定案；不是字數門檻，是寫法）**：\n"
+        "   ① 刪句測試：每句寫完自問「刪掉這句讀者少知道什麼」——答不出來就刪。\n"
+        "   ② 同頁數字不重複：數字只在「現況」出現一次，意涵／後續講意義與行動，\n"
+        "      不抄數字（違者記 warning）。\n"
+        "   ③ 圖面資訊不轉述：圖上一眼看得到的（排名順序、顏色分級、軸標）不寫成字，\n"
+        "      文字只寫圖看不出來的（跨年比較、佔比、集中度、缺口）。\n"
+        "   ④ 填充詞禁用：進行、相關、方面、值得注意的是、此外、同時、整體而言\n"
+        "      ——刪掉後句意不變的詞一律不寫（違者記 warning）。\n"
+        "   ⑤ 動詞收斂：「呈現增加趨勢」寫「增加」，「具有較高集中度」寫「集中」；\n"
+        "      一個動作一個動詞，不套名詞化外殼。\n"
         f"   headline＝**從上列要點挑最重要一條濃縮**至 ≤{NARRATIVE_HEADLINE_MAX} 字，\n"
         "   不是另想一句；\n"
         "   text＝由上列要點**逐條展開**成連貫長文（段落數不少於要點條數，\n"
