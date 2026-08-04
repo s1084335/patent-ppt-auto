@@ -37,8 +37,8 @@ class ClusteringReportsConstantTests(unittest.TestCase):
             DEFAULT_REPORT_NAMES,
             tuple(name for name, definition in REPORT_DEFINITIONS.items()
                   if not definition.requires_market_data))
-        self.assertIn("pain_point_quadrant", REPORT_DEFINITIONS,
-                      "定義不應刪除，只是暫不進預設批次")
+        # 🔴 2026-08-04：痛點板已整個刪除（連定義），DEFAULT 不再有排除項。
+        self.assertNotIn("pain_point_quadrant", REPORT_DEFINITIONS)
 
     def test_get_report_definitions_returns_catalog(self):
         """GET /report-definitions 必須回傳完整報表目錄（前端探索入口）。"""

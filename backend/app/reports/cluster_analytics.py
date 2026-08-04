@@ -21,21 +21,21 @@ from backend.app.clustering.sources import (
 #
 # 這一組取代原本只有件數與家數的靜態統計：使用者要的是「技術競爭型態、演進趨勢
 # 及布局意義」的判讀，不是「哪個主題件數比較高」。
-TOPIC_STATUS_EMERGING = "新興技術"
-TOPIC_STATUS_GROWING = "成長技術"
-TOPIC_STATUS_MATURE = "成熟技術"
-TOPIC_STATUS_CONCENTRATED = "競爭集中技術"
-TOPIC_STATUS_DECLINING = "衰退／轉型技術"
+TOPIC_STATUS_EMERGING = "近期新進"
+TOPIC_STATUS_GROWING = "申請成長"
+TOPIC_STATUS_MATURE = "申請趨穩"
+TOPIC_STATUS_CONCENTRATED = "少數申請人集中"
+TOPIC_STATUS_DECLINING = "申請下降"
 TOPIC_STATUS_UNCLASSIFIED = "未分類"
 TOPIC_STATUS_INSUFFICIENT = "樣本不足"
 
 # 「意義」不是裝飾——狀態名只說了是什麼，讀者要的是「所以呢」（C-6）。
 TOPIC_STATUS_MEANINGS: dict[str, str] = {
-    TOPIC_STATUS_EMERGING: "剛開始受到關注",
-    TOPIC_STATUS_GROWING: "技術快速擴散",
-    TOPIC_STATUS_MATURE: "技術方向逐漸穩定",
-    TOPIC_STATUS_CONCENTRATED: "技術成熟後由少數玩家掌握",
-    TOPIC_STATUS_DECLINING: "技術熱度降低或被新技術取代",
+    TOPIC_STATUS_EMERGING: "近三年才開始出現申請",
+    TOPIC_STATUS_GROWING: "申請件數與申請人數同步上升",
+    TOPIC_STATUS_MATURE: "申請件數持平，方向趨於固定",
+    TOPIC_STATUS_CONCENTRATED: "申請持續但集中於少數申請人",
+    TOPIC_STATUS_DECLINING: "近年申請件數明顯下降",
     TOPIC_STATUS_INSUFFICIENT: "件數過少，趨勢判斷不可靠",
 }
 
@@ -449,56 +449,6 @@ def build_opportunity_matrix(
     }
 
 
-def build_pain_point_matrix(
-    topic_rows: list[dict[str, Any]],
-    pain_data: list[dict[str, Any]],
-    x_median: float,
-) -> dict[str, Any]:
-    """建立痛點交叉驗證四象限（專利訊號 × 客戶痛點）資料。
-
-    痛點等級由使用者確認後才傳入；X 軸與機會評估共用同一次主題件數
-    中位數，不得重算不同門檻；unknown 由前端顯示為灰色待調查，不當 low
-    （報表定案 #6）。
-
-    Parameters
-    ----------
-    topic_rows : list[dict]
-        ``build_topic_effect_table`` 的輸出。
-    pain_data : list[dict]
-        每項需含 ``topic_code``、``severity``（high/medium/low/unknown）、
-        ``basis``（簡短依據）、``source``（來源）。
-    x_median : float
-        機會評估四象限的專利件數中位數（共用 X 門檻）。
-
-    Returns
-    -------
-    dict，鍵：
-        rows : list[dict]
-            topic_code、patent_count、severity、basis、source。
-        x_median : float
-    """
-    pain_map: dict[str, dict[str, Any]] = {}
-    for p in pain_data:
-        pain_map[p["topic_code"]] = p
-
-    rows: list[dict[str, Any]] = []
-    for r in topic_rows:
-        tc = r["topic_code"]
-        info = pain_map.get(tc, {})
-        rows.append({
-            "topic_code": tc,
-            # label 傳遞給圖表顯示中文主題名；缺 label 時由 renderer fallback 到 code
-            "label": r.get("label"),
-            "patent_count": r["patent_count"],
-            # 集中度兩欄（同機會矩陣，2026-07-29 定案）：只轉傳、不重算。
-            "top3_share": r.get("top3_share", 0),
-            "max_share": r.get("max_share", 0),
-            "severity": info.get("severity", "unknown"),
-            "basis": info.get("basis"),
-            "source": info.get("source"),
-        })
-
-    return {
-        "rows": rows,
-        "x_median": float(x_median),
-    }
+# 🔴 2026-08-04：痛點板（pain_point_quadrant）已整個刪除（使用者定案）。
+# 07-29 起本就停產（「整個藏起來，等市場線做好再放出來」），市場線也已定案移除，
+# 留著的程式每次改字級、用詞、版面都多一份要同步、又永遠驗不到。

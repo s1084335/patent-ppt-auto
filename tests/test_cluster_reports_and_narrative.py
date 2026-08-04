@@ -18,7 +18,8 @@ from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 from backend.app.reports.report_engine import run_reports_batch
 
 
-CLUSTER_REPORT_NAMES = ("cluster_topic_table", "opportunity_quadrant", "pain_point_quadrant")
+# 🔴 2026-08-04：pain_point_quadrant 已整個刪除（使用者定案）。
+CLUSTER_REPORT_NAMES = ("cluster_topic_table", "opportunity_quadrant")
 
 
 class ClusterReportDefinitionTests(unittest.TestCase):
@@ -40,10 +41,7 @@ class ClusterReportDefinitionTests(unittest.TestCase):
         self.assertEqual([s.key for s in specs], ["cluster_analytics"],
                          "cluster_topic_table 應解析到 cluster_analytics section")
 
-    def test_pain_point_marks_pending_market_data(self):
-        """pain_point_quadrant 須註明依賴市場線痛點資料（尚未實作）。"""
-        note = getattr(REPORT_DEFINITIONS["pain_point_quadrant"], "data_source_note", "")
-        self.assertIn("市場", note, "pain_point_quadrant 應註明待市場線痛點資料")
+    # 🔴 2026-08-04：test_pain_point_marks_pending_market_data 已刪除——痛點板已刪，定義不存在
 
 
 class ClusterReportGracefulEmptyTests(unittest.TestCase):
@@ -80,9 +78,6 @@ class ClusterReportArtifactMappingTests(unittest.TestCase):
         self.assertEqual(
             chart_runner.report_names_for_artifact("opportunity_quadrant.svg"),
             ["opportunity_quadrant"])
-        self.assertEqual(
-            chart_runner.report_names_for_artifact("pain_point_quadrant.svg"),
-            ["pain_point_quadrant"])
 
 
 class ReportGenerateAutoNarrativeTests(unittest.TestCase):

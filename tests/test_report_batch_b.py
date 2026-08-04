@@ -87,9 +87,8 @@ class B3PainPointRequiresMarketTests(unittest.TestCase):
     def test_definition_declares_requirement(self):
         from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 
-        self.assertTrue(
-            getattr(REPORT_DEFINITIONS["pain_point_quadrant"], "requires_market_data", False),
-            "痛點四象限應宣告需要市場資料")
+        # 🔴 2026-08-04：pain_point_quadrant 已整個刪除（使用者定案）。
+        self.assertNotIn("pain_point_quadrant", REPORT_DEFINITIONS)
         for name in ("cluster_topic_table", "opportunity_quadrant"):
             with self.subTest(report=name):
                 self.assertFalse(

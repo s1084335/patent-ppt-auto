@@ -12,7 +12,6 @@ from backend.app.reports import cluster_analytics as ca
 from backend.app.clustering.sources import SOURCE_FIELD_EFFECT, SOURCE_FIELD_TECHNICAL
 from backend.app.reports.cluster_analytics import (
     build_opportunity_matrix,
-    build_pain_point_matrix,
     build_topic_effect_table,
 )
 
@@ -197,68 +196,8 @@ class OpportunityMatrixTests(unittest.TestCase):
         self.assertEqual(result["applicant_count_median"], 4.0)
 
 
-class PainPointMatrixTests(unittest.TestCase):
-    """build_pain_point_matrix: 痛點四象限，共用機會 X 中位數。"""
-
-    def test_basic_pain_mapping(self):
-        topic_rows = [
-            {"topic_code": "T01", "patent_count": 10, "applicant_count": 5,
-             "top_applicants": []},
-            {"topic_code": "T02", "patent_count": 3, "applicant_count": 2,
-             "top_applicants": []},
-        ]
-        pain_data = [
-            {"topic_code": "T01", "severity": "high", "basis": "訴訟數量上升",
-             "source": "docket"},
-        ]
-        result = build_pain_point_matrix(topic_rows, pain_data, x_median=6.5)
-        self.assertEqual(len(result["rows"]), 2)
-        t01 = next(r for r in result["rows"] if r["topic_code"] == "T01")
-        t02 = next(r for r in result["rows"] if r["topic_code"] == "T02")
-        self.assertEqual(t01["severity"], "high")
-        self.assertEqual(t01["basis"], "訴訟數量上升")
-        self.assertEqual(t01["source"], "docket")
-        self.assertEqual(t02["severity"], "unknown")
-        self.assertIsNone(t02["basis"])
-        self.assertIsNone(t02["source"])
-
-    def test_label_passthrough(self):
-        """regression（2026-07-21）：同機會矩陣，痛點 rows 也必須帶 label。"""
-        topic_rows = [
-            {"topic_code": "T01", "label": "散熱防塵", "patent_count": 11,
-             "applicant_count": 6, "top_applicants": []},
-        ]
-        result = build_pain_point_matrix(topic_rows, [], x_median=6.5)
-        self.assertEqual(result["rows"][0].get("label"), "散熱防塵",
-                         "pain rows 必須帶 label 供圖表顯示中文主題名")
-
-    def test_severity_distribution(self):
-        topic_rows = [
-            {"topic_code": f"T{i:02d}", "patent_count": i * 5,
-             "applicant_count": i, "top_applicants": []}
-            for i in range(1, 6)
-        ]
-        pain_data = [
-            {"topic_code": "T01", "severity": "high", "basis": "x", "source": "a"},
-            {"topic_code": "T03", "severity": "medium", "basis": "y", "source": "b"},
-            {"topic_code": "T05", "severity": "low", "basis": "z", "source": "c"},
-        ]
-        result = build_pain_point_matrix(topic_rows, pain_data, x_median=12.0)
-        sevs = {r["topic_code"]: r["severity"] for r in result["rows"]}
-        self.assertEqual(sevs["T01"], "high")
-        self.assertEqual(sevs["T03"], "medium")
-        self.assertEqual(sevs["T05"], "low")
-        self.assertEqual(sevs["T02"], "unknown")
-        self.assertEqual(sevs["T04"], "unknown")
-        self.assertEqual(result["x_median"], 12.0)
-
-    def test_empty_pain_data(self):
-        topic_rows = [
-            {"topic_code": "T01", "patent_count": 5, "applicant_count": 3,
-             "top_applicants": []},
-        ]
-        result = build_pain_point_matrix(topic_rows, [], x_median=5.0)
-        self.assertEqual(result["rows"][0]["severity"], "unknown")
+# 🔴 2026-08-04：PainPointMatrixTests 已刪除——痛點板整個移除（使用者定案），
+# 規格沒了測試就失去存在理由。
 
 
 class TopicStatusClassificationTests(unittest.TestCase):

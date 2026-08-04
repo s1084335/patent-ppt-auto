@@ -160,7 +160,7 @@ EVIDENCE_ORDER: tuple[str, ...] = (
     "ipc_main_distribution", "cpc_main_distribution", "cluster_topic_table",  # 技術
     "applicant_ranking", "owner_ranking",                               # 競爭
     "applicant_year_matrix", "owner_year_matrix",
-    "opportunity_quadrant", "pain_point_quadrant",                      # 機會
+    "opportunity_quadrant",                                             # 機會
 )
 
 # 不進 PPT 的報表（2026-07-31 使用者定案）：家族完整性明細屬資料品質稽核，
@@ -228,8 +228,8 @@ TABLE_COLUMN_LABELS: dict[str, str] = {
     "owner_display_name": "專利權人",
     "application_year": "申請年",
     "授權公告年": "授權公告年",
-    "leading_applicant_count": "龍頭涉入數",
-    "leading_applicants_involved": "龍頭涉入名單",
+    "leading_applicant_count": "主要申請人涉入數",
+    "leading_applicants_involved": "主要申請人名單",
     "quadrant": "象限",
 }
 TABLE_EXCLUDED_COLUMNS = frozenset({"topic_code"})

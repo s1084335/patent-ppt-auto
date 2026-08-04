@@ -20,7 +20,6 @@ from backend.app.db.connection import get_connection_kwargs
 from backend.app.reports.chart_runner import run_chart_trial
 from backend.app.reports.cluster_analytics import (
     build_opportunity_matrix,
-    build_pain_point_matrix,
     build_topic_effect_table,
 )
 from backend.app.repositories.topic_state_repository import (
@@ -168,7 +167,7 @@ def compute_and_save_cluster_analysis(
     -------
     dict
         含 cluster_data 所有欄位，外加 topic_rows / opportunity_matrix /
-        pain_point_matrix / analysis_status。
+        analysis_status。
     """
     from psycopg.rows import dict_row
 
@@ -180,7 +179,6 @@ def compute_and_save_cluster_analysis(
                 **cluster_data,
                 "topic_rows": [],
                 "opportunity_matrix": {},
-                "pain_point_matrix": {},
                 "analysis_status": "no_topics",
             }
 
@@ -193,16 +191,10 @@ def compute_and_save_cluster_analysis(
         opp_matrix = build_opportunity_matrix(
             topic_rows, cluster_data.get("top_applicants_ws", [])
         )
-        pain_matrix = build_pain_point_matrix(
-            topic_rows, pain_data or [],
-            opp_matrix["patent_count_median"],
-        )
-
         cur = conn.cursor()
         for output_name, result in [
             ("topic_effect_table", {"rows": topic_rows}),
             ("opportunity_matrix", opp_matrix),
-            ("pain_point_matrix", pain_matrix),
         ]:
             cur.execute(
                 "INSERT INTO app_layer.analysis_outputs "
@@ -216,7 +208,6 @@ def compute_and_save_cluster_analysis(
         **cluster_data,
         "topic_rows": topic_rows,
         "opportunity_matrix": opp_matrix,
-        "pain_point_matrix": pain_matrix,
         "analysis_status": "saved",
     }
 

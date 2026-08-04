@@ -210,7 +210,7 @@ def _load_report_cluster_data(
     走既有 backend/app/reports/cluster_data_loader.py（已對齊 0021 schema，內含合併重映
     與 incremental fallback），不自寫 SQL。回傳形狀＝run_chart_trial 的 cluster_data 契約
     （topics／assignments／normalized_applicants／top_applicants_ws ＋ 算好的 topic_rows／
-    opportunity_matrix／pain_point_matrix）。
+    opportunity_matrix）。
 
     與 compute_and_save_cluster_analysis 的差異：那支會把三項分析寫進
     app_layer.analysis_outputs（需要 analysis_id）；報表 job 只是要畫圖，沒有 analysis 脈絡，
@@ -221,7 +221,6 @@ def _load_report_cluster_data(
 
     from backend.app.reports.cluster_analytics import (
         build_opportunity_matrix,
-        build_pain_point_matrix,
         build_topic_effect_table,
     )
     from backend.app.reports.cluster_data_loader import load_cluster_workspace_data
@@ -245,19 +244,11 @@ def _load_report_cluster_data(
         patents=cluster_data.get("patents"),
     )
     opportunity = build_opportunity_matrix(topic_rows, cluster_data.get("top_applicants_ws", []))
-    # 市場資料（痛點嚴重度）：有就用、沒有也要能產出（2026-07-28 使用者定案）。
-    # 無市場資料時嚴重度落 unknown，痛點板顯示為灰色待調查帶（不當 low），報表照常產出。
-    # ⚠ 原本此處寫死 []，市場線接通後也吃不到——改為參數傳入並存進 cluster_data，
-    # 供 _build_cluster_analytics_section 的 data.get("pain_data") 取用（雙通道各自分段）。
-    market_rows = list(pain_data or cluster_data.get("pain_data") or [])
-    pain = build_pain_point_matrix(topic_rows, market_rows, opportunity["patent_count_median"])
+    # 🔴 痛點板已整個刪除（2026-08-04 使用者定案），pain 相關計算一併移除。
     return {
         **cluster_data,
-        "pain_data": market_rows,
         "topic_rows": topic_rows,
         "opportunity_matrix": opportunity,
-        "pain_point_matrix": pain,
-        "has_market_data": bool(market_rows),
     }
 
 

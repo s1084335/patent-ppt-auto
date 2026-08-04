@@ -979,7 +979,8 @@ class FrontendSkeletonTests(unittest.TestCase):
 
         self.assertIn("buildReportViewOptions", fill_body)
         self.assertIn("clusterReportViews", options_body)
-        for key in ("cluster_topic_table", "opportunity_quadrant", "pain_point_quadrant"):
+        # 痛點板已刪（2026-08-04），分群檢視剩兩種。
+        for key in ("cluster_topic_table", "opportunity_quadrant"):
             with self.subTest(key=key):
                 self.assertIn(key, cluster_views_body)
         self.assertIn("source_field", options_body)
@@ -995,7 +996,6 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("report-single-compact-data", self.html)
         self.assertIn("viewSection.report_key === 'annual_trend'", single_body)
         self.assertIn("'opportunity_quadrant'", data_first_body)
-        self.assertIn("'pain_point_quadrant'", data_first_body)
         self.assertNotIn("key === 'annual_trend'", data_first_body)
         self.assertIn("variant.rows", section_body)
         self.assertIn("thresholds", section_body)

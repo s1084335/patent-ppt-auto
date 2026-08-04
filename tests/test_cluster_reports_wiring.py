@@ -70,39 +70,7 @@ class FrontendSendsWorkspaceTests(unittest.TestCase):
             "submitReports 沒送 workspace_id——分群三份報表不會產出")
 
 
-class MarketOptionalTests(unittest.TestCase):
-    """市場資料：有就用、沒有也要能產出（使用者定案）。"""
-
-    def test_pain_matrix_works_without_market_data(self):
-        """無市場資料時痛點板仍要產得出來，不是 raise 或回空。"""
-        from backend.app.reports.cluster_analytics import build_pain_point_matrix
-
-        topic_rows = [
-            {"topic_code": "T001", "topic_label": "甲", "patent_count": 10,
-             "applicant_count": 3},
-            {"topic_code": "T002", "topic_label": "乙", "patent_count": 2,
-             "applicant_count": 1},
-        ]
-        matrix = build_pain_point_matrix(topic_rows, [], 5.0)
-        self.assertTrue(matrix.get("rows"), "無市場資料時痛點板不得為空")
-
-    def test_cluster_section_passes_market_data_when_present(self):
-        """有市場資料時要真的傳進去，不能寫死空陣列。"""
-        import inspect
-        from backend.app.reports import chart_runner
-
-        src = inspect.getsource(chart_runner._build_cluster_analytics_section)
-        self.assertIn('data.get("pain_data"', src)
-
-    def test_loader_passes_market_data_through(self):
-        """handlers 的 loader 不得寫死 [] ——那會讓有市場資料時也用不到。"""
-        import inspect
-        from backend.app.worker import handlers
-
-        src = inspect.getsource(handlers._load_report_cluster_data)
-        self.assertNotIn(
-            "build_pain_point_matrix(topic_rows, [],", src,
-            "loader 寫死空市場資料——市場線接通後仍然吃不到")
+# 🔴 2026-08-04：MarketOptionalTests 已刪除——痛點板與其市場資料通道已整個移除（使用者定案）
 
 
 class ClusterDataResolutionTests(unittest.TestCase):

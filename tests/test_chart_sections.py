@@ -157,7 +157,7 @@ class MatrixChartTests(unittest.TestCase):
 
 
 class OpportunityQuadrantLegendTests(unittest.TestCase):
-    """regression（2026-07-21）：「單一玩家壟斷型」曾因圖例探針座標錯置重複三次。
+    """regression（2026-07-21）：「集中持有」曾因圖例探針座標錯置重複三次。
     2026-07-21 板狀改版註記：battle 標籤從散點圖例（■ 列）改為 2×2 格 header，
     斷言改為四個戰場語言在全圖各出現恰一次（空格也有 header，恆為四格四次）。"""
 
@@ -176,7 +176,7 @@ class OpportunityQuadrantLegendTests(unittest.TestCase):
             path = Path(tmp) / "opportunity.svg"
             chart_runner.render_opportunity_quadrant_svg(path, "機會四象限分析", data)
             svg = path.read_text(encoding="utf-8")
-        for battle in ("高競爭技術區", "新興戰場（競爭者已進場）", "待釐清領域", "單一玩家壟斷型"):
+        for battle in ("多方投入技術", "低件數·多申請人", "低件數·少申請人", "集中持有"):
             self.assertEqual(svg.count(battle), 1,
                              f"戰場語言「{battle}」應恰出現一次（格 header），實得 {svg.count(battle)}")
         # chip 文字用中文 label 非 code，格式「label 件/家」
@@ -213,7 +213,7 @@ class DisplaySpecTests(unittest.TestCase):
     def test_cluster_card_three_tabs_board(self):
         """2026-07-21 二次修正（規格變更註記）：原 test_cluster_card_table_only_no_quadrant
         斷言「只留統計表、象限圖暫停展示」；板狀佈局完成後象限圖回歸 index——
-        cluster 卡片＝三 tabs（主題統計表＋機會矩陣＋痛點矩陣）；topic rows 仍帶龍頭涉入。"""
+        cluster 卡片＝三 tabs（主題統計表＋機會矩陣＋痛點矩陣）；topic rows 仍帶主要申請人涉入。"""
         data = {
             "topics": [{"topic_code": "T01", "label": "散熱防塵", "source_field": "wips_independent_claims"}],
             "assignments": [{"topic_code": "T01", "patent_id": 1}],
@@ -378,42 +378,11 @@ class BoardQuadrantTests(unittest.TestCase):
             chart_runner.render_opportunity_quadrant_svg(path, "機會四象限分析", data)
             svg = path.read_text(encoding="utf-8")
         self.assertIn("本案無此類", svg, "空格應顯示斜體說明")
-        self.assertIn("色＝龍頭涉入", svg, "圖例缺「色＝龍頭涉入｜數字＝件/家」")
+        self.assertIn("色＝主要申請人涉入", svg, "圖例缺「色＝主要申請人涉入｜數字＝件/家」")
         for color in ("#DC2626", "#F59E0B", "#9CA3AF"):
-            self.assertIn(color, svg, f"圖例缺龍頭涉入三級色 {color}")
+            self.assertIn(color, svg, f"圖例缺主要申請人涉入三級色 {color}")
 
-    def test_pain_board_unknown_gray_band_not_low(self):
-        rows = [
-            {"topic_code": "P01", "label": "散熱防塵", "patent_count": 11, "severity": "high"},
-            {"topic_code": "P02", "label": "能源管理", "patent_count": 2, "severity": "high"},
-            {"topic_code": "P03", "label": "收納走線", "patent_count": 1, "severity": "medium"},
-            {"topic_code": "P04", "label": "照明裝置", "patent_count": 4, "severity": "low"},
-            {"topic_code": "P05", "label": "外觀設計", "patent_count": 11, "severity": "unknown"},
-            {"topic_code": "P06", "label": "轉向機構", "patent_count": 8, "severity": "unknown"},
-            {"topic_code": "P07", "label": "電控模組", "patent_count": 6, "severity": "unknown"},
-        ]
-        data = {"rows": rows, "x_median": 6.5}
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "pain.svg"
-            chart_runner.render_pain_point_quadrant_svg(path, "痛點四象限分析", data)
-            svg = path.read_text(encoding="utf-8")
-        chips = self._PAIN_CHIP.findall(svg)
-        self.assertEqual(sorted(c[2] for c in chips), sorted(r["topic_code"] for r in rows))
-        band_by_topic = {r["topic_code"]: r["severity"] for r in rows}
-        col_by_topic = {r["topic_code"]: ("hi" if r["patent_count"] >= 6.5 else "lo") for r in rows}
-        for band, col, topic, *_ in chips:
-            self.assertEqual(band, band_by_topic[topic], f"{topic} 應在 {band_by_topic[topic]} 帶")
-            self.assertNotEqual((band_by_topic[topic], band), ("unknown", "low"),
-                                "unknown 不得落低帶")
-            self.assertEqual(col, col_by_topic[topic], f"{topic} 密度欄應為 {col_by_topic[topic]}")
-        self.assertIn("待調查（灰帶）", svg, "缺獨立灰帶標示")
-        # 四角象限名沿用
-        for corner in ("研發優先缺口★", "高競爭→claim overlap 分析", "nice-to-have→防禦即可", "競爭者已過度投入→選擇性"):
-            self.assertIn(corner, svg, f"缺象限名 {corner}")
-        groups: dict[tuple[str, str], list[tuple[float, float, float]]] = {}
-        for band, col, topic, x, y, w in chips:
-            groups.setdefault((band, col), []).append((float(x), float(y), float(w)))
-        self._assert_no_overlap(self, groups)
+    # 🔴 2026-08-04：test_pain_board_unknown_gray_band_not_low 已刪除——痛點板整個移除（使用者定案），規格沒了測試就失去存在理由
 
 
 class PersistenceTruncationTests(unittest.TestCase):
@@ -603,7 +572,7 @@ class TopicSegmentTests(unittest.TestCase):
                 "leading_applicants", "leading_applicant_count",
             ],
         )
-        self.assertIn(tech_variant["rows"][0]["quadrant"], {"高競爭技術區", "新興戰場", "待釐清", "單一玩家壟斷"})
+        self.assertIn(tech_variant["rows"][0]["quadrant"], {"多方投入技術", "低件數·多申請人", "低件數·少申請人", "集中持有"})
         self.assertEqual(
             tech_variant["thresholds"],
             {"patent_count_median": 1.0, "applicant_count_median": 1.0},
@@ -1610,7 +1579,7 @@ class NiceTicksTests(unittest.TestCase):
             ticks = chart_runner.nice_ticks(max_value)
             step = ticks[1] - ticks[0]
             mantissa = step / (10 ** math.floor(math.log10(step)))
-            self.assertIn(round(mantissa, 2), (1.0, 2.0, 2.5, 5.0), f"step={step}")
+            self.assertIn(round(mantissa, 2), (1.0, 2.0, 5.0), f"step={step}")
 
     def test_starts_at_zero(self):
         self.assertEqual(chart_runner.nice_ticks(15)[0], 0)
@@ -1621,7 +1590,8 @@ class NiceTicksTests(unittest.TestCase):
 
     def test_p2_case_reads_cleanly(self):
         """實機 p2 的 15 件：0/4/8/11/15 → 應變成等差。"""
-        self.assertEqual(chart_runner.nice_ticks(15), [0, 5, 10, 15, 20])
+        # 🔴 J-5（2026-08-04）：頂格「夠用就截短」——15 的下一格 20 是純留白，不再畫。
+        self.assertEqual(chart_runner.nice_ticks(15), [0, 5, 10, 15])
 
 
 class NoEnglishDebugSubtitleTests(unittest.TestCase):
@@ -1871,19 +1841,19 @@ class QuadrantWordingTests(unittest.TestCase):
     等於用密度統計冒充侵權判斷。真正 FTO 需要 claim chart、claim overlap、
     legal status、jurisdiction，這張圖一項都沒有。
 
-    定案改法：象限名改「高競爭技術區」，行動改「需進行 claim overlap 分析」。
+    定案改法：象限名改「多方投入技術」，行動改「建議檢視請求項範圍重疊」。
     """
 
     def test_high_density_quadrant_renamed(self):
         label, action = chart_runner._qlabel(10, 10, 5, 5)
-        self.assertEqual(label, "高競爭技術區")
-        self.assertEqual(action, "需進行 claim overlap 分析")
+        self.assertEqual(label, "多方投入技術")
+        self.assertEqual(action, "建議檢視請求項範圍重疊")
 
     def test_table_quadrant_name_matches_chart(self):
         """⚠ 表格用名與圖上名必須同一套，否則同一象限在兩處叫不同名字。"""
         name = chart_runner._opportunity_quadrant_name(
             {"patent_count": 10, "applicant_count": 10}, 5, 5)
-        self.assertEqual(name, "高競爭技術區")
+        self.assertEqual(name, "多方投入技術")
 
     def test_no_avoidance_design_claim_in_quadrant_output(self):
         """象限的任何輸出都不得再宣稱「迴避設計」。"""
@@ -1895,9 +1865,9 @@ class QuadrantWordingTests(unittest.TestCase):
 
     def test_other_quadrants_unchanged(self):
         """只有高密度高廣度那一象限改名，其餘三個維持原判讀。"""
-        self.assertEqual(chart_runner._qlabel(1, 10, 5, 5)[1], "值得追")
-        self.assertEqual(chart_runner._qlabel(1, 1, 5, 5)[1], "需使用者痛點調查")
-        self.assertEqual(chart_runner._qlabel(10, 1, 5, 5)[1], "注意依賴風險")
+        self.assertEqual(chart_runner._qlabel(1, 10, 5, 5)[1], "建議檢視各案技術差異")
+        self.assertEqual(chart_runner._qlabel(1, 1, 5, 5)[1], "建議人工覆核代表專利")
+        self.assertEqual(chart_runner._qlabel(10, 1, 5, 5)[1], "建議確認權利集中程度")
 
 
 class PointLabelPlacementTests(unittest.TestCase):

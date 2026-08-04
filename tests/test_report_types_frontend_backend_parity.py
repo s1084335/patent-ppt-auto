@@ -126,13 +126,7 @@ class MarketDataReportHiddenTests(unittest.TestCase):
             leaked, [],
             f"預設批次含需市場資料的報表：{leaked}")
 
-    def test_definition_still_exists(self):
-        """定義本身要留著——市場線做好後放出來只需改可見性，不必重寫報表。"""
-        from backend.app.reports.report_definitions import REPORT_DEFINITIONS
-
-        self.assertIn("pain_point_quadrant", REPORT_DEFINITIONS,
-                      "痛點四象限的定義不應刪除，只是暫不開放選取")
-
+    # 🔴 2026-08-04：test_definition_still_exists 已刪除——痛點板定義已刪，「定義保留待市場線」的前提不存在（市場線也已定案移除）
 
 if __name__ == "__main__":
     unittest.main()

@@ -314,20 +314,9 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         supports_patent_ids=False,
         data_source_note="依 cluster_topic_table；x 專利密度、y 競爭者結構強度，中位數門檻入庫",
     ),
-    # pain_point_quadrant：痛點 × 專利佈局交叉。痛點資料須走市場線（市場資料上傳→
-    # AI 摘要→使用者確認），該線尚未實作；缺痛點資料時 build_pain_point_matrix 以空
-    # pain_data 產出（severity 全部 unknown＝待調查灰帶），優雅回空、不假造痛點。
-    "pain_point_quadrant": ReportDefinition(
-        name="pain_point_quadrant",
-        requires_market_data=True,
-        report_type="cluster",
-        label="Pain Point Quadrant",
-        label_zh="痛點四象限",
-        source_table="",
-        columns=(),
-        supports_patent_ids=False,
-        data_source_note="待市場線痛點資料（市場資料上傳→AI 摘要→使用者確認）；缺資料時痛點軸全標待調查，不假造",
-    ),
+    # 🔴 2026-08-04：痛點板（pain_point_quadrant）已整個刪除（使用者定案）。
+    # 07-29 起本就停產（「整個藏起來，等市場線做好再放出來」），市場線也已定案移除，
+    # 留著的程式每次改字級、用詞、版面都多一份要同步、又永遠驗不到。
 }
 
 

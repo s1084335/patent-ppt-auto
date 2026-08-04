@@ -400,13 +400,14 @@ class ComputeAndSaveClusterAnalysisTests(unittest.TestCase):
         )
 
         mock_load.assert_called_once()
-        self.assertEqual(mock_cur.execute.call_count, 3)
+        # 🔴 2026-08-04：痛點板刪除後落庫剩兩項。
+        self.assertEqual(mock_cur.execute.call_count, 2)
         inserts = [call[0][0] for call in mock_cur.execute.call_args_list]
         for sql in inserts:
             self.assertIn("INSERT INTO app_layer.analysis_outputs", sql)
 
         output_names = [call[0][1][1] for call in mock_cur.execute.call_args_list]
-        expected_names = ["topic_effect_table", "opportunity_matrix", "pain_point_matrix"]
+        expected_names = ["topic_effect_table", "opportunity_matrix"]
         self.assertEqual(output_names, expected_names)
 
         mock_conn.commit.assert_called_once()

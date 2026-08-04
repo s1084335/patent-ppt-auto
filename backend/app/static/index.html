@@ -3145,7 +3145,7 @@ function topicPatentsTableHtml(data, scope) {
 // 分群類報表：需要 workspace 範圍（分群一律以 workspace 為單位），全庫檢視下不適用。
 // 名稱對齊後端 SECTION_SPECS 的 cluster_analytics spec。
 const CLUSTER_REPORT_NAMES = new Set([
-  'cluster_topic_table', 'opportunity_quadrant', 'pain_point_quadrant',
+  'cluster_topic_table', 'opportunity_quadrant',
 ]);
 const REPORT_TYPES = [
   ['application_trend', '專利申請趨勢'],
@@ -4120,7 +4120,6 @@ function isClusterSection(section) {
   if (!section) return false;
   if (CLUSTER_REPORT_NAMES.has(section.report_key)) return true;
   return (section.variants || []).some(v => clusterVariantMatchesReport(v, 'opportunity_quadrant')
-    || clusterVariantMatchesReport(v, 'pain_point_quadrant')
     || clusterVariantMatchesReport(v, 'cluster_topic_table'));
 }
 
@@ -4133,7 +4132,6 @@ function clusterVariantMatchesReport(variant, reportKey) {
   const file = String((variant && variant.file) || (variant && variant.chart_url) || '');
   if (reportKey === 'cluster_topic_table') return key.includes('topic_table') || file.includes('cluster_topic_table');
   if (reportKey === 'opportunity_quadrant') return key.includes('opportunity') || file.includes('opportunity_quadrant');
-  if (reportKey === 'pain_point_quadrant') return key.includes('pain') || file.includes('pain_point_quadrant');
   return false;
 }
 
@@ -4171,7 +4169,6 @@ function clusterReportViews(section) {
   const views = [
     { report_key: 'cluster_topic_table', label: reportLabelForKey('cluster_topic_table') },
     { report_key: 'opportunity_quadrant', label: reportLabelForKey('opportunity_quadrant') },
-    { report_key: 'pain_point_quadrant', label: reportLabelForKey('pain_point_quadrant') },
   ];
   return views.filter(function (view) {
     if (view.report_key === 'cluster_topic_table') return (section.rows || []).length || hasClusterVariant(section, view.report_key);
@@ -4377,7 +4374,7 @@ function reportVariantTabsHtml(section, sectionIndex) {
 
 function reportDataFirstLayout(section) {
   const key = section && section.report_key;
-  return key === 'opportunity_quadrant' || key === 'pain_point_quadrant';
+  return key === 'opportunity_quadrant';
 }
 
 function reportRowsTableHtml(rows, columns, labels) {

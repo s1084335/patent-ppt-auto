@@ -15,7 +15,6 @@ from typing import Any, Callable, Sequence
 
 from backend.app.reports.cluster_analytics import (
     build_opportunity_matrix,
-    build_pain_point_matrix,
     build_topic_effect_table,
 )
 from backend.app.reports.report_definitions import REPORT_DEFINITIONS
@@ -270,7 +269,6 @@ CHART_FILE_REPORTS: dict[str, list[str]] = {
     # 三個分群 artifact 各自對回自己的報表名（供 manifest／解讀查找定位到正確報表）。
     "cluster_topic_table.html": ["cluster_topic_table"],
     "opportunity_quadrant.svg": ["opportunity_quadrant"],
-    "pain_point_quadrant.svg": ["pain_point_quadrant"],
 }
 
 
@@ -293,7 +291,6 @@ def report_names_for_artifact(filename: str) -> list[str]:
     # 舊的精確比對（CHART_FILE_REPORTS 只有無後綴的 .html）對不上，
     # manifest 會少掉這兩個檔的報表歸屬——靜默失敗，只有查 manifest 才發現。
     for base, ext in (("opportunity_quadrant", ".svg"),
-                      ("pain_point_quadrant", ".svg"),
                       ("cluster_topic_table", ".html")):
         if filename.startswith(f"{base}_") and filename.endswith(ext):
             return [base]
@@ -1157,7 +1154,8 @@ QUADRANT_TARGET_ASPECT = 1.78
 
 #: 象限板圖例前綴（唯一來源——量寬度與畫出來必須是同一個字串，
 #: 否則改了文字卻沒改寬度，又會壓在一起）。
-LEGEND_PREFIX_TEXT = "色＝龍頭涉入｜數字＝件/家"
+# 🔴 2026-08-04 用詞規範：「龍頭」避免使用——只說資料能證明的（前三大申請人）。
+LEGEND_PREFIX_TEXT = "色＝主要申請人涉入｜數字＝件/家"
 
 #: 圖例項之間的間距（px）。
 LEGEND_ITEM_GAP_PX = 24
@@ -1325,8 +1323,10 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
         if r.get("application_year") is not None
     ]
     data.sort()
-    x_max = max([d[1] for d in data] + [1]) * 1.15
-    y_max = max([d[2] for d in data] + [1]) * 1.15
+    # 🔴 J-5：不再乘 1.15 餘裕——nice_ticks 本身就會把頂格補到資料之上，
+    # 兩層餘裕疊加正是「資料最大 7、軸畫到 10」的來源。
+    x_max = max([d[1] for d in data] + [1])
+    y_max = max([d[2] for d in data] + [1])
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
@@ -1369,7 +1369,15 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
     # 看起來像好幾個不同的點——那正是實機 p3「2021 2011」並排的成因。
     items = merge_colocated_labels(
         [(coords[i][0], coords[i][1], str(data[i][0])) for i in wanted])
-    obstacles = [(x, y, 4.0) for x, y in coords]
+    # 🔴 J-5：軸線與刻度區也是障礙——原本只把資料點列為障礙，
+    # 合併後的年份標籤落在低家數低件數的角落時，避讓就把它推到 x 軸上、
+    # 與刻度數字重疊。障礙半徑蓋住軸線帶與每個刻度數字。
+    obstacles = [(x, y, 4.0) for x, y in coords] + [
+        (scale(t, 0, x_max, left, left + plot_w), top + plot_h + 18, 16.0)
+        for t in x_ticks
+    ] + [
+        (left + plot_w * i / 12, top + plot_h + 2, 6.0) for i in range(13)
+    ]
     for (_x, _y, text), position in zip(items, place_point_labels(items, obstacles, label_px)):
         if position is None:
             continue
@@ -1542,9 +1550,12 @@ def nice_ticks(max_value: float, count: int = 5) -> list[int]:
     🔴 2026-08-02 實機：p2 縱軸印出 0／4／8／**11**／15、p4 印出 0／4／**9**／13／17。
     根因是刻度用 `max * i / (count-1)` 直接取整——間距忽 3 忽 4，讀者無法心算比例。
 
-    步進限制在 1／2／2.5／5 的 10 次方倍，這就是「好讀」的定義；
-    ⚠ 最後一格可能高於實際最大值（15 → 0/5/10/15/20），那是刻意的：
-    寧可頂端留白，也不要為了頂到滿而用 3.75 這種步進。
+    步進限制在 1／2／5 的 10 次方倍，這就是「好讀」的定義。
+    🔴 2026-08-04（J-5）：**2.5 步進移除**——件數與家數都是整數，2.5 取整後
+    印出 0/2/5/8/10，連等差都不是；且配合 1.15 倍餘裕會把「資料最大 7」的軸
+    推到 10，右側留白 1/3。
+    ⚠ 最後一格仍可能高於實際最大值（頂端留一小格），但**夠用就截短**：
+    步進放大後不再硬湊滿 count 格，資料最大 7 → 0/2/4/6/8，不是拖到 10。
     """
     span = max(float(max_value), 0.0)
     if span <= 0 or count < 2:
@@ -1555,11 +1566,16 @@ def nice_ticks(max_value: float, count: int = 5) -> list[int]:
         return list(range(int(math.ceil(span)) + 1))
     raw_step = span / (count - 1)
     magnitude = 10 ** math.floor(math.log10(raw_step))
-    for multiple in (1, 2, 2.5, 5, 10):
+    for multiple in (1, 2, 5, 10):
         step = multiple * magnitude
         if step >= raw_step:
             break
-    return [int(round(step * i)) for i in range(count)]
+    step = max(1, int(round(step)))
+    ticks = [step * i for i in range(count)]
+    # 夠用就截短：倒數第二格已蓋過資料，最後那格就是純留白。
+    while len(ticks) > 2 and ticks[-2] >= span:
+        ticks.pop()
+    return ticks
 
 
 def _load_ipc_tech_names() -> dict[str, dict[str, str]]:
@@ -1633,12 +1649,12 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "source_field": "來源欄位",
     "top_applicants": "前三大申請人",
     "quadrant": "象限",
-    "leading_applicants": "龍頭公司",
+    "leading_applicants": "主要申請人",
     "top3_share": "前三大占比(%)",
     "max_share": "最大一家(%)",
     "acquired_count": "受讓取得",
-    "leading_applicant_count": "龍頭涉入(家)",
-    "leading_applicants_involved": "龍頭涉入名單",
+    "leading_applicant_count": "主要申請人涉入(家)",
+    "leading_applicants_involved": "主要申請人名單",
     "doc_count": "專利件數",
     "applicant_names": "申請人",
     "top3_applicants": "前三大申請人",
@@ -2626,7 +2642,7 @@ def _build_lifecycle_section(ctx: ChartContext) -> None:
     ctx.sections.append({
         "title": report["label_zh"],
         "variants": [{"label": "Lifecycle", "file": "lifecycle.svg", "variant_key": "default"}],
-        "note": "各點＝一個申請年；萌芽/成長/成熟/衰退的階段判讀由分析者依軌跡判斷。",
+        "note": "各點＝一個申請年；依申請件數與申請人數的年度軌跡判讀，不作生命週期階段斷言。",
     })
 
 
@@ -2705,7 +2721,7 @@ def render_cluster_topic_table_html(
         '<table><thead><tr>'
         '<th>Topic Code</th><th>Label</th>'
         '<th class="num">專利件數</th><th class="num">申請人家數</th>'
-        '<th class="num">龍頭涉入(家)</th>'
+        '<th class="num">主要申請人涉入(家)</th>'
         '<th>前三大申請人</th>'
         '</tr></thead><tbody>'
     )
@@ -2741,12 +2757,12 @@ def _qlabel(px: float, py: float, p_med: float, a_med: float) -> tuple[str, str]
     （高競爭技術區）與**下一步查證動作**（claim overlap 分析）。
     """
     if px >= p_med and py >= a_med:
-        return "高競爭技術區", "需進行 claim overlap 分析"
+        return "多方投入技術", "建議檢視請求項範圍重疊"
     if px < p_med and py >= a_med:
-        return "新興戰場（競爭者已進場）", "值得追"
+        return "低件數·多申請人", "建議檢視各案技術差異"
     if px < p_med and py < a_med:
-        return "待釐清領域", "需使用者痛點調查"
-    return "單一玩家壟斷型", "注意依賴風險"
+        return "低件數·少申請人", "建議人工覆核代表專利"
+    return "集中持有", "建議確認權利集中程度"
 
 
 def _opportunity_quadrant_name(row: dict[str, Any], p_med: float, a_med: float) -> str:
@@ -2754,12 +2770,12 @@ def _opportunity_quadrant_name(row: dict[str, Any], p_med: float, a_med: float) 
     hi_patent = float(row["patent_count"]) >= p_med
     hi_applicant = float(row["applicant_count"]) >= a_med
     if hi_patent and hi_applicant:
-        return "高競爭技術區"
+        return "多方投入技術"
     if (not hi_patent) and hi_applicant:
-        return "新興戰場"
+        return "低件數·多申請人"
     if hi_patent and (not hi_applicant):
-        return "單一玩家壟斷"
-    return "待釐清"
+        return "集中持有"
+    return "低件數·少申請人"
 
 
 def _opportunity_display_rows(matrix: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2973,7 +2989,7 @@ def render_opportunity_quadrant_svg(
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="{margin_l}" y="34" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         # Y 軸口徑防呆註（沿用散點版文案）
-        f'<text x="{margin_l}" y="56" font-size="{note_px:.1f}" fill="#9CA3AF">※ 純專利訊號(申請人家數)＝衡量競爭者是否已進場，不等於產品核心度</text>',
+        f'<text x="{margin_l}" y="56" font-size="{note_px:.1f}" fill="#9CA3AF">※ 純專利訊號(申請人家數)＝衡量申請人是否已投入布局，不等於產品核心度</text>',
         # 圖例：色＝龍頭涉入三級｜數字＝件/家
         f'<text x="{margin_l}" y="86" font-size="{note_px:.1f}" font-weight="600" fill="{COLOR_TEXT}">{LEGEND_PREFIX_TEXT}</text>',
     ]
@@ -2982,7 +2998,7 @@ def render_opportunity_quadrant_svg(
     # 每個圖例項約 144px，兩個數字都不夠。改為依**實際文字寬度**推進，
     # 與標籤區用同一支 `_display_width`，不另立估法。
     legend_x = margin_l + _text_px(LEGEND_PREFIX_TEXT) + LEGEND_ITEM_GAP_PX
-    for key, desc in [("lead≥2", "龍頭涉入≥2家"), ("lead=1", "龍頭涉入1家"), ("lead=0", "無龍頭涉入")]:
+    for key, desc in [("lead≥2", "主要申請人涉入≥2家"), ("lead=1", "主要申請人涉入1家"), ("lead=0", "無主要申請人涉入")]:
         parts.append(f'<rect x="{legend_x}" y="{76}" width="12" height="12" fill="{_TIER_COLORS[key]}" rx="2"/>')
         parts.append(f'<text x="{legend_x + 18}" y="87" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(desc)}</text>')
         legend_x += 18 + _text_px(desc) + LEGEND_ITEM_GAP_PX
@@ -3032,145 +3048,9 @@ def render_opportunity_quadrant_svg(
     path.write_text("\n".join(parts), encoding="utf-8")
 
 
-def render_pain_point_quadrant_svg(
-    path: Path,
-    title: str,
-    data: dict[str, Any],
-) -> None:
-    """痛點交叉驗證板（板狀佈局）。
-
-    列帶＝痛點 高／中（中線帶）／低／待調查（灰帶，unknown 全集中此帶、不落低）；
-    欄＝密度 低/高（共用機會板同一 X 中位數）。chip＝「label 件數」、底色＝嚴重度色。
-    四角象限名照範例頁 7：研發優先缺口★＝低密度×高痛點（散點版左右錯置，板狀版修正）。
-    """
-    rows = data.get("rows", [])
-    x_med = float(data.get("x_median", 0))
-
-    width = 1120
-    margin_l, margin_r = 24, 24
-    label_w = 104  # 左側帶標籤欄寬
-    board_x = margin_l + label_w
-    col_gap = 14
-    col_w = (width - board_x - margin_r - col_gap) / 2
-    inner_pad = 12
-    area_w = col_w - 2 * inner_pad
-
-    band_order = ("high", "medium", "low", "unknown")
-    band_labels = {"high": "痛點 高", "medium": "中（中線帶）", "low": "低", "unknown": "待調查（灰帶）"}
-    band_bg = {"high": "#FEF2F2", "medium": "#FFFBEB", "low": "#F0FDF4", "unknown": "#F3F4F6"}
-    chip_fill = {"high": "#EF4444", "medium": "#EAB308", "low": "#10B981", "unknown": "#D1D5DB"}
-    corner_names = {
-        ("high", "lo"): "研發優先缺口★",
-        ("high", "hi"): "高競爭→claim overlap 分析",
-        ("low", "lo"): "nice-to-have→防禦即可",
-        ("low", "hi"): "競爭者已過度投入→選擇性",
-    }
-
-    # 依嚴重度分帶、依 X 中位數分欄；非法／缺 severity 一律進待調查灰帶（不落低）
-    cells: dict[tuple[str, str], list[dict[str, Any]]] = {
-        (band, col): [] for band in band_order for col in ("lo", "hi")}
-    for r in sorted(rows, key=lambda item: -int(item["patent_count"])):
-        sev = str(r.get("severity", "unknown"))
-        if sev not in band_labels:
-            sev = "unknown"
-        col = "hi" if float(r["patent_count"]) >= x_med else "lo"
-        cells[(sev, col)].append(r)
-
-    placed: dict[tuple[str, str], tuple[list[dict[str, Any]], float]] = {}
-    for key, members in cells.items():
-        chips = []
-        for r in members:
-            label = str(r.get("label") or r.get("topic_code", ""))
-            tooltip = f'{label} / {int(r["patent_count"])}件 / {key[0]}'
-            if r.get("basis"):
-                tooltip += f'｜依據：{r["basis"]}'
-            chips.append({
-                "text": f'{label} {int(r["patent_count"])}',
-                "fill": chip_fill[key[0]],
-                "topic": str(r.get("topic_code", "")),
-                "tooltip": tooltip,
-            })
-        placed[key] = _flow_chips(chips, area_w)
-
-    corner_h = 24  # 有象限名的格，chips 前多留一行
-    def _cell_h(key: tuple[str, str]) -> float:
-        """格內容高＝（象限名行）＋chips＋上下留白。"""
-        head = corner_h if key in corner_names else 8.0
-        chips_h = placed[key][1]
-        return head + chips_h + inner_pad + 8.0
-
-    grid_top = 116.0
-    band_gap = 10.0
-    band_tops: dict[str, float] = {}
-    band_hs: dict[str, float] = {}
-    y_cursor = grid_top
-    for band in band_order:
-        h = max(_cell_h((band, "lo")), _cell_h((band, "hi")), 60.0)
-        band_tops[band] = y_cursor
-        band_hs[band] = h
-        y_cursor += h + band_gap
-    grid_bottom = y_cursor - band_gap
-    height = int(grid_bottom + 70)
-
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
-        '<rect width="100%" height="100%" fill="white"/>',
-        f'<text data-role="chart-title" x="{margin_l}" y="34" font-size="20" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        # 副標銜接句（沿用散點版文案）
-        f'<text x="{margin_l}" y="54" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">把機會矩陣「待釐清領域」一軸用公開痛點初步補上（數字＝專利件數）</text>',
-    ]
-    # 圖例：嚴重度四級色（沿用 severity 色；unknown 顯示為待調查灰）
-    legend_x = margin_l
-    for band in band_order:
-        legend_label = "待調查" if band == "unknown" else {"high": "高", "medium": "中", "low": "低"}[band]
-        parts.append(f'<rect x="{legend_x}" y="70" width="12" height="12" fill="{chip_fill[band]}" rx="2"/>')
-        parts.append(f'<text x="{legend_x + 18}" y="81" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{xml_text(legend_label)}</text>')
-        legend_x += 84
-    # 欄 header：密度 低/高
-    col_x = {"lo": board_x, "hi": board_x + col_w + col_gap}
-    parts.append(f'<text x="{col_x["lo"] + col_w / 2:.0f}" y="{grid_top - 8:.0f}" text-anchor="middle" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">低密度</text>')
-    parts.append(f'<text x="{col_x["hi"] + col_w / 2:.0f}" y="{grid_top - 8:.0f}" text-anchor="middle" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">高密度</text>')
-
-    for band in band_order:
-        by = band_tops[band]
-        bh = band_hs[band]
-        parts.append(
-            f'<rect x="{board_x:.1f}" y="{by:.1f}" width="{width - board_x - margin_r:.1f}" '
-            f'height="{bh:.1f}" rx="8" fill="{band_bg[band]}" stroke="#E5E7EB"/>')
-        parts.append(
-            f'<text x="{board_x - 10:.1f}" y="{by + bh / 2 + 4:.1f}" text-anchor="end" '
-            f'font-size="{CHART_LABEL_PX}" fill="#374151">{xml_text(band_labels[band])}</text>')
-        # 欄分隔虛線
-        sep_x = board_x + col_w + col_gap / 2
-        parts.append(
-            f'<line x1="{sep_x:.1f}" y1="{by:.1f}" x2="{sep_x:.1f}" y2="{by + bh:.1f}" '
-            f'stroke="#D1D5DB" stroke-width="1" stroke-dasharray="4,4"/>')
-        for col in ("lo", "hi"):
-            cx = col_x[col]
-            head = corner_h if (band, col) in corner_names else 8.0
-            if (band, col) in corner_names:
-                parts.append(
-                    f'<text x="{cx + inner_pad:.1f}" y="{by + 17:.1f}" font-size="{CHART_LABEL_PX}" '
-                    f'font-weight="600" fill="{COLOR_TEXT_SOFT}">{xml_text(corner_names[(band, col)])}</text>')
-            for chip in placed[(band, col)][0]:
-                parts.extend(_chip_svg(
-                    chip, cx + inner_pad + chip["x"], by + head + chip["y"],
-                    f'data-band="{band}" data-col="{col}" data-topic="{xml_text(chip["topic"])}"'))
-
-    # 語意方向軸標籤（沿用文案）＋腳註（FTO＋痛點待調查聲明沿用）
-    mid_x = board_x + (width - board_x - margin_r) / 2
-    parts.append(
-        f'<text x="{mid_x:.0f}" y="{grid_bottom + 26:.0f}" text-anchor="middle" font-size="{CHART_LABEL_PX}" '
-        f'fill="{COLOR_TEXT}">低  ← 專利件數 (patent_count) →  高</text>')
-    pain_note = "｜痛點為待調查狀態" if any(
-        str(r.get("severity", "unknown")) not in ("high", "medium", "low") or r.get("severity") == "unknown"
-        for r in rows) else ""
-    parts.append(
-        f'<text x="{margin_l}" y="{grid_bottom + 48:.0f}" font-size="{CHART_LABEL_PX}" fill="#9CA3AF">'
-        f'本分析非侵權迴避(FTO)結論{pain_note}</text>')
-
-    parts.append("</svg>")
-    path.write_text("\n".join(parts), encoding="utf-8")
+# 🔴 2026-08-04：痛點板（pain_point_quadrant）已整個刪除（使用者定案）。
+# 07-29 起本就停產（「整個藏起來，等市場線做好再放出來」），市場線也已定案移除，
+# 留著的程式每次改字級、用詞、版面都多一份要同步、又永遠驗不到。
 
 
 def _build_cluster_analytics_section(ctx: ChartContext) -> None:
@@ -3199,14 +3079,11 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     # 兩條路徑），是同一概念兩處落點——只移除其中一處會留下「宣告了變體但檔案不存在」
     # 的死選項。兩處一併移除，主題統計改由 section 的 rows 走數據表單一呈現。
     variants: list[dict[str, str]] = []
-    segment_matrices: list[tuple[str, str, dict[str, Any], dict[str, Any]]] = []
+    segment_matrices: list[tuple[str, str, dict[str, Any]]] = []
     leading_by_topic: dict[str, dict[str, Any]] = {}
     for sf, segment_label, seg_rows in segments:
         opp_matrix = build_opportunity_matrix(seg_rows, data.get("top_applicants_ws", []))
-        pain_matrix = build_pain_point_matrix(
-            seg_rows, data.get("pain_data", []), opp_matrix["patent_count_median"]
-        )
-        segment_matrices.append((sf, segment_label, opp_matrix, pain_matrix))
+        segment_matrices.append((sf, segment_label, opp_matrix))
         leading_by_topic.update({r["topic_code"]: r for r in opp_matrix["rows"]})
 
     # 顯示規格（2026-07-21）：把機會矩陣算出的龍頭涉入（leading_applicant_count／
@@ -3222,7 +3099,7 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     #   thresholds 逐通道保存中位數門檻（象限判讀可重現，不每次重算）。
     opportunity_rows: list[dict[str, Any]] = []
     opportunity_thresholds: dict[str, dict[str, float]] = {}
-    for sf, _segment_label, opp_matrix, _pain in segment_matrices:
+    for sf, _segment_label, opp_matrix in segment_matrices:
         opportunity_rows.extend({**row, "source_field": sf} for row in opp_matrix["rows"])
         opportunity_thresholds[sf] = {
             "patent_count_median": opp_matrix["patent_count_median"],
@@ -3295,7 +3172,7 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     else:
         variants.insert(0, {"label": "主題統計表", "file": "", "variant_key": "topic_table"})
 
-    for sf, segment_label, opp_matrix, pain_matrix in segment_matrices:
+    for sf, segment_label, opp_matrix in segment_matrices:
         # 檔名後綴：多來源時帶 slug（tech/effect），單一來源維持原檔名（相容既有契約）
         slug = SOURCE_SEGMENT_SLUGS.get(sf, "other")
         suffix = f"_{slug}" if multi_source else ""
@@ -3313,28 +3190,15 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
             "thresholds": opp_thresholds,
         })
         ctx.chart_rows[f"opportunity_quadrant{suffix}"] = {**opp_matrix, "rows": opp_rows}
-        # 🔴 痛點矩陣**不產**（2026-07-29 使用者定案「整個藏起來，等市場線做好再放出來」）。
-        #
-        # ⚠ 5b4dbef 只把 pain_point_quadrant 從 DEFAULT_REPORT_NAMES 排除，那擋的是
-        # 「報表勾選清單」那一層——但本函式是**整包產出**，內部無條件 render + append，
-        # 完全不看使用者選了哪些報表。使用者重產報表後（report_trial_20260729_164537）
-        # 痛點矩陣照樣出現在檢視選單，實測打臉了我「已擋住」的判斷。
-        # 教訓：擋一個報表要追**所有**產出路徑，只查 DEFAULT_REPORT_NAMES 不夠。
-        #
-        # 市場線（上傳→AI 摘要→使用者確認）尚未實作，缺資料時痛點軸全是「待調查」，
-        # 產出的圖看不出不完整、匯進 PPT 會被讀成「痛點都很低」。
-        # ⚠ 機會矩陣是純專利資料（x 專利密度、y 競爭者結構強度），**照常產出**，不連坐。
-        # pain_matrix 仍計算（上方迴圈）但不落檔——市場線做好後解除本段即可恢復。
+        # 🔴 痛點板已整個刪除（2026-08-04 使用者定案；07-29 起本就停產）。
 
     note = (
         "主題統計表包含所有正式主題（含未分類），技術主題與功效分類分段不混表；"
-        "機會板／痛點板採板狀佈局（chip 流式排列，結構上不重疊）、每個來源各一組——"
-        "機會板 2×2 格依該段專利件數與申請人家數中位數分高低，chip 色＝龍頭涉入三級；"
-        "痛點板列帶＝嚴重度（高／中線帶／低／待調查灰帶，unknown 不落低）、"
-        "欄＝密度低/高（共用同段機會板件數中位數）。"
+        "機會板採板狀佈局（chip 流式排列，結構上不重疊）、每個來源各一組——"
+        "2×2 格依該段專利件數與申請人家數中位數分高低，chip 色＝主要申請人涉入三級。"
     )
     # 顯示規格（2026-07-21 二次修正）：板狀佈局完成，象限圖回歸 index——
-    # cluster 卡片＝主題統計表＋各來源機會/痛點矩陣 tabs。
+    # cluster 卡片＝主題統計表＋各來源機會矩陣 tabs。
     ctx.sections.append({
         "title": "分群分析",
         "report_key": "cluster_topic_table",
@@ -3380,7 +3244,7 @@ SECTION_SPECS: tuple[SectionSpec, ...] = (
     # 保留 "cluster_analytics" 虛擬別名，相容既有「無對應報表的特殊 section」契約與呼叫端。
     SectionSpec(
         "cluster_analytics",
-        ("cluster_analytics", "cluster_topic_table", "opportunity_quadrant", "pain_point_quadrant"),
+        ("cluster_analytics", "cluster_topic_table", "opportunity_quadrant"),
         _build_cluster_analytics_section,
     ),
 )
