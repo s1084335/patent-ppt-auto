@@ -683,13 +683,16 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
     )
 
     width, height = 980, 540
+    # 字級由縮放反推（資料 14pt／註記 12pt）；本圖畫布固定，不需迭代。
+    label_px = chart_font_px(width, height)
+    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
     left, top = 50, 70
     map_w, map_h = 880, 390
     max_value = max([int(row["patent_count"]) for row in rows] + [1])
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="50" y="36" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text x="50" y="36" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         f'<rect x="{left}" y="{top}" width="{map_w}" height="{map_h}" fill="{COLOR_MAP}" stroke="#94A3B8"/>',
     ]
     for lon in range(-180, 181, 60):
@@ -719,12 +722,12 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
         # 區域局用橘色，與國家（藍色）視覺區分：代表「這個地區有佈局」而非單一國家。
         fill, stroke = ("#F59E0B", "#92400E") if is_regional else ("#2563EB", "#1E40AF")
         svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" fill="{fill}" fill-opacity="0.68" stroke="{stroke}" stroke-width="2"/>')
-        svg.append(f'<text x="{x:.1f}" y="{y + 4:.1f}" text-anchor="middle" font-size="{CHART_LABEL_PX}" fill="{readable_text_on(fill)}" data-on-fill="{fill}" font-weight="700">{xml_text(code)}</text>')
-        svg.append(f'<text x="{x:.1f}" y="{y + radius + 18:.1f}" text-anchor="middle" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{value}</text>')
+        svg.append(f'<text x="{x:.1f}" y="{y + 4:.1f}" text-anchor="middle" font-size="{label_px:.1f}" fill="{readable_text_on(fill)}" data-on-fill="{fill}" font-weight="700">{xml_text(code)}</text>')
+        svg.append(f'<text x="{x:.1f}" y="{y + radius + 18:.1f}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value}</text>')
     footnote = "Bubble view: circle area is proportional to patent count. 橘色＝區域專利局（標轄區位置）。"
     if no_geo_notes:
         footnote += " 無地域代碼：" + "、".join(no_geo_notes)
-    svg.append(f'<text x="50" y="505" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{xml_text(footnote)}</text>')
+    svg.append(f'<text x="50" y="505" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{xml_text(footnote)}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -851,7 +854,12 @@ def render_matrix_chart(
     #
     # 反推：可用高度 = CHART_CANVAS_MAX_HEIGHT - top_margin - 底部；
     # 列高固定為可讀值，**列數跟著可用高度走**（放不下的列由「顯示前 N」標示）。
-    label_width, cell_w, cell_h, top_margin = 300, 66, 30, 96
+    # 🔴 2026-08-04：字級由縮放反推（資料 14pt／註記 12pt）。
+    # ⚠ 先用畫布上限求初值排版面（格高、標籤區都跟著字級走），
+    # 畫布尺寸算完後再定最終字級——高度受 max_visible_rows 限制，接近上限。
+    _f0 = chart_font_px(CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT)
+    cell_h = max(30, int(round(_f0 * 30 / CHART_LABEL_PX)))
+    label_width, cell_w, top_margin = 300, 66, 96
     usable = CHART_CANVAS_MAX_HEIGHT - top_margin - 28
     max_visible_rows = max(1, usable // cell_h)
     rows_total_count = len(top_rows)
@@ -861,13 +869,17 @@ def render_matrix_chart(
     cell_w = max(cell_w, grid_w // max(len(cols), 1))
     width = label_width + cell_w * max(len(cols), 1) + 24
     height = top_margin + cell_h * max(len(top_rows), 1) + 28
+    label_width = label_gutter([str(name) for name in top_rows], font_px=_f0 * 1.05)
+    width = label_width + cell_w * max(len(cols), 1) + 24
+    label_px = chart_font_px(width, height)
+    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
     max_value = max((cells[(r, c)] for r in top_rows for c in cols if (r, c) in cells), default=1)
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" font-family="Segoe UI, sans-serif">',
         f'<rect width="{width}" height="{height}" fill="white"/>',
-        f'<text data-role="chart-title" x="16" y="26" font-size="{CHART_LABEL_PX}" font-weight="bold" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="16" y="56" font-size="{CHART_LABEL_PX}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
+        f'<text data-role="chart-title" x="16" y="26" font-size="{note_px:.1f}" font-weight="bold" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text x="16" y="56" font-size="{label_px:.1f}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
     ]
     # 🔴 F-13：格子有三階顏色卻沒有任何說明（實機 p6），讀者無從對照。
     # ⚠ 圖例與格子共用 `bubble_legend_spans`——各算各的會出現
@@ -877,19 +889,19 @@ def render_matrix_chart(
     for legend_color, legend_label, legend_span in bubble_legend_spans(max_value):
         text = f"{legend_label} {legend_span}"
         parts.append(f'<rect x="{legend_x}" y="{44}" width="12" height="12" rx="2" fill="{legend_color}"/>')
-        parts.append(f'<text x="{legend_x + 20}" y="{56}" font-size="{CHART_LABEL_PX}" fill="#4B5563">'
+        parts.append(f'<text x="{legend_x + 20}" y="{56}" font-size="{label_px:.1f}" fill="#4B5563">'
                      f'{xml_text(text)}</text>')
         legend_x += legend_step(text, mark_gap=8)
     for col_index, col in enumerate(cols):
         x = label_width + col_index * cell_w + cell_w / 2
         parts.append(
-            f'<text x="{x}" y="{top_margin - 12}" font-size="{CHART_LABEL_PX}" text-anchor="middle" fill="{COLOR_TEXT}">{xml_text(col)}</text>'
+            f'<text x="{x}" y="{top_margin - 12}" font-size="{label_px:.1f}" text-anchor="middle" fill="{COLOR_TEXT}">{xml_text(col)}</text>'
         )
     for row_index, row_label in enumerate(top_rows):
         y = top_margin + row_index * cell_h
         display = row_label
         parts.append(
-            f'<text x="{label_width - 8}" y="{y + cell_h / 2 + 6}" font-size="{CHART_LABEL_PX}" text-anchor="end" fill="{COLOR_TEXT}">{xml_text(display)}</text>'
+            f'<text x="{label_width - 8}" y="{y + cell_h / 2 + 6}" font-size="{label_px:.1f}" text-anchor="end" fill="{COLOR_TEXT}">{xml_text(display)}</text>'
         )
         for col_index, col in enumerate(cols):
             x = label_width + col_index * cell_w
@@ -909,7 +921,7 @@ def render_matrix_chart(
                 f'<rect x="{x}" y="{y}" width="{cell_w - 2}" height="{cell_h - 2}" fill="{fill}"/>'
             )
             parts.append(
-                f'<text x="{x + (cell_w - 2) / 2}" y="{y + cell_h / 2 + 6}" font-size="{CHART_LABEL_PX}" '
+                f'<text x="{x + (cell_w - 2) / 2}" y="{y + cell_h / 2 + 6}" font-size="{label_px:.1f}" '
                 f'text-anchor="middle" fill="{readable_text_on(fill)}" data-on-fill="{fill}">{value}</text>'
             )
     parts.append("</svg>")
@@ -1025,7 +1037,13 @@ def render_year_bubble_matrix_chart(
     max_value = int(layout["max_value"] or 1)
     # 🔴 P-2：畫布以最終顯示尺寸設計。原本 340+82×年、56×列，10 列讓畫布高 719px，
     # 塞進 4.32in 圖框被壓到 0.60 倍，11px 的申請人名只剩 4.8pt（下限 12pt）。
-    left, top = 300, 132
+    # 🔴 2026-08-04：字級由縮放反推（資料 14pt／註記 12pt）。
+    # ⚠ 本圖的畫布高度幾乎固定（row_h 會自適應填滿 CHART_CANVAS_MAX_HEIGHT），
+    # 故先用畫布上限求初值排版面，最後再用**實際**畫布尺寸定字級——
+    # 標籤區用初值多留 5% 餘裕，避免字放大後撞到左緣。
+    _f0 = chart_font_px(CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT)
+    left = label_gutter([str(name) for name in row_names], font_px=_f0 * 1.05)
+    top = 132
     usable = CHART_CANVAS_MAX_HEIGHT - top - 34
     row_h = max(26, usable // max(1, len(row_names)))
     if row_h * len(row_names) > usable:          # 列太多時砍列，不是縮字
@@ -1048,12 +1066,14 @@ def render_year_bubble_matrix_chart(
     bubble_max = max(BUBBLE_MIN_RADIUS_PX, min(28.0, (cell_w - LABEL_MIN_GAP_PX) / 2))
     width = left + max(1, len(years)) * cell_w + 34
     height = top + max(1, len(row_names)) * row_h + 34
+    label_px = chart_font_px(width, height)
+    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text data-role="chart-title" x="16" y="28" font-size="18" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="16" y="90" font-size="{CHART_LABEL_PX}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
-        *([f'<text x="{width - 34}" y="{top - 14}" text-anchor="end" font-size="{CHART_LABEL_PX - 3}" '
+        f'<text data-role="chart-title" x="16" y="28" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text x="16" y="90" font-size="{note_px:.1f}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
+        *([f'<text x="{width - 34}" y="{top - 14}" text-anchor="end" font-size="{note_px:.1f}" '
            f'fill="{COLOR_TEXT_SOFT}">僅顯示 {years[0]}–{years[-1]}（共 {years_total} 年）</text>']
           if years_total > len(years) else []),
     ]
@@ -1068,23 +1088,23 @@ def render_year_bubble_matrix_chart(
     for color, label, span in bubble_legend_spans(max_value):
         text = f"{label} {span}"
         parts.append(f'<circle cx="{legend_x}" cy="86" r="9" fill="{color}"/>')
-        parts.append(f'<text x="{legend_x + 14}" y="90" font-size="{CHART_LABEL_PX}" fill="#4B5563">'
+        parts.append(f'<text x="{legend_x + 14}" y="90" font-size="{label_px:.1f}" fill="#4B5563">'
                      f'{xml_text(text)}</text>')
         legend_x += legend_step(text, mark_width=18, mark_gap=5)
-    year_labels = [_year_axis_label(year, cell_w) for year in years]
+    year_labels = [_year_axis_label(year, cell_w, label_px) for year in years]
     # 縮成兩位數時要說出世紀，否則 '11 讀者無從判斷是哪個一百年。
     if any(label.startswith("'") for label in year_labels):
         # ⚠ 字級不得低於 CHART_LABEL_PX：圖會被縮進 PPT 圖框（縮了兩次），
         # 14px 在 949px 畫布下只剩 9.5pt，低於 12pt 下限（AGENTS.md「SVG 文字的最終字級下限」）。
-        parts.append(f'<text x="{left - 10}" y="{top - 14}" font-size="{CHART_LABEL_PX}" '
+        parts.append(f'<text x="{left - 10}" y="{top - 14}" font-size="{label_px:.1f}" '
                      f'text-anchor="end" fill="{COLOR_TEXT_SOFT}">申請年 20—</text>')
     for col_index, label in enumerate(year_labels):
         x = left + col_index * cell_w + cell_w / 2
-        parts.append(f'<text x="{x:.1f}" y="{top - 14}" font-size="{CHART_LABEL_PX}" text-anchor="middle" fill="{COLOR_TEXT}">{label}</text>')
+        parts.append(f'<text x="{x:.1f}" y="{top - 14}" font-size="{label_px:.1f}" text-anchor="middle" fill="{COLOR_TEXT}">{label}</text>')
     for row_index, company in enumerate(row_names):
         y = top + row_index * row_h
         display = company
-        parts.append(f'<text x="{left - 10}" y="{y + 20}" font-size="{CHART_LABEL_PX}" text-anchor="end" fill="{COLOR_TEXT}">{xml_text(display)}</text>')
+        parts.append(f'<text x="{left - 10}" y="{y + 20}" font-size="{label_px:.1f}" text-anchor="end" fill="{COLOR_TEXT}">{xml_text(display)}</text>')
         for col_index, year in enumerate(years):
             value = values.get((company, year), 0)
             if value <= 0:
@@ -1094,16 +1114,18 @@ def render_year_bubble_matrix_chart(
             fill, color_band = year_bubble_color(value, max_value)
             # ⚠ 位數多時縮小是為了塞進泡泡，但縮到 8px 縮放後只剩 5pt——
             # 下限拉到 CHART_LABEL_PX-4（縮放後仍 ≈9.5pt），再小就不如不標。
-            value_font_size = (CHART_LABEL_PX if value < 100
-                               else CHART_LABEL_PX - 2 if value < 1000
-                               else CHART_LABEL_PX - 4)
+            # 🔴 2026-08-04：原本依位數縮小（100 以上 -2、1000 以上 -4），
+            # 與使用者定案的「圖表文字一律 14pt」衝突——縮下去就低於目標。
+            # ⚠ 改為一律用 label_px；泡泡放不放得下由 bubble_max 控制半徑，
+            # 不是靠把字縮小來遷就。
+            value_font_size = label_px
             parts.append(
                 f'<circle cx="{x:.1f}" cy="{y + 16:.1f}" r="{radius:.1f}" fill="{fill}" '
                 f'data-value-band="{color_band}" stroke="#374151" stroke-width="1.1">'
                 f'<title>{xml_text(company)} / {year} / {value}</title></circle>'
             )
             parts.append(
-                f'<text x="{x:.1f}" y="{y + 20:.1f}" font-size="{value_font_size}" font-weight="700" '
+                f'<text x="{x:.1f}" y="{y + 20:.1f}" font-size="{value_font_size:.1f}" font-weight="700" '
                 f'text-anchor="middle" fill="{readable_text_on(fill)}" data-on-fill="{fill}" pointer-events="none">{value}</text>'
             )
     parts.append("</svg>")

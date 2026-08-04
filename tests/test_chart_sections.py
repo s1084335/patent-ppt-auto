@@ -1058,8 +1058,16 @@ class SelectiveRenderTests(unittest.TestCase):
         # fixture 30 年×2 家＝60 列，入庫截為 25 年×2 家＝50 列（原斷言 60）。
         self.assertEqual(len(report_data["reports"]["owner_year_matrix"]["rows"]), 50)
         self.assertEqual(report_data["reports"]["owner_year_matrix"]["rows_total"], 60)
-        # P-2：內文字級統一 CHART_LABEL_PX（縮放後 ≥12pt），不再是 17
-        self.assertIn(f'font-size="{chart_runner.CHART_LABEL_PX}"', svg)
+        # 🔴 2026-08-04：字級改由 chart_font_px() 依縮放反推，不再是固定的
+        # CHART_LABEL_PX。⚠ 判準也跟著換——驗的是「縮放到投影片上是不是 14pt」，
+        # 那才是使用者定的目標；驗 SVG 裡的 px 數字等於把中間值當規格。
+        _sizes = {float(v) for v in re.findall(r'font-size="([0-9.]+)"', svg)}
+        _w = float(re.search(r'<svg[^>]+width="([0-9.]+)"', svg).group(1))
+        _h = float(re.search(r'<svg[^>]+height="([0-9.]+)"', svg).group(1))
+        _scale = chart_runner.chart_scale(_w, _h)
+        self.assertAlmostEqual(max(_sizes) * 0.75 * _scale,
+                               chart_runner.CHART_DATA_TARGET_PT, places=0,
+                               msg=f"資料文字沒落在 14pt（字級 {max(_sizes)}px、縮放 {_scale:.3f}）")
         self.assertNotIn("{CHART_LABEL_PX}", svg, "常數被當字面印進 SVG（漏了 f 前綴）")
         # P-2：寬度以畫布上限為準，年份多時砍最舊的年份而不是把格子縮到看不清
         svg_width = float(re.search(r'<svg[^>]+width="([0-9.]+)"', svg).group(1))
