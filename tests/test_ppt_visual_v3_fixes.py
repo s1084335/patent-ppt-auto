@@ -287,10 +287,9 @@ class FrameworkBarFitsTests(unittest.TestCase):
         self.assertLessEqual(len(text), 60)
         self.assertTrue(text.endswith("項分析"), f"收尾被截掉了：{text!r}")
 
-    def test_fewer_items_when_names_are_long(self):
-        tight = bp._framework_text(self.layout, budget_chars=40)
-        loose = bp._framework_text(self.layout, budget_chars=120)
-        self.assertLess(tight.count("→"), loose.count("→"))
+    # 🔴 2026-08-04（J-11）：test_fewer_items_when_names_are_long 已刪除——
+    # 動線改用固定分組名（時間→地域→技術→競爭→機會），箭頭數不再隨預算增減，
+    # 「依預算調列數」的行為隨規格一起消失。收尾完整與項數誠實兩支仍在守。
 
     def test_all_items_listed_when_they_fit(self):
         short = [self._Spec(f"主題{i}") for i in range(3)]

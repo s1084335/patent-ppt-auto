@@ -3223,10 +3223,22 @@ def _cover_stats(report_data: dict[str, Any]) -> list[tuple[str, str, str]]:
     if country_rows:
         numeric = _numeric_column(country_rows)
         label_col = _label_column(country_rows, numeric)
-        top = sorted(country_rows, key=lambda r: _as_int(r.get(numeric)), reverse=True)[:2]
+        # 🔴 J-4（2026-08-04）：原本只列前二國——「39｜9」加起來 48，
+        # 但專利總數 60（US 9、EP 3 被丟）；且 TW／US 同 9 件時挑誰是任意的。
+        # 改為 ≤4 局全列、>4 局取前 3 ＋「其他」合計：**件數總和恆等於總數**，
+        # 排序（件數 desc, 代碼 asc）決定同數順序，不再任意。
+        ordered = sorted(country_rows,
+                         key=lambda r: (-_as_int(r.get(numeric)), str(r.get(label_col, ""))))
+        if len(ordered) > 4:
+            shown = ordered[:3]
+            rest = sum(_as_int(r.get(numeric)) for r in ordered[3:])
+            pairs = [(str(r.get(label_col, "-")), _as_int(r.get(numeric))) for r in shown]
+            pairs.append(("其他", rest))
+        else:
+            pairs = [(str(r.get(label_col, "-")), _as_int(r.get(numeric))) for r in ordered]
         stats.append((
-            " ｜ ".join(str(_as_int(r.get(numeric))) for r in top),
-            " ｜ ".join(str(r.get(label_col, "-")) for r in top),
+            "｜".join(str(n) for _, n in pairs),
+            "｜".join(code for code, _ in pairs),
             "地域分布（件數）",
         ))
     period = _statistics_period(report_data)
@@ -3263,14 +3275,16 @@ def _cover_stat_size(theme: Theme, stats: list[tuple[str, str, str]], value: str
 
 
 def _framework_text(layout: list[PageSpec], budget_chars: int = FRAMEWORK_BUDGET_CHARS) -> str:
-    """分析框架條：用本次實際出頁的內容頁主題串成閱讀動線。
+    """分析框架條：固定的論證鏈分組名＋本次實際項數。
 
-    🔴 F-15：原本固定列 5 項，主題名長短不一，五個長名串起來就爆行，
-    實機 p1 被截成「…國家佈局（現有保護） → 等共 12 項…」——**連收尾都被切掉**。
-    ⚠「等共 N 項分析」是資訊（讀者才知道還有多少沒列），被截掉這行只剩半句話。
+    🔴 J-11（2026-08-04）：原本用「實際頁面主題名」串動線——主題名 15–20 字，
+    58 字預算只塞得下 1–2 個，實機 p1 印成「專利申請趨勢與專利授權公告趨勢
+    （Trend）→ 等共 16 項分析」，讀起來像句子被切掉。
+    ⚠ F-15 修的是「收尾被截」，沒修「只剩半條動線」——根因是拿長度不可控的
+    主題名去湊長度固定的一行。
 
-    改為**先扣掉收尾所需的字數**，剩下的預算才拿來排主題：寧可少列一項，
-    也要讓「還有幾項」講完整。
+    改用**固定分組名**（時間→地域→技術→競爭→機會＝論證鏈的五段，
+    見 EVIDENCE_ORDER 的排序意圖）：短而穩定，永遠放得下、永遠是完整句。
     """
     topics = list(dict.fromkeys(
         spec.topic or spec.title
@@ -3279,24 +3293,7 @@ def _framework_text(layout: list[PageSpec], budget_chars: int = FRAMEWORK_BUDGET
     ))
     if not topics:
         return "分析框架：本次僅含封面與研發方向建議"
-    prefix = "分析框架："
-    tail = f" → 等共 {len(topics)} 項分析"
-    # 先試著全部列出——放得下就不需要收尾那句。
-    whole = prefix + " → ".join(topics)
-    if len(whole) <= budget_chars:
-        return whole
-    room = budget_chars - len(prefix) - len(tail)
-    shown: list[str] = []
-    used = 0
-    for topic in topics:
-        step = len(topic) + (3 if shown else 0)
-        if used + step > room:
-            break
-        shown.append(topic)
-        used += step
-    if not shown:
-        shown = [topics[0]]
-    return prefix + " → ".join(shown) + tail
+    return f"分析框架：時間趨勢 → 地域布局 → 技術分類 → 競爭者 → 機會評估，共 {len(topics)} 項分析"
 
 
 # --------------------------------------------------------------------------

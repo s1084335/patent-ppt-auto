@@ -170,6 +170,11 @@ def _pick_representative(
         # 年份缺漏者排最後（-1），不因為沒年份就被當成最新
         best = max(owned, key=lambda pid: (int(patents.get(pid, {}).get("application_year") or -1), -pid))
         number = str(patents.get(best, {}).get("number") or "")
+        # 🔴 J-3（2026-08-04）：連字號換成 U+2011（不斷行連字號）。
+        # PowerPoint 把 ASCII `-` 當合法斷點，`2019-0247710` 會被折成兩行；
+        # 而自動換行不寫進 XML，程式掃不到，只有轉圖／實機看得見。
+        # 顯示長相相同、網頁端同樣受益；關口只有這裡，組版端零改動。
+        number = number.replace("-", "‑")
         if number and number not in numbers:
             numbers.append(number)
     # ⚠ 表格欄**只放專利號**（2026-08-03 使用者定案）。
