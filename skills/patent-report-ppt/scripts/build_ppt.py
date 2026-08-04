@@ -2038,9 +2038,11 @@ def _render_chart_hero(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any])
     _render_header(slide, theme, spec, ctx)
     g = theme.geometry["chart_hero"]
     image = ctx["charts"].resolve(spec.charts[0]) if spec.charts else None
+    # R-3：框高先讓過頁尾帶，再談縮放（長圖會撐滿框高，底注否則壓住資料來源）。
+    frame_h = image_frame_height(theme, g["image_top_in"], g["image_height_in"])
     # 說明靠右對齊**圖的實際右緣**，不是框的右緣。圖填不滿框時（瘦圖只佔框寬的
     # 三分之一），靠框對齊會讓說明飄在圖右邊幾吋外的空白處（獨立驗收 p6 抓到）。
-    shown_w, _ = (_fitted_size(image, g["image_width_in"], g["image_height_in"])
+    shown_w, _ = (_fitted_size(image, g["image_width_in"], frame_h)
                   if image is not None else (g["image_width_in"], 0.0))
     edge_left = g["image_left_in"] + (g["image_width_in"] - shown_w) / 2
     _add_text(slide, theme, _encoding_note(spec, ctx),
@@ -2050,7 +2052,7 @@ def _render_chart_hero(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any])
     if image is not None:
         _add_picture_fitted(slide, image,
                             left=g["image_left_in"], top=g["image_top_in"],
-                            width=g["image_width_in"], height=g["image_height_in"])
+                            width=g["image_width_in"], height=frame_h)
 
     headline, points, _ = ctx["narratives_by_page"].get(spec.page, ("", [], False))
     # 🔴 2026-08-03 使用者：「判讀區塊那裡要能帶出核心結論，**還有不是每頁都要有
@@ -2349,6 +2351,31 @@ def _parse_direction_body(body: str) -> dict[str, Any] | None:
     }
 
 
+def image_frame_height(theme: Theme, top_in: float, declared_height_in: float) -> float:
+    """圖框可用高度——**不得延伸進頁尾帶**（R-3，2026-08-05 實機 p17／p18）。
+
+    🔴 象限板長寬比 ~1.47 比圖框（8.9×5.0＝1.78）更高，於是**高度受限**、
+    撐滿整個框高：框底 1.86+5.0＝6.86in 落進頁尾帶（footnote.top 6.78in），
+    圖自己最後一行底注「本分析非侵權迴避(FTO)結論…」就疊在組版頁尾
+    「資料來源：…」上面。⚠ 寬度受限的圖（長條 949×453＝2.1）實際高度只有 4.2in，
+    本來就碰不到頁尾——所以夾限只會咬到真正會撞的那幾張，其餘零影響。
+
+    ⚠ 用夾限而不是把宣告高度改小：頁尾位置是唯一事實來源（theme.footnote），
+    日後頁尾搬家時圖框自動跟著讓位，不必再記得同步第二個數字。
+    """
+    footnote_top = theme.geometry["footnote"]["top_in"]
+    return min(declared_height_in, max(0.0, footnote_top - top_in))
+
+
+def _fitted_size_from_px(width_px: float, height_px: float,
+                         box_w: float, box_h: float) -> tuple[float, float]:
+    """已知像素尺寸時的等比縮放結果（供 `_fitted_size` 與測試共用同一套算法）。"""
+    if not width_px or not height_px:
+        return box_w, box_h
+    scale = min(box_w / (width_px / 96), box_h / (height_px / 96))
+    return (width_px / 96) * scale, (height_px / 96) * scale
+
+
 def _fitted_size(image_path: Path, box_w: float, box_h: float) -> tuple[float, float]:
     """圖等比縮放塞進框後的**實際**尺寸（英吋）。
 
@@ -2362,10 +2389,7 @@ def _fitted_size(image_path: Path, box_w: float, box_h: float) -> tuple[float, f
             width_px, height_px = img.size
     except Exception:
         return box_w, box_h
-    if not width_px or not height_px:
-        return box_w, box_h
-    scale = min(box_w / (width_px / 96), box_h / (height_px / 96))
-    return (width_px / 96) * scale, (height_px / 96) * scale
+    return _fitted_size_from_px(width_px, height_px, box_w, box_h)
 
 
 def _render_chart_wide(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
