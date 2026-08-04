@@ -56,8 +56,11 @@ class CapacityIsHonestTests(unittest.TestCase):
                 if area is None:
                     continue
                 width_in, height_in, columns = area
+                # ⚠ 要點有設段落行距，估算必須用同一份（point_line_ratio）——
+                # 不傳就會拿到全域估算值，測到的是測試自己的錯。
                 per_line, max_lines = bp._text_capacity(
-                    theme, width_in=width_in, height_in=height_in, size_pt=size)
+                    theme, width_in=width_in, height_in=height_in, size_pt=size,
+                    line_ratio=bp.point_line_ratio(theme))
                 if caveat:
                     max_lines -= bp._lines_needed(f"{bp.CAVEAT_LABEL}｜警語", per_line)
                 # ⚠ 用**程式的公式**算，不自己重算一份——測試重算一份就變成

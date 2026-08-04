@@ -353,6 +353,17 @@ def points_budget(per_line: int, max_lines: int, columns: int) -> dict[str, int]
     }
 
 
+def point_line_ratio(theme: Theme) -> float:
+    """要點文字的行距。**唯一定義處**——估算（`_text_capacity`）與渲染
+    （`_add_number_bold_text` 的 `paragraph.line_spacing`）都讀它。
+
+    🔴 2026-08-04：程式原本從未設定過 `line_spacing`，`qa.line_height_ratio`
+    只是估算值，PowerPoint 實際用預設行距。⚠ 兩者分開就會出現「調大了估算值、
+    畫面卻沒變寬」——只是把版面寫得更空。
+    """
+    return float(theme.qa.get("point_line_height_ratio", theme.qa["line_height_ratio"]))
+
+
 def _points_area(theme: Theme, kind: str, *, caveat: bool = False) -> tuple[float, float, int] | None:
     """該版型放要點的區域：(寬, 高, 欄數)；沒有要點區的版型回 None。
 
@@ -442,7 +453,8 @@ def narrative_capacity(theme: Theme | None = None,
                 return None
             width_in, height_in, columns = area
             per_line, max_lines = _text_capacity(
-                theme, width_in=width_in, height_in=height_in, size_pt=size)
+                theme, width_in=width_in, height_in=height_in, size_pt=size,
+                line_ratio=point_line_ratio(theme))
             # ⚠ 框變小之外，警語本身還會先佔掉行數（批1 起警語不參與均分），兩者都要扣。
             if caveat:
                 max_lines -= _lines_needed(f"{CAVEAT_LABEL}｜{caveat}", per_line)
@@ -539,10 +551,18 @@ class Theme:
 # --------------------------------------------------------------------------
 # 文字量估算：文字框裝不裝得下要能事前判斷（fallback 截斷）與事後自檢（QA）
 # --------------------------------------------------------------------------
-def _text_capacity(theme: Theme, *, width_in: float, height_in: float, size_pt: float) -> tuple[int, int]:
-    """回傳（每行字數, 可用行數）。中文字寬約等於字級，故以 pt/72 估字寬。"""
+def _text_capacity(theme: Theme, *, width_in: float, height_in: float, size_pt: float,
+                   line_ratio: float | None = None) -> tuple[int, int]:
+    """回傳（每行字數, 可用行數）。中文字寬約等於字級，故以 pt/72 估字寬。
+
+    ⚠ `line_ratio` 給**有設段落行距**的文字用（目前只有要點，見
+    `POINT_LINE_RATIO`）。其餘文字沒設 `line_spacing`，PowerPoint 用預設行距，
+    所以只能沿用 `qa.line_height_ratio` 這個估算值——把它全域調大，
+    畫面不會變寬，只會讓容量估得更保守（字更少、版面更空）。
+    """
     char_in = size_pt / 72.0 * float(theme.qa["cjk_char_width_ratio"])
-    line_in = size_pt / 72.0 * float(theme.qa["line_height_ratio"])
+    ratio = line_ratio if line_ratio is not None else float(theme.qa["line_height_ratio"])
+    line_in = size_pt / 72.0 * ratio
     # ⚠ 加 epsilon：1.5 / (40/72*1.35) 在浮點下是 1.9999999998，直接 int() 會少算一行，
     # 讓剛好兩行的標題被誤判成裝不下而截字（封面標題被切成「…」就是這樣來的）。
     epsilon = 1e-6
@@ -1280,8 +1300,13 @@ def _add_number_bold_text(
     ⚠ 強調條（emphasis）的數字維持 alert 色不轉青，否則整條的警示語氣會被打斷。
     """
     _, frame = _new_textbox(slide, left=left, top=top, width=width, height=height)
+    spacing = point_line_ratio(theme)
     for index, (label, text, color, emphasized) in enumerate(blocks):
         para = frame.paragraphs[0] if index == 0 else frame.add_paragraph()
+        # 🔴 2026-08-04：行距要**真的寫進段落**。原本只有 `qa.line_height_ratio`
+        # 這個估算值，PowerPoint 用的是預設行距——調大估算值畫面不會變寬，
+        # 只會讓容量估得更保守（字更少、版面更空）。
+        para.line_spacing = spacing
         if label:
             chip = para.add_run()
             chip.text = f"{label}｜"
@@ -1579,8 +1604,9 @@ def _points_panel_height(
     ceiling = max_height_in if max_height_in is not None else g["height_in"]
     chrome = g["text_top_offset_in"] + g["text_bottom_pad_in"]
     size_pt = theme.size("point_text_pt")
-    per_line, _ = _text_capacity(theme, width_in=width_in, height_in=ceiling, size_pt=size_pt)
-    line_in = size_pt / 72.0 * float(theme.qa["line_height_ratio"])
+    per_line, _ = _text_capacity(theme, width_in=width_in, height_in=ceiling, size_pt=size_pt,
+                                 line_ratio=point_line_ratio(theme))
+    line_in = size_pt / 72.0 * point_line_ratio(theme)
     lines = sum(
         max(1, math.ceil(((len(label) + 1 if label else 0) + len(text)) / per_line))
         for label, text, _, _ in blocks
@@ -1806,7 +1832,8 @@ def _trim_blocks(
     """
     if not blocks:
         return blocks
-    per_line, lines = _text_capacity(theme, width_in=width_in, height_in=height_in, size_pt=size_pt)
+    per_line, lines = _text_capacity(theme, width_in=width_in, height_in=height_in,
+                                     size_pt=size_pt, line_ratio=point_line_ratio(theme))
     needs = [
         max(1, math.ceil(((len(label) + 1 if label else 0) + len(text)) / per_line))
         for label, text, _, _ in blocks
@@ -2356,11 +2383,12 @@ def _render_wide_points_band(slide, theme: Theme, spec: PageSpec, ctx: dict[str,
     # 資料少的頁面（IPC 四階只有 2 條）下半部就是一大片空白——
     # 這正是本批要治的毛病，換個位置再犯一次沒有意義。
     lines = sum(_lines_needed(f"{label}｜{text}", _text_capacity(
-        theme, width_in=col_w, height_in=g["band_bottom_in"], size_pt=size_pt)[0])
+        theme, width_in=col_w, height_in=g["band_bottom_in"], size_pt=size_pt,
+        line_ratio=point_line_ratio(theme))[0])
         for label, text, _, _ in _points_for(spec, ctx))
     per_column_lines = math.ceil(lines / columns_n) if lines else 1
     needed = (g["band_text_top_offset_in"] + inset
-              + per_column_lines * size_pt / 72.0 * theme.qa["line_height_ratio"])
+              + per_column_lines * size_pt / 72.0 * point_line_ratio(theme))
     height = min(g["band_bottom_in"] - top,
                  max(g["band_header_height_in"] + inset + inset, needed))
     _add_band(slide, theme, g["band_left_in"], top, g["band_width_in"], height, "panel", rounded=True)

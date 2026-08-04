@@ -21,7 +21,7 @@
     "subtitle_pt": 14.0,
     "body_pt": 15.0,
     "point_label_pt": 13.0,
-    "point_text_pt": 15.0,
+    "point_text_pt": 16.0,
     "caveat_title_pt": 13.0,
     "caveat_text_pt": 12.0,
     "encoding_note_pt": 12.0,
@@ -518,12 +518,13 @@
     },
     "_max_columns_comment": "6 → 7（2026-08-03）：技術狀態在優先序第 4、代表專利第 7，維持 6 會剛好卡掉代表專利——使用者定案「兩個通道各自要做的都要能顯示，不要再被卡掉」。欄位順序由引擎的 priority_columns 決定，放不下時砍尾巴不砍中間。"
   },
-  "_qa_comment": "產後溢出／重疊／邊距自檢的門檻。tolerance 給文字框內距與四捨五入留餘裕，不是用來吃掉真的溢出；line_height_ratio 與 cjk_char_width_ratio 用來估算文字框容量（中文字寬約等於字級），估到裝不下就寫 warning。",
+  "_qa_comment": "產後溢出／重疊／邊距自檢的門檻。tolerance 給文字框內距與四捨五入留餘裕，不是用來吃掉真的溢出；line_height_ratio 與 cjk_char_width_ratio 用來估算文字框容量（中文字寬約等於字級），估到裝不下就寫 warning。 point_line_height_ratio（2026-08-04 使用者定案 1.65）是**要點文字專用**的行距，估算與實際段落 line_spacing 都讀它——只有要點會設段落行距，標題／表格／封面仍用 PowerPoint 預設，故不可把 line_height_ratio 全域調大。",
   "qa": {
     "min_margin_in": 0.5,
     "overlap_tolerance_in": 0.03,
     "bounds_tolerance_in": 0.01,
     "line_height_ratio": 1.35,
+    "point_line_height_ratio": 1.65,
     "cjk_char_width_ratio": 1.0,
     "capacity_slack": 1.05
   }
