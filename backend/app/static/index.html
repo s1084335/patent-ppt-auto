@@ -5561,6 +5561,11 @@ function importResultHtml(j) {
     // ⚠ summary.alias_variants 早就存在但前端**零顯示**——自動歸戶了幾筆、
     // 建了幾組待確認組，使用者完全看不到（做了卻沒人知道的靜默成功）。
     + aliasVariantsHtml(r.alias_variants)
+    // 新增待補名稱提示（2026-07-28 定案）：只告知數量、指路，不預先分組。
+    + ((r.pending_company_names || 0) > 0
+      ? '<div style="margin-top:0.5rem;color:var(--warn)">新增 <strong>' + r.pending_company_names
+        + '</strong> 個未對照的專利權人名稱，可至「專利權人代碼」區處理。</div>'
+      : '')
     + '<div style="margin-top:0.5rem">已加入 workspace <strong>' + escHtml(wsName) + '</strong>。</div>'
     + shortcut
     + '</div>';

@@ -105,8 +105,13 @@ fi
 
 # ── 3. build ──
 echo "== 2/4 重建 image =="
-docker rm -f patent-backend patent-worker >/dev/null 2>&1 || true
+# 🔴 2026-08-04 使用者定案：**先 build 成功、才換容器**。
+# 原本先 `rm -f` 再 build——build 那幾分鐘服務完全中斷（port forwarding 看起來像
+# 隧道壞掉，08-03 誤判過一次）；且 build 失敗時舊容器已死、回不去。
+# 改為 build 失敗就整個停（set -e），舊容器原封不動繼續服務。
 docker build -t "$IMAGE" .
+echo "  image 建置成功，開始換容器（中斷僅數秒）"
+docker rm -f patent-backend patent-worker >/dev/null 2>&1 || true
 echo
 
 # ── 4. 起容器：兩組 named volume，backend 與 worker 必須掛同一組 ──

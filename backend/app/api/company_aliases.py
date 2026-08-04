@@ -535,6 +535,54 @@ _PENDING_CODES_SQL = """
 """
 
 
+COUNT_PENDING_FOR_PATENTS_SQL = """
+    WITH raw_names AS (
+        SELECT x.raw_name, pp.patent_id
+        FROM core_layer.patent_people pp
+        CROSS JOIN LATERAL (VALUES
+            (NULLIF(BTRIM(pp."申請人"), '')),
+            (NULLIF(BTRIM(pp."標準化申請人"), '')),
+            (NULLIF(BTRIM(pp."最近專利權人[US,JP,KR,CN,CA,AU]"), '')),
+            (NULLIF(BTRIM(pp."標準當前專利權人[US,JP,KR,CN,CA,AU]"), '')),
+            (NULLIF(BTRIM(pp."最近受讓人[US,KR,CN]"), ''))
+        ) AS x(raw_name)
+        WHERE x.raw_name IS NOT NULL
+          AND pp.patent_id = ANY(%(patent_ids)s)
+    ),
+    names AS (
+        SELECT lower(regexp_replace(BTRIM(part), '\\s+', ' ', 'g')) AS lookup_key
+        FROM raw_names r
+        CROSS JOIN LATERAL regexp_split_to_table(r.raw_name, '\\s*\\|\\s*') AS part
+        WHERE NULLIF(BTRIM(part), '') IS NOT NULL
+    )
+    SELECT count(DISTINCT n.lookup_key)
+    FROM names n
+    WHERE NOT EXISTS (
+        SELECT 1 FROM derived_layer.company_aliases ca
+        WHERE ca.review_status = 'confirmed'
+          AND lower(regexp_replace(BTRIM(ca."別稱"), '\\s+', ' ', 'g')) = n.lookup_key
+    )
+"""
+
+
+def count_pending_names_for_patents(cur, patent_ids: list[int]) -> int:
+    """本批專利中「未對照（無 confirmed 別稱）」的去重名稱數。
+
+    🔴 匯入後主動告知用（2026-07-28 使用者定案，company-zh-name-confirm-spec）：
+    三層收斂只吸收大小寫與空白差異，標點差異與全新公司要人工補——
+    但使用者不會知道有新的要補，得自己展開待補清單才發現。
+
+    ⚠ 只告知數量、不預先分組（同日定案）：不判斷誰跟誰同一家。
+    ⚠ 欄位、拆分（` | ` 多值）與 normalize 規則與 _PENDING_CODES_SQL 同一套
+    ——放同檔就是為了改一處兩邊一起動。
+    """
+    if not patent_ids:
+        return 0
+    cur.execute(COUNT_PENDING_FOR_PATENTS_SQL, {"patent_ids": list(patent_ids)})
+    row = cur.fetchone()
+    return int(row[0] if not isinstance(row, dict) else list(row.values())[0])
+
+
 @router.get("/company-codes/pending")
 def list_pending_company_codes(limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
     """待補代碼的專利權人名稱（去重後的原始名稱＋專利數＋出現在哪些欄位）。

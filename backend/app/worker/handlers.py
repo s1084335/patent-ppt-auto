@@ -597,9 +597,34 @@ def _enqueue_refresh_derived(summary: dict[str, Any]) -> None:
             return
         job = jr.create_job("refresh_derived", {})
         summary["refresh_derived_job_id"] = job.job_id
+        # 匯入回報帶「新增待補名稱數」（見 _count_pending_company_names docstring）。
+        _count_pending_company_names(summary)
     except Exception as exc:  # noqa: BLE001 - refresh 是輔助，缺了照樣完成匯入
         LOGGER.exception("refresh_derived enqueue failed after import")
         summary["refresh_derived_error"] = f"{type(exc).__name__}: {exc}"
+
+
+def _count_pending_company_names(summary: dict[str, Any]) -> None:
+    """匯入完成回報「新增待補名稱數」（2026-07-28 定案；只告知數量、不預先分組）。
+
+    失敗隔離沿同檔慣例：計數只是提示，任何例外記 log 回填 error 欄，不 raise。
+    """
+    import psycopg
+
+    from backend.app.api.company_aliases import count_pending_names_for_patents
+    from backend.app.db.connection import get_connection_kwargs
+
+    try:
+        patent_ids = summary.get("patent_ids") or []
+        if not patent_ids:
+            return
+        with psycopg.connect(**get_connection_kwargs(), connect_timeout=15) as conn:
+            with conn.cursor() as cur:
+                summary["pending_company_names"] = count_pending_names_for_patents(
+                    cur, [int(pid) for pid in patent_ids])
+    except Exception as exc:  # noqa: BLE001 - 提示性統計，缺了照樣完成匯入
+        LOGGER.exception("pending company name count failed after import")
+        summary["pending_company_names_error"] = f"{type(exc).__name__}: {exc}"
 
 
 def _enqueue_patent_note(summary: dict[str, Any]) -> None:

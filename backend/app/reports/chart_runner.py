@@ -116,8 +116,12 @@ COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
 #
 # 反推：要讓縮放 ≥0.9，畫布不得超過 9.89×4.80 in ＝ 949×461 px。
 # 字級 18px（＝13.5pt）× 0.9 ＝ 12.2pt，剛好過線。
-CHART_CANVAS_WIDTH = 949
-CHART_CANVAS_MAX_HEIGHT = 460
+# 🔴 尺寸與字級的唯一定義處＝chart_sizing（2026-08-03 定案：只分尺寸與字級，
+# 版面邏輯共用）。修 PPT 的尺寸改 chart_sizing.PPT；本檔常數只是綁定，不自帶數值。
+from backend.app.reports.chart_sizing import PPT as _SIZING
+
+CHART_CANVAS_WIDTH = _SIZING.canvas_width
+CHART_CANVAS_MAX_HEIGHT = _SIZING.canvas_max_height
 CHART_LABEL_PX = 18          # （已停用）舊的寫死字級；改由 chart_font_px() 反推
 
 #: 每英吋多少 px（SVG 的 96dpi 與 PPT 的 72pt 之間的換算基準）。
@@ -128,17 +132,17 @@ PT_PER_PX = 72.0 / PX_PER_INCH
 #: 🔴 2026-08-04 使用者定案：圖表文字的**最終顯示大小**。
 #: 「超過的降下來，不夠的要調上去」——實測第五輪同一個 18px 在不同頁面
 #: 變成 12.2／16.6／10.3pt，象限板 chip 更只有 6.9pt。
-CHART_DATA_TARGET_PT = 14.0   # 列標籤、數值、軸年份、chip 等**資料文字**
-CHART_NOTE_TARGET_PT = 12.0   # 圖例、編碼說明、來源等**註記**（比資料小一級）
+CHART_DATA_TARGET_PT = _SIZING.data_target_pt   # 資料文字（列標籤、數值、chip…）
+CHART_NOTE_TARGET_PT = _SIZING.note_target_pt   # 註記（圖例、編碼說明、來源）
 
 #: PPT 圖框尺寸（英吋）。⚠ 這是 `theme.json` 的**刻意複製**：
 #: `chart_runner` 在後端、`theme.json` 在 skill 目錄，跨模組讀不到。
 #: 依「同一份知識只能有一個定義處」的規則，無法 import 時加一致性測試釘住
 #: （`test_chart_font_target.FrameConstantsMatchThemeTests`），讓分岔立刻紅。
-CHART_HERO_FRAME_IN = (8.9, 5.0)
-CHART_WIDE_FRAME_IN = (12.13, 3.2)
+CHART_HERO_FRAME_IN = _SIZING.hero_frame_in
+CHART_WIDE_FRAME_IN = _SIZING.wide_frame_in
 #: 長寬比達到多少就會被組版端改用滿寬版型（與 build_ppt.WIDE_CHART_ASPECT_MIN 同值）。
-WIDE_CHART_ASPECT_MIN = 3.5
+WIDE_CHART_ASPECT_MIN = _SIZING.wide_aspect_min
 
 
 def chart_scale(width_px: float, height_px: float) -> float:
@@ -187,10 +191,10 @@ def chart_font_px(width_px: float, height_px: float, *,
     新增任何圖都自動達標，不必逐張調。
     """
     return target_pt / PT_PER_PX / chart_scale(width_px, height_px)
-CHART_ROW_HEIGHT = 28        # 12 列 → 68+336+34 = 438px，仍在上限內
+CHART_ROW_HEIGHT = _SIZING.row_height
 #: 年度矩陣泡泡的最小「大泡泡」半徑——格內兩位數（18px 字）放得下的下限。
 #: ⚠ 比這更窄時不再縮泡泡（改為壓縮大小差異），否則數字會滿出來。
-BUBBLE_MIN_RADIUS_PX = 14.0
+BUBBLE_MIN_RADIUS_PX = _SIZING.bubble_min_radius
 
 # 年度矩陣顯示年數（2026-08-03 使用者定案：**16 年**，原 15）。
 # ⚠ 固定值優於「放不下才砍」——後者讓同一份報表在不同資料量下顯示不同年距，
@@ -198,7 +202,7 @@ BUBBLE_MIN_RADIUS_PX = 14.0
 # 🔴 改 16 的原因：本案資料橫跨 2011–2026 正好 16 年，15 會砍掉最舊那年。
 # 而 15 這個數字當初是**拍的、不是量出來的**；實測 949px 畫布下 16 欄每欄 57px，
 # 泡泡與數字都放得下。
-CHART_YEAR_WINDOW = 16
+CHART_YEAR_WINDOW = _SIZING.year_window
 
 COLOR_BAR = "#006DF5"
 # ⚠ 不得與 COLOR_TEXT_SOFT 共用色值：轉色表以**色碼**為鍵，兩個角色撞同一個
@@ -1189,7 +1193,7 @@ def legend_step(label: str, *, mark_width: float = 12, mark_gap: float = 8) -> f
 
 
 #: 排名圖長條的高度（px）。註記位置由它推導，不得各寫各的。
-BAR_HEIGHT_PX = 18
+BAR_HEIGHT_PX = _SIZING.bar_height
 
 #: 文字「字身上緣到 baseline」佔字級的比例，用來判斷文字會不會壓到上方元素。
 #: ⚠ 這是估算值——量的是能不能「看起來壓到」，不是精確排版。
