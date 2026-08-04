@@ -94,7 +94,10 @@ class SkillRulesTests(unittest.TestCase):
         for token in ("20", "55", "4", "7"):
             with self.subTest(token=token):
                 self.assertIn(token, self.md)
-        self.assertIn("report_narrative_v7", self.md, "prompt_version 未升版")
+        # M-1（2026-08-04）：skill 範例**不再寫死版本號**——CLI 會照抄導致 metadata
+        # 失真，改由 runner 蓋章（stamp_narrative_metadata）。此處只驗「不殘留舊版號」，
+        # 舊版號清單鎖在 test_monitor_findings_m1_m5。
+        self.assertNotIn("report_narrative_v7", self.md, "skill 範例不得寫死舊版號")
 
     def test_prose_instruction_removed(self):
         """⚠ 舊散文指令必須移除——它與要點契約直接矛盾（AI 會二選一）。"""

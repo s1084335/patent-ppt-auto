@@ -79,6 +79,26 @@ NARRATIVE_POINTS_MAX = 3       # 2026-08-04 7→3（同上）
 # 要點與長文的數字一致性檢查用（含小數、百分比與千分位）。
 _NUMBER_PATTERN = re.compile(r"\d+(?:[.,]\d+)*%?")
 
+# 🔴 M-3（2026-08-04）：鎖八用的**統計數字**抽取——排除代碼型 token。
+# 分類代碼（A63B-005、F03G-005）與專利號（2024-0173588、U+2011 版）的數字片段
+# 不是統計數字：緊鄰字母或連字號（含 U+2011）的數字一律不取。
+# ⚠ 只給鎖八用：鎖二（數字要出現在長文）與鎖四（現況要有數字）仍用寬鬆版
+# ——代碼也該在長文出現、代碼也算「有數據依據」的一部分。
+_STAT_NUMBER_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9\-\u2011])\d+(?:[.,]\d+)*%?(?![A-Za-z\-\u2011])"
+)
+
+
+def effective_max_chars(limits: dict[str, int] | None) -> int:
+    """單一夾限出口（M-2，2026-08-04）：版面容量與全域可讀上限取小。
+
+    🔴 曾兩處落點：validator 夾了 55、build_prompt 沒夾——L4 寬幅頁容量 97 字
+    照原值進 prompt，CLI 守 prompt 寫 93 字仍被驗紅（規則自相矛盾，紅字全是噪音）。
+    prompt 告知與 contract 驗證**必須同一個數字**，都走這裡。
+    """
+    raw = int((limits or {}).get("max_chars") or NARRATIVE_POINT_TEXT_MAX)
+    return min(raw, NARRATIVE_POINT_TEXT_MAX)
+
 # ── C-6：把「文字要有意義」從提示變成檢查（2026-08-02）──
 #
 # 使用者定調：報告文字要從「看到什麼數據 → 描述數據」提升為
@@ -144,9 +164,8 @@ def validate_narrative_contract(
             # 直到組版端才發現放不下——實機 #166 因此丟了 10 條要點。
             limits = capacity.get(where) or base_limits
             max_points = int(limits.get("max_points") or NARRATIVE_POINTS_MAX)
-            max_chars = int(limits.get("max_chars") or NARRATIVE_POINT_TEXT_MAX)
-            # 版面容量比全域上限嚴時以版面為準；比全域寬時仍守全域。
-            max_chars = min(max_chars, NARRATIVE_POINT_TEXT_MAX)
+            # 版面容量比全域上限嚴時以版面為準；比全域寬時仍守全域（單一夾限出口）。
+            max_chars = effective_max_chars(limits)
             min_points = min(NARRATIVE_POINTS_MIN, max_points)
             headline = entry.get("headline")
             points = entry.get("points")
@@ -205,15 +224,19 @@ def validate_narrative_contract(
             # 鎖八·同頁數字不重複（濃縮五規則，2026-08-04）：意涵／後續複述
             # 現況的數字＝同一份資訊佔兩份版面。現況帶數字（鎖四），其他段講
             # 意義與行動，不再抄數字。
+            # ⚠ M-3 修訂：①用 _STAT_NUMBER_PATTERN（分類代碼／專利號的數字片段
+            # 不算統計數字）②每 point 先去重、只算**跨 point** 的重複——
+            # 同段內重講是鎖一（一條只講一個論點）的範疇，不在此自指誤報。
             seen_numbers: dict[str, int] = {}
             for i, point in enumerate(points):
-                for number in _NUMBER_PATTERN.findall(str((point or {}).get("text") or "")):
-                    if number in seen_numbers:
+                text_i = str((point or {}).get("text") or "")
+                for number in dict.fromkeys(_STAT_NUMBER_PATTERN.findall(text_i)):
+                    if number in seen_numbers and seen_numbers[number] != i:
                         warnings.append(
                             f"{where} points[{i}] 重複了 points[{seen_numbers[number]}] 的"
                             f"數字 {number}——同頁數字只寫一次，其他段講意義不抄數字")
                     else:
-                        seen_numbers[number] = i
+                        seen_numbers.setdefault(number, i)
             # 鎖五·每頁至少一條「意涵」（C-6）。
             # ⚠ 全部都是「現況」＝把數據複述一遍就交差，讀者仍要自己想「所以呢」。
             labels = [str((p or {}).get("label") or "") for p in points]
@@ -414,8 +437,10 @@ def build_prompt(
     capacity = load_narrative_capacity(run_dir)
     capacity_note = ""
     if capacity:
+        # M-2：告知值走 effective_max_chars——與 validator 同一個夾限出口，
+        # 否則寬幅頁（容量 97）照原值告知，CLI 守了 prompt 仍被驗紅。
         listed = "\n".join(
-            f"   - {key}：{limits['max_points']} 條以內、每條 ≤{limits['max_chars']} 字"
+            f"   - {key}：{limits['max_points']} 條以內、每條 ≤{effective_max_chars(limits)} 字"
             for key, limits in sorted(capacity.items())
         )
         capacity_note = (
@@ -594,6 +619,20 @@ def _subprocess_cli_runner(argv: Sequence[str], timeout: float) -> CliResult:
     return CliResult(exit_code=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
 
 
+def stamp_narrative_metadata(narratives: dict) -> None:
+    """把每個 variant 的 prompt_version 蓋成現行值（M-1，2026-08-04）。
+
+    🔴 CLI 會照 skill 契約範例抄 metadata——範例一度寫死 v7，narratives 檔
+    從 v8 時代起版本欄一直失真。metadata 的事實來源是 runner，不是 CLI 的抄寫；
+    在驗證與上傳**之前**回填，檔案與 DB 都拿到正確值。ai_model 由 CLI 寫
+    （它才知道實際跑的模型），不在此覆蓋。
+    """
+    for report in (narratives.get("reports") or {}).values():
+        for entry in (report.get("variants") or {}).values():
+            if isinstance(entry, dict):
+                entry["prompt_version"] = PROMPT_VERSION
+
+
 def run_narrative(
     based_on_version: str | None,
     *,
@@ -664,6 +703,12 @@ def run_narrative(
                 f"{sorted(dropped)}。CLI 未保留原檔內容，已中止上傳以免覆蓋 "
                 "report_artifacts（重跑前請確認 narratives.json 仍在 run_dir）。"
             )
+
+    # M-1：metadata 蓋章（prompt_version 以 runner 為準）後回寫檔案，
+    # 再進驗證與上傳——refresh_index 與 DB 拿到的都是蓋章後的版本。
+    stamp_narrative_metadata(narratives)
+    narratives_path.write_text(
+        json.dumps(narratives, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 三件套契約驗證（v4）：只警告不 raise——舊格式要能過渡、超限交 PPT 端 fallback；
     # 警告進 summary 讓前端任務進度看得到，違規不得靜默。
