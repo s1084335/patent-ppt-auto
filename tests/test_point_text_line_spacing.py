@@ -63,7 +63,7 @@ class PointTextSpacingTests(unittest.TestCase):
         """容量估算要用要點專屬行距，不是全域那個。"""
         theme = bp.Theme.load()
         size = theme.size("point_text_pt")
-        width_in, height_in, _ = bp._points_area(theme, "chart_hero", caveat=False)
+        width_in, height_in, _ = bp._points_area(theme, "chart_hero")
         _, lines = bp._text_capacity(theme, width_in=width_in, height_in=height_in,
                                      size_pt=size, line_ratio=float(theme.qa["point_line_height_ratio"]))
         expected = int(height_in / (size / 72.0 * 1.65) + 1e-6)

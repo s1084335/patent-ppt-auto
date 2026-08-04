@@ -42,22 +42,18 @@ def _entry(headline="布局集中於 A63B", points=None, text=None):
     不是因為要湊字數。
     """
     if points is None:
+        # 🔴 2026-08-04 三層制：固定現況／意涵／後續三段，判讀限制已移除。
         points = [
-            {"label": "現況", "text": "A63B 體育訓練器材次分類 47 件，F03G 僅 2 件為唯一跨界",
+            {"label": "現況", "text": "A63B 體育訓練器材 47 件，F03G 僅 2 件，近三年新進者 1 家",
              "emphasis": True},
-            {"label": "意涵", "text": "同一技術方向反覆布局，47 件集中代表路線已收斂"},
-            {"label": "後續", "text": "以 5 階細分類檢視斷層，找出尚未連續布局的細部路線"},
-            {"label": "現況", "text": "近三年新進者僅 1 家，其餘皆為既有玩家的延伸案"},
-            {"label": "意涵", "text": "新進者稀少顯示進入門檻偏高，非題目本身缺乏吸引力"},
-            {"label": "判讀限制", "text": "分類統計只反映標引結果，不等於實際技術含量高低"},
+            {"label": "意涵", "text": "分類分布集中於單一大類，同一技術方向反覆布局"},
+            {"label": "後續", "text": "建議進一步檢視 5 階細分類分布，以確認尚未連續布局的細部路線"},
         ]
     if text is None:
-        text = ("A63B 體育訓練器材次分類累計 47 件，F03G 僅 2 件，資源明顯偏向前者。\n"
-                "同一技術方向反覆布局，顯示路線已收斂而非仍在探索。\n"
-                "建議以 5 階細分類檢視斷層所在，判斷哪些細部路線尚未連續布局。\n"
-                "近三年新進者僅 1 家，其餘為既有玩家延伸。\n"
-                "新進者稀少多半是進入門檻偏高所致，不宜直接讀成題目沒有價值。\n"
-                "分類統計只反映標引結果，不等於實際技術含量。")
+        text = (
+            "A63B 體育訓練器材次分類累計 47 件，F03G 僅 2 件，近三年新進者僅 1 家。\n"
+            "分類分布集中於單一大類，同一技術方向反覆布局，路線已收斂而非仍在探索。\n"
+            "建議以 5 階細分類檢視斷層所在，以確認哪些細部路線尚未連續布局。")
     return {"headline": headline, "points": points, "text": text,
             "ai_model": "m", "prompt_version": "report_narrative_v7",
             "generated_at": "2026-07-31T00:00:00"}
@@ -73,8 +69,9 @@ class ContractConstantsTests(unittest.TestCase):
     def test_limits_single_source(self):
         self.assertEqual(runner.NARRATIVE_HEADLINE_MAX, 20)
         self.assertEqual(runner.NARRATIVE_POINT_TEXT_MAX, 55)
-        self.assertEqual(runner.NARRATIVE_POINTS_MIN, 4)
-        self.assertEqual(runner.NARRATIVE_POINTS_MAX, 7)
+        # 🔴 2026-08-04 三層制：固定 3 段（原 4–7 條）。
+        self.assertEqual(runner.NARRATIVE_POINTS_MIN, 3)
+        self.assertEqual(runner.NARRATIVE_POINTS_MAX, 3)
 
     def test_prompt_version_bumped(self):
         self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v8")
@@ -135,7 +132,7 @@ class ValidateContractTests(unittest.TestCase):
         self.assertIn("rk", w[0], "warning 要指出是哪張報表")
 
     def test_points_count_out_of_range(self):
-        """v5 起範圍是 4–7（原 3–6）：2 條太少、8 條太多。"""
+        """v8 起固定 3 段：2 條太少、8 條太多。"""
         for n in (2, 8):
             with self.subTest(n=n):
                 pts = [{"label": "l", "text": "t"} for _ in range(n)]

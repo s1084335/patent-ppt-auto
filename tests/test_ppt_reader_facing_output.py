@@ -189,56 +189,10 @@ class TableColumnLabelCoverageTests(unittest.TestCase):
         self.assertEqual(missing, [], f"這些欄會以內部英文欄名印在簡報上：{missing}")
 
 
-class CaveatNotTruncatedTests(unittest.TestCase):
-    """B-3：判讀限制警語不得被切在句中——講一半比不講更糟。
-
-    實測第 3 頁右欄末條：「判讀限制｜最近 1–2 個申請年件數偏低多為新案審…」。
-    `_trim_blocks` 把行數平均分給各條，警語分到 2 行（26 字）而全文 36 字，
-    於是被硬切；那段又沒有標點可切，既有的「切在標點」邏輯救不了。
-    """
-
-    def _panel(self):
-        theme = bp.Theme.load()
-        g = theme.geometry["chart_hero"]
-        return (theme,
-                g["panel_width_in"] - g["panel_inset_in"] * 2,
-                g["panel_height_in"] - g["panel_text_top_offset_in"] - g["panel_inset_in"])
-
-    def _blocks(self, caveat: str):
-        points = [(f"現況{i}", "中國受理三十九件占逾六成最集中無疑", "ink", False)
-                  for i in range(5)]
-        return points + [(bp.CAVEAT_LABEL, caveat, "muted", False)]
-
-    def test_caveat_kept_whole_in_chart_hero_panel(self):
-        theme, width, height = self._panel()
-        caveat = bp.CAVEATS["application_trend"]
-        trimmed = bp._trim_blocks(theme, self._blocks(caveat),
-                                  width_in=width, height_in=height,
-                                  size_pt=theme.size("point_text_pt"))
-        kept = [text for label, text, _, _ in trimmed if label == bp.CAVEAT_LABEL]
-        self.assertEqual(kept, [caveat], "判讀限制被截斷或整條消失")
-
-    def test_longest_caveat_also_kept_whole(self):
-        theme, width, height = self._panel()
-        caveat = max(bp.CAVEATS.values(), key=len)
-        trimmed = bp._trim_blocks(theme, self._blocks(caveat),
-                                  width_in=width, height_in=height,
-                                  size_pt=theme.size("point_text_pt"))
-        kept = [text for label, text, _, _ in trimmed if label == bp.CAVEAT_LABEL]
-        self.assertEqual(kept, [caveat], "最長的判讀限制仍被截斷")
-
-    def test_points_still_trimmed_to_fit(self):
-        """讓路的是要點不是版面：其餘各條仍須被裁到框內裝得下。"""
-        theme, width, height = self._panel()
-        blocks = self._blocks(bp.CAVEATS["application_trend"])
-        trimmed = bp._trim_blocks(theme, blocks, width_in=width, height_in=height,
-                                  size_pt=theme.size("point_text_pt"))
-        per_line, lines = bp._text_capacity(theme, width_in=width, height_in=height,
-                                            size_pt=theme.size("point_text_pt"))
-        used = sum(bp.math.ceil(((len(label) + 1 if label else 0) + len(text)) / per_line)
-                   for label, text, _, _ in trimmed)
-        self.assertLessEqual(used, lines, "裁切後仍溢出要點框")
-
+# 🔴 2026-08-04：原本這裡有 CaveatNotTruncatedTests——驗「判讀限制」的容量與截斷。
+# 使用者定案把判讀限制整個移除（「判讀限制不要出現了，作用不大」），
+# 規格沒了測試就失去存在理由，故整個類別刪除而非改寫。
+# ⚠ 改寫成「驗別的事」會留下一個守不住任何意圖的空殼測試。
 
 def _render_table_cells(rows) -> list[str]:
     """把 rows 畫進一張空白投影片，回傳所有儲存格文字（讀者真正看到的字）。"""

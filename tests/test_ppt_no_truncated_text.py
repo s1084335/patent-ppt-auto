@@ -48,32 +48,10 @@ def _theme():
     return bp.Theme.load(THEME_PATH)
 
 
-class CaveatShrinksCapacityTests(unittest.TestCase):
-    """① 有判讀限制框的頁，容量要按**縮小後**的框算。"""
-
-    def test_points_area_honours_caveat_height(self):
-        theme = _theme()
-        without = bp._points_area(theme, "percentage_bars")
-        with_caveat = bp._points_area(theme, "percentage_bars", caveat=True)
-        self.assertIsNotNone(with_caveat)
-        self.assertLess(with_caveat[1], without[1],
-                        "有判讀限制框時要點區其實只有 3.3 in，容量卻按 5.0 算")
-
-    def test_capacity_smaller_for_caveated_report(self):
-        """實際容量表：有 caveat 的報表可寫條數必須少於同版型無 caveat 者。"""
-        theme = _theme()
-        capacity = bp.narrative_capacity(theme)
-        caveated = [k for k in capacity if k in bp.CAVEATS]
-        self.assertTrue(caveated, "測試前提不成立：沒有任何帶 caveat 的報表")
-        for key in caveated:
-            spec = next((s for s in bp.PAGE_LAYOUT if key in s.report_keys), None)
-            if spec is None or spec.kind not in ("percentage_bars", "chart_with_points", "stat_callout"):
-                continue
-            area = bp._points_area(theme, spec.kind, caveat=True)
-            plain = bp._points_area(theme, spec.kind)
-            with self.subTest(report=key):
-                self.assertLess(area[1], plain[1])
-
+# 🔴 2026-08-04：原本這裡有 CaveatShrinksCapacityTests——驗「判讀限制」的容量與截斷。
+# 使用者定案把判讀限制整個移除（「判讀限制不要出現了，作用不大」），
+# 規格沒了測試就失去存在理由，故整個類別刪除而非改寫。
+# ⚠ 改寫成「驗別的事」會留下一個守不住任何意圖的空殼測試。
 
 class NoEllipsisTests(unittest.TestCase):
     """② `_trim_blocks` 一律不得截字。"""

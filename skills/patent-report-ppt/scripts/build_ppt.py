@@ -300,15 +300,13 @@ DEFAULT_ENCODING_NOTE = "條長＝件數｜數值取自報表引擎"
 # 故必須是常數而非各處寫死的字面（改字面時裁切保護才不會默默失效）。
 CAVEAT_LABEL = "判讀限制"
 
-# 方法論警語：只寫判讀限制，不寫系統狀態；沒有列在這裡的頁面不硬生警語框。
-CAVEATS = {
-    "application_trend": "最近 1–2 個申請年件數偏低多為新案審查中的資料截止效應，非活動衰退。",
-    "opportunity_quadrant": "象限以件數與申請人家數的相對門檻切分，屬相對位置判讀，不代表技術優劣；低密度區需人工覆核代表專利相關性。",
-    "cluster_topic_table": "分群標籤僅供辨識，技術優劣與可商品化程度未經驗證，需人工覆核代表專利。",
-    "applicant_ranking": "申請人家數只反映競爭者是否已進場，不等於市占、營收或產品核心度。",
-    "owner_ranking": "名單反映權利持有結構，不代表合作、授權或併購關係。",
-    "country_distribution": "受理國分布反映保護範圍，不能推論銷售市場或需求大小。",
-}
+# 🔴 2026-08-04 使用者定案：**判讀限制整個移除**（「判讀限制不要出現了，作用不大」）。
+# 不是移到別處——連獨立灰框也不畫。要點區改為三層說明（現況／意涵／後續）。
+#
+# ⚠ 清空而非刪除這個 dict：`_caveat_of` 仍在（回空字串），渲染端的分支因此自然關閉，
+# 不必把警語框的程式碼一併拆掉；日後若要恢復某一頁的警語，填回這裡即可。
+# ⚠ `CAVEAT_LABEL` 保留給 narrative fallback 的舊資料辨識用，不再產生新的。
+CAVEATS: dict[str, str] = {}
 
 # narrative fallback：舊格式只有長文 text，依這些段落標記切成可讀條列。
 NARRATIVE_MARKERS = (
@@ -324,13 +322,21 @@ NUMBER_PATTERN = re.compile(r"(\d[\d,]*(?:\.\d+)?\s*(?:%|件|家|年|項|個)?)"
 
 
 # 一條要點在版面上預估佔幾行（含 label 那截）。用來把「可用行數」換算成「可寫幾條」。
+#: 要點區固定三層：現況（數據事實）→ 意涵（代表什麼）→ 後續（下一步看什麼）。
+#: 🔴 2026-08-04 使用者定案：16pt＋行距 1.65 後側欄頁只放得下 5 條 × 19 字，
+#: **碎成 5 個短句反而難讀**。改為三段有層次的敘述，同樣資訊用更少字講完。
+#: ⚠ 是「濃縮」不是「少講」——同類要合併，不是把後面幾條刪掉。
+NARRATIVE_LAYERS = 3
+
+#: （已停用）每條要點預設佔幾行。三層制改為由「總行數 ÷ 3」決定每段行數。
 NARRATIVE_POINT_LINES = 2
 
 #: 一條要點的標籤（含「｜」分隔）最多佔幾個字。
 #: ⚠ 容量宣告要扣掉它——`_trim_blocks` 算行數時算的是「標籤｜正文」，
 #: 只宣告正文字數會讓 CLI 照著寫卻放不下（2026-08-04 實機丟 5 條的根因）。
-#: 取最長的標籤（`CAVEAT_LABEL`＝「判讀限制」）才對每一種標籤都成立。
-POINT_LABEL_COST = len("判讀限制") + 1
+#: 取最長的標籤才對每一種都成立。三層（現況／意涵／後續）都是 2 字。
+#: 🔴 2026-08-04：原本是「判讀限制」的 5 字；判讀限制移除後降為 3。
+POINT_LABEL_COST = max(len(label) for label in ("現況", "意涵", "後續")) + 1
 
 
 def points_budget(per_line: int, max_lines: int, columns: int) -> dict[str, int]:
@@ -347,9 +353,10 @@ def points_budget(per_line: int, max_lines: int, columns: int) -> dict[str, int]
     ⚠ 取**最長**標籤來扣：容量宣告必須對每一種標籤都成立。
     ⚠ 這個公式只能有這一份——測試若自己重算一次，改了程式測試還是綠的。
     """
+    lines_per_point = max(1, (max_lines * columns) // NARRATIVE_LAYERS)
     return {
-        "max_points": max(1, (max_lines * columns) // NARRATIVE_POINT_LINES),
-        "max_chars": max(1, per_line * NARRATIVE_POINT_LINES - POINT_LABEL_COST),
+        "max_points": NARRATIVE_LAYERS,
+        "max_chars": max(1, per_line * lines_per_point - POINT_LABEL_COST),
     }
 
 
@@ -364,7 +371,7 @@ def point_line_ratio(theme: Theme) -> float:
     return float(theme.qa.get("point_line_height_ratio", theme.qa["line_height_ratio"]))
 
 
-def _points_area(theme: Theme, kind: str, *, caveat: bool = False) -> tuple[float, float, int] | None:
+def _points_area(theme: Theme, kind: str) -> tuple[float, float, int] | None:
     """該版型放要點的區域：(寬, 高, 欄數)；沒有要點區的版型回 None。
 
     🔴 `caveat`（H-2，2026-08-03）：有判讀限制框的頁，要點框會縮成
@@ -402,9 +409,9 @@ def _points_area(theme: Theme, kind: str, *, caveat: bool = False) -> tuple[floa
     # 誤把它算進來會用附錄的幾何覆蓋掉同一張報表在內頁的真實容量。
     if kind in {"chart_with_points", "percentage_bars", "stat_callout"}:
         g = theme.geometry["points_panel"]
-        declared = g["height_with_caveat_in"] if caveat else g["height_in"]
+        # 判讀限制移除後不再有「要為警語框讓高度」的情形，一律用全高。
         return (g["width_in"] - g["text_inset_right_in"],
-                declared - g["text_top_offset_in"] - g["text_bottom_pad_in"], 1)
+                g["height_in"] - g["text_top_offset_in"] - g["text_bottom_pad_in"], 1)
     return None
 
 
@@ -443,21 +450,19 @@ def narrative_capacity(theme: Theme | None = None,
         # ⚠ `chart_wide` 是**執行時依圖的長寬比**決定的，不是宣告在 PAGE_LAYOUT 裡。
         # 拿不到圖檔時只能用宣告版型估——那會低估扁圖頁（滿寬雙欄橫幅比窄側欄大得多），
         # CLI 因此寫得比實際能放的少。給了 charts 就能算準。
-        # ⚠ 順序：先知道有沒有 caveat，才算得出**這頁實際的框**（H-2）。
-        caveat = CAVEATS.get(spec.report_keys[0] if spec.report_keys else "", "")
-
         def _limits_for(page_kind: str) -> dict[str, int] | None:
-            """某個版型下，這一頁的要點容量。"""
-            area = _points_area(theme, page_kind, caveat=bool(caveat))
+            """某個版型下，這一頁的要點容量。
+
+            ⚠ 判讀限制移除後（2026-08-04），不再有「警語框先佔掉高度與行數」
+            這兩層扣減——框一律是全高，要點三段平分。
+            """
+            area = _points_area(theme, page_kind)
             if area is None:
                 return None
             width_in, height_in, columns = area
             per_line, max_lines = _text_capacity(
                 theme, width_in=width_in, height_in=height_in, size_pt=size,
                 line_ratio=point_line_ratio(theme))
-            # ⚠ 框變小之外，警語本身還會先佔掉行數（批1 起警語不參與均分），兩者都要扣。
-            if caveat:
-                max_lines -= _lines_needed(f"{CAVEAT_LABEL}｜{caveat}", per_line)
             return points_budget(per_line, max_lines, columns)
 
         # 🔴 I-1（2026-08-03 實機 #166）：容量必須**逐 variant** 算。

@@ -68,8 +68,13 @@ NARRATIVE_HEADLINE_MAX = 20   # 一句判讀結論（PPT 標題「{主題}：{he
 # 以下三個是**全域上限**，實際能寫多少以 build_ppt.narrative_capacity() 逐報表算出的
 # 版面容量為準（同一份數字同時餵給 prompt、validator 與裁切）。
 NARRATIVE_POINT_TEXT_MAX = 55  # 每條要點的字數（2026-07-31 50→55，使用者選定）
-NARRATIVE_POINTS_MIN = 4       # 2026-07-31 3→4，使用者選定
-NARRATIVE_POINTS_MAX = 7       # 2026-07-31 6→7，同上
+# 🔴 2026-08-04 使用者定案：要點改**三層說明**，不再是一堆並列的短列點。
+# 16pt＋行距 1.65 後側欄頁只放得下 5 條 × 19 字，碎成 5 個短句反而難讀；
+# 改為三段有層次的敘述，同樣的資訊用更少字講完（濃縮，不是少講）。
+NARRATIVE_LAYER_LABELS = ("現況", "意涵", "後續")
+NARRATIVE_LAYERS = len(NARRATIVE_LAYER_LABELS)
+NARRATIVE_POINTS_MIN = 3       # 2026-08-04 4→3（固定三層）
+NARRATIVE_POINTS_MAX = 3       # 2026-08-04 7→3（同上）
 
 # 要點與長文的數字一致性檢查用（含小數、百分比與千分位）。
 _NUMBER_PATTERN = re.compile(r"\d+(?:[.,]\d+)*%?")
@@ -434,12 +439,17 @@ def build_prompt(
         "   report_key→variants→variant_key→\n"
         "   {points,headline,text,ai_model,prompt_version,generated_at} 兩層結構。\n"
         "   ⚠ **依此順序逐欄寫，不要跳著寫**——順序就是撰寫程序：\n"
-        f"   points＝{NARRATIVE_POINTS_MIN}–{NARRATIVE_POINTS_MAX} 條要點\n"
-        f"   （各含 label／text／emphasis，text ≤{NARRATIVE_POINT_TEXT_MAX} 字，\n"
-        "   一條只講一個論點：句號至多一個、逗號至多兩個）；\n"
-        "   ⚠ 每條要寫到「數據代表什麼 → 為何重要 → 對技術布局有何意義」，\n"
-        "   不是把數據複述一遍。label 為「現況」者**必須帶數字**；\n"
-        "   每個變體**至少一條「意涵」**（只列現況＝沒有判讀）。\n"
+        f"   points＝**固定 {NARRATIVE_LAYERS} 段**，label 依序為 "
+        f"{'／'.join(NARRATIVE_LAYER_LABELS)}，不得增減、不得改名：\n"
+        "     現況＝圖上讀得到的數據事實，**必須帶數字**；\n"
+        "     意涵＝這些數據代表什麼、為什麼會這樣（不重複數字，要說「所以呢」）；\n"
+        "     後續＝據此下一步該看什麼／查什麼（可執行，不是空話）。\n"
+        "   ⚠ 這是**三層說明**不是三個短列點：同一層的多件事要**合併在同一段**講完，\n"
+        "   不要為了短而砍掉資訊——目標是濃縮（同樣的事用更少字），不是少講。\n"
+        "   ⚠ 每段 text 不得超過下方列出的該頁字數上限，且**至多 3 句**\n"
+        "   ——句子再多就變字牆，讀者一眼抓不到重點。\n"
+        "   ⚠ 公司名第一次寫全名，之後用短稱（「廈門帝瑪斯健康科技」→「帝瑪斯」）；\n"
+        "   不要用「遙遙領先」「僅」「多為」這類程度副詞，直接給數字。\n"
         "   CPC 分類那一頁要講的是**與 IPC 的差異**（哪些分類 IPC 沒有、代表什麼），\n"
         "   不是把 IPC 那段重講一次。\n"
         f"   headline＝**從上列要點挑最重要一條濃縮**至 ≤{NARRATIVE_HEADLINE_MAX} 字，\n"
