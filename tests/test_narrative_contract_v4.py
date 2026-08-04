@@ -36,9 +36,10 @@ def _entry(headline="布局集中於 A63B", points=None, text=None):
     """合規樣本。⚠ v5 起長文必須「由要點逐條展開」：段落數不少於要點數、
     要點裡的數字也要出現在長文——所以 fixture 不能再用一句「長文」帶過。
 
-    ⚠ v7（2026-08-03）起還要過**版面用量下限**（≥60%）。原樣本只寫 51/385 字
-    （13%），在新規則下確實不合格——那正是使用者說的「丟棄資訊」。
-    要點改寫成帶數字與依據的完整判讀，示範「濃縮」該長什麼樣。
+    ⚠ v8（2026-08-04）起**版面用量下限已移除**——它逼著寫到接近版面上限，
+    尾端整條反而被組版丟掉。判準改為內容完整性（覆蓋、要有意涵、現況帶數字）。
+    這裡的樣本仍寫成帶數字與依據的完整判讀，因為那才是好的判讀該有的樣子，
+    不是因為要湊字數。
     """
     if points is None:
         points = [
@@ -76,7 +77,7 @@ class ContractConstantsTests(unittest.TestCase):
         self.assertEqual(runner.NARRATIVE_POINTS_MAX, 7)
 
     def test_prompt_version_bumped(self):
-        self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v7")
+        self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v8")
 
 
 class SkillRulesTests(unittest.TestCase):

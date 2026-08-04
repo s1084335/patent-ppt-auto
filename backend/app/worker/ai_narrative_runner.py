@@ -57,7 +57,9 @@ SKILL_PATH = _resolve_skill_path()
 # 現況必須帶數字、每頁至少一條意涵、CPC 必須與 IPC 對照。
 # v7（2026-08-03）：版面用量下限（要濃縮不要丟棄）＋敘述措辭四層
 # （客觀描述 → 專利數據解讀 → 合理推論 → 分析限制）＋結論回到要點（標 emphasis）。
-PROMPT_VERSION = "report_narrative_v7"
+# v8（2026-08-04）：**移除版面用量下限**（v7 加的那道鎖是丟棄要點的根因，見下方
+# 說明）＋ `max_chars` 改為扣掉標籤成本後的正文字數。契約實質改變，故升版供追溯。
+PROMPT_VERSION = "report_narrative_v8"
 
 # ── 三件套契約上限（v4；單一來源，skill 條文與驗證都以此為準）──
 # ⚠ 暫定值：理想上由 theme.json v2 的要點框尺寸換算，v2（skill creator 重建中）
@@ -88,14 +90,21 @@ NARRATIVE_IMPLICATION_LABELS = ("意涵",)   # 這一類在講意義 → 每頁�
 # 「取到對的 variant」這個機制，內容上該講什麼差異是這一層的事。
 NARRATIVE_CONTRAST_WITH = {"cpc_main_distribution": "IPC"}
 
-# 🔴 C-9（2026-08-03）：版面用量下限。
-# 實測 IPC L4 頁容量 8 條 × 54 字＝432 字，實際只寫 81 字（**18.8%**），
-# 而且**沒有任何一頁被版面裁掉**——資訊是在寫的時候就沒進去。
-# ⚠ 根因是我 07-31 寫的「容量是上限，不是目標」被當成鼓勵留白，
-# 且沒有相對的下限要求。使用者定調：要的是**濃縮**（同一段版面塞進更多判讀），
-# 不是**丟棄**（把該講的省略掉）。
-# 0.6 不是要求寫滿——留四成餘裕給「這張圖確實只看得出兩件事」的情況。
-NARRATIVE_MIN_FILL_RATIO = 0.6
+# 🔴 2026-08-04：**版面用量下限（原 C-9 鎖七）已移除**，不要再加回來。
+#
+# 它 08-03 加入時的理由是 IPC L4 只寫了 81/432 字（18.8%）。但它造成的後果
+# 比原問題更糟：**逼 CLI 寫到接近版面上限** → 必然踩到邊界 → 尾端整條被丟，
+# 而丟的都是排在後面的「意涵」「後續」，正是價值最高的幾條
+# （第五輪實機丟 5 條，contract warnings 卻是 0）。
+#
+# 🔴 使用者定案原話：「拿掉字數下限，但可以給他格式，畢竟現在版面是符合目標的
+# 只是資訊被丟棄要修」。
+#
+# ⚠ 拿掉的只有**字數下限**。內容完整性由別的鎖守著，它們都還在：
+#   - 鎖三：要覆蓋圖上主要事實
+#   - 鎖五：至少要有一條「意涵」（不能只複述數據）
+#   - 每條字數**上限**與條數上限（見下方 max_chars／max_points）
+# 「寫得夠不夠」是內容問題，不是字數問題——用字數當代理指標就會逼出灌水。
 
 
 def validate_narrative_contract(
@@ -182,18 +191,6 @@ def validate_narrative_contract(
             if not any(label in NARRATIVE_IMPLICATION_LABELS for label in labels):
                 warnings.append(
                     f"{where} 沒有任何「意涵」——只描述數據不說意義，停在「看到什麼數據」那一層")
-            # 鎖七·版面用量不得過低（C-9）。
-            # ⚠ 量的是**該頁實際容量**，不是全域上限——側欄頁與滿寬頁差 4 倍，
-            # 用同一個絕對字數當門檻會讓側欄頁永遠不合格。
-            # ⚠ 只在**知道該頁實際容量**時才判——沒有 capacity 就不知道版面多大，
-            # 拿全域上限（7×55＝385）當分母會讓側欄頁永遠不合格。
-            room = (limits.get("max_points") or 0) * (limits.get("max_chars") or 0)
-            used = sum(len(str((p or {}).get("text") or "")) for p in points)
-            if room and used < room * NARRATIVE_MIN_FILL_RATIO:
-                warnings.append(
-                    f"{where} 版面用量偏低（{used}/{room} 字＝{used / room:.0%}，"
-                    f"下限 {NARRATIVE_MIN_FILL_RATIO:.0%}）——"
-                    "這張圖看得出的事沒講完；要的是濃縮不是省略")
             # 鎖六·該對照的要對照著講（CPC vs IPC）。
             counterpart = NARRATIVE_CONTRAST_WITH.get(report_key)
             if counterpart:

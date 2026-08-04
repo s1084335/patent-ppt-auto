@@ -326,6 +326,32 @@ NUMBER_PATTERN = re.compile(r"(\d[\d,]*(?:\.\d+)?\s*(?:%|件|家|年|項|個)?)"
 # 一條要點在版面上預估佔幾行（含 label 那截）。用來把「可用行數」換算成「可寫幾條」。
 NARRATIVE_POINT_LINES = 2
 
+#: 一條要點的標籤（含「｜」分隔）最多佔幾個字。
+#: ⚠ 容量宣告要扣掉它——`_trim_blocks` 算行數時算的是「標籤｜正文」，
+#: 只宣告正文字數會讓 CLI 照著寫卻放不下（2026-08-04 實機丟 5 條的根因）。
+#: 取最長的標籤（`CAVEAT_LABEL`＝「判讀限制」）才對每一種標籤都成立。
+POINT_LABEL_COST = len("判讀限制") + 1
+
+
+def points_budget(per_line: int, max_lines: int, columns: int) -> dict[str, int]:
+    """一個要點框放得下幾條、每條正文幾個字。**容量宣告的唯一公式**。
+
+    🔴 2026-08-04：`max_chars` 必須**扣掉標籤佔的字**。
+    症狀：第五輪實機丟了 5 條要點，但同一輪 narrative 的契約警告是 0
+    ——CLI 完全照容量寫，組版還是丟。
+    根因：容量算的是「正文幾個字」，`_trim_blocks` 算的是
+    `len(label) + 1 + len(text)`。正文寫滿 `per_line × 2`，再加「意涵｜」3 字
+    就變 3 行而不是 2 行——條數一多總行數必然溢出，尾端整條被丟，
+    而丟的都是排在後面的「意涵」「後續」，正是價值最高的幾條。
+
+    ⚠ 取**最長**標籤來扣：容量宣告必須對每一種標籤都成立。
+    ⚠ 這個公式只能有這一份——測試若自己重算一次，改了程式測試還是綠的。
+    """
+    return {
+        "max_points": max(1, (max_lines * columns) // NARRATIVE_POINT_LINES),
+        "max_chars": max(1, per_line * NARRATIVE_POINT_LINES - POINT_LABEL_COST),
+    }
+
 
 def _points_area(theme: Theme, kind: str, *, caveat: bool = False) -> tuple[float, float, int] | None:
     """該版型放要點的區域：(寬, 高, 欄數)；沒有要點區的版型回 None。
@@ -420,10 +446,7 @@ def narrative_capacity(theme: Theme | None = None,
             # ⚠ 框變小之外，警語本身還會先佔掉行數（批1 起警語不參與均分），兩者都要扣。
             if caveat:
                 max_lines -= _lines_needed(f"{CAVEAT_LABEL}｜{caveat}", per_line)
-            return {
-                "max_points": max(1, (max_lines * columns) // NARRATIVE_POINT_LINES),
-                "max_chars": max(1, per_line * NARRATIVE_POINT_LINES),
-            }
+            return points_budget(per_line, max_lines, columns)
 
         # 🔴 I-1（2026-08-03 實機 #166）：容量必須**逐 variant** 算。
         #
@@ -3072,6 +3095,28 @@ def _split_multi_chart_page(spec: PageSpec, charts: ChartIndex | None = None) ->
     return pages
 
 
+def resolve_layout(report_data: dict[str, Any], charts: ChartIndex,
+                   theme: Theme | None, overrides: dict[str, str]) -> list[PageSpec]:
+    """從報表資料算出最終版面：展開 → 套版型覆寫（含拆頁）→ 圖檔降級 → **重算標題**。
+
+    🔴 2026-08-04（J-2）：最後那步不能省。`_expand_page_layout` 在**還是一頁兩張圖**
+    的時候就把 topic 定死了，`_apply_layout_overrides` 之後才一圖一頁拆開——
+    於是 p13／p14 兩頁的標題一字不差都是「主要申請人排名（Applicants）」，
+    但 p14 畫的是 `owner_ranking.svg`、內容講的是權利人。**只有標題錯**。
+
+    ⚠ `_split_multi_chart_page` 已經很細心地把 `report_keys` 收窄到該圖真正對應的
+    報表（它的 docstring 就寫著「否則兩頁會印出一模一樣的標題」），但漏了 topic 這一半。
+    這裡在拆完之後重算一次——`_chart_page_topic` 依 `charts[0]` 判斷，拆完才問得到正確答案。
+
+    ⚠ 收成單一入口是為了讓測試驗得到**完整結果**：三個步驟散在呼叫端時，
+    測試只驗得到中間狀態，正是這個 bug 混過去的原因。
+    """
+    layout = _expand_page_layout(report_data, charts, theme)
+    layout = _apply_layout_overrides(layout, overrides, charts)
+    layout = _apply_chart_degradation(layout, charts)
+    return [_spec_with(spec, topic=_chart_page_topic(spec, report_data)) for spec in layout]
+
+
 def _clean_layout_overrides(value: Any) -> dict[str, str]:
     """只接受 renderer 支援的版型名稱，無效覆寫忽略而非讓產檔失敗。"""
     if not isinstance(value, dict):
@@ -3445,9 +3490,8 @@ def build_ppt(
                       "重跑 ai:report_ppt 產新契約後將呈現色塊流程＋題目卡。",
         })
 
-    layout = _expand_page_layout(report_data, charts, theme)
-    layout = _apply_layout_overrides(layout, _clean_layout_overrides(approvals.get("layout_overrides")), charts)
-    layout = _apply_chart_degradation(layout, charts)
+    layout = resolve_layout(report_data, charts, theme,
+                            _clean_layout_overrides(approvals.get("layout_overrides")))
 
     # 逐頁備妥 narrative（判讀式標題＋要點），fallback 一律寫 warning，不靜默。
     narratives_by_page: dict[int, tuple[str, list[dict[str, Any]], bool]] = {}
