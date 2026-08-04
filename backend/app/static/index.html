@@ -778,6 +778,12 @@ const GLOBAL_WS_VALUE = '__global__';
 // 為讓既有 /workspaces/{id}/... 呼叫無需改動，state.workspaceId 一律存「真實數字 id」
 // （全庫時存後端全庫 workspace 的真實 id）；哨兵只用於下拉 value 與此旗標。
 function isGlobalSelected() { return !!state.isGlobalWs; }
+// 目前選中的 workspace 顯示名（匯出頁「範圍」標示用；下拉是唯一事實來源）。
+function currentWorkspaceLabel() {
+  const sel = el('workspace-select');
+  const opt = sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+  return opt ? opt.textContent : '全庫（所有專利）';
+}
 async function loadWorkspaces() {
   const sel = el('workspace-select');
   // 全庫項恆置頂為第一項，即使後端尚無其他 workspace 也永遠有可選項。
@@ -799,9 +805,18 @@ async function loadWorkspaces() {
     sel.innerHTML = globalOpt;
     state.globalWorkspaceId = null;
   }
-  // 預設選全庫（第一項）＝進站即專利總覽全庫視角。
-  sel.value = GLOBAL_WS_VALUE;
-  selectGlobalWorkspace();
+  // 預設選全庫；上次選過的 workspace 若仍存在則恢復（R-2：重整不得靜默改範圍）。
+  let saved = null;
+  try { saved = localStorage.getItem('workspaceSel'); } catch (_) {}
+  if (saved && saved !== GLOBAL_WS_VALUE
+      && Array.from(sel.options).some(o => o.value === saved)) {
+    sel.value = saved;
+    state.isGlobalWs = false;
+    state.workspaceId = parseInt(saved, 10);
+  } else {
+    sel.value = GLOBAL_WS_VALUE;
+    selectGlobalWorkspace();
+  }
   state.nav = 'patents';
   renderMain();
 }
@@ -814,6 +829,9 @@ function onWorkspaceChange() {
   // 切 workspace 先停掉所有輪詢：舊 workspace 的 job 不得繼續寫入新 workspace 的畫面。
   clearAllTimers();
   const v = el('workspace-select').value;
+  // 🔴 R-2（2026-08-05）：選擇持久化。原本每次載入硬性重設回全庫——部署後重整
+  // 頁面，使用者以為還在滑雪機、按「重新產製」實際送出全庫（#193 實案）。
+  try { localStorage.setItem('workspaceSel', v); } catch (_) {}
   if (v === GLOBAL_WS_VALUE) {
     selectGlobalWorkspace();
     state.nav = 'patents';  // 選全庫＝原總覽視角：導向專利總覽（跨 workspace 全庫清單）。
@@ -3565,6 +3583,8 @@ function renderExport() {
     + '<select id="export-version-select" class="ppt-layout-select" onchange="loadExportPreview(this.value)"></select>'
     + '<button class="btn btn-outline" id="btn-reload-preview" onclick="loadExportPreview(exportPreview.version)">重新載入預覽</button>'
     + '<button class="btn btn-outline" id="btn-export" onclick="triggerExport()">重新產製報表資料</button>'
+    // R-2：明示這次產製的範圍——送錯 workspace 時要看得出來，不能靜默。
+    + '<span style="font-size:0.82rem;color:var(--text-muted)">範圍：' + escHtml(currentWorkspaceLabel()) + '</span>'
     + '<span style="flex:1"></span>'
     + '<button class="btn btn-outline" id="btn-export-html" onclick="reviewExportOutput()">單頁 HTML 預覽</button>'
     + '<button class="btn btn-primary" id="btn-export-ppt" onclick="requestExportPpt()">產生 PPT</button>'
