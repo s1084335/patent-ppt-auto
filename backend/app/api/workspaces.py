@@ -314,7 +314,7 @@ def compose(request: ComposeRequest) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 技術文獻（market research 線）
+# 技術文獻
 #
 # 使用者上傳的產業／技術 PDF，供 CLI 推導產品定義（scope）與市場證據。內容長期保存在
 # app_layer.workspace_documents（0027），與用完即刪的 import_blobs 物理分離。

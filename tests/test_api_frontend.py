@@ -600,65 +600,13 @@ class FrontendSkeletonTests(unittest.TestCase):
 
     # ── c. 市場資料上傳區塊（綁 workspace；全庫隱藏） ──
 
-    def test_market_upload_block_present_and_wired(self):
-        """市場資料上傳區塊：接 POST /market-documents（綁 workspace）、GET 列清單，
-        並有「產市場摘要」鈕送 POST /ai-tasks（task_type=ai:market_summary）。"""
-        for needle in (
-            "market-upload",            # 上傳區塊掛點
-            "uploadMarketDocument",     # 上傳函式
-            "loadMarketDocuments",      # 列清單
-            "/market-documents",        # 端點
-            "btn-gen-market-summary",   # 產摘要鈕
-            "submitMarketSummary",      # 送 ai-task
-            "ai:market_summary",        # task_type
-        ):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, self.html)
-        # ⚠關鍵：workspace_id 必須放進 params（to_payload exclude 具名 workspace_id）。
-        m = re.search(r"function submitMarketSummary\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
-        self.assertIsNotNone(m, "找不到 submitMarketSummary() 定義")
-        self.assertIn("params", m.group(0))
-        self.assertIn("workspace_id", m.group(0))
-        self.assertIn("ai:market_summary", m.group(0))
+    # 🔴 2026-08-04：test_market_upload_block_present_and_wired 已刪除——市場線整個移除（使用者定案），規格沒了測試就失去存在理由
 
-    def test_market_upload_hidden_for_global_workspace(self):
-        """全庫 workspace 不提供市場資料：選全庫時市場上傳區隱藏／禁用（全庫產摘要後端會 raise）。"""
-        m = re.search(r"function renderMarketUpload\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
-        self.assertIsNotNone(m, "找不到 renderMarketUpload() 定義")
-        # 全庫時直接隱藏（判斷全庫哨兵）。
-        self.assertIn("isGlobalSelected", m.group(0))
+    # 🔴 2026-08-04：test_market_upload_hidden_for_global_workspace 已刪除——市場線整個移除（使用者定案），規格沒了測試就失去存在理由
 
-    def test_market_upload_supports_new_and_existing_workspace(self):
-        """市場上傳綁 workspace：既有 ws 可上傳、也要能對新建 workspace 上傳。"""
-        for needle in ("market-ws-mode", "market-new-ws-name", "market-existing-ws"):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, self.html)
+    # 🔴 2026-08-04：test_market_upload_supports_new_and_existing_workspace 已刪除——市場線整個移除（使用者定案），規格沒了測試就失去存在理由
 
-    # ── d. 市場並排＋融合解讀（報表顯示區；只讀已確認現行版） ──
-
-    def test_report_shows_market_side_by_side_accepted_only(self):
-        """報表顯示區並排市場側摘要（只讀已確認現行版）與 AI 融合解讀。"""
-        for needle in (
-            "market-side-by-side",         # 並排容器
-            "loadMarketSummaryForReport",  # 載入市場側
-            "accepted_only=true",          # 只讀已確認現行版
-            "market-fusion",               # AI 融合解讀顯示
-        ):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, self.html)
-
-    def test_report_market_hidden_when_no_accepted_summary(self):
-        """無市場資料或現行版未確認時，市場區塊整區隱藏（不顯示空表、不留佔位）。"""
-        m = re.search(
-            r"function loadMarketSummaryForReport\([^)]*\)\s*\{.*?\n\}", self.html, re.S
-        )
-        self.assertIsNotNone(m, "找不到 loadMarketSummaryForReport() 定義")
-        body = m.group(0)
-        # summary 為 null 時不渲染（整區隱藏）。
-        self.assertIn("summary", body)
-        self.assertRegex(body, r"if\s*\(!.*summary")
-
-    # ── e. 移除舊 market_evidence 前端 ──
+    # 🔴 2026-08-04：test_report_shows_market_side_by_side_accepted_only 已刪除——市場線整個移除（使用者定案），規格沒了測試就失去存在理由
 
     def test_no_market_evidence_frontend_usage(self):
         """前端不得引用舊 market-evidence（v3 deep-research）API 或區塊。"""
@@ -721,16 +669,8 @@ class FrontendSkeletonTests(unittest.TestCase):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.html)
 
-    def test_topic_merge_suggestions_wired(self):
-        """合併建議區接 /topics/merge-suggestions，列相近主題對與 distance，可一鍵合併。"""
-        for needle in (
-            "/topics/merge-suggestions",
-            "loadMergeSuggestions",
-            "topic-merge-suggestions",
-            "distance",
-        ):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, self.html)
+    # 🔴 2026-08-04 C9i：test_topic_merge_suggestions_wired 已刪除——合併建議入口移除
+    #（v1 無相似度來源，端點刻意回空），規格沒了測試就失去存在理由。目標記於 decisions.md。
 
     def test_topic_manual_merge_wired(self):
         """可手動選兩個主題送出合併（POST /topics/merge，body 帶 topic_keys 兩個）。"""

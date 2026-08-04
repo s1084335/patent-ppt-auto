@@ -156,7 +156,6 @@ def compute_and_save_cluster_analysis(
     workspace_id: int,
     source_field: str,
     analysis_id: int,
-    pain_data: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """載入 0018 schema → 計算三項分群分析 → 寫入 app_layer.analysis_outputs。
 
@@ -216,7 +215,6 @@ def run_full_report(
     workspace_id: int,
     source_field: str,
     analysis_id: int,
-    pain_data: list[dict[str, Any]] | None = None,
     output_dir: str | None = None,
     # 排名類顯示與保存一律前 20（2026-07-21 定案修正，與 run_chart_trial 預設一致）
     ranking_limit: int = 20,
@@ -233,7 +231,6 @@ def run_full_report(
         workspace_id=workspace_id,
         source_field=source_field,
         analysis_id=analysis_id,
-        pain_data=pain_data,
     )
 
     cluster_data_for_charts = (

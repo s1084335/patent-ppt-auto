@@ -175,7 +175,9 @@ class TableColumnLabelCoverageTests(unittest.TestCase):
             for spec in bp.PAGE_LAYOUT if spec.kind in ("table", "table_with_points")
             for key in spec.report_keys
         }
-        self.assertIn("applicant_ranking", table_keys, "附錄 2 掛的報表變了，本測試需同步")
+        # 🔴 2026-08-04：附錄2（主要專利權人與申請人）已移除——附錄只留主題分類。
+        # 同步守衛改盯剩下的表格頁（主題統計）；排名完整名單的落點改為網頁報表。
+        self.assertIn("cluster_topic_table", table_keys, "附錄掛的報表變了，本測試需同步")
         missing: list[str] = []
         for key in sorted(table_keys):
             definition = REPORT_DEFINITIONS.get(key)

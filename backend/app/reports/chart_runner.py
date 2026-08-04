@@ -1464,7 +1464,8 @@ def truncation_note(shown: int, total: int) -> str:
     """
     if total <= shown:
         return ""
-    return f"顯示前 {shown}/{total} 名，完整名單見附錄"
+    # ⚠ 附錄2 已移除（2026-08-04），完整名單的落點是網頁報表，不能再指向附錄。
+    return f"顯示前 {shown}/{total} 名，完整名單見網頁報表"
 
 
 #: 列數少於 3 時的列高上限倍率。
@@ -2218,10 +2219,11 @@ CLASSIFICATION_LEVEL_LABELS = {4: "Level 4 (Subclass)", 5: "Level 5 (Main Group)
 # 排名類報表出圖時套 ranking_limit（其餘報表用各自定義的預設列數）。
 RANKING_LIMIT_REPORTS = ("applicant_ranking", "owner_ranking")
 
-# 圖表可讀的列數上限。⚠ 不是資料上限——附錄表格仍列完整名單。
-# 每列 50px，20 列＝1124px，塞進簡報圖框縮到 0.37 倍、字剩 5px 不可讀。
-# 12 列＝702px，縮放約 0.58 倍（+57%），公司名讀得出來。
-CHART_ROW_LIMIT = 12
+# 🔴 排名的兩端上限（2026-08-04 使用者定案）：**網頁端前 20、簡報端（圖）前 10**。
+# 都是天花板——資料不足不補。網頁 20 由 main.py 的 _limit_rows_per_source 執行；
+# 圖是進簡報的 artifact，取 10。
+# ⚠ 附錄2（完整名單）已定案移除，被截的部分改由網頁報表承接，註記同步改寫。
+CHART_ROW_LIMIT = 10
 
 # ---------------------------------------------------------------------------
 # 入庫截取（2026-07-21 定案修正）：排名類「保存」也只留前 20、年度序列只留最新
@@ -2316,7 +2318,7 @@ class ChartContext:
     chart_rows: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)  # map / family_map（有渲染該 section 才有）
     # 分群分析資料（由呼叫端注入，不含 DB SQL）。
-    # 結構：{topics, assignments, normalized_applicants, pain_data?, top_applicants_ws?}
+    # 結構：{topics, assignments, normalized_applicants, top_applicants_ws?}
     cluster_data: dict[str, Any] | None = None
     # 分群報表的 report 形狀（cluster_topic_table／opportunity_quadrant），由
     # _build_cluster_analytics_section 填入、組檔時顯式併進 report_data["reports"]。

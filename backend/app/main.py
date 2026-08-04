@@ -19,7 +19,6 @@ from backend.app.api import (
     events,
     imports,
     jobs,
-    market,
     patents,
     reports,
     topics,
@@ -44,7 +43,6 @@ app.include_router(topics.router, prefix=settings.API_V1_PREFIX)
 app.include_router(comparison.router, prefix=settings.API_V1_PREFIX)
 app.include_router(events.router, prefix=settings.API_V1_PREFIX)
 app.include_router(patents.router, prefix=settings.API_V1_PREFIX)
-app.include_router(market.router, prefix=settings.API_V1_PREFIX)
 # 公司中文名草稿確認：補上三態流程的「確認」環節（原本產得出草稿但無處確認）。
 app.include_router(company_aliases.router, prefix=settings.API_V1_PREFIX)
 

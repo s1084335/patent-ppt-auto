@@ -671,7 +671,6 @@ const state = {
   // 全庫（下拉第一項）：選它時 isGlobalWs=true、workspaceId 落到全庫真實 id。
   isGlobalWs: false,
   globalWorkspaceId: null,   // 後端全庫 workspace 真實 id（loadWorkspaces 取得）
-  marketWorkspaceId: null,   // 市場上傳／產摘要目標 ws（新建時為新 ws id）
   nav: 'patents',
   patentsOffset: 0,
   // 分類區專利清單的分頁位移（2026-07-27 使用者定：與總覽一致都要分頁）。
@@ -2042,7 +2041,6 @@ async function renderTopics() {
     + '</div>'
     + '<div id="topic-ops"></div>'
     + '<div id="topic-op-job"></div>'
-    + '<div id="topic-merge-suggestions"></div>'
     + '<div id="topic-merge-history"></div>'
     + '</details>'
     // 專利清單放最後：進階操作已在其上方，不必捲過整張表才找得到
@@ -2053,7 +2051,6 @@ async function renderTopics() {
     topicListCache = data.topics || [];
     renderTopicTags(topicListCache);
     renderTopicOps();
-    loadMergeSuggestions();
     loadMergeHistory();
     // 已採用主題＝顯示正常分類，只保留重新挑選入口；尚無主題＝顯示候選挑選介面。
     loadTopicCandidates({ hasTopics: topicListCache.length > 0 });
@@ -2841,35 +2838,9 @@ async function pollTopicOpJob(runId, opLabel) {
   }
   tick();
 }
-// 合併建議（GET /topics/merge-suggestions）：列相近主題對＋distance，可一鍵合併。
-async function loadMergeSuggestions() {
-  const wrap = el('topic-merge-suggestions');
-  if (!wrap) return;
-  try {
-    const data = await getJson(API + '/workspaces/' + state.workspaceId
-      + '/topics/merge-suggestions?source_field=' + encodeURIComponent(state.topicSourceField));
-    const items = data.suggestions || [];
-    if (items.length === 0) { wrap.innerHTML = '<div class="card">目前沒有合併建議。</div>'; return; }
-    const rows = items.map(s =>
-      '<tr>'
-      + '<td style="white-space:normal">' + escHtml((s.labels || []).join('　＋　')) + '</td>'
-      + '<td>' + escHtml((s.topic_keys || []).join(' , ')) + '</td>'
-      + '<td>' + (typeof s.distance === 'number' ? s.distance.toFixed(4) : escHtml(s.distance)) + '</td>'
-      + '<td><button class="btn btn-outline" onclick="mergeFromSuggestion(\''
-      + escHtml((s.topic_keys || [])[0]) + '\',\'' + escHtml((s.topic_keys || [])[1]) + '\')">合併</button></td>'
-      + '</tr>'
-    ).join('');
-    wrap.innerHTML = '<div class="card"><div style="font-weight:600;margin-bottom:0.6rem">合併建議</div>'
-      + '<div class="table-wrap"><table class="data">'
-      + '<thead><tr><th>主題</th><th>topic_keys</th><th>distance</th><th></th></tr></thead>'
-      + '<tbody>' + rows + '</tbody></table></div></div>';
-  } catch (e) {
-    wrap.innerHTML = '<div class="card">合併建議載入失敗（' + escHtml(e.message) + '）。</div>';
-  }
-}
-function mergeFromSuggestion(keyA, keyB) {
-  queueTopicMerge([keyA, keyB], null, null);
-}
+// 🔴 2026-08-04 C9i 定案：合併建議入口移除——v1 沒有主題相似度來源，
+// 端點刻意回空清單，前端留著就是一個永遠空白的區塊。
+// 日後有相似度來源（embeddings 距離）時再把入口加回；後端端點保留。
 // 合併歷史（GET /topics/merge-history）：can_unmerge 為真才可還原，否則顯示 blocked_reason。
 // 合併狀態的可讀文字。後端 2026-07-27 起帶 status；舊資料無此欄時視為已完成
 // （相容既有紀錄，不讓歷史整片變「未知」）。
@@ -3208,11 +3179,6 @@ function renderReports() {
     + '<label class="reports-header-label" for="report-view-select">檢視</label>'
     + '<select id="report-view-select" class="select" onchange="onReportViewChange()">'
     + '<option value="">（選擇報表）</option></select>'
-    // R8：市場資料收進可展開區塊，放選單右邊；平時不佔版面。
-    + '<details class="reports-market-details" id="market-details">'
-    + '<summary>市場資料（PDF）</summary>'
-    + '<div id="market-upload"></div>'
-    + '</details>'
     + '<span style="flex:1"></span>'
     // 一次產全部解讀（2026-07-30 使用者定案「初次通常是一次跑全部，
     // 而重解讀是個報表獨立」）：不帶 report_keys＝整份重跑。
@@ -3242,14 +3208,11 @@ function renderReports() {
     // 報表顯示區：市場側摘要（只讀已確認現行版）與專利側報表卡「同一列」左右並排，
     // 對標範例 PPT 第 9 頁版型（非上下分區）。兩者各查各的、確定性組版，AI 不融合。
     + '<div id="report-market-row">'
-    + '<div id="market-side-by-side"></div>'
     + '<div id="report-inline-view"></div>'
     + '</div>';
   // 進頁即載入既有報表版本清單（只讀既有產出，不觸發任何產製）。
   // 重置檢視快取：換 workspace／重進頁面時，選單要重填成新版本的 sections。
   reportViewContent = null;
-  renderMarketUpload();
-  loadMarketSummaryForReport();
   loadReportVersions();
 }
 
@@ -3257,182 +3220,8 @@ function renderReports() {
 // 市場資料綁 workspace（market_documents／market_doc_summaries 皆 workspace 級）；
 // 全庫 workspace 無單一產品定義、不提供市場資料（後端 runner 內建 is_global 護欄會 raise），
 // 故選全庫時整個上傳區隱藏。上傳支援「對既有 ws」或「對新建 ws」（新建 ws 由上傳前先建）。
-function renderMarketUpload() {
-  const wrap = el('market-upload');
-  if (!wrap) return;
-  if (isGlobalSelected()) {
-    // 全庫不提供市場資料：整區隱藏（不顯示空表、不留佔位）。
-    wrap.innerHTML = '';
-    return;
-  }
-  wrap.innerHTML = '<div class="card">'
-    + '<h3 style="margin-bottom:0.5rem">市場資料（PDF）</h3>'
-    + '<p class="hint" style="padding:0 0 0.5rem">上傳市場 PDF 後可產 AI 摘要草稿；'
-    + '逐筆確認後才會進報表（未確認草稿不進報表）。</p>'
-    // workspace 二選一：對目前既有 ws 上傳，或新建一個 ws 再上傳。
-    + '<div class="form-row"><label class="form-label">上傳到 Workspace</label>'
-    + '<div class="radio-line">'
-    + '<input type="radio" name="market-ws-mode" id="market-ws-mode-existing" value="existing" checked onchange="onMarketWsModeChange()">'
-    + '<label for="market-ws-mode-existing">目前選定的 workspace</label></div>'
-    + '<select id="market-existing-ws" class="text-input full" style="margin-bottom:0.5rem" disabled></select>'
-    + '<div class="radio-line">'
-    + '<input type="radio" name="market-ws-mode" id="market-ws-mode-new" value="new" onchange="onMarketWsModeChange()">'
-    + '<label for="market-ws-mode-new">新建 workspace</label></div>'
-    + '<input type="text" id="market-new-ws-name" class="text-input full" placeholder="新 workspace 名稱" disabled>'
-    + '</div>'
-    + '<div class="form-row"><label class="form-label" for="market-file">選擇 PDF</label>'
-    + '<input type="file" id="market-file" class="full" accept=".pdf"></div>'
-    + '<div class="toolbar">'
-    + '<button class="btn btn-outline" id="btn-upload-market" onclick="uploadMarketDocument()">上傳 PDF</button>'
-    + '<button class="btn btn-primary" id="btn-gen-market-summary" onclick="submitMarketSummary()">產市場摘要</button>'
-    + '</div>'
-    + '<div id="market-upload-msg"></div>'
-    + '<div id="market-doc-list"></div>'
-    + '</div>';
-  // 「目前選定的 workspace」下拉沿用真實 workspaces API（排除全庫），預設選目前 ws。
-  loadMarketExistingWorkspaces();
-  loadMarketDocuments();
-}
-// existing／new 二選一互斥切換。
-function onMarketWsModeChange() {
-  const mode = document.querySelector('input[name="market-ws-mode"]:checked').value;
-  const existing = el('market-existing-ws');
-  const newName = el('market-new-ws-name');
-  if (existing) existing.disabled = mode !== 'existing';
-  if (newName) newName.disabled = mode !== 'new';
-}
-// 既有 workspace 下拉（排除全庫，市場資料不綁全庫）；預設選目前選定 ws。
-async function loadMarketExistingWorkspaces() {
-  const sel = el('market-existing-ws');
-  if (!sel) return;
-  try {
-    const data = await getJson(API + '/workspaces?limit=200');
-    const items = (data.items || []).filter(w => !w.is_global);
-    sel.innerHTML = items.map(w =>
-      '<option value="' + w.workspace_id + '">' + escHtml(w.workspace_name) + '</option>'
-    ).join('');
-    if (state.workspaceId) sel.value = String(state.workspaceId);
-  } catch (e) {
-    sel.innerHTML = '<option value="">載入失敗</option>';
-  }
-}
-// 解析市場上傳目標 workspace：existing 取下拉值；new 先建 workspace 再回其 id。
-async function resolveMarketWorkspaceId() {
-  const mode = document.querySelector('input[name="market-ws-mode"]:checked').value;
-  if (mode === 'new') {
-    const name = (el('market-new-ws-name').value || '').trim();
-    if (!name) throw new Error('請填新 workspace 名稱');
-    const created = await getJson(API + '/workspaces', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspace_name: name }),
-    });
-    return created.workspace_id;
-  }
-  const v = el('market-existing-ws').value;
-  if (!v) throw new Error('請選擇 workspace');
-  return parseInt(v, 10);
-}
-// 上傳市場 PDF：POST /market-documents（raw body，query 帶 filename／workspace_id）。
-async function uploadMarketDocument() {
-  const msg = el('market-upload-msg');
-  const file = el('market-file').files[0];
-  if (!file) { if (msg) msg.innerHTML = '<div class="hint">請先選擇 PDF。</div>'; return; }
-  const btn = el('btn-upload-market');
-  btn.disabled = true; btn.textContent = '上傳中…';
-  try {
-    const wsId = await resolveMarketWorkspaceId();
-    const qs = 'filename=' + encodeURIComponent(file.name) + '&workspace_id=' + wsId;
-    const resp = await fetch(API + '/market-documents?' + qs, { method: 'POST', body: file });
-    if (!resp.ok) {
-      const body = await resp.json().catch(() => ({}));
-      throw new Error('HTTP ' + resp.status + (body.detail ? '：' + body.detail : ''));
-    }
-    state.marketWorkspaceId = wsId;
-    if (msg) msg.innerHTML = '<div class="hint">已上傳。</div>';
-    loadMarketDocuments();
-  } catch (e) {
-    if (msg) msg.innerHTML = '<div class="card">上傳失敗（' + escHtml(e.message) + '）。</div>';
-  } finally {
-    btn.disabled = false; btn.textContent = '上傳 PDF';
-  }
-}
-// 列該 workspace 已上傳的市場 PDF。
-async function loadMarketDocuments() {
-  const box = el('market-doc-list');
-  if (!box) return;
-  const wsId = state.marketWorkspaceId || state.workspaceId;
-  if (!wsId) { box.innerHTML = ''; return; }
-  try {
-    const data = await getJson(API + '/market-documents?workspace_id=' + wsId);
-    const docs = data.documents || [];
-    box.innerHTML = docs.length
-      ? '<ul class="hint" style="padding:0.3rem 0 0;list-style:disc inside">'
-        + docs.map(d => '<li>' + escHtml(d.original_filename) + '</li>').join('') + '</ul>'
-      : '<div class="hint">尚無市場 PDF。</div>';
-  } catch (e) {
-    box.innerHTML = '<div class="hint">載入市場 PDF 清單失敗（' + escHtml(e.message) + '）。</div>';
-  }
-}
-// 產市場摘要：POST /ai-tasks，task_type=ai:market_summary。
-// ⚠關鍵：ai_tasks 的 to_payload 會 exclude 具名 workspace_id，故 workspace_id 必須放進
-// params 內，dispatch（_run_ai_market_summary_job）才拿得到，否則會因缺 workspace_id raise。
-async function submitMarketSummary() {
-  const msg = el('market-upload-msg');
-  const btn = el('btn-gen-market-summary');
-  btn.disabled = true; btn.textContent = '送出中…';
-  try {
-    const wsId = state.marketWorkspaceId || state.workspaceId;
-    if (!wsId) throw new Error('請先選擇或建立 workspace 並上傳市場 PDF');
-    const body = { task_type: 'ai:market_summary', params: { workspace_id: wsId } };
-    const created = await getJson(API + '/ai-tasks', {
-      method: 'POST',
-      headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(body),
-    });
-    if (msg) msg.innerHTML = '<div class="hint">已送出產摘要任務（run ' + escHtml(created.run_id)
-      + '）；完成後於報表顯示區逐筆確認。</div>';
-  } catch (e) {
-    if (msg) msg.innerHTML = '<div class="card">產摘要失敗（' + escHtml(e.message) + '）。</div>';
-  } finally {
-    btn.disabled = false; btn.textContent = '產市場摘要';
-  }
-}
-
-// ══════════ 市場並排＋AI 融合解讀（報表顯示區；只讀已確認現行版） ══════════
-// 市場側只讀「已確認現行版」（accepted_only=true）：未確認草稿實體上進不了報表（實體隔離）。
-// 無市場資料或現行版未確認時，整區隱藏（不顯示空表、不留佔位）。全庫不取市場資料。
-async function loadMarketSummaryForReport() {
-  const wrap = el('market-side-by-side');
-  if (!wrap) return;
-  wrap.innerHTML = '';
-  if (isGlobalSelected() || !state.workspaceId) return;
-  try {
-    const data = await getJson(API + '/market-summaries/current?workspace_id='
-      + state.workspaceId + '&accepted_only=true');
-    const summary = data.summary;
-    if (!summary) return;  // 無已確認現行版：整區隱藏。
-    const fusion = summary.narrative
-      ? '<div class="market-fusion"><div class="ai-section-label">AI 融合解讀</div>'
-        + '<div>' + escHtml(summary.narrative) + '</div></div>'
-      : '';
-    wrap.innerHTML = '<div class="card market-side-panel">'
-      + '<h3 style="margin-bottom:0.5rem">市場側摘要（已確認現行版 v' + escHtml(summary.version) + '）</h3>'
-      + marketPayloadHtml(summary.payload_json)
-      + fusion + '</div>';
-  } catch (e) {
-    // 讀取失敗不擋報表：市場為輔助，靜默隱藏（不留錯誤佔位）。
-    wrap.innerHTML = '';
-  }
-}
-// 市場 payload（彈性 items 結構）簡表；無結構化數值時只留敘述（narrative）。
-function marketPayloadHtml(payload) {
-  if (!payload) return '';
-  const items = payload.items || [];
-  if (!items.length) return '';
-  return '<ul class="hint" style="padding:0.3rem 0;list-style:disc inside">'
-    + items.map(it => '<li>' + escHtml(JSON.stringify(it)) + '</li>').join('') + '</ul>';
-}
+// 🔴 2026-08-04：市場線整個移除（上傳／文件列表／摘要產製／側欄呈現九支函式）。
+// 使用者定案含資料表一併刪除；報表頁不再有市場側欄。
 function onReportToggle(cb) {
   if (cb.checked) state.reportSelection.add(cb.value);
   else state.reportSelection.delete(cb.value);

@@ -1427,7 +1427,7 @@ class RankingTruncationNoteTests(unittest.TestCase):
     def test_both_ranking_renderers_use_the_same_wording(self):
         """兩支渲染函式的文案走同一個來源，不各寫各的。"""
         source = Path(chart_runner.__file__).read_text(encoding="utf-8")
-        self.assertEqual(source.count('顯示前 {shown}/{total} 名，完整名單見附錄'), 1,
+        self.assertEqual(source.count('顯示前 {shown}/{total} 名，完整名單見網頁報表'), 1,
                          "截斷註記的文案不只一處——兩張圖會各自漂移")
 
     def test_owner_ranking_section_applies_the_row_limit(self):

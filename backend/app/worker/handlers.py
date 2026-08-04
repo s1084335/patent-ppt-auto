@@ -203,7 +203,6 @@ def handle_clustering_incremental(payload: dict[str, Any], context: JobContext) 
 def _load_report_cluster_data(
     workspace_id: int,
     source_field: str,
-    pain_data: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """取該 workspace／通道的分群資料供分群類圖表使用；無主題回 None。
 
@@ -274,9 +273,8 @@ def _resolve_report_cluster_data(payload: dict[str, Any], context: JobContext) -
         from backend.app.clustering.sources import source_fields
 
         targets = list(source_fields())
-    pain_data = payload.get("pain_data")
     try:
-        return _merge_cluster_channels(int(workspace_id), targets, pain_data)
+        return _merge_cluster_channels(int(workspace_id), targets)
     except Exception:  # noqa: BLE001 - 分群區塊是輔助，缺了照樣出報表
         LOGGER.exception("report cluster_data load failed: workspace_id=%s", workspace_id)
         return None
@@ -285,7 +283,6 @@ def _resolve_report_cluster_data(payload: dict[str, Any], context: JobContext) -
 def _merge_cluster_channels(
     workspace_id: int,
     source_fields_: list[str],
-    pain_data: list[dict[str, Any]] | None,
 ) -> dict[str, Any] | None:
     """載入多個通道的分群資料並合併成單一 cluster_data；全部無主題時回 None。
 
@@ -298,7 +295,7 @@ def _merge_cluster_channels(
     """
     merged: dict[str, Any] | None = None
     for source_field in source_fields_:
-        part = _load_report_cluster_data(workspace_id, source_field, pain_data)
+        part = _load_report_cluster_data(workspace_id, source_field)
         if part is None:
             continue
         # ⚠ assignment 的 source_field 已由 _load_report_cluster_data 標記

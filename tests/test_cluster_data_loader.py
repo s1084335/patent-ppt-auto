@@ -462,7 +462,7 @@ class RunFullReportTests(unittest.TestCase):
 
         mock_compute.assert_called_once_with(
             workspace_id=1, source_field="claims",
-            analysis_id=42, pain_data=None,
+            analysis_id=42,
         )
         mock_chart.assert_called_once()
         _, kwargs = mock_chart.call_args

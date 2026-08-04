@@ -335,7 +335,7 @@ class AssignmentsCarrySourceFieldTests(unittest.TestCase):
         with mock.patch("backend.app.reports.cluster_data_loader.load_cluster_workspace_data",
                         fake_load_ws), \
                 mock.patch("psycopg.connect"):
-            merged = handlers._merge_cluster_channels(1, [TECH, EFFECT], None)
+            merged = handlers._merge_cluster_channels(1, [TECH, EFFECT])
 
         self.assertIsNotNone(merged)
         by_src: dict[str, int] = {}

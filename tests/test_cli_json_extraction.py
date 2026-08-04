@@ -106,7 +106,6 @@ class AllRunnersUseSharedExtractorTests(unittest.TestCase):
         "ai_candidate_explanation_runner",
         "ai_company_zh_name_runner",
         "ai_irrelevant_filter_runner",
-        "ai_market_summary_runner",
         "ai_patent_note_runner",
         "ai_report_ppt_runner",
         "ai_topic_label_runner",

@@ -41,7 +41,6 @@ from backend.app.db.connection import get_connection_kwargs  # noqa: E402
 from backend.app.mcp_server import (  # noqa: E402
     tools_ai,
     tools_clustering,
-    tools_market,
     tools_reporting,
 )
 
@@ -59,13 +58,7 @@ mcp.tool()(tools_reporting.generate_report_ppt)
 mcp.tool()(tools_ai.get_report_payload)
 mcp.tool()(tools_ai.save_analysis_narrative)
 
-# ── market evidence tools（市場資料證據庫）──────────────────────
-mcp.tool()(tools_market.get_market_evidence)
-mcp.tool()(tools_market.save_market_evidence)
-mcp.tool()(tools_market.aggregate_market_evidence)
-mcp.tool()(tools_market.prepare_market_evidence_task)
-mcp.tool()(tools_market.save_market_evidence_candidates)
-mcp.tool()(tools_market.accept_market_evidence_candidates)
+# 🔴 2026-08-04：市場線整個移除（使用者定案，含資料表）。
 
 # ── clustering tools（分群引擎，輕量七支）───────────────────────
 mcp.tool()(tools_clustering.list_workspaces)

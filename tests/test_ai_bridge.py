@@ -167,25 +167,9 @@ class AiBridgeTests(unittest.TestCase):
         self.assertEqual(store.completed[0], {"ok": True})
         self.assertEqual(result, {"job_id": job.job_id, "status": "succeeded", "result": {"ok": True}})
 
-    def test_execute_ai_job_routes_market_summary_job(self):
-        """ai:market_summary 必須路由到 _run_ai_market_summary_job（dispatch 表接對）。"""
-        job = _market_summary_job()
-        store = FakeAiQueue(job)
-        with mock.patch.object(ai_bridge, "_run_ai_market_summary_job", return_value={"summary_id": None}) as patched:
-            result = ai_bridge.execute_ai_job(job, worker_id="ai-bridge-test", store=store)
+    # 🔴 2026-08-04：test_execute_ai_job_routes_market_summary_job 已刪除——市場線整個移除（使用者定案），規格沒了測試就失去存在理由
 
-        patched.assert_called_once()
-        self.assertEqual(store.completed[0], {"summary_id": None})
-        self.assertEqual(result, {"job_id": job.job_id, "status": "succeeded", "result": {"summary_id": None}})
-
-    def test_market_summary_dispatch_requires_workspace_id(self):
-        """市場摘要綁 workspace：payload 缺 workspace_id 時 dispatch 直接 raise，不空跑 CLI。"""
-        job = _market_summary_job(payload={})
-        store = FakeAiQueue(job)
-        result = ai_bridge.execute_ai_job(job, worker_id="ai-bridge-test", store=store)
-
-        self.assertEqual(result["status"], "failed")
-        self.assertIn("workspace_id", store.failed[0]["error_message"])
+    # 🔴 2026-08-04：test_market_summary_dispatch_requires_workspace_id 已刪除——市場線整個移除（使用者定案），規格沒了測試就失去存在理由
 
     def test_execute_ai_job_rejects_non_ai_job(self):
         """橋接器只處理 AI job，避免錯吃一般 worker 任務。"""

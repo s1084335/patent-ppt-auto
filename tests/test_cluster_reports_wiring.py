@@ -136,7 +136,7 @@ class ClusterDataResolutionTests(unittest.TestCase):
         ])
         with mock.patch.object(handlers, "_load_report_cluster_data",
                                side_effect=lambda *a, **k: next(parts)):
-            merged = handlers._merge_cluster_channels(7, ["tech", "effect"], None)
+            merged = handlers._merge_cluster_channels(7, ["tech", "effect"])
         self.assertIsNotNone(merged)
         self.assertEqual(len(merged["topics"]), 1)
 

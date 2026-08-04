@@ -84,13 +84,18 @@ class DirectionLastTests(unittest.TestCase):
         layout = self._layout(_minimal_report_data())
         kinds = [s.kind for s in layout]
         direction_at = kinds.index("direction")
-        first_appendix = next(i for i, s in enumerate(layout) if s.is_appendix)
+        # ⚠ 2026-08-04：附錄2 移除後，最小 fixture（只有排名資料）不再產生附錄頁
+        # ——附錄只剩主題分類，要有分群資料才出。附錄不存在時結論就該是最後一頁。
+        first_appendix = next((i for i, s in enumerate(layout) if s.is_appendix), None)
         self.assertGreater(direction_at, 0, "研發方向不得在封面前")
         content_pages = [i for i, s in enumerate(layout)
                         if s.kind not in {"cover", "direction"} and not s.is_appendix]
         self.assertTrue(all(i < direction_at for i in content_pages),
                         "還有內容頁排在研發方向之後——結論必須壓軸")
-        self.assertLess(direction_at, first_appendix, "研發方向要在附錄之前")
+        if first_appendix is None:
+            self.assertEqual(direction_at, len(layout) - 1, "無附錄時結論應為最後一頁")
+        else:
+            self.assertLess(direction_at, first_appendix, "研發方向要在附錄之前")
 
     def test_dynamic_pages_insert_before_direction(self):
         """動態插頁也算證據，必須插在結論（direction）之前。"""

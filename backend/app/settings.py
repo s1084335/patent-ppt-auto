@@ -38,19 +38,7 @@ def get_model_artifact_root() -> Path:
     return (PROJECT_ROOT / "data" / "model_artifacts").resolve()
 
 
-def get_market_doc_root() -> Path:
-    """取得市場資料 PDF 落地根目錄；未設定時落在專案 data 目錄。
-
-    正式落點為 NAS（使用者定案），現階段先用本機目錄代替，換 NAS 只改環境變數
-    MARKET_DOC_ROOT 不改程式。讀取者為本機 Companion 驅動的 CLI，故落檔案系統而非 DB。
-    """
-    configured = os.getenv("MARKET_DOC_ROOT", "").strip()
-    if configured:
-        configured_path = Path(configured).expanduser()
-        if not configured_path.is_absolute():
-            configured_path = PROJECT_ROOT / configured_path
-        return configured_path.resolve()
-    return (PROJECT_ROOT / "data" / "market_docs").resolve()
+# 🔴 2026-08-04：get_market_doc_root 已移除——市場線整個刪除（使用者定案，含資料表）。
 
 
 API_V1_PREFIX = "/api/v1"

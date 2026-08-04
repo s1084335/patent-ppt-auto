@@ -137,8 +137,9 @@ PAGE_LAYOUT: tuple[PageSpec, ...] = (
              slots=("direction.body",)),
     PageSpec(page=9, kind="table", title="附錄1：全分類技術指標總表", topic="全分類技術指標總表",
              report_keys=("cluster_topic_table",), is_appendix=True),
-    PageSpec(page=10, kind="table", title="附錄2：主要專利權人與申請人", topic="主要專利權人與申請人",
-             report_keys=("applicant_ranking", "owner_ranking"), is_appendix=True),
+    # 🔴 2026-08-04 使用者定案：附錄只保留主題分類（附錄1）——
+    # 「附錄那邊做到主題分類就好，其他的要看去網頁看就好」。
+    # 原附錄2（主要專利權人與申請人）移除；排名圖的截斷註記已改指向網頁報表。
 )
 
 # 論證順序（2026-07-31 使用者定案的 17 頁大綱）：範圍 → 時間 → 空間 → 技術 →
