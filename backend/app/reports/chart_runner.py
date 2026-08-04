@@ -2802,19 +2802,25 @@ def _chip_text_color(hex_fill: str) -> str:
     return "#111827" if luminance > 0.6 else "#FFFFFF"
 
 
-def _fit_chip_text(text: str, area_w: float) -> tuple[str, float]:
-    """算 chip 寬；文字超過格寬時截字加「…」，回傳（顯示文字, chip 寬）。"""
+def _fit_chip_text(text: str, area_w: float,
+                   font_px: float = _CHIP_FONT) -> tuple[str, float]:
+    """算 chip 寬；文字超過格寬時截字加「…」，回傳（顯示文字, chip 寬）。
+
+    ⚠ 2026-08-04：字級改由 `chart_font_px` 反推後 chip 會變寬，這裡的截字會更常
+    觸發——與使用者「不要剪字」的定案衝突，待改為 chip 內換行（見 J 系列待辦）。
+    """
     max_text_w = area_w - 2 * _CHIP_PAD_X
-    if _est_text_width(text, _CHIP_FONT) <= max_text_w:
-        return text, _est_text_width(text, _CHIP_FONT) + 2 * _CHIP_PAD_X
+    if _est_text_width(text, font_px) <= max_text_w:
+        return text, _est_text_width(text, font_px) + 2 * _CHIP_PAD_X
     clipped = text
-    while len(clipped) > 1 and _est_text_width(clipped + "…", _CHIP_FONT) > max_text_w:
+    while len(clipped) > 1 and _est_text_width(clipped + "…", font_px) > max_text_w:
         clipped = clipped[:-1]
     clipped += "…"
-    return clipped, min(_est_text_width(clipped, _CHIP_FONT) + 2 * _CHIP_PAD_X, area_w)
+    return clipped, min(_est_text_width(clipped, font_px) + 2 * _CHIP_PAD_X, area_w)
 
 
-def _flow_chips(chips: list[dict[str, Any]], area_w: float) -> tuple[list[dict[str, Any]], float]:
+def _flow_chips(chips: list[dict[str, Any]], area_w: float,
+                font_px: float = _CHIP_FONT) -> tuple[list[dict[str, Any]], float]:
     """把 chips 流式排進寬 area_w 的格內（相對座標），回傳（定位清單, 內容總高）。
 
     同列 chip x 依序遞增（前一顆右緣＋間距），放不下就換行、行高固定，
@@ -2824,17 +2830,22 @@ def _flow_chips(chips: list[dict[str, Any]], area_w: float) -> tuple[list[dict[s
     x = 0.0
     y = 0.0
     for chip in chips:
-        display, w = _fit_chip_text(chip["text"], area_w)
+        display, w = _fit_chip_text(chip["text"], area_w, font_px)
+        # chip 高＝字級＋固定上下內距。⚠ 不可等比放大：原本 24px 是
+        # 「12px 字 ＋ 上下各 6px」，等比會把內距也放大成 12px，
+        # 字級 24.5px 時 chip 撐到 49px，格高連鎖膨脹、畫布反而被縮更小。
+        chip_h = font_px + (_CHIP_H - _CHIP_FONT)
         if x > 0 and x + w > area_w:
             x = 0.0
-            y += _CHIP_H + _CHIP_GAP_Y
-        placed.append({**chip, "display": display, "x": x, "y": y, "w": w})
+            y += chip_h + _CHIP_GAP_Y
+        placed.append({**chip, "display": display, "x": x, "y": y, "w": w, "h": chip_h})
         x += w + _CHIP_GAP_X
-    total_h = (y + _CHIP_H) if placed else 0.0
+    total_h = (y + font_px + (_CHIP_H - _CHIP_FONT)) if placed else 0.0
     return placed, total_h
 
 
-def _chip_svg(chip: dict[str, Any], abs_x: float, abs_y: float, attrs: str) -> list[str]:
+def _chip_svg(chip: dict[str, Any], abs_x: float, abs_y: float, attrs: str,
+              font_px: float = _CHIP_FONT) -> list[str]:
     """輸出單一 chip（圓角矩形＋自動對比文字＋tooltip）；attrs＝data-* 識別屬性。
 
     rect 屬性順序固定為 class → data-* → x/y/width/height，測試以 regex 依此取回。
@@ -2842,9 +2853,10 @@ def _chip_svg(chip: dict[str, Any], abs_x: float, abs_y: float, attrs: str) -> l
     fill = chip["fill"]
     return [
         f'<rect class="chip" {attrs} x="{abs_x:.1f}" y="{abs_y:.1f}" width="{chip["w"]:.1f}" '
-        f'height="{_CHIP_H}" rx="6" fill="{fill}">'
+        f'height="{chip.get("h", _CHIP_H):.1f}" rx="6" fill="{fill}">'
         f'<title>{xml_text(chip.get("tooltip", chip["text"]))}</title></rect>',
-        f'<text x="{abs_x + _CHIP_PAD_X:.1f}" y="{abs_y + 16.5:.1f}" font-size="{_CHIP_FONT}" '
+        f'<text x="{abs_x + _CHIP_PAD_X:.1f}" '
+        f'y="{abs_y + chip.get("h", _CHIP_H) * 0.69:.1f}" font-size="{font_px:.1f}" '
         f'fill="{_chip_text_color(fill)}" data-on-fill="{fill}">{xml_text(chip["display"])}</text>',
     ]
 
@@ -2885,60 +2897,63 @@ def render_opportunity_quadrant_svg(
         q = "q1" if (hi_x and hi_y) else "q2" if hi_y else "q4" if hi_x else "q3"
         cell_rows[q].append(r)
 
-    header_h = 44  # 格 header：密度標籤行＋戰場語言行
-    placed: dict[str, tuple[list[dict[str, Any]], float]] = {}
+    header_h = 44  # 格 header：密度標籤行＋象限名稱行
+
+    # chip 內容先組好（與字級無關），佈局與高度才依字級算。
+    chips_of: dict[str, list[dict[str, Any]]] = {}
     for q, members in cell_rows.items():
-        chips = []
+        bucket = []
         for r in members:
             label = str(r.get("label") or r.get("topic_code", ""))
             lc = int(r.get("leading_applicant_count", 0))
             involved = "、".join(r.get("leading_applicants_involved") or [])
             tooltip = f'{label} / {int(r["patent_count"])}件 {int(r["applicant_count"])}家'
             if involved:
-                tooltip += f"｜龍頭：{involved}"
-            chips.append({
+                tooltip += f"｜主要申請人：{involved}"
+            bucket.append({
                 "text": f'{label} {int(r["patent_count"])}/{int(r["applicant_count"])}',
                 "fill": _TIER_COLORS[_tier_key(lc)],
                 "topic": str(r.get("topic_code", "")),
                 "tooltip": tooltip,
             })
-        placed[q] = _flow_chips(chips, area_w)
-
-    def _cell_h(q: str) -> float:
-        """格內容高＝header＋chips（空格留 placeholder 行高）＋底留白。"""
-        chips_h = placed[q][1]
-        return header_h + (chips_h if chips_h else 20.0) + inner_pad
+        chips_of[q] = bucket
 
     grid_top = 104.0
     grid_chrome = grid_top + cell_gap + 64  # 標題區＋列間距＋底部說明
-    # 🔴 H-8（2026-08-03 實機 p17／p18）：象限板實測 1120×374＝比例 2.99，
-    # 而 chart_hero 圖框是 1.78——等比縮放後圖只佔框高六成，上下各空兩成。
-    # ⚠ 修法不是把圖拉大（那會超出框寬），是**讓畫布本身接近圖框比例**：
-    # 列高的下限由目標比例回推，多出來的空間留在**格子內**。
-    # 格子有邊框、是內容區，格內下緣留白讀起來是「這一格東西比較少」；
-    # 頁面上的空白則單純是版面沒用滿——同樣的像素，意義不同。
     target_h = width / QUADRANT_TARGET_ASPECT
-    # ⚠ I-9（2026-08-03）評估後**維持現狀不改**：
-    # 實機每格高 224px、內容約 72px（格內空 68%），我一度想給格內留白設上限，
-    # 但量測後確認**與 H-8 互斥**——要維持 1.78 比例，格高就必須是內容的 3.1 倍；
-    # 任何更小的倍率都會讓畫布變扁、頁面留白回來（實測改成 1.5 倍後畫布 2.65、
-    # 頁面空回 33%）。
-    # 🔴 使用者實機抱怨的是**頁面留白**（H-8），格內留白是我自己記的觀察、
-    # 他評為輕微。不拿他沒抱怨的去換掉他抱怨過的。
     min_row_h = max(96.0, (target_h - grid_chrome) / 2)
-    top_row_h = max(_cell_h("q2"), _cell_h("q1"), min_row_h)
-    bot_row_h = max(_cell_h("q3"), _cell_h("q4"), min_row_h)
+
+    def _layout(font_px: float) -> tuple[dict[str, tuple[list[dict[str, Any]], float]], float, float, float]:
+        """依字級算出 chip 佈局與畫布高度，回傳 (placed, 上列高, 下列高, 畫布高)。
+
+        🔴 2026-08-04：字級由縮放反推、縮放由畫布高決定、畫布高又由 chip 換行數
+        （＝字級）決定——**三者互為因果**。故抽成這個函式供 solve_chart_font 迭代。
+        ⚠ 之前誤以為畫布高被 QUADRANT_TARGET_ASPECT 鎖定，實測那只是**下限**：
+        內容一多就超過，字級用預估高度算出來會偏大，實際縮放後只剩 10.9pt。
+        """
+        laid = {q: _flow_chips(chips_of[q], area_w, font_px) for q in qcolors}
+        def cell_h(q: str) -> float:
+            chips_h = laid[q][1]
+            return header_h + (chips_h if chips_h else 20.0) + inner_pad
+        top_h = max(cell_h("q2"), cell_h("q1"), min_row_h)
+        bot_h = max(cell_h("q3"), cell_h("q4"), min_row_h)
+        return laid, top_h, bot_h, grid_top + top_h + cell_gap + bot_h + 64
+
+    label_px, _ = solve_chart_font(width, lambda f: _layout(f)[3])
+    note_px = chart_font_px(width, _layout(label_px)[3], target_pt=CHART_NOTE_TARGET_PT)
+    placed, top_row_h, bot_row_h, _canvas_h = _layout(label_px)
+
     grid_bottom = grid_top + top_row_h + cell_gap + bot_row_h
     height = int(grid_bottom + 64)
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text data-role="chart-title" x="{margin_l}" y="34" font-size="20" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text data-role="chart-title" x="{margin_l}" y="34" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         # Y 軸口徑防呆註（沿用散點版文案）
-        f'<text x="{margin_l}" y="56" font-size="{CHART_LABEL_PX}" fill="#9CA3AF">※ 純專利訊號(申請人家數)＝衡量競爭者是否已進場，不等於產品核心度</text>',
+        f'<text x="{margin_l}" y="56" font-size="{note_px:.1f}" fill="#9CA3AF">※ 純專利訊號(申請人家數)＝衡量競爭者是否已進場，不等於產品核心度</text>',
         # 圖例：色＝龍頭涉入三級｜數字＝件/家
-        f'<text x="{margin_l}" y="86" font-size="{CHART_LABEL_PX}" font-weight="600" fill="{COLOR_TEXT}">{LEGEND_PREFIX_TEXT}</text>',
+        f'<text x="{margin_l}" y="86" font-size="{note_px:.1f}" font-weight="600" fill="{COLOR_TEXT}">{LEGEND_PREFIX_TEXT}</text>',
     ]
     # 🔴 H-8（2026-08-03 實機 p17／p18）：圖例方塊壓在「數字＝件/家」上面。
     # 原本 `margin_l + 200` 與 `+= 130` 都是寫死的——前綴實際約 234px、
@@ -2947,7 +2962,7 @@ def render_opportunity_quadrant_svg(
     legend_x = margin_l + _text_px(LEGEND_PREFIX_TEXT) + LEGEND_ITEM_GAP_PX
     for key, desc in [("lead≥2", "龍頭涉入≥2家"), ("lead=1", "龍頭涉入1家"), ("lead=0", "無龍頭涉入")]:
         parts.append(f'<rect x="{legend_x}" y="{76}" width="12" height="12" fill="{_TIER_COLORS[key]}" rx="2"/>')
-        parts.append(f'<text x="{legend_x + 18}" y="87" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{xml_text(desc)}</text>')
+        parts.append(f'<text x="{legend_x + 18}" y="87" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(desc)}</text>')
         legend_x += 18 + _text_px(desc) + LEGEND_ITEM_GAP_PX
 
     cell_pos = {
@@ -2962,33 +2977,33 @@ def render_opportunity_quadrant_svg(
             f'<rect x="{cx:.1f}" y="{cy:.1f}" width="{cell_w:.1f}" height="{ch:.1f}" rx="10" '
             f'fill="{qcolors[q]}" fill-opacity="0.07" stroke="#E5E7EB"/>')
         parts.append(
-            f'<text x="{cx + inner_pad:.1f}" y="{cy + 18:.1f}" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{xml_text(density_tags[q])}</text>')
+            f'<text x="{cx + inner_pad:.1f}" y="{cy + 18:.1f}" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{xml_text(density_tags[q])}</text>')
         parts.append(
-            f'<text x="{cx + inner_pad:.1f}" y="{cy + 37:.1f}" font-size="{CHART_LABEL_PX}" font-weight="600" '
+            f'<text x="{cx + inner_pad:.1f}" y="{cy + 37:.1f}" font-size="{label_px:.1f}" font-weight="600" '
             f'fill="{qcolors[q]}">{xml_text(f"{battle} → {action}")}</text>')
         chips, _chips_h = placed[q]
         if chips:
             for chip in chips:
                 parts.extend(_chip_svg(
                     chip, cx + inner_pad + chip["x"], cy + header_h + chip["y"],
-                    f'data-cell="{q}" data-topic="{xml_text(chip["topic"])}"'))
+                    f'data-cell="{q}" data-topic="{xml_text(chip["topic"])}"', label_px))
         else:
             parts.append(
-                f'<text x="{cx + inner_pad:.1f}" y="{cy + header_h + 14:.1f}" font-size="{CHART_LABEL_PX}" '
+                f'<text x="{cx + inner_pad:.1f}" y="{cy + header_h + 14:.1f}" font-size="{label_px:.1f}" '
                 f'fill="#9CA3AF" font-style="italic">本案無此類</text>')
 
     # 語意方向軸標籤（無數值刻度）
     mid_x = margin_l + (width - margin_l - margin_r) / 2
     parts.append(
-        f'<text x="{mid_x:.0f}" y="{grid_bottom + 26:.0f}" text-anchor="middle" font-size="{CHART_LABEL_PX}" '
+        f'<text x="{mid_x:.0f}" y="{grid_bottom + 26:.0f}" text-anchor="middle" font-size="{label_px:.1f}" '
         f'fill="{COLOR_TEXT}">低密度  ←  專利密度(件數)  →  高密度</text>')
     mid_y = grid_top + (grid_bottom - grid_top) / 2
     parts.append(
-        f'<text x="26" y="{mid_y:.0f}" text-anchor="middle" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}" '
+        f'<text x="26" y="{mid_y:.0f}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}" '
         f'transform="rotate(-90,26,{mid_y:.0f})">低  ←  申請人家數(廣度)  →  高</text>')
     # 腳註 FTO 聲明（沿用）
     parts.append(
-        f'<text x="{margin_l}" y="{grid_bottom + 48:.0f}" font-size="{CHART_LABEL_PX}" fill="#9CA3AF">'
+        f'<text x="{margin_l}" y="{grid_bottom + 48:.0f}" font-size="{label_px:.1f}" fill="#9CA3AF">'
         f'本分析非侵權迴避(FTO)結論｜資料依公開專利資訊整理</text>')
 
     parts.append("</svg>")
