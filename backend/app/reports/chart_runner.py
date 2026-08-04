@@ -119,7 +119,75 @@ COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
 # 字級 18px（＝13.5pt）× 0.9 ＝ 12.2pt，剛好過線。
 CHART_CANVAS_WIDTH = 949
 CHART_CANVAS_MAX_HEIGHT = 460
-CHART_LABEL_PX = 18          # 列標籤／數值；縮放後約 12.2pt
+CHART_LABEL_PX = 18          # （已停用）舊的寫死字級；改由 chart_font_px() 反推
+
+#: 每英吋多少 px（SVG 的 96dpi 與 PPT 的 72pt 之間的換算基準）。
+PX_PER_INCH = 96.0
+#: 1px 等於幾 pt。
+PT_PER_PX = 72.0 / PX_PER_INCH
+
+#: 🔴 2026-08-04 使用者定案：圖表文字的**最終顯示大小**。
+#: 「超過的降下來，不夠的要調上去」——實測第五輪同一個 18px 在不同頁面
+#: 變成 12.2／16.6／10.3pt，象限板 chip 更只有 6.9pt。
+CHART_DATA_TARGET_PT = 14.0   # 列標籤、數值、軸年份、chip 等**資料文字**
+CHART_NOTE_TARGET_PT = 12.0   # 圖例、編碼說明、來源等**註記**（比資料小一級）
+
+#: PPT 圖框尺寸（英吋）。⚠ 這是 `theme.json` 的**刻意複製**：
+#: `chart_runner` 在後端、`theme.json` 在 skill 目錄，跨模組讀不到。
+#: 依「同一份知識只能有一個定義處」的規則，無法 import 時加一致性測試釘住
+#: （`test_chart_font_target.FrameConstantsMatchThemeTests`），讓分岔立刻紅。
+CHART_HERO_FRAME_IN = (8.9, 5.0)
+CHART_WIDE_FRAME_IN = (12.13, 3.2)
+#: 長寬比達到多少就會被組版端改用滿寬版型（與 build_ppt.WIDE_CHART_ASPECT_MIN 同值）。
+WIDE_CHART_ASPECT_MIN = 3.5
+
+
+def chart_scale(width_px: float, height_px: float) -> float:
+    """這張畫布縮進 PPT 圖框後的縮放比。
+
+    ⚠ 縮放比由畫布尺寸決定——這正是「同一個字級在不同頁面變成不同大小」的原因。
+    組版端 `_add_picture_fitted` 是等比縮放到框內，故取寬高兩個比例的較小者。
+    """
+    w_in = width_px / PX_PER_INCH
+    h_in = height_px / PX_PER_INCH
+    if h_in <= 0 or w_in <= 0:
+        return 1.0
+    frame = CHART_WIDE_FRAME_IN if w_in / h_in >= WIDE_CHART_ASPECT_MIN else CHART_HERO_FRAME_IN
+    return min(frame[0] / w_in, frame[1] / h_in)
+
+
+def solve_chart_font(width_px: float, height_for_font, *,
+                     target_pt: float = CHART_DATA_TARGET_PT) -> tuple[float, float]:
+    """畫布高度與字級互相依賴時，迭代求出兩者，回傳 `(字級px, 畫布高px)`。
+
+    🔴 為什麼需要迭代：字級大 → 列高大 → 畫布高 → 縮放小 → 字級又要更大。
+    多數圖不會真的循環（縮放由畫布**寬**決定），但**內容少的圖**會：
+    高度掉到 `寬/3.5` 以下就改用滿寬框（`WIDE_CHART_ASPECT_MIN`），
+    縮放從 0.9 跳到 1.23，字級得跟著減三分之一。
+
+    `height_for_font(font_px)` 是呼叫端提供的「這個字級下畫布要多高」。
+    ⚠ 三輪內收斂——框只有兩種，最多換一次就穩定；仍不收斂時回最後一輪的值，
+    不無限迴圈。
+    """
+    font = target_pt / PT_PER_PX          # 初值：假設不縮放
+    height = height_for_font(font)
+    for _ in range(3):
+        nxt = chart_font_px(width_px, height, target_pt=target_pt)
+        if abs(nxt - font) < 0.5:
+            return nxt, height
+        font = nxt
+        height = height_for_font(font)
+    return font, height
+
+
+def chart_font_px(width_px: float, height_px: float, *,
+                  target_pt: float = CHART_DATA_TARGET_PT) -> float:
+    """要讓文字在 PPT 上顯示成 `target_pt`，這張畫布的 SVG 字級要開多大。
+
+    **唯一定義處**——圖表字級一律問這裡，不再寫死數字。
+    新增任何圖都自動達標，不必逐張調。
+    """
+    return target_pt / PT_PER_PX / chart_scale(width_px, height_px)
 CHART_ROW_HEIGHT = 28        # 12 列 → 68+336+34 = 438px，仍在上限內
 #: 年度矩陣泡泡的最小「大泡泡」半徑——格內兩位數（18px 字）放得下的下限。
 #: ⚠ 比這更窄時不再縮泡泡（改為壓縮大小差異），否則數字會滿出來。
@@ -309,6 +377,9 @@ def render_line_chart(
     years = sorted(set(app) | set(pub))
     max_count = max([*app.values(), *pub.values(), 1])
     width, height = CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT
+    # 字級由縮放反推（資料 14pt／註記 12pt）；畫布固定，不需迭代。
+    label_px = chart_font_px(width, height)
+    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
     left, right, top, bottom = 76, 34, 64, 72
     plot_w = width - left - right
     plot_h = height - top - bottom
@@ -326,17 +397,17 @@ def render_line_chart(
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         f'<rect width="100%" height="100%" fill="white"/>',
-        f'<text data-role="chart-title" x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text data-role="chart-title" x="{left}" y="34" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
     ]
     for tick in y_ticks:
         y = scale(tick, 0, max_count, top + plot_h, top)
         svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 4:.1f}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{tick}</text>')
+        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 4:.1f}" text-anchor="end" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{tick}</text>')
     svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
     svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
     for year in x_labels:
         x = scale(year, years[0], years[-1], left, left + plot_w)
-        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{year}</text>')
+        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{year}</text>')
     svg.append(f'<polyline points="{points(app)}" fill="none" stroke="{COLOR_APPLICATION}" stroke-width="3"/>')
     if pub:
         # 只有真的有公告序列才畫第二條線，避免單序列時出現一條 0 的假線。
@@ -349,10 +420,10 @@ def render_line_chart(
     # G-5：圖例中文化。⚠ F-9 那次只清了英文副題、沒清圖例——同一種問題只掃了一半。
     # 圖例是讀者辨識兩條線的唯一依據，用英文等於這張圖有一半看不懂。
     svg.append(f'<rect x="{left + 10}" y="{top + 8}" width="12" height="12" fill="{COLOR_APPLICATION}"/>'
-               f'<text x="{left + 28}" y="{top + 19}" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">申請年</text>')
+               f'<text x="{left + 28}" y="{top + 19}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">申請年</text>')
     if pub:
         svg.append(f'<rect x="{left + 148}" y="{top + 8}" width="12" height="12" fill="{COLOR_PUBLICATION}"/>'
-                   f'<text x="{left + 166}" y="{top + 19}" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">授權公告年</text>')
+                   f'<text x="{left + 166}" y="{top + 19}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">授權公告年</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -372,18 +443,27 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
     # right 留給列尾數值：18px 字要放得下「1,234」而不撞出畫布。
     right = 150
     bottom = 34
+    # 🔴 2026-08-04：字級由「這張畫布會被縮多少」反推（資料 14pt／註記 12pt）。
+    # ⚠ 畫布高度又依字級而變，故迭代求解（見 solve_chart_font）。
+    def _canvas_height(font_px: float) -> float:
+        rh = _fill_row_height(len(data), top=top, bottom=bottom,
+                              base=int(round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX)))
+        return top + bottom + max(1, len(data)) * rh
+
+    label_px, _ = solve_chart_font(width, _canvas_height)
+    note_px = chart_font_px(width, _canvas_height(label_px), target_pt=CHART_NOTE_TARGET_PT)
     height = top + bottom + max(1, len(data)) * row_h
     plot_w = width - left - right
     max_value = max([int(row[value_key]) for row in data] + [1])
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text data-role="chart-title" x="28" y="36" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text data-role="chart-title" x="28" y="36" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
     ]
     # F-12：截斷了就要說——同一種圖不得一張標、一張不標。
     note = truncation_note(len(data), len(rows))
     if note:
-        svg.append(f'<text x="{width - 40}" y="36" text-anchor="end" font-size="{CHART_LABEL_PX}" '
+        svg.append(f'<text x="{width - 40}" y="36" text-anchor="end" font-size="{label_px:.1f}" '
                    f'fill="{COLOR_TEXT_SOFT}">{xml_text(note)}</text>')
     for index, row in enumerate(data):
         y = top + index * row_h
@@ -404,9 +484,9 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
         color = ranking_bar_color(value, max_value)
         # 🔴 I-3：列標籤**左對齊**——字寬估算猜三次仍被裁（實測真實寬度比估算多 13%），
         # 改成從左緣固定位置開始畫，標籤多長都不可能超出左界。
-        svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + 20}" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{label}</text>')
+        svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{label}</text>')
         svg.append(f'<rect x="{left}" y="{y + 5}" width="{bar_w:.1f}" height="18" rx="2" fill="{color}"/>')
-        svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{y + 20}" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{value}</text>')
+        svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -439,15 +519,33 @@ def render_segmented_bar_chart(
     # （2026-08-03 使用者定案：資訊不能有被截斷的；既有測試也在守這件事）。
     # 故改為**動態列高**：只有帶受讓人註記的那幾列佔兩行，其餘一行。
     # 本案 12 列只有 1 列有受讓人，總高 466px，縮放仍 ≈0.89。
-    row_h = CHART_ROW_HEIGHT
     top = 90
-    left = label_gutter([str(row.get(label_key) or "") for row in data])
     right = 150
     bottom = 34
 
     def _assignees(row: dict[str, Any]) -> str:
         names = [n.strip() for n in str(row.get("recent_assignee_display_names") or "").split("; ") if n.strip()]
         return ("最新受讓人：" + "；".join(names)) if names else ""
+
+    # 🔴 2026-08-04：字級由「這張畫布會被縮多少」反推（目標 14pt），
+    # 而畫布高度又由字級決定——故迭代求解（見 solve_chart_font）。
+    # ⚠ 列高與標籤區寬度都要跟著字級走，不能沿用舊常數，否則字放大就撞邊。
+    _notes_preview = [_assignees(row) for row in data]
+
+    def _canvas_height(font_px: float) -> float:
+        row_px = font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX
+        total = top + bottom
+        for note in _notes_preview:
+            step = row_px * (2 if note else 1)
+            if total > top + bottom and total + step > CHART_CANVAS_MAX_HEIGHT:
+                break
+            total += step
+        return total
+
+    label_px, _ = solve_chart_font(width, _canvas_height)
+    note_px = chart_font_px(width, _canvas_height(label_px), target_pt=CHART_NOTE_TARGET_PT)
+    row_h = int(round(label_px * CHART_ROW_HEIGHT / CHART_LABEL_PX))
+    left = label_gutter([str(row.get(label_key) or "") for row in data], font_px=label_px)
 
     # ⚠ 列數必須跟著**畫布高度上限**走，不是固定 limit：多幾列有受讓人註記，
     # 畫布就變高、縮放變小、字又掉回不可讀。改為逐列累加到上限為止，
@@ -472,10 +570,10 @@ def render_segmented_bar_chart(
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text data-role="chart-title" x="28" y="36" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<rect x="28" y="56" width="12" height="12" fill="{RANKING_BAR_SCALE[0]}"/><text x="46" y="67" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">全部專利</text>',
-        f'<rect x="126" y="56" width="12" height="12" fill="{COLOR_SEGMENT}"/><text x="144" y="67" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{xml_text(segment_label)}</text>',
-        *([f'<text x="{width - 40}" y="67" text-anchor="end" font-size="{CHART_LABEL_PX}" '
+        f'<text data-role="chart-title" x="28" y="36" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<rect x="28" y="56" width="12" height="12" fill="{RANKING_BAR_SCALE[0]}"/><text x="46" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">全部專利</text>',
+        f'<rect x="126" y="56" width="12" height="12" fill="{COLOR_SEGMENT}"/><text x="144" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(segment_label)}</text>',
+        *([f'<text x="{width - 40}" y="67" text-anchor="end" font-size="{note_px:.1f}" '
            f'fill="{COLOR_TEXT_SOFT}">{xml_text(truncation_note(len(data), total_rows))}</text>']
           if truncation_note(len(data), total_rows) else []),
     ]
@@ -491,7 +589,7 @@ def render_segmented_bar_chart(
         segment_x = left + max(total_w - segment_w, 0)
         # 🔴 I-3：列標籤**左對齊**——字寬估算猜三次仍被裁（實測真實寬度比估算多 13%），
         # 改成從左緣固定位置開始畫，標籤多長都不可能超出左界。
-        svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + 20}" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{label}</text>')
+        svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{label}</text>')
         # 🔴 F-2：原本 fill="#CBD5E1"（白底淺灰藍）被 chart_recolor 當結構色轉成
         # 面板底 274A66，對深空背景只有 1.72——簡報上這根長條等於不存在。
         # 改用資料色階（依數值深淺，W-2），最淺一階對兩種背景都 ≥3.0。
@@ -504,7 +602,7 @@ def render_segmented_bar_chart(
         # ⚠ 分段為 0 時整個括號不印——印「(0)」只是噪音。
         segment_mark = (f'<tspan fill="{COLOR_SEGMENT}">（{segment}）</tspan>'
                         if segment > 0 else "")
-        svg.append(f'<text x="{left + total_w + 8:.1f}" y="{y + 20}" font-size="{CHART_LABEL_PX}" '
+        svg.append(f'<text x="{left + total_w + 8:.1f}" y="{y + 20}" font-size="{label_px:.1f}" '
                    f'fill="{COLOR_TEXT}">{total}{segment_mark}</text>')
         # 受讓人名單完整輸出、不截斷——這一列本來就多給了一行。
         # 🔴 I-8（2026-08-03 實機 p13）：原本 y 是 `y + 20 + row_h`，
@@ -516,7 +614,7 @@ def render_segmented_bar_chart(
             # 算進去——長條佔 y+5～y+23，15px 字的上緣落在 y+20.75，必然壓上。
             # ⚠ 改為由幾何推導：長條下緣 ＋ 字身高 ＋ 最小間距。這樣改了長條高
             # 或字級都會自動跟上，不必第三次調那個數字。
-            note_font = CHART_LABEL_PX - 3
+            note_font = (label_px) - 3
             note_y = (y + 5 + BAR_HEIGHT_PX) + note_font * TEXT_ASCENT_RATIO + LABEL_MIN_GAP_PX
             svg.append(f'<text x="{left}" y="{note_y:.1f}" font-size="{note_font}" '
                        f'fill="{COLOR_TEXT_SOFT}">{xml_text(notes[index])}</text>')
@@ -642,6 +740,9 @@ def render_bubble_chart(
 ) -> None:
     """氣泡圖：X/Y 線性軸、泡泡面積正比 size_key（企業研發能量用）。"""
     width, height = CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT
+    # 字級由縮放反推（資料 14pt／註記 12pt）；畫布固定，不需迭代。
+    label_px = chart_font_px(width, height)
+    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
     left, right, top, bottom = 90, 40, 64, 84
     plot_w, plot_h = width - left - right, height - top - bottom
     xs = [float(r[x_key]) for r in rows] or [0.0]
@@ -651,7 +752,7 @@ def render_bubble_chart(
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text data-role="chart-title" x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text data-role="chart-title" x="{left}" y="34" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
     ]
     # F-11：兩軸都用等差好讀刻度（原本 max*i/4 取整後印出 0/4/9/13/17）。
     y_ticks = nice_ticks(y_max)
@@ -661,13 +762,13 @@ def render_bubble_chart(
     for y_tick in y_ticks:
         y = scale(y_tick, 0, y_max, top + plot_h, top)
         svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 4:.1f}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{y_tick}</text>')
+        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 4:.1f}" text-anchor="end" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{y_tick}</text>')
     for x_tick in x_ticks:
         x = scale(x_tick, 0, x_max, left, left + plot_w)
-        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{x_tick}</text>')
+        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{x_tick}</text>')
     svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
     svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
-    svg.append(f'<text x="{left + plot_w / 2:.0f}" y="{height - 20}" text-anchor="middle" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">被引用總數（下載時點快照）</text>')
+    svg.append(f'<text x="{left + plot_w / 2:.0f}" y="{height - 20}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">被引用總數（下載時點快照）</text>')
     # 泡泡由大到小畫，避免大泡蓋掉小泡的標籤。
     ordered = sorted(rows, key=lambda r: -float(r[size_key]))
     for row in ordered:
@@ -704,7 +805,7 @@ def render_bubble_chart(
             else:            # 標籤在泡泡下方
                 line_y1, line_y2 = label_y - 10, y + radius
             svg.append(f'<line x1="{x:.1f}" y1="{line_y1:.1f}" x2="{x:.1f}" y2="{line_y2:.1f}" stroke="#94A3B8" stroke-width="1"/>')
-        svg.append(f'<text x="{x:.1f}" y="{label_y:.1f}" text-anchor="middle" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">{xml_text(label)}</text>')
+        svg.append(f'<text x="{x:.1f}" y="{label_y:.1f}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{xml_text(label)}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -1014,10 +1115,11 @@ LABEL_FONT_SIZE = CHART_LABEL_PX  # P-2：縮放後 ≥12pt
 LABEL_CHAR_WIDTH = 0.6
 
 
-def label_box(x: float, y: float, text: str) -> tuple[float, float, float, float]:
+def label_box(x: float, y: float, text: str,
+              font_px: float = LABEL_FONT_SIZE) -> tuple[float, float, float, float]:
     """標籤的外接矩形 (x1, y1, x2, y2)。y 是 SVG baseline，故上緣要往回推一個字級。"""
-    w = len(text) * LABEL_FONT_SIZE * LABEL_CHAR_WIDTH
-    return (x, y - LABEL_FONT_SIZE, x + w, y + 3)
+    w = len(text) * font_px * LABEL_CHAR_WIDTH
+    return (x, y - font_px, x + w, y + 3)
 
 
 def boxes_overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
@@ -1042,9 +1144,13 @@ LEGEND_ITEM_GAP_PX = 24
 LEGEND_SCALE_PREFIX = "件數色階"
 
 
-def _text_px(text: str) -> int:
-    """文字在 `CHART_LABEL_PX` 字級下的估算寬度（px）。"""
-    return int(_display_width(text) * CHART_LABEL_PX)
+def _text_px(text: str, font_px: float = CHART_LABEL_PX) -> int:
+    """文字在指定字級下的估算寬度（px）。
+
+    ⚠ 字級不再是常數（見 `chart_font_px`），量寬度時必須帶入該圖實際用的字級，
+    否則標籤區會依舊字級算，字放大後就撞邊。
+    """
+    return int(_display_width(text) * font_px)
 
 
 def legend_start_x(prefix_x: float, prefix_text: str, gap: float | None = None) -> float:
@@ -1137,6 +1243,7 @@ LABEL_MIN_GAP_PX = 3
 def place_point_labels(
     items: list[tuple[float, float, str]],
     obstacles: list[tuple[float, float, float]],
+    font_px: float = LABEL_FONT_SIZE,
 ) -> list[tuple[float, float] | None]:
     """替資料點標籤挑位置：四個候選方位輪流試，都撞就放棄該標籤。
 
@@ -1165,12 +1272,12 @@ def place_point_labels(
     blocked = [(ox - r, oy - r, ox + r, oy + r) for ox, oy, r in obstacles]
     placed: list[tuple[float, float] | None] = []
     for x, y, text in items:
-        width = len(text) * LABEL_FONT_SIZE * LABEL_CHAR_WIDTH
+        width = len(text) * font_px * LABEL_CHAR_WIDTH
         chosen: tuple[float, float] | None = None
         for dx, dy in candidates:
             lx = x + dx if dx > 0 else x + dx - width
             ly = y + dy
-            box = label_box(lx, ly, text)
+            box = label_box(lx, ly, text, font_px)
             grown = (box[0] - LABEL_MIN_GAP_PX, box[1] - LABEL_MIN_GAP_PX,
                      box[2] + LABEL_MIN_GAP_PX, box[3] + LABEL_MIN_GAP_PX)
             if any(boxes_overlap(grown, other) for other in blocked):
@@ -1187,6 +1294,9 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
     width, height = CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT
     left, right, top, bottom = 90, 40, 64, 84
     plot_w, plot_h = width - left - right, height - top - bottom
+    # 字級由縮放反推（資料 14pt／註記 12pt）；本圖畫布固定，不需迭代。
+    label_px = chart_font_px(width, height)
+    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
     data = [
         (int(r["application_year"]), int(r["applicant_count"]), int(r["patent_count"]))
         for r in rows
@@ -1198,7 +1308,7 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text data-role="chart-title" x="{left}" y="34" font-size="24" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text data-role="chart-title" x="{left}" y="34" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
     ]
     # F-11：兩軸都用等差好讀刻度（原本 max*i/4 取整後印出 0/4/9/13/17）。
     y_ticks = nice_ticks(y_max)
@@ -1208,13 +1318,13 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
     for y_tick in y_ticks:
         y = scale(y_tick, 0, y_max, top + plot_h, top)
         svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 4:.1f}" text-anchor="end" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{y_tick}</text>')
+        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 4:.1f}" text-anchor="end" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{y_tick}</text>')
     for x_tick in x_ticks:
         x = scale(x_tick, 0, x_max, left, left + plot_w)
-        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT_SOFT}">{x_tick}</text>')
+        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{x_tick}</text>')
     svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
     svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
-    svg.append(f'<text x="{left + plot_w / 2:.0f}" y="{height - 20}" text-anchor="middle" font-size="{CHART_LABEL_PX}" fill="{COLOR_TEXT}">申請人家數</text>')
+    svg.append(f'<text x="{left + plot_w / 2:.0f}" y="{height - 20}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">申請人家數</text>')
     points = " ".join(
         f"{scale(a, 0, x_max, left, left + plot_w):.1f},{scale(c, 0, y_max, top + plot_h, top):.1f}"
         for _y, a, c in data
@@ -1238,10 +1348,10 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
     items = merge_colocated_labels(
         [(coords[i][0], coords[i][1], str(data[i][0])) for i in wanted])
     obstacles = [(x, y, 4.0) for x, y in coords]
-    for (_x, _y, text), position in zip(items, place_point_labels(items, obstacles)):
+    for (_x, _y, text), position in zip(items, place_point_labels(items, obstacles, label_px)):
         if position is None:
             continue
-        svg.append(f'<text x="{position[0]:.1f}" y="{position[1]:.1f}" font-size="{LABEL_FONT_SIZE}" '
+        svg.append(f'<text x="{position[0]:.1f}" y="{position[1]:.1f}" font-size="{label_px:.1f}" '
                    f'fill="{COLOR_TEXT_SOFT}">{xml_text(text)}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
@@ -1370,7 +1480,8 @@ LABEL_TEXT_OFFSET_PX = 12
 LABEL_GUTTER_PADDING_PX = 48
 
 
-def label_gutter(labels: list[str], *, minimum: int = 180, maximum: int = 480) -> int:
+def label_gutter(labels: list[str], *, minimum: int = 180, maximum: int = 480,
+                 font_px: float = CHART_LABEL_PX) -> int:
     """列標籤區寬度——依**實際最長標籤**算，不寫死。
 
     🔴 G-3（2026-08-03 實機 p10）：「A63B-0022　心肺與協調訓練器械」開頭的字
@@ -1385,7 +1496,7 @@ def label_gutter(labels: list[str], *, minimum: int = 180, maximum: int = 480) -
         return minimum
     widest = max(_display_width(text) for text in labels)
     return int(max(minimum, min(maximum,
-                                widest * CHART_LABEL_PX + LABEL_GUTTER_PADDING_PX)))
+                                widest * font_px + LABEL_GUTTER_PADDING_PX)))
 
 
 def _display_width(text: str) -> float:

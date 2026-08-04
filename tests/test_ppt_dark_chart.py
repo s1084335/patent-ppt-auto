@@ -228,8 +228,8 @@ class ChartTextSizeOnSlideTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             svg = self._render_ranking(Path(tmp))
-        sizes = [int(s) for s in re.findall(
-            rf'<text x="{LABEL_TEXT_OFFSET_PX}" y="\d+" font-size="(\d+)"', svg)]
+        sizes = [float(s) for s in re.findall(
+            rf'<text x="{LABEL_TEXT_OFFSET_PX}" y="\d+" font-size="([\d.]+)"', svg)]
         self.assertTrue(sizes, "找不到列標籤")
         worst = min(sizes)
         actual = self._slide_pt(svg, worst)
@@ -249,7 +249,7 @@ class ChartTextSizeOnSlideTests(unittest.TestCase):
     def test_value_labels_also_readable(self):
         with tempfile.TemporaryDirectory() as tmp:
             svg = self._render_ranking(Path(tmp))
-        sizes = [int(s) for s in re.findall(r'font-size="(\d+)"', svg)]
+        sizes = [float(s) for s in re.findall(r'font-size="([\d.]+)"', svg)]
         body = [s for s in sizes if s < 20]          # 排除標題那種大字
         self.assertGreaterEqual(self._slide_pt(svg, min(body)), self.MIN_SLIDE_PT)
 
@@ -280,8 +280,11 @@ class AllChartsReadableOnSlideTests(unittest.TestCase):
         return px * 72 / 96 * scale
 
     def _check(self, svg: str, label: str):
-        # 標題類大字（≥20px）不列入——它們本來就大，且組版端會移除
-        sizes = [int(s) for s in re.findall(r'font-size="(\d+)"', svg) if int(s) < 20]
+        # 🔴 2026-08-04：原本用「≥20px 視為標題、不列入」過濾——那個門檻被
+        # chart_font_px() 推翻了：資料文字現在就是 20.7px（縮放後剛好 14pt），
+        # 會被誤判成標題整批濾掉，`sizes` 變空、測試以「找不到內文字級」失敗。
+        # ⚠ 改為**全部都要達標**：字級一律由縮放反推，本來就沒有例外。
+        sizes = [float(s) for s in re.findall(r'font-size="([\d.]+)"', svg)]
         self.assertTrue(sizes, f"{label}: 找不到內文字級")
         worst = min(sizes)
         actual = self._slide_pt(svg, worst)

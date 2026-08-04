@@ -1941,8 +1941,10 @@ class PointLabelPlacementTests(unittest.TestCase):
             path = Path(tmp) / "lc.svg"
             chart_runner.render_lifecycle_chart(path, "專利生命週期", rows)
             svg = path.read_text(encoding="utf-8")
+        # ⚠ 字級改由 chart_font_px() 反推後帶小數（20.7），`\d+` 抓不到 →
+        # 標籤清單變空 → 測試以「一個年份標籤都沒畫出來」失敗，而不是真的重疊。
         labels = re.findall(
-            r'<text x="([0-9.]+)" y="([0-9.]+)" font-size="\d+" fill="[^"]+">(\d{4})</text>', svg)
+            r'<text x="([0-9.]+)" y="([0-9.]+)" font-size="[0-9.]+" fill="[^"]+">(\d{4})</text>', svg)
         self.assertTrue(labels, "一個年份標籤都沒畫出來")
         for i, (x1, y1, t1) in enumerate(labels):
             for x2, y2, t2 in labels[i + 1:]:
