@@ -287,8 +287,8 @@ def _merge_cluster_channels(
     """載入多個通道的分群資料並合併成單一 cluster_data；全部無主題時回 None。
 
     合併語意：topics／assignments／topic_rows 直接串接（每列自帶 source_field，
-    下游 `_source_segments` 據此分段）；normalized_applicants 與 top_applicants_ws 是
-    workspace 級的同一份，取第一個非空者即可，不重複串接。
+    下游 `_source_segments` 據此分段）；`patents` 與 `normalized_applicants` 取**聯集**
+    （見下方 R-4 說明）；top_applicants_ws 是 workspace 級的同一份，取第一個非空者。
 
     只有部分通道有主題時（例如只跑了技術分群）照樣回傳有的那部分——
     報表能出多少算多少，不因為某通道沒分群就整張不給。
@@ -304,6 +304,8 @@ def _merge_cluster_channels(
         # 實機症狀＝13 個主題的件數**全變 0**，而報表照常產出不報錯。
         if merged is None:
             merged = dict(part)
+            # ⚠ 複製一份：下面會 append，不能改到來源 dict 的 list。
+            merged["normalized_applicants"] = list(part.get("normalized_applicants") or [])
             merged["source_fields"] = [source_field]
             continue
         merged["topics"] = list(merged["topics"]) + list(part["topics"])
@@ -314,6 +316,20 @@ def _merge_cluster_channels(
         # 在狀態分類裡變成「不計入任何一窗」而靜默少算。
         merged["patents"] = {**(merged.get("patents") or {}),
                              **(part.get("patents") or {})}
+        # 🔴 R-4（2026-08-05 實機 p18／p22）：申請人**也要取聯集**——原本沿用
+        # 第一個通道的那份，理由寫「workspace 級的同一份」，但 loader 是以
+        # **該通道的 assignments** 決定要查哪些 patent_id 的申請人，根本不是
+        # workspace 級。實機：9 件只在功效通道的專利（正好全是 TW 案——技術通道
+        # 用獨立項，TW 案沒有）申請人整批失蹤 → 該主題顯示 0 家、前三大「—」、
+        # 代表專利空白，且 TW 案永遠選不上代表專利（扣 1911 的修正因此看不到）。
+        # ⚠ 這與上一行 `patents` 是**同一型問題**，當時只修了其中一處。
+        seen = {(int(a["patent_id"]), str(a["applicant_name"]))
+                for a in merged["normalized_applicants"]}
+        for a in part.get("normalized_applicants") or []:
+            key = (int(a["patent_id"]), str(a["applicant_name"]))
+            if key not in seen:
+                seen.add(key)
+                merged["normalized_applicants"].append(a)
         merged["source_fields"].append(source_field)
     return merged
 
