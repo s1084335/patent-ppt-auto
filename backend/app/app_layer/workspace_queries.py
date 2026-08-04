@@ -21,6 +21,7 @@ from psycopg.rows import dict_row
 
 from backend.app.app_layer import patent_queries
 from backend.app.db.connection import get_pool
+from backend.app.transforms.patent_numbers import display_number_sql
 from backend.app.repositories.topic_state_repository import (
     PostgresTopicStateRepository,
     TopicStateNotFoundError,
@@ -122,14 +123,7 @@ _WS_PATENTS_CTE = f"""
 WITH ws_patents AS (
     SELECT
         p.id AS patent_id,
-        COALESCE(
-            NULLIF(BTRIM(p."授權公告號"), ''),
-            NULLIF(BTRIM(p."審查的公告號"), ''),
-            NULLIF(BTRIM(p."未審查的公開號(轉換後)"), ''),
-            NULLIF(BTRIM(p."未審查的公開號"), ''),
-            NULLIF(BTRIM(p."申請號(轉換後)"), ''),
-            NULLIF(BTRIM(p."申請號"), '')
-        ) AS patent_number,
+        {display_number_sql("p")} AS patent_number,
         -- 只回「有無代表圖」布林；bytea 不進清單，圖走 GET /patents/{{id}}/figure 惰性載入。
         (p."主附圖" IS NOT NULL) AS has_figure,
         rpb.applicant_display_name AS applicant_display_name,

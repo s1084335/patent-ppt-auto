@@ -15,6 +15,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from backend.app.db.connection import get_connection_kwargs
+from backend.app.transforms.patent_numbers import display_number_sql
 
 from .artifacts import (
     artifact_key,
@@ -1070,18 +1071,12 @@ def workspace_dashboard(workspace_id: int) -> dict[str, Any]:
             topic_rows = _dashboard_topics(cur, workspace_id)
             # 0021：成員直接來自 workspaces.patent_ids_json，無 workspace_patents 可 JOIN
             member_ids = [int(value) for value in (workspace["patent_ids_json"] or [])]
+            # 顯示號鏈唯一定義處＝transforms.patent_numbers（2026-08-04 治本收斂）。
             cur.execute(
-                """
+                f"""
                 SELECT
                     p.id AS patent_id,
-                    COALESCE(
-                        NULLIF(BTRIM(p."授權公告號"), ''),
-                        NULLIF(BTRIM(p."審查的公告號"), ''),
-                        NULLIF(BTRIM(p."未審查的公開號(轉換後)"), ''),
-                        NULLIF(BTRIM(p."未審查的公開號"), ''),
-                        NULLIF(BTRIM(p."申請號(轉換後)"), ''),
-                        NULLIF(BTRIM(p."申請號"), '')
-                    ) AS patent_number,
+                    {display_number_sql("p")} AS patent_number,
                     p.title,
                     p.country_code
                 FROM core_layer.patents p

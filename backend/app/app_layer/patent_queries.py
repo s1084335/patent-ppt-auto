@@ -20,6 +20,7 @@ from psycopg.rows import dict_row
 
 from backend.app.clustering.sources import source_fields
 from backend.app.db.connection import get_pool
+from backend.app.transforms.patent_numbers import display_number_sql
 from backend.app.repositories.topic_state_repository import (
     PostgresTopicStateRepository,
     TopicStateNotFoundError,
@@ -47,10 +48,12 @@ _PATENT_FIELDS: dict[str, str] = {
     "title": "NULLIF(BTRIM({p}.title), '')",
     "title_original": "NULLIF(BTRIM({p}.title_original), '')",
     "abstract": "NULLIF(BTRIM({p}.abstract), '')",
-    "application_number": 'NULLIF(BTRIM({p}."申請號"), \'\')',
+    # 申請號／公開號的**顯示值轉換後優先**（2026-08-04 治本：TW 扣 1911 的機制
+    # 要在顯示端生效；非 TW 案轉換欄＝原值，無副作用）。原值仍在 DB 供查證。
+    "application_number": 'COALESCE(NULLIF(BTRIM({p}."申請號(轉換後)"), \'\'), NULLIF(BTRIM({p}."申請號"), \'\'))',
     "application_date": "{p}.application_date",
     "application_year": "{p}.application_year",
-    "publication_number": 'NULLIF(BTRIM({p}."未審查的公開號"), \'\')',
+    "publication_number": 'COALESCE(NULLIF(BTRIM({p}."未審查的公開號(轉換後)"), \'\'), NULLIF(BTRIM({p}."未審查的公開號"), \'\'))',
     "grant_number": 'NULLIF(BTRIM({p}."授權公告號"), \'\')',
     "orig_ipc_main": 'NULLIF(BTRIM({p}."Orig. IPC(Main)"), \'\')',
     # 文獻備註 0032 起搬到 patents 主表（一專利一列，AI 回寫直接 WHERE id）；
@@ -193,21 +196,14 @@ def display_projection(
     return ",\n        ".join(parts)
 
 
-# 六欄專利號 COALESCE（與 workspace_queries 的 ws_patents CTE 同順序，唯一事實共用同一規則）。
+# 顯示號規則唯一定義處在 transforms.patent_numbers（2026-08-04 治本收斂）；
 # 以 CTE 先算出 patent_number 與 applicant，供外層對 patent_number／title 過濾。
 # 號搜（search_patents）與全庫清單（list_patents）共用此 CTE，不重寫兩份專利號規則。
 _CANDIDATES_CTE = f"""
 WITH candidates AS (
     SELECT
         p.id AS patent_id,
-        COALESCE(
-            NULLIF(BTRIM(p."授權公告號"), ''),
-            NULLIF(BTRIM(p."審查的公告號"), ''),
-            NULLIF(BTRIM(p."未審查的公開號(轉換後)"), ''),
-            NULLIF(BTRIM(p."未審查的公開號"), ''),
-            NULLIF(BTRIM(p."申請號(轉換後)"), ''),
-            NULLIF(BTRIM(p."申請號"), '')
-        ) AS patent_number,
+        {display_number_sql("p")} AS patent_number,
         -- 只回「有無代表圖」布林，不把 bytea 內容帶進清單（清單一頁 200 筆會拖回數 MB）；
         -- 實際圖片由前端逐筆走 GET /patents/{{id}}/figure 惰性載入。
         (p."主附圖" IS NOT NULL) AS has_figure,
