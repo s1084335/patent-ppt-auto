@@ -9,6 +9,7 @@ from typing import Any
 
 from openpyxl import load_workbook
 
+from backend.app.mappings.wips import PEOPLE_FIELD_COLUMNS
 from backend.app.transforms.text import clean_text
 
 # 對照檔（xlsx/csv）表頭，2026-07-28 起與 DB 四欄一致（使用者：「對照檔也改四欄」）。
@@ -240,6 +241,33 @@ PEOPLE_NAME_CODE_COLUMNS: tuple[tuple[str, str | None], ...] = (
 )
 
 
+#: 繁體欄名 → WIPS 原始（簡體）欄名。
+#: 🔴 2026-08-03 實機驗收發現：`people` dict 保留 **WIPS 原始欄名**，
+#: 而 `PEOPLE_NAME_CODE_COLUMNS` 寫死繁體——簡體檔一個欄位都對不上，
+#: `build_people_pairs` 回傳 0 對，整條名稱治理管線**空轉且不報錯**
+#: （匯入 summary 的 alias_variants 顯示 0，看起來像「沒有新變體」）。
+#: ⚠ 反查表由 `wips.py` 的 `PEOPLE_FIELD_COLUMNS` **推導**，不另寫一份——
+#: 本 bug 的成因正是同一組欄名在兩處各寫一次，其中一處只寫了繁體。
+_TRADITIONAL_TO_SOURCE = {trad: simp for simp, trad in PEOPLE_FIELD_COLUMNS.items()}
+
+#: 自動建組寫入的 source_type。⚠ 必須是 DB CHECK 白名單內的值，見上方 INSERT 註解。
+AUTO_GROUP_SOURCE_TYPE = "wips_lookup"
+
+
+def people_value(people: dict[str, Any], column: str | None) -> Any:
+    """取 people 欄位值——繁體欄名與 WIPS 原始（簡體）欄名都認。
+
+    ⚠ 兩種都要試：舊資料與 `alias_variant_sweep` 走 DB 讀出來的是繁體欄名，
+    匯入路徑拿到的是 WIPS 原始欄名。只認一種就會有一條路徑靜默失效。
+    """
+    if column is None:
+        return None
+    if column in people:
+        return people[column]
+    source = _TRADITIONAL_TO_SOURCE.get(column)
+    return people.get(source) if source else None
+
+
 def build_people_pairs(people: dict[str, Any]) -> list[tuple[str | None, str]]:
     """從一列 patent_people 抽出 (代碼, 名稱) 配對，供名稱治理管線消費。
 
@@ -262,10 +290,10 @@ def build_people_pairs(people: dict[str, Any]) -> list[tuple[str | None, str]]:
     pairs: list[tuple[str | None, str]] = []
     seen: set[tuple[str | None, str]] = set()
     for name_col, code_col in PEOPLE_NAME_CODE_COLUMNS:
-        raw_name = clean_text(people.get(name_col))
+        raw_name = clean_text(people_value(people, name_col))
         if not raw_name:
             continue
-        col_code = clean_text(people.get(code_col)) if code_col else None
+        col_code = clean_text(people_value(people, code_col)) if code_col else None
         # 每欄各自算「第一個」——專利權人欄的第一個要帶它自己的代碼欄。
         is_first = True
         for part in raw_name.split("|"):
@@ -392,8 +420,12 @@ def govern_company_names(
                     canonical_zh, canonical_en = next(iter(names)) if len(names) == 1 else ("", "")
                     conn.execute(
                         'INSERT INTO derived_layer.company_aliases '
-                        '("申請人代碼", "公司中文名稱", "正規化名稱", "別稱", source_file) '
-                        "VALUES (%s, %s, %s, %s, %s) "
+                        '("申請人代碼", "公司中文名稱", "正規化名稱", "別稱", '
+                        " source_file, source_type) "
+                        # ⚠ 明確指定 source_type，不吃 DB 預設值 `excel_seed`
+                        # ——這條路的來源是 **WIPS 匯入**，不是 excel 對照檔。
+                        # 2026-08-03 實機驗收看到別稱列標成 excel_seed 才發現。
+                        f"VALUES (%s, %s, %s, %s, %s, '{AUTO_GROUP_SOURCE_TYPE}') "
                         'ON CONFLICT ("申請人代碼", alias_lookup_key) '
                         "WHERE review_status = 'confirmed' DO NOTHING",
                         (hit, canonical_zh or None, canonical_en or None, variant, source_label),
@@ -425,7 +457,14 @@ def govern_company_names(
                     'INSERT INTO derived_layer.company_aliases '
                     '("申請人代碼", "公司中文名稱", "正規化名稱", "別稱", '
                     " source_file, source_type, review_status) "
-                    "VALUES (%s, %s, %s, %s, %s, 'import', 'review_required') "
+                    # 🔴 source_type 必須是 CHECK 白名單內的值
+                    # （excel_seed／wips_lookup／manual／ai_suggested）。
+                    # 2026-08-03 實機驗收：原本寫 'import'，**不在白名單**，
+                    # 一送出就 CheckViolation——規格 2-2 節誤記為「既有值」。
+                    # ⚠ 用 `wips_lookup`：本路徑就是「拿 WIPS 給的代碼與標準化名建組」。
+                    # ⚠ 不可用 `ai_suggested`——本線是確定性規則、無 AI 參與（使用者明示）；
+                    #   也不是 `manual`（不是人工建的）、不是 `excel_seed`（那是初始種子檔）。
+                    f"VALUES (%s, %s, %s, %s, %s, '{AUTO_GROUP_SOURCE_TYPE}', 'review_required') "
                     'ON CONFLICT ("申請人代碼", alias_lookup_key) '
                     "WHERE review_status = 'confirmed' DO NOTHING",
                     # ⚠ 中文名一律 None：市場慣用名是判斷不是資料，不得自動填。
@@ -463,8 +502,10 @@ def govern_company_names(
                 # ⚠ 名稱欄一併改寫四欄口徑：中文進 `公司中文名稱`、英文正式名進
                 # `正規化名稱`（0041 起表上只有這四欄）。
                 'INSERT INTO derived_layer.company_aliases '
-                '("申請人代碼", "公司中文名稱", "正規化名稱", "別稱", source_file) '
-                "VALUES (%s, %s, %s, %s, %s) "
+                '("申請人代碼", "公司中文名稱", "正規化名稱", "別稱", '
+                " source_file, source_type) "
+                # ⚠ 同上：已知代碼補別稱同樣來自 WIPS 匯入，不是 excel 對照檔。
+                f"VALUES (%s, %s, %s, %s, %s, '{AUTO_GROUP_SOURCE_TYPE}') "
                 'ON CONFLICT ("申請人代碼", alias_lookup_key) '
                 "WHERE review_status = 'confirmed' DO NOTHING",
                 (code, canonical_zh or None, canonical_en or None, variant, source_label),

@@ -352,6 +352,8 @@ def _report_content_payload(run_dir):
 
     from fastapi.responses import JSONResponse
 
+    from backend.app.reports.chart_runner import variant_narrative_ref
+
     version = run_dir.name
     raw = run_dir.read_bytes("report_data.json")
     if raw is None:
@@ -381,16 +383,28 @@ def _report_content_payload(run_dir):
     for section in report_data.get("sections", []) or []:
         report_key = _section_report_key(section)
         rows = _lookup_rows(report_data, report_key)
-        entry = narratives.get(report_key) or narratives.get(report_key.rpartition("_L")[0]) or {}
         variants_out = []
         for variant in list(section.get("variants") or []) + list(section.get("more_variants") or []):
             file_name = str(variant.get("file", ""))
             variant_key = variant.get("variant_key", "default")
+            # 🔴 解讀掛點**逐變體**解析，唯一來源＝chart_runner.variant_narrative_ref。
+            # 產出時已寫進 report_data.json 的 narrative_key；舊版產出沒有這欄，
+            # 現算一次（同一個函式，不是第二份規則）。
+            # ⚠ 原本整張卡共用 `narratives.get(report_key)`，於是 `annual_trend` 與
+            # 機會板兩個變體永遠查不到——PPT 端有 alias 接得起來、網頁端沒有，
+            # 使用者看到的就是「AI 解讀尚未產生」（2026-08-03 實機）。
+            # ⚠ 精確鍵優先於對照：narratives 真的有這個鍵就用它，對照是「查不到才要的橋」。
+            ref = variant.get("narrative_key") or variant_narrative_ref(report_key, variant_key)
+            candidates = [(report_key, variant_key), tuple(ref.rsplit(":", 1))]
             narrative = None
             if not narratives_expired:
-                narrative = (entry.get("variants") or {}).get(variant_key)
-                if narrative is None and entry.get("text"):
-                    narrative = {"text": entry["text"]}  # v1 相容：單一 text 當所有變體預設
+                for narr_key, narr_variant in candidates:
+                    entry = narratives.get(narr_key) or {}
+                    narrative = (entry.get("variants") or {}).get(narr_variant)
+                    if narrative is None and entry.get("text"):
+                        narrative = {"text": entry["text"]}  # v1 相容：單一 text 當所有變體預設
+                    if narrative is not None:
+                        break
             variants_out.append({
                 "label": variant.get("label", ""),
                 "variant_key": variant_key,

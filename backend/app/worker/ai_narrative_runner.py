@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -48,29 +49,95 @@ SKILL_PATH = _resolve_skill_path()
 # v4（2026-07-31）：三件套契約——variant 加 headline／points（PPT 用要點，text 留給
 # 報表頁長文）。動因：實機 PPT 每頁 1 段 400–500 字字牆，⚠ AI 沒有違規，是舊規則
 # 教它寫散文（「標準寫法是：先點出數據現象…」）。
-PROMPT_VERSION = "report_narrative_v4"
+# v5（2026-07-31）：撰寫程序翻轉（points→headline→text）＋三道形狀鎖
+# ＋逐報表版面容量。契約實質改變，故升版供產出追溯。
+# v6（2026-08-02）：放寬形式、收緊內容。⚠ v5 的「不得含句號、逗號至多一個」
+# 讓 CLI 只能砍掉數字（實測 points 只用 4 條 × 19 字，容量卻有 8 條 × 54 字）——
+# 規則本身是 W-1 的根因。改為句號 ≤1／逗號 ≤2，同時新增三道內容鎖：
+# 現況必須帶數字、每頁至少一條意涵、CPC 必須與 IPC 對照。
+# v7（2026-08-03）：版面用量下限（要濃縮不要丟棄）＋敘述措辭四層
+# （客觀描述 → 專利數據解讀 → 合理推論 → 分析限制）＋結論回到要點（標 emphasis）。
+# v8（2026-08-04）：**移除版面用量下限**（v7 加的那道鎖是丟棄要點的根因，見下方
+# 說明）＋ `max_chars` 改為扣掉標籤成本後的正文字數。契約實質改變，故升版供追溯。
+PROMPT_VERSION = "report_narrative_v8"
 
 # ── 三件套契約上限（v4；單一來源，skill 條文與驗證都以此為準）──
 # ⚠ 暫定值：理想上由 theme.json v2 的要點框尺寸換算，v2（skill creator 重建中）
 #   落地後對框尺寸驗算；要調整只改這裡。
 NARRATIVE_HEADLINE_MAX = 20   # 一句判讀結論（PPT 標題「{主題}：{headline}」）
-NARRATIVE_POINT_TEXT_MAX = 50  # 每條要點的字數（2026-07-31 40→50：實機「字太少」）
-NARRATIVE_POINTS_MIN = 3
-NARRATIVE_POINTS_MAX = 6  # 2026-07-31 5→6：同上
+# 以下三個是**全域上限**，實際能寫多少以 build_ppt.narrative_capacity() 逐報表算出的
+# 版面容量為準（同一份數字同時餵給 prompt、validator 與裁切）。
+NARRATIVE_POINT_TEXT_MAX = 55  # 每條要點的字數（2026-07-31 50→55，使用者選定）
+NARRATIVE_POINTS_MIN = 4       # 2026-07-31 3→4，使用者選定
+NARRATIVE_POINTS_MAX = 7       # 2026-07-31 6→7，同上
+
+# 要點與長文的數字一致性檢查用（含小數、百分比與千分位）。
+_NUMBER_PATTERN = re.compile(r"\d+(?:[.,]\d+)*%?")
+
+# ── C-6：把「文字要有意義」從提示變成檢查（2026-08-02）──
+#
+# 使用者定調：報告文字要從「看到什麼數據 → 描述數據」提升為
+# 「數據代表什麼 → 為何重要 → 對技術布局有何意義」。
+# ⚠ 只寫在給 AI 看的提示、沒有程式驗證的規則，等於沒有規則
+#   （known-issues-optimization C-1 的教訓）。以下三件是可程式化的部分。
+NARRATIVE_EVIDENCE_LABELS = ("現況",)      # 這一類在講數據 → 必須有數字
+NARRATIVE_IMPLICATION_LABELS = ("意涵",)   # 這一類在講意義 → 每頁至少要有一條
+
+# 需要與另一張圖對照著講的報表。
+# 🔴 參考報告（附件3 電輔自行車）的 CPC 段落寫的是「**與 IPC 分布圖不同的是**…
+# Y02T（交通運輸的減排技術）…」——CPC 不重講一次 IPC，而是講 CPC 有而 IPC
+# 沒有的分類及其意義。實機 p10／p11 與 p8／p9 逐字相同，F-4 修好的只是
+# 「取到對的 variant」這個機制，內容上該講什麼差異是這一層的事。
+NARRATIVE_CONTRAST_WITH = {"cpc_main_distribution": "IPC"}
+
+# 🔴 2026-08-04：**版面用量下限（原 C-9 鎖七）已移除**，不要再加回來。
+#
+# 它 08-03 加入時的理由是 IPC L4 只寫了 81/432 字（18.8%）。但它造成的後果
+# 比原問題更糟：**逼 CLI 寫到接近版面上限** → 必然踩到邊界 → 尾端整條被丟，
+# 而丟的都是排在後面的「意涵」「後續」，正是價值最高的幾條
+# （第五輪實機丟 5 條，contract warnings 卻是 0）。
+#
+# 🔴 使用者定案原話：「拿掉字數下限，但可以給他格式，畢竟現在版面是符合目標的
+# 只是資訊被丟棄要修」。
+#
+# ⚠ 拿掉的只有**字數下限**。內容完整性由別的鎖守著，它們都還在：
+#   - 鎖三：要覆蓋圖上主要事實
+#   - 鎖五：至少要有一條「意涵」（不能只複述數據）
+#   - 每條字數**上限**與條數上限（見下方 max_chars／max_points）
+# 「寫得夠不夠」是內容問題，不是字數問題——用字數當代理指標就會逼出灌水。
 
 
-def validate_narrative_contract(narratives: dict[str, Any]) -> list[str]:
+def validate_narrative_contract(
+    narratives: dict[str, Any],
+    capacity: dict[str, dict[str, int]] | None = None,
+) -> list[str]:
     """驗三件套契約，回傳警告清單（合規＝空）。
+
+    `capacity`＝各報表要點區的實際版面容量（`build_ppt.narrative_capacity()`）。
+    給了就以它為準，沒給退回全域上限——撰寫（prompt）、驗證（本函式）與裁切
+    （`_trim_blocks`）三處吃同一份數字，才不會出現「說 55 字、版面只放得下 26」。
 
     ⚠ 只警告、不 raise、不截斷：narrative 是報表頁與 PPT 的共同資料來源，
     截了就毀；截斷是 PPT 消費端 fallback 的職責。舊格式（只有 text）要能
     過渡期照跑，故缺 headline／points 也只標記。警告進 summary 的
     contract_warnings，前端任務進度看得到——違規不得靜默。
     """
+    capacity = capacity or {}
     warnings: list[str] = []
     for report_key, report in (narratives.get("reports") or {}).items():
+        base_limits = capacity.get(report_key) or {}
         for variant_key, entry in (report.get("variants") or {}).items():
             where = f"{report_key}:{variant_key}"
+            # 🔴 I-1（2026-08-03）：容量**逐 variant**取，取不到才退回 report_key 層。
+            # 同一報表的 L4（扁圖、底部寬橫幅）與 L5（一般圖、右側窄欄）版面差一倍以上，
+            # 用同一個上限驗證的結果是：CLI 照寬的寫、驗證也照寬的驗，兩邊一致地錯，
+            # 直到組版端才發現放不下——實機 #166 因此丟了 10 條要點。
+            limits = capacity.get(where) or base_limits
+            max_points = int(limits.get("max_points") or NARRATIVE_POINTS_MAX)
+            max_chars = int(limits.get("max_chars") or NARRATIVE_POINT_TEXT_MAX)
+            # 版面容量比全域上限嚴時以版面為準；比全域寬時仍守全域。
+            max_chars = min(max_chars, NARRATIVE_POINT_TEXT_MAX)
+            min_points = min(NARRATIVE_POINTS_MIN, max_points)
             headline = entry.get("headline")
             points = entry.get("points")
             if not headline or not isinstance(points, list) or not points:
@@ -81,16 +148,64 @@ def validate_narrative_contract(narratives: dict[str, Any]) -> list[str]:
                 warnings.append(
                     f"{where} headline 超限（{len(str(headline))} 字 > "
                     f"{NARRATIVE_HEADLINE_MAX}）")
-            if not (NARRATIVE_POINTS_MIN <= len(points) <= NARRATIVE_POINTS_MAX):
+            if not (min_points <= len(points) <= max_points):
                 warnings.append(
-                    f"{where} points 條數 {len(points)} 不在 "
-                    f"{NARRATIVE_POINTS_MIN}–{NARRATIVE_POINTS_MAX}")
+                    f"{where} points 條數 {len(points)} 不在 {min_points}–{max_points}"
+                    f"（該頁版面容量）")
+            body = str(entry.get("text") or "")
             for i, point in enumerate(points):
                 text = str((point or {}).get("text") or "")
-                if len(text) > NARRATIVE_POINT_TEXT_MAX:
+                if len(text) > max_chars:
                     warnings.append(
-                        f"{where} points[{i}] 超限（{len(text)} 字 > "
-                        f"{NARRATIVE_POINT_TEXT_MAX}）")
+                        f"{where} points[{i}] 超限（{len(text)} 字 > {max_chars}）")
+                # 鎖一·一條只講一個論點（🔴 2026-08-02 放寬形式）。
+                #
+                # 原規則是「不得含句號、逗號至多一個」。實測那讓 CLI **只能砍掉數字**：
+                #   text（報表頁，過關）：「在 subclass 層級，A63B 達 47 件，是絕對主體。」
+                #   points（PPT，太少）：「IPC大方向幾乎全落在運動訓練器材領域」（零數字）
+                # 「A63B 達 47 件，是絕對主體」已用掉唯一的逗號，再加依據就違規——
+                # 不是 CLI 偷懶，是規則逼它二選一。容量給到 8 條 × 54 字，只用了 4 條 × 19 字。
+                #
+                # ⚠ 放寬不等於取消：本意是「不要串接多個論點」，那由**上限**表達
+                # （句號 ≤1、逗號 ≤2），不是禁止標點。
+                if text.count("。") > 1:
+                    warnings.append(f"{where} points[{i}] 句號過多（一條只講一個論點）")
+                if text.count("，") > 2:
+                    warnings.append(f"{where} points[{i}] 逗號過多（一條只講一個論點）")
+                # 鎖四·現況要帶數字（W-1 的正面要求）。
+                # 只放寬形式不會讓數字自己回來——「現況」是講數據的那一類，
+                # 沒有數字就只剩形容詞（實機原句：「IPC大方向幾乎全落在運動訓練器材領域」）。
+                label = str((point or {}).get("label") or "")
+                if label in NARRATIVE_EVIDENCE_LABELS and not _NUMBER_PATTERN.search(text):
+                    warnings.append(
+                        f"{where} points[{i}]（{label}）沒有任何數字——現況要有數據依據")
+                # 鎖二·數字一致：要點裡的數字必須在長文也出現，否則兩邊會漂移
+                # （網頁報表頁讀 text、PPT 讀 points，讀者會看到互相對不上的數字）。
+                for number in _NUMBER_PATTERN.findall(text):
+                    if body and number not in body:
+                        warnings.append(
+                            f"{where} points[{i}] 的數字 {number} 未出現在長文——兩邊會對不上")
+            # 鎖五·每頁至少一條「意涵」（C-6）。
+            # ⚠ 全部都是「現況」＝把數據複述一遍就交差，讀者仍要自己想「所以呢」。
+            labels = [str((p or {}).get("label") or "") for p in points]
+            if not any(label in NARRATIVE_IMPLICATION_LABELS for label in labels):
+                warnings.append(
+                    f"{where} 沒有任何「意涵」——只描述數據不說意義，停在「看到什麼數據」那一層")
+            # 鎖六·該對照的要對照著講（CPC vs IPC）。
+            counterpart = NARRATIVE_CONTRAST_WITH.get(report_key)
+            if counterpart:
+                joined = " ".join(str((p or {}).get("text") or "") for p in points) + body
+                if counterpart not in joined:
+                    warnings.append(
+                        f"{where} 未與 {counterpart} 對照——這一頁要講的是與 {counterpart} 的"
+                        f"差異，不是把 {counterpart} 那段重講一次")
+            # 鎖三·覆蓋：長文由要點逐條展開，段落數不該少於要點數。
+            if body:
+                paragraphs = [p for p in re.split(r"\n\s*\n|\n", body) if p.strip()]
+                if len(paragraphs) < len(points):
+                    warnings.append(
+                        f"{where} 長文 {len(paragraphs)} 段 < 要點 {len(points)} 條"
+                        f"——長文應由要點逐條展開，不得漏掉判讀")
     return warnings
 
 
@@ -123,6 +238,22 @@ _CLI_SPECS: dict[str, dict[str, Any]] = {
 
 class NarrativeRunnerError(RuntimeError):
     """headless 解讀流程失敗（CLI 不存在、非零退出、產物缺失或版本不符）。"""
+
+
+def _narrative_report_keys(narratives_path: Path) -> set[str]:
+    """讀 narratives.json 現有的 report_key 集合；檔案不存在或壞掉回空集合。
+
+    只用於「重產前後比對」，壞檔等同沒有既有解讀——這一步不該把讀檔問題
+    誤報成資料遺失。
+    """
+    if not narratives_path.exists():
+        return set()
+    try:
+        data = json.loads(narratives_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return set()
+    reports = data.get("reports")
+    return set(reports) if isinstance(reports, dict) else set()
 
 
 @dataclass
@@ -197,6 +328,32 @@ def resolve_run_dir(based_on_version: str | None, *, root: Path | None = None) -
     )
 
 
+def load_narrative_capacity(run_dir: Path | None = None) -> dict[str, dict[str, int]]:
+    """各報表要點區的實際版面容量；取不到回空 dict。
+
+    ⚠ 延後匯入 `ai_report_ppt_runner`：那支模組在 import 期就從本模組取東西，
+    寫成模組層 import 會循環。
+    ⚠ 失敗只降級不中斷：容量是「讓 CLI 寫得剛好」的優化，拿不到就退回全域上限，
+    不該讓整個解讀任務產不出來。
+    """
+    try:
+        from .ai_report_ppt_runner import _load_builder
+
+        builder = _load_builder()
+        if run_dir is None:
+            return builder.narrative_capacity()
+        # 帶 run_dir 才算得出扁圖頁的真實容量（版型依圖的長寬比在執行時決定）。
+        import json as _json
+
+        manifest_path = run_dir / "artifact_manifest.json"
+        manifest = _json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+        theme = builder.Theme.load()
+        charts = builder.ChartIndex(run_dir, run_dir / ".cache", manifest, theme)
+        return builder.narrative_capacity(theme, charts)
+    except Exception:
+        return {}
+
+
 def build_prompt(
     run_dir: Path,
     version: str,
@@ -220,6 +377,32 @@ def build_prompt(
     """
     skill = skill_path if skill_path is not None else SKILL_PATH
     narratives_path = run_dir / "narratives.json"
+    # 逐報表的真實版面容量：大圖頁的右側直欄與無圖表格頁的底部橫幅差很多，
+    # 只給一組全域上限會讓 CLI 盲寫、事後被裁掉。取不到就不寫這段（退回全域上限）。
+    capacity = load_narrative_capacity(run_dir)
+    capacity_note = ""
+    if capacity:
+        listed = "\n".join(
+            f"   - {key}：{limits['max_points']} 條以內、每條 ≤{limits['max_chars']} 字"
+            for key, limits in sorted(capacity.items())
+        )
+        capacity_note = (
+            "   ⚠ 下列項目的要點區版面容量**小於**上述全域上限，以這裡的為準：\n"
+            f"{listed}\n"
+            "   ⚠ **帶冒號的 `報表:變體` 是「該變體專屬」的容量**，"
+            "對應 `reports[報表].variants[變體]`。\n"
+            "   同一報表若同時出現 `ipc_main_distribution` 與 "
+            "`ipc_main_distribution:L5` 兩行，\n"
+            "   **寫 L5 那個變體時一律以 `:L5` 那行為準**；"
+            "不帶冒號的只是沒有專屬值時的預設。\n"
+            "   ⚠ 為什麼要分開：同一報表的不同變體排在**不同版面**——L4 扁圖走底部雙欄橫幅"
+            "（每行字多），\n"
+            "   L5 走右側窄欄（每行字少約一半）。照寬的那組寫，窄的那頁會整條被丟掉"
+            "（2026-08-03 實機丟了 10 條）。\n"
+            "   （未列出的項目用全域上限。超出容量不會被排版成好看的樣子，整條會被丟掉。）\n"
+            "   ⚠ 容量是**上限不是目標**：沒話講就少寫一條，不要為湊條數或湊字數灌水；\n"
+            "   但也不得敷衍——該報表看得出的判讀不能因為想寫短而省略。\n"
+        )
     scope = ""
     if report_keys:
         listed = "、".join(str(k) for k in report_keys)
@@ -249,11 +432,22 @@ def build_prompt(
         f"4. 輸出唯一檔案：{narratives_path}\n"
         f"   形狀（v3 引擎讀取契約）：based_on_version 必須等於 \"{version}\"；reports 以\n"
         "   report_key→variants→variant_key→\n"
-        "   {headline,points,text,ai_model,prompt_version,generated_at} 兩層結構。\n"
-        f"   headline＝一句判讀結論（≤{NARRATIVE_HEADLINE_MAX} 字）；points＝\n"
-        f"   {NARRATIVE_POINTS_MIN}–{NARRATIVE_POINTS_MAX} 條要點（各含 label／text／\n"
-        f"   emphasis，text ≤{NARRATIVE_POINT_TEXT_MAX} 字）；text＝完整長文解讀。\n"
-        "5. 只准寫 narratives.json 這一個檔案；不得改動目錄內其他檔案、不得執行 shell 指令；\n"
+        "   {points,headline,text,ai_model,prompt_version,generated_at} 兩層結構。\n"
+        "   ⚠ **依此順序逐欄寫，不要跳著寫**——順序就是撰寫程序：\n"
+        f"   points＝{NARRATIVE_POINTS_MIN}–{NARRATIVE_POINTS_MAX} 條要點\n"
+        f"   （各含 label／text／emphasis，text ≤{NARRATIVE_POINT_TEXT_MAX} 字，\n"
+        "   一條只講一個論點：句號至多一個、逗號至多兩個）；\n"
+        "   ⚠ 每條要寫到「數據代表什麼 → 為何重要 → 對技術布局有何意義」，\n"
+        "   不是把數據複述一遍。label 為「現況」者**必須帶數字**；\n"
+        "   每個變體**至少一條「意涵」**（只列現況＝沒有判讀）。\n"
+        "   CPC 分類那一頁要講的是**與 IPC 的差異**（哪些分類 IPC 沒有、代表什麼），\n"
+        "   不是把 IPC 那段重講一次。\n"
+        f"   headline＝**從上列要點挑最重要一條濃縮**至 ≤{NARRATIVE_HEADLINE_MAX} 字，\n"
+        "   不是另想一句；\n"
+        "   text＝由上列要點**逐條展開**成連貫長文（段落數不少於要點條數，\n"
+        "   要點出現過的數字必須也出現在長文）。\n"
+        + capacity_note
+        + "5. 只准寫 narratives.json 這一個檔案；不得改動目錄內其他檔案、不得執行 shell 指令；\n"
         "   寫完即結束，不輸出多餘說明。"
         + scope
         + extra
@@ -374,6 +568,9 @@ def run_narrative(
     resolver = resolve_run_dir or globals()["resolve_run_dir"]
     run_dir = resolver(based_on_version, root=root)
     version = run_dir.name
+    narratives_path = run_dir / "narratives.json"
+    # 重產前的 report_key 快照：限定範圍重產時，範圍外的解讀一張都不許少（見下方檢查）。
+    keys_before = _narrative_report_keys(narratives_path)
     if progress is not None:
         progress("cli_running", 30)
 
@@ -385,7 +582,6 @@ def run_narrative(
     if progress is not None:
         progress("cli_running", 85)
 
-    narratives_path = run_dir / "narratives.json"
     if not narratives_path.exists():
         raise NarrativeRunnerError(f"CLI 正常結束但未產出 {narratives_path}")
     narratives = json.loads(narratives_path.read_text(encoding="utf-8"))
@@ -395,9 +591,23 @@ def run_narrative(
             f"narratives.json based_on_version={got_version!r} 與目錄版本 {version!r} 不符（解讀過期）"
         )
 
+    # ⚠ 限定範圍重產：範圍外的既有解讀一張都不許消失（2026-07-31）。
+    # CLI 若沒讀入既有檔、直接寫出只含本次範圍的檔案，結構完全合法、版本相符、
+    # 契約驗證也會過（那一張本身合規），接著整包 upsert 覆蓋 report_artifacts →
+    # 其餘十幾張解讀消失而 job 顯示 succeeded。與同檔「上傳失敗不可吞」同一條原則：
+    # 靜默資料損失比 failed 更難判斷，故在 refresh_index 與上傳**之前**擋下。
+    if report_keys:
+        dropped = keys_before - _narrative_report_keys(narratives_path) - set(report_keys)
+        if dropped:
+            raise NarrativeRunnerError(
+                f"限定重產 {sorted(report_keys)} 後，範圍外的既有解讀消失："
+                f"{sorted(dropped)}。CLI 未保留原檔內容，已中止上傳以免覆蓋 "
+                "report_artifacts（重跑前請確認 narratives.json 仍在 run_dir）。"
+            )
+
     # 三件套契約驗證（v4）：只警告不 raise——舊格式要能過渡、超限交 PPT 端 fallback；
     # 警告進 summary 讓前端任務進度看得到，違規不得靜默。
-    contract_warnings = validate_narrative_contract(narratives)
+    contract_warnings = validate_narrative_contract(narratives, load_narrative_capacity(run_dir))
 
     # 確定性程式重渲染 index（嵌入解讀）；CLI 不碰 index.html。
     refresh = refresh_index(run_dir)

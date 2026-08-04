@@ -28,18 +28,31 @@ THEME = json.loads(
 
 
 class SvgPaletteTests(unittest.TestCase):
-    """🔴 SVG 色票對齊 Slidesgo（theme.json 同組色）。"""
+    """🔴 引擎色票必須被 PPT 端的轉色表涵蓋。
 
-    def test_palette_matches_theme(self):
-        color = THEME["color"]
-        self.assertEqual(chart_runner.COLOR_APPLICATION.lstrip("#").upper(), color["blue"],
-                         "申請線應用主題藍")
-        self.assertEqual(chart_runner.COLOR_TEXT.lstrip("#").upper(), color["navy"],
-                         "標題／主文字應用深藍")
-        self.assertEqual(chart_runner.COLOR_BAR.lstrip("#").upper(), color["blue"],
-                         "長條主色應用主題藍（舊綠 0F766E 退場）")
-        self.assertEqual(chart_runner.COLOR_BAR_ALT.lstrip("#").upper(), color["muted"],
-                         "長條次色應用灰藍")
+    ## 2026-07-31 改寫：不變式換了
+
+    舊斷言是「引擎色票 == theme 色票」。PPT 改深空主題後這個前提**被刻意打破**：
+    同一份 SVG 也內嵌在網頁報表頁（淺底），所以引擎維持淺色，深色化改在
+    PPT 組版端做（使用者裁示）。兩邊色票本來就不再相同，繼續比對只會恆紅。
+
+    真正該守的是新的不變式：**引擎用的每個顏色，PPT 端都知道要換成什麼**。
+    漏一個，那個顏色就會以淺色留在深底上。
+    """
+
+    def test_engine_colours_are_covered_by_recolor_map(self):
+        recolor = THEME["chart_recolor"]
+        known = {k.upper() for k in recolor["map"]} | {c.upper() for c in recolor["keep"]}
+        for name in dir(chart_runner):
+            if not name.startswith("COLOR_"):
+                continue
+            value = getattr(chart_runner, name)
+            if not isinstance(value, str) or not value.startswith("#"):
+                continue
+            with self.subTest(constant=name):
+                self.assertIn(
+                    value.lstrip("#").upper(), known,
+                    f"{name}={value} 沒有轉色對照——深底上會維持原本的淺色主題色")
 
     def test_old_green_gone(self):
         src = Path(chart_runner.__file__).read_text(encoding="utf-8")

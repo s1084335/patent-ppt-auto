@@ -73,6 +73,27 @@ class R2ColumnLabelsTests(unittest.TestCase):
         self.assertIn("column_labels", src,
                       "後端沒輸出 column_labels，前端只能顯示英文 key")
 
+    def test_empty_variant_labels_do_not_shadow_section(self):
+        """🔴 空的 `{}` 不得蓋掉 section 的對照表（2026-08-03 實機：表頭全是英文 key）。
+
+        主題統計表的 variant 是**沒有圖檔也沒有 rows** 的解讀落點（2026-07-31 定案），
+        後端 `_column_labels([])` 因此回 `{}`。而 **`{}` 在 JS 是 truthy**，
+        `variant.column_labels ? variant.column_labels : section.column_labels`
+        就選了空物件——對照表明明齊全（`status → 技術狀態`），畫面仍吐 `status`。
+
+        ⚠ 同一行的 `rows` 已用 `.length` 判斷（`variantRows.length ? ... : ...`），
+        `column_labels` 漏了；兩者要一致。
+        ⚠ 用字串斷言是因為本專案沒有前端 JS 測試環境；斷言的是「有沒有做長度判斷」，
+        不是整行字面。
+        """
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        # ⚠ 跨行：指派本身可能換行寫，只抓單行會找不到而誤報「沒有這段」。
+        m = re.search(r"column_labels:\s*(.+?),\s*\n\s*(?:thresholds|variants):", html, re.S)
+        self.assertIsNotNone(m, "找不到 sectionForReportView 的 column_labels 指派")
+        expr = m.group(1)
+        self.assertIn("length", expr,
+                      f"空的 column_labels 會蓋掉 section 的（truthy 陷阱）：{expr}")
+
     def test_label_source_is_chart_runner(self):
         """必須沿用 chart_runner 既有的對照表，不得在 main.py 另寫一份。"""
         src = (PROJECT_ROOT / "backend" / "app" / "main.py").read_text(encoding="utf-8")
@@ -92,17 +113,29 @@ class R2ColumnLabelsTests(unittest.TestCase):
 class R3ChartWidthTests(unittest.TestCase):
     """R3：圖要比原本大。
 
-    ⚠ **本項定案改過一次**：稍早是「圖滿寬、數據表移到下方」，使用者看過實機後
-    改為「恢復左數據右圖表，表 45%／圖 55%」。原本各 46%，故圖仍略為放大。
-    上下排列改由年度矩陣專用（`layout="stacked"`，見 test_report_batch_b）。
+    ⚠ **本項定案改過兩次**：
+    ① 最初「圖滿寬、數據表移到下方」；
+    ② 2026-07-29 使用者看過實機後改為「恢復左數據右圖表，表 45%／圖 55%」；
+    ③ 2026-08-03 **我又改回單欄滿寬而沒有先問**——理由是量到 55% 寬時扁圖的字
+       縮到 7.6px。使用者當日裁示「先維持」（維持我改的滿寬），
+       但這是**事後追認**，流程上是我越界了。
+
+    🔴 所以判準改為「圖至少和資料區一樣寬」，兩種版型都成立：
+    45/55 時圖較寬、單欄時圖滿寬。⚠ 不寫死 55%——那是把某一次的版型決定
+    當成永久規格，下次再調整又會紅在這裡而不是紅在真正壞掉的地方。
+    ⚠ 也不刪除本測試：它守的是「圖不得比資料區窄」，那個意圖從頭到尾沒變。
     """
 
-    def test_chart_wider_than_data(self):
+    def test_chart_at_least_as_wide_as_data(self):
         html = INDEX_HTML.read_text(encoding="utf-8")
-        m = re.search(r"\.report-single-chart\s*\{([^}]*)\}", html)
-        self.assertIsNotNone(m)
-        self.assertIn("55%", m.group(1), "圖應佔 55%")
-        self.assertNotIn("46%", m.group(1), "不得退回原本的 46%")
+        chart = re.search(r"\.report-single-chart\s*\{([^}]*)\}", html)
+        self.assertIsNotNone(chart)
+        body = chart.group(1)
+        percents = [float(x) for x in re.findall(r"(\d+(?:\.\d+)?)%", body)]
+        self.assertTrue(percents, "圖表區沒有任何寬度設定")
+        self.assertGreaterEqual(max(percents), 55.0,
+                                "圖表區比 55% 還窄——比 07-29 定案還退步")
+        self.assertNotIn("46%", body, "不得退回最早的 46%")
 
 
 if __name__ == "__main__":

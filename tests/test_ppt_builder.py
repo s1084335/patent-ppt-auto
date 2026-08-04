@@ -285,9 +285,11 @@ def test_svg_conversion_is_cached(full_report_dir, partial_approvals, tmp_path, 
     calls: list[Path] = []
     original = builder.rasterize_svg
 
-    def counting(svg_path: Path, cache_dir: Path):
+    # ⚠ 2026-07-31 起多一個 theme 參數（深色轉色＋白邊裁切）；用 *args 收，
+    # 這支測的是「同一張圖只轉一次」，不該因為簽名長了就紅。
+    def counting(svg_path: Path, *args):
         calls.append(svg_path)
-        return original(svg_path, cache_dir)
+        return original(svg_path, *args)
 
     monkeypatch.setattr(builder, "rasterize_svg", counting)
     builder.build_ppt(

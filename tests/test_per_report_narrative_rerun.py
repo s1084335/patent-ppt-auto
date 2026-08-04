@@ -27,9 +27,17 @@
 from __future__ import annotations
 
 import inspect
+import json
 import re
+import tempfile
 import unittest
 from pathlib import Path
+
+from backend.app.worker.ai_narrative_runner import (
+    CliResult,
+    NarrativeRunnerError,
+    run_narrative,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -349,3 +357,119 @@ class CliResultNoneSafetyTests(unittest.TestCase):
         self.assertTrue(
             "無" in msg or "空" in msg,
             f"訊息看不出是無輸出：{msg}")
+
+
+class ScopedRerunKeepsOtherNarrativesTests(unittest.TestCase):
+    """🔴 只重產一張時，重產前有的 report_key 不得在重產後消失（2026-07-31）。
+
+    ## 缺口（實測前的程式路徑）
+
+    `run_narrative()` 跑完 CLI 只做「讀檔 → 驗契約 → refresh_index → upload_run_dir」，
+    **沒有比對重產前後的 report_key 集合**。CLI 若沒讀入既有檔、直接寫出只含本次
+    範圍的 `narratives.json`：
+
+    - 檔案結構完全合法（reports→variants 兩層都在）
+    - `based_on_version` 相符，版本檢查過
+    - `validate_narrative_contract` 只看「每一張自己合不合規」，那一張本身合規
+
+    → 整包 upsert 覆蓋 report_artifacts，其餘十幾張報表的解讀消失，job 卻 succeeded。
+    ⚠ 這與本模組既有原則一致（「上傳失敗不可吞：靜默資料損失比 failed 更難判斷」）：
+    靜默少了十幾張解讀，比明確 failed 難查得多。
+    """
+
+    VERSION = "report_trial_20260731_000000"
+
+    def _run_dir(self, base: Path, existing: dict) -> Path:
+        """建假報表目錄：report_data.json ＋ 重產前的 narratives.json。"""
+        run_dir = base / self.VERSION
+        run_dir.mkdir(parents=True)
+        (run_dir / "report_data.json").write_text(
+            json.dumps({"sections": []}), encoding="utf-8")
+        (run_dir / "narratives.json").write_text(
+            json.dumps({"based_on_version": self.VERSION, "reports": existing}),
+            encoding="utf-8")
+        return run_dir
+
+    @staticmethod
+    def _cli_writing(run_dir: Path, version: str, reports: dict):
+        """假 CLI：寫出指定內容的 narratives.json（模擬 CLI 沒讀入既有檔）。"""
+        def _runner(argv, timeout):
+            (run_dir / "narratives.json").write_text(
+                json.dumps({"based_on_version": version, "reports": reports}),
+                encoding="utf-8")
+            return CliResult(exit_code=0, stdout='{"result": "done"}', stderr="")
+        return _runner
+
+    def test_dropped_report_key_raises_and_blocks_upload(self):
+        """重產 A 卻寫出只剩 A 的檔案 → 必須 raise，且不得上傳。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            before = {
+                "application_trend": {"variants": {"default": {"text": "舊 A"}}},
+                "country_distribution": {"variants": {"default": {"text": "舊 B"}}},
+                "applicant_ranking": {"variants": {"default": {"text": "舊 C"}}},
+            }
+            run_dir = self._run_dir(base, before)
+            uploaded: list[Path] = []
+            refreshed: list[Path] = []
+
+            with self.assertRaises(NarrativeRunnerError) as ctx:
+                run_narrative(
+                    self.VERSION,
+                    cli_runner=self._cli_writing(
+                        run_dir, self.VERSION,
+                        {"application_trend": {"variants": {"default": {"text": "新 A"}}}}),
+                    refresh_index=lambda rd: refreshed.append(rd) or {},
+                    root=base,
+                    report_keys=["application_trend"],
+                    upload_run_dir=lambda rd: uploaded.append(rd) or 3,
+                )
+            message = str(ctx.exception)
+            self.assertIn("country_distribution", message,
+                          f"錯誤訊息未指出消失的 report_key：{message}")
+            self.assertEqual(uploaded, [],
+                             "解讀已缺漏卻仍上傳——DB 會被覆蓋成只剩一張")
+
+    def test_scoped_rerun_keeping_others_succeeds(self):
+        """CLI 照規矩保留其他報表時要照常成功（守門不得誤殺正常重產）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            before = {
+                "application_trend": {"variants": {"default": {"text": "舊 A"}}},
+                "country_distribution": {"variants": {"default": {"text": "舊 B"}}},
+            }
+            run_dir = self._run_dir(base, before)
+            uploaded: list[Path] = []
+            summary = run_narrative(
+                self.VERSION,
+                cli_runner=self._cli_writing(run_dir, self.VERSION, {
+                    "application_trend": {"variants": {"default": {"text": "新 A"}}},
+                    "country_distribution": {"variants": {"default": {"text": "舊 B"}}},
+                }),
+                refresh_index=lambda rd: {},
+                root=base,
+                report_keys=["application_trend"],
+                upload_run_dir=lambda rd: uploaded.append(rd) or 3,
+            )
+            self.assertEqual(uploaded, [run_dir])
+            self.assertEqual(summary["based_on_version"], self.VERSION)
+
+    def test_first_run_without_existing_file_succeeds(self):
+        """初次解讀（尚無 narratives.json）不得被守門擋下。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            run_dir = base / self.VERSION
+            run_dir.mkdir(parents=True)
+            (run_dir / "report_data.json").write_text(
+                json.dumps({"sections": []}), encoding="utf-8")
+            uploaded: list[Path] = []
+            run_narrative(
+                self.VERSION,
+                cli_runner=self._cli_writing(run_dir, self.VERSION, {
+                    "application_trend": {"variants": {"default": {"text": "新 A"}}}}),
+                refresh_index=lambda rd: {},
+                root=base,
+                report_keys=["application_trend"],
+                upload_run_dir=lambda rd: uploaded.append(rd) or 1,
+            )
+            self.assertEqual(uploaded, [run_dir])

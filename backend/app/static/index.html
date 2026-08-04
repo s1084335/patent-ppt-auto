@@ -385,6 +385,12 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 #export-preview { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.4rem 1.6rem; }
 .real-pptx-preview { max-height: calc(100vh - 15rem); overflow: auto; border: 1px solid var(--border); border-radius: 0.45rem; background: var(--panel-2); padding: 0.75rem; }
 .real-pptx-preview > * { margin-left: auto; margin-right: auto; }
+/* ⚠ 只關掉「投影片內部」的捲軸（2026-07-31 使用者截圖：每個文字框角落都冒出上下
+   箭頭，看起來像產檔壞了）。成因是 renderer 給文字容器 overflow:auto，內容超出
+   幾像素就顯示捲軸——PPT 檔本身沒問題，純顯示面。選擇器用後代 `*` 而不是元素
+   本身：外層 .real-pptx-preview 的捲軸要留著，那是用來翻頁的。 */
+.real-pptx-preview * { scrollbar-width: none; -ms-overflow-style: none; }
+.real-pptx-preview *::-webkit-scrollbar { display: none; }
 /* ⚠ 2026-07-30 移除 .ppt-slide 系列 CSS（25 條）：那是用 HTML/CSS 模擬 PPT 版面，與批次 2 導入的真實 .pptx 渲染（.real-pptx-preview）並存必然分岔——模擬版還留著早已定案不印的浮水印即為證據。編輯模式改用 renderReportContentHtml 的內容視圖。 */
 /* 報表種類頁標題列橫排（2026-07-27 R7／R8）：標題｜檢視選單｜市場 PDF（收合）。
    原本 15 個勾選框＋固定展開的市場區塊佔滿整頁，看不到報表本身。 */
@@ -407,10 +413,16 @@ table.data td.cell-wrap, table.data th.cell-wrap {
    換行到表格下方。且此症狀隨視窗寬度時好時壞（寬時 1rem 佔比小可能勉強塞下），
    比穩定壞掉更難查。
    兩欄各扣 0.5rem（gap 的一半），相加即為 100% - 1rem，正好容納 gap。 */
-.report-single-data { flex: 0 0 calc(45% - 0.5rem); min-width: 0; overflow-x: auto; }
-.report-single-chart { flex: 1 1 calc(55% - 0.5rem); min-width: 0; }
-.report-single-compact-data .report-single-data { flex-basis: calc(32% - 0.5rem); }
-.report-single-compact-data .report-single-chart { flex-basis: calc(68% - 0.5rem); }
+/* 🔴 2026-08-03 使用者定案：圖表滿寬、表格排下方。
+   原本圖表只佔 55%（約 577px），SVG 980px 寬被縮到 0.59 倍；受理局分布那種
+   4 列的扁圖縮完只剩 131px 高，13px 的軸標籤變成 **7.6px**，實測看不清楚。
+   ⚠ 縮圖不是「小一點」而已——字級是等比縮的，縮到某個點就不再是資訊。
+   改滿寬後圖寬 1050px，配合引擎新畫布（標籤 18px）約可得 20px。
+   代價：卡片變高、要多捲動；使用者選擇這個取捨。 */
+.report-single { flex-direction: column; }
+.report-single-data { flex: 1 1 100%; width: 100%; min-width: 0; overflow-x: auto; }
+.report-single-chart { flex: 1 1 100%; width: 100%; min-width: 0; order: -1; }
+/* 單欄版面下比例已無意義，只留表格的緊湊字級設定。 */
 .report-single-compact-data table.data { width: auto; min-width: 15rem; font-size: 0.82rem; }
 .report-single-compact-data table.data th,
 .report-single-compact-data table.data td {
@@ -551,7 +563,11 @@ table.data td.cell-wrap, table.data th.cell-wrap {
     <button class="nav-item" data-nav="reports" onclick="navTo('reports')">報表種類</button>
     <button class="nav-item" data-nav="export" onclick="navTo('export')">匯出報告</button>
     <div class="nav-section-label">進階</div>
-    <button class="nav-item" data-nav="comparison" onclick="navTo('comparison')">案件比對</button>
+    <!-- 🔴 2026-08-03 使用者：「案件比對區塊先移除掉」——只收**入口**。
+         renderComparison()、navTo 的 comparison 分支、後端 /api/comparison
+         與所有表單 DOM 全部保留（測試 test_comparison_has_create_form 守著）。
+         恢復方式：在此加回一個 nav-item 按鈕，data-nav 與 onclick 皆指向 comparison。
+         ⚠ 不要連實作一起刪——「先移除」的『先』就是指之後還要用。 -->
     <button class="nav-item" data-nav="status" onclick="navTo('status')">系統狀態</button>
   </nav>
 
@@ -617,7 +633,9 @@ table.data td.cell-wrap, table.data th.cell-wrap {
         <label class="form-label" for="import-purpose">用途</label>
         <select id="import-purpose" class="text-input full">
           <option value="general" selected>一般情報分析（general）</option>
-          <option value="case_comparison">案件比對（case_comparison）</option>
+          <!-- 🔴 2026-08-03 隨案件比對入口一併收起——選了也沒地方可以比對。
+               ⚠ 後端 IMPORT_PURPOSES 仍接受 case_comparison，既有資料的標記不受影響；
+               恢復時在此加回一個 value="case_comparison" 的 option 即可。 -->
         </select>
       </div>
 
@@ -4278,7 +4296,13 @@ function sectionForReportView(section, option, sourceField) {
     title: option.label || reportLabelForKey(reportKey),
     report_key: reportKey,
     rows: variantRows.length ? variant.rows : (rows.length ? rows : (section.rows || [])),
-    column_labels: variant && variant.column_labels ? variant.column_labels : section.column_labels,
+    // ⚠ 要判**長度**不是 truthy：主題統計表的 variant 是沒有 rows 的解讀落點，
+    // 後端 _column_labels([]) 回 {}，而 {} 在 JS 為真 → 空物件蓋掉 section 那份
+    // 完整對照表，表頭整排退回英文 key（2026-08-03 實機，status 顯示成 status）。
+    // 同一個函式的 rows 早就用 variantRows.length 判斷了，這裡漏掉。
+    column_labels: (variant && variant.column_labels
+      && Object.keys(variant.column_labels).length)
+      ? variant.column_labels : section.column_labels,
     thresholds: variant ? (variant.thresholds || {}) : {},
     variants: variants.length ? variants : (section.variants || []).filter(variant => clusterVariantMatchesReport(variant, reportKey)),
   });

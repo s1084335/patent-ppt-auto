@@ -52,9 +52,11 @@
 
 `ReportDefinition.aggregates`＝`(函式, 來源欄, 輸出別名)` tuple 清單，函式白名單在
 `report_engine.AGGREGATE_FUNCTIONS`（`sum`／`count`（非空列數）／`count_distinct`／`avg`／`max`），
-白名單外直接 raise。聚合別名可用於 `default_order`。年增率折線（`application_growth.svg`）
-不是報表定義，是 `chart_runner.compute_yoy_growth` 由申請趨勢 rows 衍生計算（連續年才計）；
-技術別成長折線待分群引擎產出 topic 後再加。
+白名單外直接 raise。聚合別名可用於 `default_order`。
+
+⚠ 年增率折線（`application_growth.svg`）**已於 2026-08-02 移除**（使用者定案）：
+小樣本下被極低基期放大到失真——2022 年由前一年 1 件增至 15 件即 1400%，沒有解釋力。
+技術別的成長判讀改由主題分類統計表的「技術狀態分類」承載，不再畫年增率。
 
 ### 國家佈局口徑（現有保護，2026-07-14 定案；2026-07-15 降為申請國層級）
 

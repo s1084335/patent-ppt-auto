@@ -242,6 +242,7 @@ def _load_report_cluster_data(
         cluster_data["topics"],
         cluster_data["assignments"],
         cluster_data["normalized_applicants"],
+        patents=cluster_data.get("patents"),
     )
     opportunity = build_opportunity_matrix(topic_rows, cluster_data.get("top_applicants_ws", []))
     # 市場資料（痛點嚴重度）：有就用、沒有也要能產出（2026-07-28 使用者定案）。
@@ -320,6 +321,11 @@ def _merge_cluster_channels(
         merged["topics"] = list(merged["topics"]) + list(part["topics"])
         merged["assignments"] = list(merged["assignments"]) + list(part["assignments"])
         merged["topic_rows"] = list(merged["topic_rows"]) + list(part["topic_rows"])
+        # 專利屬性取聯集：兩通道的 patent_id 集合不保證相同（某件只被一個通道分到時，
+        # 另一通道的 patents 就沒有它）。只取第一個通道會讓那些件缺年份，
+        # 在狀態分類裡變成「不計入任何一窗」而靜默少算。
+        merged["patents"] = {**(merged.get("patents") or {}),
+                             **(part.get("patents") or {})}
         merged["source_fields"].append(source_field)
     return merged
 

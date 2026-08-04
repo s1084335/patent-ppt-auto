@@ -26,6 +26,7 @@ from backend.app.mappings.wips import (
 )
 from backend.app.derived.company_alias_importer import (
     build_people_pairs,
+    people_value,
     register_known_code_variants,
 )
 from backend.app.transforms.dates import parse_date, year_from_date
@@ -722,6 +723,8 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
     variant_pairs: list[tuple[str | None, str | None]] = []
     # 代碼 → WIPS 標準化申請人，供未建組時填英文正式名（規格批次 b）。
     standardized_by_code: dict[str, str] = {}
+    # 有 people 資料卻抽不出任何 (代碼, 名稱) 配對的列數——欄名不認得的訊號。
+    people_unmatched = 0
     # 本次涉及的 patent_ids（新建＋命中既有），保序去重，供匯入圈 workspace（2026-07-22 定案）。
     touched_patent_ids: list[int] = []
     seen_patent_ids: set[int] = set()
@@ -761,10 +764,21 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
                 # 五欄配對（2026-07-30 規格 2-6）：原本只取申請人兩欄，
                 # 專利權人／受讓人欄的名稱看得見卻不會自動歸戶。改走共用函式，
                 # 與待補清單同一套欄位口徑，且 `A | B` 多值會拆開。
-                variant_pairs.extend(build_people_pairs(people))
+                row_pairs = build_people_pairs(people)
+                variant_pairs.extend(row_pairs)
+                # 🔴 通用性防護（2026-08-03）：**有名稱資料卻一對都抽不到＝欄名不認得**。
+                # 本次實機就是這樣：檔案是簡體欄名、`PEOPLE_NAME_CODE_COLUMNS` 寫死繁體，
+                # 五欄全部落空 → 治理管線整條空轉，而 summary 只顯示
+                # `alias_variants: 0`，看起來像「沒有新變體」而不是「一個都沒掃到」。
+                # ⚠ 不預測所有可能的欄名寫法（那是猜），改成**遇到不認得的就出聲**：
+                # 日後 WIPS 再換欄名格式，這裡會叫出來而不是靜默失效。
+                if people and not row_pairs:
+                    people_unmatched += 1
                 # 建組時要用的英文正式名：WIPS 標準化申請人（現成資料）。
-                _std = clean_text(people.get("标准化申请人"))
-                _code = clean_text(people.get("申请人代表码"))
+                # ⚠ 走 `_people_value` 簡繁雙認——原本只寫簡體字面，繁體檔會抓不到，
+                # 建組時就填不進英文正式名（同一個 bug 的另一半）。
+                _std = clean_text(people_value(people,"標準化申請人"))
+                _code = clean_text(people_value(people,"申請人代表碼"))
                 if _code and _std:
                     standardized_by_code.setdefault(_code, _std)
                 # 同列多圖（load_xlsx_rows 偵測）警告；規格明文要求不得靜默丟棄。
@@ -836,6 +850,16 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
     summary["alias_variants"] = register_known_code_variants(
         variant_pairs, source_label=f"import:{path.name}",
         standardized_names=standardized_by_code)
+    # 🔴 欄名不認得的警告（2026-08-03）：把「掃不到」與「沒有新的」分開。
+    # ⚠ 沒有這個訊號時，兩者在 summary 上長得一模一樣（都是 alias_variants: 0），
+    # 而前者是**整條名稱治理管線失效**、後者是正常狀態。
+    if people_unmatched:
+        summary["people_columns_unmatched"] = people_unmatched
+        summary.setdefault("warnings", []).append(
+            f"{people_unmatched} 列有申請人／專利權人資料，卻抽不出任何 (代碼, 名稱) 配對"
+            "——欄名可能不在 PEOPLE_FIELD_COLUMNS 對照表內，"
+            "公司名治理（自動建組、變體註冊、待中文化偵測）對這些列不會運作。"
+        )
     return summary
 
 

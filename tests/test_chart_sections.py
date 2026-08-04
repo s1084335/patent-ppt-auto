@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sys
 import tempfile
@@ -73,10 +74,15 @@ class SectionRegistryTests(unittest.TestCase):
         specs = chart_runner.resolve_sections(["lifecycle", "country_distribution"])
         self.assertEqual([spec.key for spec in specs], ["country_map", "lifecycle"])
 
-    def test_resolve_application_trend_includes_growth(self):
-        # 申請趨勢同時驅動雙線趨勢圖與年增率折線兩個 sections。
+    def test_application_growth_section_removed(self):
+        """年增率 section 已移除（2026-08-02 使用者定案）。
+
+        小樣本下年增率被極低基期放大到失真——2022 年由前一年 1 件增至 15 件即
+        1400%，該圖自己的判讀限制就寫著這句，沒有解釋力。報表與 PPT 都不再產。
+        """
         keys = [spec.key for spec in chart_runner.resolve_sections(["application_trend"])]
-        self.assertEqual(keys, ["annual_trend", "application_growth"])
+        self.assertEqual(keys, ["annual_trend"])
+        self.assertNotIn("application_growth", {spec.key for spec in chart_runner.SECTION_SPECS})
 
     def test_recent_assignee_ranking_is_not_used(self):
         """最新受讓人報表已定案不使用；不得要求 section registry 支援它。"""
@@ -137,11 +143,15 @@ class MatrixChartTests(unittest.TestCase):
                 path, "測試矩陣", rows, row_key="applicant_display_name", col_key="country_code"
             )
             svg = path.read_text(encoding="utf-8")
-        self.assertEqual(meta["rows_drawn"], 20)   # 前 20 大截取
+        # 🔴 2026-08-03 規格變更（P-2）：列數改由**畫布高度上限**決定，不再是固定 20。
+        # 原因：22 列讓畫布高 688px，塞進 4.32in 圖框被壓到 0.60 倍，字只剩 5.4pt。
+        # 畫得下幾列就畫幾列，其餘由「顯示前 N」標示——縮到看不清楚等於資訊沒了。
+        self.assertLessEqual(meta["rows_drawn"], 20)
+        self.assertGreaterEqual(meta["rows_drawn"], 8, "列數不該少到看不出分布")
         self.assertEqual(meta["rows_total"], 25)
         self.assertEqual(meta["cols"], ["US", "CN"])  # 欄按總量排序
         self.assertIn("Co00", svg)      # 總量最大的公司入圖
-        self.assertNotIn("Co24", svg)   # 第 21 名之後被截掉
+        self.assertNotIn("Co24", svg)   # 末位被截掉
         self.assertIn(">100<", svg)     # 儲存格是單一公司的值（未跨公司加總）
         self.assertNotIn(">2290<", svg)  # 不出現全欄加總值——確保沒混算
 
@@ -166,7 +176,7 @@ class OpportunityQuadrantLegendTests(unittest.TestCase):
             path = Path(tmp) / "opportunity.svg"
             chart_runner.render_opportunity_quadrant_svg(path, "機會四象限分析", data)
             svg = path.read_text(encoding="utf-8")
-        for battle in ("必守核心戰場", "新興戰場（競爭者已進場）", "待釐清領域", "單一玩家壟斷型"):
+        for battle in ("高競爭技術區", "新興戰場（競爭者已進場）", "待釐清領域", "單一玩家壟斷型"):
             self.assertEqual(svg.count(battle), 1,
                              f"戰場語言「{battle}」應恰出現一次（格 header），實得 {svg.count(battle)}")
         # chip 文字用中文 label 非 code，格式「label 件/家」
@@ -398,7 +408,7 @@ class BoardQuadrantTests(unittest.TestCase):
             self.assertEqual(col, col_by_topic[topic], f"{topic} 密度欄應為 {col_by_topic[topic]}")
         self.assertIn("待調查（灰帶）", svg, "缺獨立灰帶標示")
         # 四角象限名沿用
-        for corner in ("研發優先缺口★", "必守核心→迴避設計", "nice-to-have→防禦即可", "競爭者已過度投入→選擇性"):
+        for corner in ("研發優先缺口★", "高競爭→claim overlap 分析", "nice-to-have→防禦即可", "競爭者已過度投入→選擇性"):
             self.assertIn(corner, svg, f"缺象限名 {corner}")
         groups: dict[tuple[str, str], list[tuple[float, float, float]]] = {}
         for band, col, topic, x, y, w in chips:
@@ -460,10 +470,8 @@ class PersistenceTruncationTests(unittest.TestCase):
             self.assertLessEqual(len(years), 25, f"{name} 入庫年份數應 ≤25")
             self.assertEqual(min(years), 1995, f"{name} 應留最新 25 年（1995–2019）")
             self.assertEqual(rd["reports"][name].get("rows_total"), 30)
-        # 年增率衍生序列（chart_rows，年份鍵為 "year"）同樣最新 25 年
-        growth_years = {int(r["year"]) for r in rd["chart_rows"]["application_growth"]}
-        self.assertLessEqual(len(growth_years), 25)
-        self.assertGreaterEqual(min(growth_years), 1995)
+        # 年增率序列已隨 section 移除，不得再出現在 chart_rows
+        self.assertNotIn("application_growth", rd["chart_rows"])
 
     def test_topic_rows_not_truncated(self):
         data = {
@@ -555,12 +563,18 @@ class TopicSegmentTests(unittest.TestCase):
                              "痛點板應已停產")
             self.assertFalse((Path(tmp) / "pain_point_quadrant_effect.svg").exists(),
                              "痛點板應已停產")
-        # ⚠ 2026-07-30：variants[0] 是主題統計表的**解讀掛點**（無圖檔），
-        # 其後才是每來源的機會板。共 1 + 2 = 3 個。
-        # 掛點的存在理由見 test_topic_table_single_render.TopicTableNarrativeTests：
+        # ⚠ 2026-07-30：variants 前段是主題統計表的**解讀掛點**（無圖檔），
+        # 其後才是每來源的機會板。掛點的存在理由見
+        # test_topic_table_single_render.TopicTableNarrativeTests：
         # main.py 把 narrative 掛在 variant 上，沒 variant 就讀不到解讀。
-        self.assertEqual(len(files), 3, "統計表解讀掛點 1 + 每來源機會板 2")
-        self.assertEqual(files[0], "", "第一個應為主題統計表掛點（無圖檔）")
+        #
+        # 🔴 2026-07-31：本測資有技術／功效**兩個通道**，故掛點也是兩個
+        # （topic_table_tech／topic_table_effect）。動因：PPT 依通道把主題統計表
+        # 拆成兩頁，只有一份解讀時兩頁會印出一模一樣的標題與要點。
+        # ⚠ 單通道時仍只產一個掛點（chart_runner 以實際存在的通道判斷），
+        # 由 test_single_source_keeps_filenames_and_single_segment 守住。
+        self.assertEqual(len(files), 4, "統計表解讀掛點 2（雙通道）+ 每來源機會板 2")
+        self.assertEqual(files[:2], ["", ""], "前兩個應為主題統計表掛點（無圖檔）")
         for f in ("opportunity_quadrant_tech.svg", "opportunity_quadrant_effect.svg"):
             self.assertIn(f, files)
         self.assertIn("機會四象限分析——技術主題", tech_opp)
@@ -589,7 +603,7 @@ class TopicSegmentTests(unittest.TestCase):
                 "leading_applicants", "leading_applicant_count",
             ],
         )
-        self.assertIn(tech_variant["rows"][0]["quadrant"], {"必守核心", "新興戰場", "待釐清", "單一玩家壟斷"})
+        self.assertIn(tech_variant["rows"][0]["quadrant"], {"高競爭技術區", "新興戰場", "待釐清", "單一玩家壟斷"})
         self.assertEqual(
             tech_variant["thresholds"],
             {"patent_count_median": 1.0, "applicant_count_median": 1.0},
@@ -729,13 +743,12 @@ class NarrativeRefreshTests(unittest.TestCase):
         解讀查找須退基底鍵（2026-07-22 v2 首跑 4 變體待解讀 regression）。"""
         narrs = {"ipc_main_distribution": {"variants": {
             "L4": {"text": "四階解讀"}, "L5": {"text": "五階解讀"}}}}
-        entry = chart_runner._narrative_entry(narrs, "ipc_main_distribution_L4")
-        self.assertEqual(chart_runner._narrative_text(entry, "L4"), "四階解讀")
-        self.assertEqual(chart_runner._narrative_text(entry, "L5"), "五階解讀")
+        text = chart_runner._variant_narrative_text
+        self.assertEqual(text(narrs, "ipc_main_distribution_L4", "L4"), "四階解讀")
+        self.assertEqual(text(narrs, "ipc_main_distribution_L4", "L5"), "五階解讀")
         # 精確鍵優先：同名精確鍵存在時不退基底
         narrs2 = {"foo_L4": {"text": "精確"}, "foo": {"text": "基底"}}
-        self.assertEqual(chart_runner._narrative_text(
-            chart_runner._narrative_entry(narrs2, "foo_L4"), "default"), "精確")
+        self.assertEqual(text(narrs2, "foo_L4", "default"), "精確")
 
     def test_refresh_index_version_mismatch_shows_expired(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -796,7 +809,7 @@ class SelectiveRenderTests(unittest.TestCase):
                 )
 
             self.assertEqual(result["status"], "ok")
-            self.assertEqual(result["sections_rendered"], ["annual_trend", "application_growth"])
+            self.assertEqual(result["sections_rendered"], ["annual_trend"])
             # 只查趨勢 section 依賴的兩張報表（公告補齊雙線），沒有其他報表被查。
             self.assertEqual(sorted(set(fetched)), ["application_trend", "publication_trend"])
             # 產出檔只有選中 sections 的圖＋固定兩檔。
@@ -804,7 +817,6 @@ class SelectiveRenderTests(unittest.TestCase):
                 sorted(result["files"]),
                 sorted([
                     "annual_trend.svg",
-                    "application_growth.svg",
                     "report_data.json",
                     "index.html",
                     "artifact_manifest.json",
@@ -843,7 +855,7 @@ class SelectiveRenderTests(unittest.TestCase):
                     output_dir=Path(tmp),
                     report_names=["application_trend", "publication_trend"],
                 )
-        # application_trend 被 annual_trend 與 application_growth 兩個 sections 依賴，
+        # application_trend 同時被趨勢圖與（在同一批查詢裡的）其他 section 用到，
         # 但快取後只實際查一次 DB。
         self.assertEqual(calls.count("application_trend"), 1)
 
@@ -909,7 +921,12 @@ class SelectiveRenderTests(unittest.TestCase):
             report_data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
 
         self.assertIn("有最新受讓人", svg)
-        self.assertIn("2 / 5", svg)
+        # 🔴 H-7（2026-08-03）：原本印「2 / 5」，讀者看不出分子是什麼。
+        # 改為主數字＝總件數，分段用**圖例同色**括在後面（顏色自己對應
+        # 圖例的「有最新受讓人」），分段為 0 時整個括號不印。
+        self.assertIn("5<tspan", svg, "分段標示未採用主數字＋同色括號")
+        self.assertIn(chart_runner.COLOR_SEGMENT, svg)
+        self.assertNotIn("2 / 5", svg, "還在用讀不出分子的舊寫法")
         self.assertIn("Acme", svg)
         self.assertIn("Beta", svg)
         total_rect = re.search(r'<rect class="bar-total" x="([0-9.]+)"[^>]+width="([0-9.]+)"', svg)
@@ -1021,23 +1038,40 @@ class SelectiveRenderTests(unittest.TestCase):
         for year in range(2000, 2005):
             self.assertNotIn(f">{year}<", svg)
             self.assertNotIn(f"/ {year} /", svg)
-        for year in (2005, 2029):
-            self.assertIn(f">{year}<", svg)
-            self.assertIn(f"/ {year} /", svg)
+        # 🔴 P-2：年份多到放不下時保留最新那段，並在圖上標明範圍——
+        # 少資訊可以，靜默少才不行（2026-08-03 使用者定案）。
+        # ⚠ 欄寬窄時年份印兩位數（見 test_year_axis_labels_readable）——
+        # 驗「最新年份在軸上」，不驗四位數字面。
+        self.assertIn(">'29<", svg, "最新年份必須在")
+        self.assertIn("僅顯示", svg, "砍了年份卻沒標明範圍")
         radii = [float(value) for value in re.findall(r' r="([0-9.]+)"', svg)]
         self.assertGreaterEqual(min(radii), 9.0)
-        self.assertGreaterEqual(max(radii), 27.0)
+        # 🔴 2026-08-03：上限由「固定 28」改為**依欄寬推導**（見
+        # test_year_matrix_bubble_fit）。橫軸補齊連續年度後欄距 43→38px，
+        # 固定半徑會讓相鄰泡泡撞在一起。這裡只驗「還放得下格內兩位數」，
+        # 不再驗死值——驗死值等於把重疊當成規格。
+        self.assertGreaterEqual(max(radii), chart_runner.BUBBLE_MIN_RADIUS_PX)
         height = float(re.search(r'<svg[^>]+height="([0-9.]+)"', svg).group(1))
-        self.assertGreaterEqual(height, 125 + 2 * 56 + 34)
+        # P-2：畫布高度改為上限制（≤CHART_CANVAS_MAX_HEIGHT），不再隨列數無限長高。
+        self.assertLessEqual(height, chart_runner.CHART_CANVAS_MAX_HEIGHT)
         # 2026-07-21 定案修正（規格變更註記）：年度序列「保存」只留最新 25 年——
         # fixture 30 年×2 家＝60 列，入庫截為 25 年×2 家＝50 列（原斷言 60）。
         self.assertEqual(len(report_data["reports"]["owner_year_matrix"]["rows"]), 50)
         self.assertEqual(report_data["reports"]["owner_year_matrix"]["rows_total"], 60)
-        # font-size 放大（年標籤用 17，公司名用 17）
-        self.assertIn('font-size="17"', svg)
-        # left margin 擴大（340 使 SVG 寬度擴大，原 width 約 250+NumYears*82+34）
+        # 🔴 2026-08-04：字級改由 chart_font_px() 依縮放反推，不再是固定的
+        # CHART_LABEL_PX。⚠ 判準也跟著換——驗的是「縮放到投影片上是不是 14pt」，
+        # 那才是使用者定的目標；驗 SVG 裡的 px 數字等於把中間值當規格。
+        _sizes = {float(v) for v in re.findall(r'font-size="([0-9.]+)"', svg)}
+        _w = float(re.search(r'<svg[^>]+width="([0-9.]+)"', svg).group(1))
+        _h = float(re.search(r'<svg[^>]+height="([0-9.]+)"', svg).group(1))
+        _scale = chart_runner.chart_scale(_w, _h)
+        self.assertAlmostEqual(max(_sizes) * 0.75 * _scale,
+                               chart_runner.CHART_DATA_TARGET_PT, places=0,
+                               msg=f"資料文字沒落在 14pt（字級 {max(_sizes)}px、縮放 {_scale:.3f}）")
+        self.assertNotIn("{CHART_LABEL_PX}", svg, "常數被當字面印進 SVG（漏了 f 前綴）")
+        # P-2：寬度以畫布上限為準，年份多時砍最舊的年份而不是把格子縮到看不清
         svg_width = float(re.search(r'<svg[^>]+width="([0-9.]+)"', svg).group(1))
-        self.assertGreaterEqual(svg_width, 340 + 1 * 82 + 34)
+        self.assertLessEqual(svg_width, chart_runner.CHART_CANVAS_WIDTH)
 
 
 class ClassificationSourceColumnTests(unittest.TestCase):
@@ -1216,6 +1250,729 @@ class SectionReportKeyTests(unittest.TestCase):
                 "data-empty", by_title[title],
                 f"卡片「{title}」數據表為空（顯示無資料），但該報表有 rows",
             )
+
+
+class EncodingNoteAccuracyTests(unittest.TestCase):
+    """F-5：編碼說明必須描述那張圖**實際**怎麼畫，不得沿用舊版型或憑鍵名想像。"""
+
+    def test_ipc_cpc_notes_do_not_claim_side_by_side(self):
+        """🔴 拆頁後 IPC/CPC 各階層獨立成頁，不得再寫「左右為不同階層」。
+
+        2026-07-31 批 3 把並排頁拆成一圖一頁（修「CPC 兩張從未畫出」），
+        但編碼說明沒跟著改——實機 p8–p11 四頁都還寫著「左右為不同階層，
+        非同圖合成」，而畫面上根本沒有左右兩張圖。
+        """
+        for key in ("ipc_main_distribution", "cpc_main_distribution"):
+            note = chart_runner.CHART_ENCODING_NOTES[key]
+            self.assertNotIn("左右", note, f"{key} 的編碼說明仍描述並排版型")
+
+    def test_lifecycle_note_matches_how_chart_is_drawn(self):
+        """🔴 生命週期是**依年份**連線，不是「同一技術群」。
+
+        同檔 `render_lifecycle_chart` 的 docstring 與 SVG 副題（connected by year）
+        都寫著依年份，說明卻寫成技術群——2026-08-02 使用者當場抓到。
+        """
+        note = chart_runner.CHART_ENCODING_NOTES["lifecycle"]
+        self.assertIn("年份", note)
+        self.assertNotIn("技術群", note)
+
+
+class BubbleLegendSpanTests(unittest.TestCase):
+    """F-6：泡泡圖圖例級距不得出現「下限大於上限」或把單值寫成區間。
+
+    🔴 2026-08-02 實機 p17（max_value=3）印出「低 **1–0**」——下限 1、上限 0。
+    根因：級距由 `ceil(下界×max)`／`floor(上界×max)` 直接串接，max 小的時候
+    某一階完全落不到任何整數上（0–0.75 件），floor 就小於 ceil。
+    p16（max_value=5）則是把單值印成「1–1／2–2／3–3」。
+    """
+
+    def _spans(self, max_value: int):
+        return chart_runner.bubble_legend_spans(max_value)
+
+    def test_no_inverted_span(self):
+        """任何 max_value 下都不得出現下限 > 上限。"""
+        for max_value in range(1, 31):
+            for _color, label, span in self._spans(max_value):
+                bounds = [int(x) for x in span.split("–")]
+                self.assertLessEqual(bounds[0], bounds[-1],
+                                     f"max_value={max_value} 的「{label}」級距顛倒：{span}")
+
+    def test_empty_band_is_dropped(self):
+        """max_value=3 時最低階涵蓋不到任何整數件數，該階不列入圖例。"""
+        labels = [label for _c, label, _s in self._spans(3)]
+        self.assertNotIn("低", labels)
+        self.assertEqual([s for _c, _l, s in self._spans(3)], ["1", "2", "3"])
+
+    def test_single_value_not_written_as_range(self):
+        """單值級距寫「1」，不寫「1–1」。"""
+        spans = [s for _c, _l, s in self._spans(5)]
+        self.assertEqual(spans, ["1", "2", "3", "4–5"])
+
+    def test_spans_cover_every_count_once(self):
+        """級距要連續且不重疊——每個實際件數只能落在一階。"""
+        for max_value in (3, 5, 8, 11, 20):
+            covered: list[int] = []
+            for _c, _l, span in self._spans(max_value):
+                bounds = [int(x) for x in span.split("–")]
+                covered.extend(range(bounds[0], bounds[-1] + 1))
+            self.assertEqual(covered, list(range(1, max_value + 1)),
+                             f"max_value={max_value} 的級距沒有完整覆蓋 1..{max_value}")
+
+
+def _relative_luminance(hex_color: str) -> float:
+    value = hex_color.lstrip("#")
+    channels = []
+    for offset in (0, 2, 4):
+        c = int(value[offset:offset + 2], 16) / 255
+        channels.append(c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def _contrast(a: str, b: str) -> float:
+    la, lb = _relative_luminance(a), _relative_luminance(b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+class RankingBarScaleTests(unittest.TestCase):
+    """F-2＋W-2：排名長條依數值連續深淺，且**最淺一階也要看得見**。
+
+    🔴 F-2 實機 p14：主長條 `CBD5E1` 被轉色成 `274A66`（面板底色），
+    對深空背景實測只有 **1.72**——那根長條幾乎不存在。根因是 `CBD5E1`
+    被歸進「淺灰＝結構色」那一組，但它在排名圖裡是**資料**不是結構。
+    ⚠ 這是批 2「資料色與裝飾色分離」漏掉的一個。
+
+    🔴 W-2 使用者選「依數值連續深淺」。⚠ 硬約束：**最淺一階對背景仍須 ≥3.0**
+    （WCAG 圖形元素門檻）——色階要從這個下限往上推，不能從主色往下淡，
+    否則就是再做一次 F-2。
+    """
+
+    def test_scale_has_five_steps(self):
+        self.assertEqual(len(chart_runner.RANKING_BAR_SCALE), 5)
+
+    def test_every_step_is_visible_on_white(self):
+        """網頁報表是白底——五階都要 ≥3.0，包含最淺那階。"""
+        for color in chart_runner.RANKING_BAR_SCALE:
+            self.assertGreaterEqual(_contrast(color, "FFFFFF"), 3.0,
+                                    f"{color} 在白底上看不清（圖形元素需 ≥3.0）")
+
+    def test_steps_are_monotonic(self):
+        """由深到淺單調——不單調就沒有「依數值」的語意。"""
+        lums = [_relative_luminance(c) for c in chart_runner.RANKING_BAR_SCALE]
+        self.assertEqual(lums, sorted(lums), f"色階亮度非單調：{lums}")
+
+    def test_largest_value_gets_the_darkest_step(self):
+        self.assertEqual(chart_runner.ranking_bar_color(13, 13),
+                         chart_runner.RANKING_BAR_SCALE[0])
+
+    def test_smallest_value_gets_the_lightest_step(self):
+        self.assertEqual(chart_runner.ranking_bar_color(1, 13),
+                         chart_runner.RANKING_BAR_SCALE[-1])
+
+    def test_equal_values_get_equal_colors(self):
+        """⚠ 同件數必須同色——不同色會讓讀者以為它們有差別。"""
+        self.assertEqual(chart_runner.ranking_bar_color(5, 13),
+                         chart_runner.ranking_bar_color(5, 13))
+
+    def test_zero_max_does_not_raise(self):
+        self.assertIn(chart_runner.ranking_bar_color(0, 0), chart_runner.RANKING_BAR_SCALE)
+
+    def test_ranking_chart_no_longer_uses_structural_grey(self):
+        """🔴 排名圖不得再用結構灰當資料條（F-2 的直接重現）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rank.svg"
+            chart_runner.render_bar_chart(
+                path, "主要申請人排名",
+                [{"applicant_display_name": f"公司{i}", "patent_count": v}
+                 for i, v in enumerate([13, 5, 5, 3, 1])],
+                "applicant_display_name")
+            svg = path.read_text(encoding="utf-8")
+        for structural in ("CBD5E1", "D1D5DB", "E5E7EB", "DCE3F2"):
+            self.assertNotIn(structural, svg.upper(), f"排名圖用了結構色 {structural} 當資料條")
+        self.assertIn(chart_runner.RANKING_BAR_SCALE[0].lstrip("#"), svg.upper())
+
+
+class MatrixLegendTests(unittest.TestCase):
+    """F-13：熱圖有三階顏色卻沒有任何色階說明。
+
+    🔴 實機 p6 公司×國家交叉表：格子有橘紅／橘／淡橘，整頁沒說哪個顏色代表幾件。
+    ⚠ 泡泡矩陣（p16／p17）有圖例，同一份簡報裡同一套色階一張有一張沒有。
+    圖例必須與格子共用 `bubble_legend_spans`——各算各的就會出現
+    「圖例說 3–5、格子其實畫到 6」這種對不上的情況。
+    """
+
+    ROWS = [{"applicant_display_name": "廈門帝瑪斯", "jurisdiction": "CN", "patent_count": 11},
+            {"applicant_display_name": "廈門帝瑪斯", "jurisdiction": "TW", "patent_count": 1},
+            {"applicant_display_name": "孟喬", "jurisdiction": "CN", "patent_count": 2},
+            {"applicant_display_name": "孟喬", "jurisdiction": "TW", "patent_count": 3}]
+
+    def _render(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "matrix.svg"
+            chart_runner.render_matrix_chart(path, "公司×國家交叉表", self.ROWS,
+                                             "applicant_display_name", "jurisdiction")
+            return path.read_text(encoding="utf-8")
+
+    def test_legend_is_present(self):
+        self.assertIn("件數色階", self._render())
+
+    def test_legend_spans_match_the_cells(self):
+        """圖例級距與格子上色共用同一個來源。"""
+        svg = self._render()
+        for _color, _label, span in chart_runner.bubble_legend_spans(11):
+            self.assertIn(span, svg, f"圖例缺級距 {span}")
+
+    def test_legend_colors_are_the_cell_colors(self):
+        svg = self._render().upper()
+        for color, _label, _span in chart_runner.bubble_legend_spans(11):
+            self.assertIn(color.lstrip("#").upper(), svg)
+
+
+class RankingTruncationNoteTests(unittest.TestCase):
+    """F-12：同型的兩張排名圖，規則必須一致。
+
+    🔴 實機 p14 申請人排名畫 12 列並標「顯示前 12/20 名，完整名單見附錄」；
+    p15 專利權人排名**畫滿 20 列且沒有任何註記**——同一種圖兩套規則。
+    列數多的那張字會被壓到不可讀（07-31 實測 20 列縮進圖框後只剩 5px）。
+    """
+
+    ROWS = [{"current_assignee_display_name": f"公司{i}", "patent_count": 20 - i}
+            for i in range(20)]
+
+    def _render(self, rows, **kwargs):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rank.svg"
+            chart_runner.render_bar_chart(path, "現專利權人排名", rows,
+                                          "current_assignee_display_name", **kwargs)
+            return path.read_text(encoding="utf-8")
+
+    def test_truncated_chart_says_so(self):
+        svg = self._render(self.ROWS, limit=12)
+        self.assertIn("顯示前 12/20 名", svg)
+
+    def test_untruncated_chart_has_no_note(self):
+        """⚠ 沒截斷卻標「顯示前 N 名」會讓讀者以為還有更多。"""
+        svg = self._render(self.ROWS[:5], limit=12)
+        self.assertNotIn("顯示前", svg)
+
+    def test_both_ranking_renderers_use_the_same_wording(self):
+        """兩支渲染函式的文案走同一個來源，不各寫各的。"""
+        source = Path(chart_runner.__file__).read_text(encoding="utf-8")
+        self.assertEqual(source.count('顯示前 {shown}/{total} 名，完整名單見附錄'), 1,
+                         "截斷註記的文案不只一處——兩張圖會各自漂移")
+
+    def test_owner_ranking_section_applies_the_row_limit(self):
+        """🔴 p15 沒傳 limit，預設 20 列全畫。"""
+        source = Path(chart_runner.__file__).read_text(encoding="utf-8")
+        start = source.index("def _build_owner_ranking_section")
+        body = source[start:start + 600]
+        self.assertIn("CHART_ROW_LIMIT", body, "專利權人排名未套用列數上限")
+
+
+class SparseChartFillsFrameTests(unittest.TestCase):
+    """G-7：列數少的圖把框空掉一半。
+
+    🔴 實機 p7（IPC L4，2 列）下方空 37%、p9（CPC L4，1 列）空 48%。
+    ⚠ 不是版型給太多空間——是**圖本身太矮**：列高固定 28px，1 列的圖只有 130px 高，
+    放進 3.2 in 的框自然剩一大片。
+
+    修法：列少時把列高撐開（有上限，否則長條會變成色塊）。
+    附帶效果是字也跟著變大——同樣的框裡，2 列比 12 列本來就該看得更清楚。
+    """
+
+    def _height(self, n_rows: int) -> int:
+        rows = [{"ipc_main_group_symbol": f"A63B-{i:03d}", "patent_count": 10 - i}
+                for i in range(n_rows)]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "b.svg"
+            chart_runner.render_bar_chart(path, "x", rows, "ipc_main_group_symbol")
+            svg = path.read_text(encoding="utf-8")
+        return int(re.search(r'height="(\d+)"', svg).group(1))
+
+    def test_few_rows_still_fill_the_frame(self):
+        """3 列以上要填到六成；1–2 列另計。
+
+        🔴 **本項判準 2026-08-03 依 H-6 下修（規格被實機推翻）**：
+        原本 1 列 0.45、2 列 0.6。實機 p9（CPC L4 只有 1 列）照這個標準撐開後，
+        那根長條橫貫全寬、粗到變成**一整塊色帶**，已經不像圖表——
+        用一個可讀性問題換掉另一個。
+
+        ⚠ 「不要大片留白」的意圖仍然保留：少列時列高照樣撐開（`_fill_row_height`
+        仍會放大），只是上限收到 `SPARSE_ROW_CEILING_FACTOR`＝2 倍。
+        剩下的留白是**內容量的問題**（CPC L4 就只有一個分類），
+        要靠版型或插圖補（W-3），不是把長條拉粗。
+        """
+        for n, floor in ((1, 0.28), (2, 0.35), (3, 0.6)):
+            height = self._height(n)
+            self.assertGreaterEqual(
+                height, chart_runner.CHART_CANVAS_MAX_HEIGHT * floor,
+                f"{n} 列的圖只有 {height}px，框會空掉一大半")
+
+    def test_many_rows_unchanged(self):
+        """⚠ 列多時維持原列高——撐開會讓畫布爆高、整張圖反而被縮小（P-2）。"""
+        self.assertLessEqual(self._height(12), chart_runner.CHART_CANVAS_MAX_HEIGHT)
+
+    def test_row_height_has_a_ceiling(self):
+        """列高不得無限放大——1 列的長條會變成一整塊色帶。"""
+        one, three = self._height(1), self._height(3)
+        self.assertLessEqual(one, three, "列少反而比列多還高，列高上限失效")
+
+
+class LabelGutterFitsTests(unittest.TestCase):
+    """G-3：列標籤超出畫布左緣被裁掉。
+
+    🔴 實機 p10「A63B-0022　心肺與協調訓練器械」開頭的 `A` 被切掉一半。
+    ⚠ 這是**我修 F-3 時造成的**：移除 `label[:42]` 硬切（資訊不得截斷）後，
+    技術名接上去讓標籤變長，但標籤區仍寫死 `left = 310`——
+    截斷從「切字串」變成「被畫布邊界裁掉」，只是換個地方發生。
+
+    標籤區必須依**實際最長標籤**決定寬度。
+    """
+
+    def _render(self, rows, label_key="ipc_main_group_symbol"):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bar.svg"
+            chart_runner.render_bar_chart(path, "IPC 主分類分布", rows, label_key)
+            return path.read_text(encoding="utf-8")
+
+    @staticmethod
+    def _row_label_x(svg: str) -> list[float]:
+        """列標籤的 x 座標。
+
+        ⚠ **定位方式已於 2026-08-03（I-3）改變**：列標籤由右對齊
+        （`text-anchor="end"`）改為**左對齊**、x 固定在 `LABEL_TEXT_OFFSET_PX`。
+        原本靠 `text-anchor="end"` 抓，改完抓不到任何一筆、`min()` 回 0，
+        測試會以「起點 < 0」失敗——那不是被裁，是**選擇器過期**。
+        """
+        return [float(x) for x in re.findall(
+            rf'<text x="({chart_runner.LABEL_TEXT_OFFSET_PX})" y="[0-9.]+" font-size=', svg)]
+
+    def test_long_label_is_not_clipped(self):
+        """列標籤不得被畫布左緣裁掉。
+
+        🔴 I-3 起改用**結構性保證**：左對齊、x 固定在留白處，
+        標籤多長都從左緣開始畫，**不存在「超出左界」這回事**。
+        （在此之前是估字寬 → 算 gutter → 右對齊，估算偏小就會被裁，猜了三次係數。）
+        """
+        svg = self._render([{"ipc_main_group_symbol": "A63B-0022", "patent_count": 5}])
+        xs = self._row_label_x(svg)
+        self.assertTrue(xs, "找不到列標籤——定位方式可能又改了")
+        self.assertGreaterEqual(min(xs), 0, "列標籤起點在畫布外")
+
+    def test_gutter_grows_with_content(self):
+        """標籤區寬度仍要跟著內容長短走——留白要還給圖。
+
+        ⚠ 標籤本身改左對齊後，`label_gutter` 不再決定標籤起點，
+        但仍決定**長條的起點**（繪圖區左緣）。短標籤時長條該往左移，把空間讓給圖。
+        """
+        short = self._render([{"ipc_main_group_symbol": "A63B", "patent_count": 5}])
+        long = self._render([{"ipc_main_group_symbol": "A63B-0022　心肺與協調訓練器械",
+                              "patent_count": 5}])
+
+        def bar_left(svg: str) -> float:
+            # ⚠ 一般長條圖的 rect 沒有 class（`bar-total` 是分段排名圖專用），
+            # 取第一個有寬度的 rect 即長條本體。
+            return min(float(x) for x, _w in re.findall(
+                r'<rect x="([0-9.]+)" y="[0-9.]+" width="([0-9.]+)"', svg))
+
+        self.assertLess(bar_left(short), bar_left(long),
+                        "標籤變長時長條沒有右移——標籤區寬度沒跟著內容走")
+
+    def test_canvas_width_still_capped(self):
+        """⚠ 標籤再長也不得把畫布撐爆——那會讓整張圖被縮小（P-2 的老問題）。"""
+        svg = self._render([{"applicant_display_name": "非常長的公司名稱" * 6,
+                             "patent_count": 5}], "applicant_display_name")
+        width = int(re.search(r'width="(\d+)"', svg).group(1))
+        self.assertLessEqual(width, chart_runner.CHART_CANVAS_WIDTH)
+
+
+class NiceTicksTests(unittest.TestCase):
+    """F-11：座標軸刻度必須等差且是好讀的整數。
+
+    🔴 實機 p2 縱軸 0／4／8／**11**／15、p4 縱軸 0／4／**9**／13／17——
+    刻度由 `max * i / 4` 直接取整，間距忽 3 忽 4，讀者無法心算比例。
+    """
+
+    def test_ticks_are_evenly_spaced(self):
+        for max_value in (1, 3, 7, 15, 17, 47, 156, 1249):
+            ticks = chart_runner.nice_ticks(max_value)
+            gaps = {ticks[i + 1] - ticks[i] for i in range(len(ticks) - 1)}
+            self.assertEqual(len(gaps), 1, f"max={max_value} 刻度不等差：{ticks}")
+
+    def test_ticks_cover_the_data(self):
+        """最後一格不得低於實際最大值，否則長條會畫出軸外。"""
+        for max_value in (1, 3, 7, 15, 17, 47, 156, 1249):
+            self.assertGreaterEqual(chart_runner.nice_ticks(max_value)[-1], max_value)
+
+    def test_step_is_a_round_number(self):
+        """步進限 1／2／2.5／5 的 10 次方倍——這是「好讀」的定義。"""
+        for max_value in (7, 15, 17, 47, 156, 1249):
+            ticks = chart_runner.nice_ticks(max_value)
+            step = ticks[1] - ticks[0]
+            mantissa = step / (10 ** math.floor(math.log10(step)))
+            self.assertIn(round(mantissa, 2), (1.0, 2.0, 2.5, 5.0), f"step={step}")
+
+    def test_starts_at_zero(self):
+        self.assertEqual(chart_runner.nice_ticks(15)[0], 0)
+
+    def test_zero_and_negative_do_not_raise(self):
+        self.assertTrue(chart_runner.nice_ticks(0))
+        self.assertTrue(chart_runner.nice_ticks(-5))
+
+    def test_p2_case_reads_cleanly(self):
+        """實機 p2 的 15 件：0/4/8/11/15 → 應變成等差。"""
+        self.assertEqual(chart_runner.nice_ticks(15), [0, 5, 10, 15, 20])
+
+
+class NoEnglishDebugSubtitleTests(unittest.TestCase):
+    """F-9：SVG 的英文副題是給開發者看的除錯資訊，不該出現在客戶簡報上。
+
+    🔴 實機 p4「X = applicant count, Y = patent count, connected by year」、
+    p16／p17「X = application_year, bubble = patent_count」。
+    ⚠ 與批 1 修掉的「英文欄名」同一類問題——當時只掃了表格欄名，沒掃圖表副題。
+    編碼說明已由 `CHART_ENCODING_NOTES` 用中文輸出並印在投影片上，這裡是重複且是英文。
+    """
+
+    # 這些片段一旦出現在 SVG 就是除錯副題外洩（欄名 application_year 本身不算，
+    # 故比對整段而非單字）。
+    FORBIDDEN = (
+        "X = applicant count",
+        "X = application_year",
+        "bubble = patent_count",
+        "X = total forward citations",
+        "Application year and grant announcement year comparison",
+        "Yearly count",
+        "YoY growth",
+    )
+
+    def _sources(self) -> str:
+        return Path(chart_runner.__file__).read_text(encoding="utf-8")
+
+    def test_no_english_subtitle_literals_in_renderers(self):
+        source = self._sources()
+        for fragment in self.FORBIDDEN:
+            self.assertNotIn(fragment, source, f"英文除錯副題殘留：{fragment}")
+
+    def test_trend_legend_is_chinese(self):
+        """🔴 G-5：p2 的圖例仍是英文（Application Year／Grant Announcement Year）。
+
+        ⚠ F-9 只清了副題、沒清圖例——同一種問題我只掃了一半。
+        圖例是給讀者辨識兩條線的，用英文等於這張圖有一半看不懂。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trend.svg"
+            chart_runner.render_line_chart(
+                path, "專利申請趨勢",
+                [{"application_year": 2020 + i, "patent_count": i + 1} for i in range(5)],
+                [{"授權公告年": 2020 + i, "patent_count": i} for i in range(5)])
+            svg = path.read_text(encoding="utf-8")
+        self.assertNotIn("Application Year", svg)
+        self.assertNotIn("Grant Announcement Year", svg)
+        self.assertIn("申請年", svg)
+        self.assertIn("授權公告年", svg)
+
+    def test_lifecycle_svg_has_no_english_subtitle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "lifecycle.svg"
+            chart_runner.render_lifecycle_chart(path, "專利生命週期", [
+                {"application_year": 2020, "applicant_count": 3, "patent_count": 7},
+                {"application_year": 2022, "applicant_count": 7, "patent_count": 15},
+            ])
+            svg = path.read_text(encoding="utf-8")
+        self.assertNotIn("connected by year", svg)
+        self.assertNotIn("applicant count", svg)
+
+
+class TablePriorityColumnsTests(unittest.TestCase):
+    """🔴 G-2：主題表只顯示前 6/11 欄，而「完整欄位見附錄」的附錄**也只有 6 欄**。
+
+    後果：S2 算出來的技術狀態與代表專利**一格都沒顯示**——功能等於沒上線。
+    ⚠ 比截斷更糟的是它承諾了一個不存在的去處。
+
+    幾何上「全欄擠一張表」不可能：11 欄需求合計 28.33 in，表寬只有 12.13 in，
+    單是「前三大申請人」（最長 66 字）就要 11.19 in。故分兩層：
+      內頁精選 6 欄 —— **必須含技術狀態**（這是這一輪的重點功能）
+      附錄     全欄 —— 內容換行、列高自適應，讓完整欄位真的有地方看
+    """
+
+    def test_priority_list_exists_for_topic_table(self):
+        self.assertIn("cluster_topic_table", chart_runner.DATA_TABLE_PRIORITY_COLUMNS)
+
+    def test_status_is_in_the_inner_page_selection(self):
+        """🔴 技術狀態沒進精選＝這一輪的重點功能在簡報上看不到。"""
+        priority = chart_runner.DATA_TABLE_PRIORITY_COLUMNS["cluster_topic_table"]
+        self.assertIn("status", priority[:6])
+
+    def test_label_and_count_come_first(self):
+        """主題名與件數是識別與量級，排最前面。"""
+        priority = chart_runner.DATA_TABLE_PRIORITY_COLUMNS["cluster_topic_table"]
+        self.assertEqual(priority[0], "label")
+        self.assertIn("patent_count", priority[:3])
+
+    def test_priority_only_lists_displayable_columns(self):
+        """⚠ 優先清單不得列到被排除的欄——那會讓兩份規則互相矛盾。"""
+        excluded = set(chart_runner.DATA_TABLE_EXCLUDED_COLUMNS["cluster_topic_table"])
+        for key in chart_runner.DATA_TABLE_PRIORITY_COLUMNS["cluster_topic_table"]:
+            self.assertNotIn(key, excluded, f"{key} 同時在優先清單與排除清單")
+
+    def test_priority_columns_are_labelled(self):
+        for key in chart_runner.DATA_TABLE_PRIORITY_COLUMNS["cluster_topic_table"]:
+            self.assertIn(key, chart_runner.DATA_COLUMN_LABELS, f"{key} 沒有中文欄名")
+
+    def test_spec_carries_priority_to_downstream(self):
+        """組版端讀 table_display 才知道要先顯示哪幾欄——不能只存在引擎記憶體裡。"""
+        spec = chart_runner.table_display_spec({})
+        self.assertIn("priority_columns", spec)
+
+
+class EveryColumnIsDeclaredTests(unittest.TestCase):
+    """🔴 加欄位就要同時登記顯示規則——否則英文欄名會直接印給讀者看。
+
+    2026-07-31 批 1 修過一次（實機 PPT 附錄 2 印出 `recent_assignee_display_names`），
+    2026-08-03 我在加代表專利三欄時**又犯同一個**：三欄的中文名都是 None、
+    也都不在排除清單，下次重產就會印出 `representative_patent`。
+
+    ⚠ 逐次補登記救不了這件事——會漏第三次。改成通則：
+    **主題表輸出的每個鍵，不是有中文欄名、就是在排除清單**，二選一。
+    """
+
+    def _topic_row_keys(self) -> set[str]:
+        from backend.app.reports.cluster_analytics import build_topic_effect_table
+        topics = [{"topic_code": "T001", "label": "拉繩捲輪回收機構",
+                   "source_field": "wips_independent_claims"}]
+        assignments = [{"topic_code": "T001", "patent_id": pid,
+                        "source_field": "wips_independent_claims"} for pid in range(1, 8)]
+        applicants = [{"patent_id": pid, "applicant_name": f"A{pid % 3}"} for pid in range(1, 8)]
+        patents = {pid: {"application_year": 2022, "number": f"CN{pid:06d}", "title": f"標題{pid}"}
+                   for pid in range(1, 8)}
+        rows = build_topic_effect_table(topics, assignments, applicants, patents=patents)
+        return set(rows[0])
+
+    def test_every_emitted_key_is_labelled_or_excluded(self):
+        excluded = set(chart_runner.DATA_TABLE_EXCLUDED_COLUMNS["cluster_topic_table"])
+        undeclared = sorted(
+            key for key in self._topic_row_keys()
+            if key not in chart_runner.DATA_COLUMN_LABELS and key not in excluded)
+        self.assertFalse(
+            undeclared,
+            f"這些欄位既沒有中文欄名也沒被排除，會以英文欄名印在表格上：{undeclared}\n"
+            "→ 加進 DATA_COLUMN_LABELS（要顯示）或 DATA_TABLE_EXCLUDED_COLUMNS（不顯示）。")
+
+    def test_representative_applicant_is_dropped(self):
+        """使用者定案：代表專利不需要再標申請人——「前三大申請人」欄已經有了。"""
+        self.assertNotIn("representative_applicant", self._topic_row_keys())
+
+    def test_representative_is_one_column(self):
+        """使用者：代表專利不要那麼多欄，版面放不下——併成一欄。"""
+        self.assertEqual(chart_runner.DATA_COLUMN_LABELS.get("representative"), "代表專利")
+        self.assertIsNone(chart_runner.DATA_COLUMN_LABELS.get("representative_patent"))
+
+
+class IpcTechNameTests(unittest.TestCase):
+    """C-3：IPC/CPC 只給代碼，讀者不知道那是什麼技術。
+
+    🔴 使用者：「IPC/CPC 沒有轉換成技術意義」。參考報告（附件3 電輔自行車）
+    的每一格都是「代碼＋中文技術名＋件數」三者同框，讀者不必去查對照表。
+
+    ⚠ 設計：官方原文與濃縮短名**存同一份**，各帶 version。拆成兩個檔會讓
+    「官方改版了但濃縮沒跟上」無人察覺——本專案已因兩處落點吃過四次虧。
+    """
+
+    def test_subclass_lookup(self):
+        self.assertEqual(chart_runner.tech_name("A63B"), "訓練與體育器械")
+        self.assertEqual(chart_runner.tech_name("F03G"), "彈力與重力發動機")
+
+    def test_ipc_and_cpc_main_group_share_one_entry(self):
+        """⚠ IPC 寫 A63B-021、CPC 寫 A63B-0021，前導零位數不同但**是同一個主目**。
+
+        兩種寫法必須正規化到同一鍵，否則同一分類在 IPC 頁與 CPC 頁會顯示不同名字
+        （或其中一頁查不到而退回代碼）。
+        """
+        self.assertEqual(chart_runner.tech_name("A63B-021"), "阻力式肌力訓練器械")
+        self.assertEqual(chart_runner.tech_name("A63B-0021"), "阻力式肌力訓練器械")
+        self.assertEqual(chart_runner.tech_name("A63B-0022"), "心肺與協調訓練器械")
+        self.assertEqual(chart_runner.tech_name("A63B-069"), "特殊運動訓練器械")
+        self.assertEqual(chart_runner.tech_name("F03G-005"), "人力機械動力裝置")
+
+    def test_unknown_code_falls_back_to_code_itself(self):
+        """查不到不留空、不猜——顯示代碼本身，讀者仍知道那是分類碼。"""
+        self.assertEqual(chart_runner.tech_name("G05B"), "G05B")
+        self.assertEqual(chart_runner.tech_name("G05B-019"), "G05B-019")
+        self.assertEqual(chart_runner.tech_name(""), "")
+
+    def test_every_entry_has_official_and_short(self):
+        """每一筆都要有官方原文（可追溯）與濃縮短名（顯示用），缺一不可。"""
+        for code, entry in chart_runner.IPC_TECH_NAMES.items():
+            self.assertTrue(entry.get("official"), f"{code} 缺官方原文")
+            self.assertTrue(entry.get("short"), f"{code} 缺濃縮短名")
+
+    def test_short_names_are_short_enough_for_chart_labels(self):
+        """短名要放得進圖表標籤——參考報告的標籤是 4–12 字，這裡放寬到 14。"""
+        for code, entry in chart_runner.IPC_TECH_NAMES.items():
+            self.assertLessEqual(len(entry["short"]), 14, f"{code} 的短名過長：{entry['short']}")
+
+    def test_short_is_not_the_official_text(self):
+        """⚠ 短名必須真的濃縮過。直接複製官方全文等於沒做這件事。"""
+        for code, entry in chart_runner.IPC_TECH_NAMES.items():
+            self.assertNotEqual(entry["short"], entry["official"], code)
+
+    def _render(self, rows, label_key="ipc_main_group_symbol"):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bar.svg"
+            chart_runner.render_bar_chart(path, "IPC 主分類分布", rows, label_key)
+            return path.read_text(encoding="utf-8")
+
+    def test_chart_label_carries_tech_name(self):
+        """🔴 圖上要看得到技術意義，不能只有代碼。"""
+        svg = self._render([{"ipc_main_group_symbol": "A63B-069", "patent_count": 19}])
+        self.assertIn("A63B-069", svg)
+        self.assertIn("特殊運動訓練器械", svg)
+
+    def test_non_classification_labels_unchanged(self):
+        """⚠ 同一支 render_bar_chart 也畫申請人排名——公司名不得被加工。"""
+        svg = self._render([{"applicant_display_name": "廈門帝瑪斯健康科技", "patent_count": 13}],
+                           label_key="applicant_display_name")
+        self.assertIn("廈門帝瑪斯健康科技", svg)
+        self.assertNotIn("訓練", svg)
+
+
+class TopicStatusDisplayTests(unittest.TestCase):
+    """C-7：技術狀態要出現在主題分類統計表上，中間計算欄不得外洩。
+
+    🔴 使用者定調：報告文字停在「哪些技術專利數量較高」，要提升到
+    「技術競爭型態、演進趨勢及布局意義」。狀態欄就是把「型態」放進表裡的落點——
+    技術演進不另開圖，併進技術通道的主題分類統計表。
+
+    ⚠ 狀態是算出來的，中間量（recent_count／share_early／concentration_*）
+    是過程不是結論，一旦出現在表上就是又一次「程式殘骸給讀者看」（批 1 的教訓）。
+    """
+
+    def test_status_columns_have_chinese_labels(self):
+        for key, label in (("status", "技術狀態"), ("status_meaning", "意義")):
+            self.assertEqual(chart_runner.DATA_COLUMN_LABELS.get(key), label)
+
+    def test_intermediate_metrics_are_hidden(self):
+        excluded = chart_runner.DATA_TABLE_EXCLUDED_COLUMNS["cluster_topic_table"]
+        for key in ("recent_count", "early_count", "recent_applicants", "early_applicants",
+                    "share_recent", "share_early", "concentration_recent", "concentration_early"):
+            self.assertIn(key, excluded, f"中間計算欄 {key} 會被印給讀者看")
+
+    def test_status_itself_is_not_hidden(self):
+        excluded = chart_runner.DATA_TABLE_EXCLUDED_COLUMNS["cluster_topic_table"]
+        self.assertNotIn("status", excluded)
+        # ⚠ status_meaning 刻意排除：它是 status 的固定對照，逐列重複很佔寬度，
+        # 改由頁尾統一說明（2026-08-03 使用者：欄位不要那麼多）。
+
+
+class QuadrantWordingTests(unittest.TestCase):
+    """C-5：象限只用「件數 × 申請人家數」切分，推不出迴避設計結論。
+
+    🔴 2026-08-02 使用者：現行 p18／p19 直接寫「必守核心戰場 → **迴避設計**」，
+    等於用密度統計冒充侵權判斷。真正 FTO 需要 claim chart、claim overlap、
+    legal status、jurisdiction，這張圖一項都沒有。
+
+    定案改法：象限名改「高競爭技術區」，行動改「需進行 claim overlap 分析」。
+    """
+
+    def test_high_density_quadrant_renamed(self):
+        label, action = chart_runner._qlabel(10, 10, 5, 5)
+        self.assertEqual(label, "高競爭技術區")
+        self.assertEqual(action, "需進行 claim overlap 分析")
+
+    def test_table_quadrant_name_matches_chart(self):
+        """⚠ 表格用名與圖上名必須同一套，否則同一象限在兩處叫不同名字。"""
+        name = chart_runner._opportunity_quadrant_name(
+            {"patent_count": 10, "applicant_count": 10}, 5, 5)
+        self.assertEqual(name, "高競爭技術區")
+
+    def test_no_avoidance_design_claim_in_quadrant_output(self):
+        """象限的任何輸出都不得再宣稱「迴避設計」。"""
+        labels = [chart_runner._qlabel(px, py, 5, 5) for px, py in
+                  ((10, 10), (1, 10), (1, 1), (10, 1))]
+        for label, action in labels:
+            self.assertNotIn("迴避設計", label)
+            self.assertNotIn("迴避設計", action)
+
+    def test_other_quadrants_unchanged(self):
+        """只有高密度高廣度那一象限改名，其餘三個維持原判讀。"""
+        self.assertEqual(chart_runner._qlabel(1, 10, 5, 5)[1], "值得追")
+        self.assertEqual(chart_runner._qlabel(1, 1, 5, 5)[1], "需使用者痛點調查")
+        self.assertEqual(chart_runner._qlabel(10, 1, 5, 5)[1], "注意依賴風險")
+
+
+class PointLabelPlacementTests(unittest.TestCase):
+    """E7：資料點標籤不得互相重疊，也不得壓在資料點上。
+
+    🔴 2026-08-02 實機 p4 生命週期：左下角兩個年份標籤疊成「20**」讀不出來，
+    2015／2019／2023 也各自擠在點旁。
+
+    07-31 的第一版避讓只看「折線在此點往上還往下」，把標籤放到線的另一側——
+    那解的是「被折線壓過」，解不了**標籤之間**與**標籤壓到別的點**。
+    資料點密集時（本案 60 件裡多年落在 1–2 家、1–2 件）兩者才是主因。
+    """
+
+    def _place(self, items, obstacles=()):
+        return chart_runner.place_point_labels(list(items), list(obstacles))
+
+    def test_two_close_labels_do_not_overlap(self):
+        placed = self._place([(100.0, 100.0, "2011"), (104.0, 102.0, "2012")])
+        self.assertEqual(len(placed), 2)
+        self.assertTrue(all(p is not None for p in placed), "兩個標籤都該放得下（換位置即可）")
+        (x1, y1), (x2, y2) = placed
+        self.assertFalse(chart_runner.boxes_overlap(
+            chart_runner.label_box(x1, y1, "2011"), chart_runner.label_box(x2, y2, "2012")),
+            "相鄰兩年的標籤仍然重疊")
+
+    def test_label_does_not_cover_data_point(self):
+        """標籤不得蓋住任何資料點（包含不是它自己的那些）。"""
+        obstacles = [(100.0, 100.0, 4.0), (118.0, 94.0, 4.0)]
+        placed = self._place([(100.0, 100.0, "2022")], obstacles)
+        self.assertIsNotNone(placed[0])
+        box = chart_runner.label_box(*placed[0], "2022")
+        for ox, oy, r in obstacles:
+            self.assertFalse(chart_runner.boxes_overlap(box, (ox - r, oy - r, ox + r, oy + r)),
+                             "標籤壓在資料點上")
+
+    def test_real_lifecycle_data_has_no_overlap(self):
+        """🔴 G-6：實機 p3 仍有兩處年份標籤疊在一起（2021/2011、2026/2017）。
+
+        ⚠ 用**實際資料形狀**驗，不是理想化的測資——E7 的碰撞避讓在單元測試下
+        一直是綠的，實機卻還在疊，因為真實資料點的密集程度不同。
+        本測試以實機生命週期的座標分布重現：多年落在 1–2 家、1–2 件，點擠成一團。
+        """
+        rows = [{"application_year": y, "applicant_count": a, "patent_count": c}
+                for y, a, c in [(2011, 1, 1), (2013, 1, 2), (2015, 2, 4), (2016, 1, 1),
+                                (2017, 1, 1), (2018, 3, 5), (2019, 3, 3), (2020, 5, 7),
+                                (2021, 1, 1), (2022, 7, 15), (2023, 4, 4), (2024, 5, 11),
+                                (2025, 4, 4), (2026, 1, 1)]]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "lc.svg"
+            chart_runner.render_lifecycle_chart(path, "專利生命週期", rows)
+            svg = path.read_text(encoding="utf-8")
+        # ⚠ 字級改由 chart_font_px() 反推後帶小數（20.7），`\d+` 抓不到 →
+        # 標籤清單變空 → 測試以「一個年份標籤都沒畫出來」失敗，而不是真的重疊。
+        labels = re.findall(
+            r'<text x="([0-9.]+)" y="([0-9.]+)" font-size="[0-9.]+" fill="[^"]+">(\d{4})</text>', svg)
+        self.assertTrue(labels, "一個年份標籤都沒畫出來")
+        for i, (x1, y1, t1) in enumerate(labels):
+            for x2, y2, t2 in labels[i + 1:]:
+                self.assertFalse(
+                    chart_runner.boxes_overlap(
+                        chart_runner.label_box(float(x1), float(y1), t1),
+                        chart_runner.label_box(float(x2), float(y2), t2)),
+                    f"年份標籤 {t1} 與 {t2} 重疊")
+
+    def test_gives_up_instead_of_stacking(self):
+        """四個候選位置全被占滿時回 None（不標），不得硬疊上去。"""
+        crowd = [(100.0 + i * 2, 100.0, f"20{i:02d}") for i in range(12)]
+        placed = self._place(crowd)
+        self.assertIn(None, placed, "極度擁擠時應放棄部分標籤，而不是全部硬放")
+        kept = [(p, item) for p, item in zip(placed, crowd) if p]
+        for i, (p1, it1) in enumerate(kept):
+            for p2, it2 in kept[i + 1:]:
+                self.assertFalse(chart_runner.boxes_overlap(
+                    chart_runner.label_box(*p1, it1[2]), chart_runner.label_box(*p2, it2[2])),
+                    "保留下來的標籤之間仍有重疊")
 
 
 if __name__ == "__main__":

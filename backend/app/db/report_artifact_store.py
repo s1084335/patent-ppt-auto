@@ -17,6 +17,7 @@ JSONB 需 base64（+33%）且每次讀該 output 就整包拉回，做不到「a
 from __future__ import annotations
 
 import hashlib
+import shutil
 from pathlib import Path
 
 from backend.app.db.connection import get_pool
@@ -151,6 +152,41 @@ def list_files(version: str) -> list[dict]:
     return [{"filename": row[0], "content": bytes(row[1])} for row in rows]
 
 
+#: 本機報表快取保留幾個版本（2026-08-03 使用者定案）。
+#: ⚠ 快取只是 DB 產物（`app_layer.report_artifacts`）的本機落地副本，
+#: 刪了下次 materialize 會重建——真身不在這裡，清理是安全的。
+REPORT_CACHE_KEEP = 5
+
+#: 版本目錄的命名前綴（`report_trial_YYYYMMDD_HHMMSS`）。
+#: ⚠ 只清符合這個形狀的目錄：同層若有人放了別的東西，不該被順手刪掉。
+_CACHE_DIR_PREFIX = "report_trial_"
+
+
+def prune_cache(cache_root: Path | str, keep: int = REPORT_CACHE_KEEP) -> list[str]:
+    """只保留最近 `keep` 個版本目錄，回傳被刪掉的版本名。
+
+    為什麼要有這個（2026-08-03）：`materialize_version` 每次落地一個版本卻**從不清**，
+    實測累積 13 個版本約 28 MB，而且只會一直長。
+
+    ⚠ 這與 `output/_verify/` 是同一個教訓（AGENTS.md：27 個目錄 90.9 MB）——
+    「換落點不等於解決問題，沒設保留策略就只是換個地方繼續膨脹」。
+
+    ⚠ 排序用**目錄名**不是 mtime：版本名本身帶時間戳（report_trial_YYYYMMDD_HHMMSS），
+    而 mtime 會被「重新讀取舊版本」之類的操作改掉，導致刪錯。
+    """
+    root = Path(cache_root)
+    if not root.is_dir():
+        return []
+    versions = sorted(d for d in root.iterdir()
+                      if d.is_dir() and d.name.startswith(_CACHE_DIR_PREFIX))
+    doomed = versions[:-keep] if keep > 0 else versions
+    removed: list[str] = []
+    for path in doomed:
+        shutil.rmtree(path, ignore_errors=True)
+        removed.append(path.name)
+    return removed
+
+
 def materialize_version(version: str, cache_root: Path | str) -> Path:
     """把 DB 內某報表版本落地成 `<cache_root>/<version>/` 目錄，回傳該目錄路徑。
 
@@ -172,4 +208,7 @@ def materialize_version(version: str, cache_root: Path | str) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     for item in files:
         (run_dir / item["filename"]).write_bytes(item["content"])
+    # ⚠ 落地**之後**才清：先清可能把剛要用的版本也算進舊的，
+    #   而且失敗時至少新版本已經完整。
+    prune_cache(cache_root)
     return run_dir

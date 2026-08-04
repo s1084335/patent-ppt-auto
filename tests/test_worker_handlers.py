@@ -52,12 +52,17 @@ class AiNarrativeHandlerTests(unittest.TestCase):
     def _fake_run_narrative(self, captured):
         """回傳一個 fake run_narrative：把呼叫參數記進 captured dict，呼叫 progress 模擬 CLI 緩進。"""
 
+        # ⚠ report_keys 是 2026-07-29「報表各自獨立重產解讀」加的參數，handler 早已
+        # 往下傳，但這支 fake 沒跟上——整組 AiNarrativeHandler 測試因 TypeError 全紅
+        # （2026-07-31 發現時已存在於 master 的祖先提交上）。既然真實介面會長，
+        # 這裡收 **kwargs 一併記錄，日後再加參數不會又整組炸掉。
         def _run(based_on_version, *, cli_kind, cli_runner, timeout_seconds, progress,
-                 model=None, instruction=None):
+                 model=None, instruction=None, **kwargs):
             captured["based_on_version"] = based_on_version
             captured["cli_kind"] = cli_kind
             captured["model"] = model
             captured["timeout_seconds"] = timeout_seconds
+            captured.update(kwargs)
             # 使用者輸入的修改需求必須一路傳到 runner（待辦 C-7b bug ②：
             # 2026-07-27 前 handler 沒往下傳，打了完全沒作用）。
             captured["instruction"] = instruction
