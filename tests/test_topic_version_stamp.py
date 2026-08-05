@@ -139,5 +139,94 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(R.current_topic_versions(None), {})
 
 
+class CurrentVersionsQueryTests(unittest.TestCase):
+    """`current_topic_versions` 的分支：查得到／該通道無主題／run_id 為 None。
+
+    ⚠ 這支會在產 PPT 時真的跑到 DB，三條分支都要驗——只驗 happy path 的話，
+    「某通道還沒分群」這種常見情形會在正式環境才第一次執行到。
+    """
+
+    def _patch(self, side_effect):
+        from backend.app.repositories import topic_state_repository as R
+
+        repo = mock.MagicMock()
+        repo.get_latest_topic_state.side_effect = side_effect
+        return mock.patch.object(R, "PostgresTopicStateRepository", return_value=repo)
+
+    def test_collects_run_id_per_channel(self):
+        from backend.app.worker import ai_report_ppt_runner as R
+
+        def _state(ws, source_field):
+            return {"run_id": 100 if "claims" in source_field else 200}
+
+        with self._patch(_state):
+            self.assertEqual(
+                R.current_topic_versions(3),
+                {"wips_independent_claims": 100, "effect_summary": 200})
+
+    def test_channel_without_topics_is_skipped(self):
+        from backend.app.repositories.topic_state_repository import (
+            TopicStateNotFoundError,
+        )
+        from backend.app.worker import ai_report_ppt_runner as R
+
+        def _state(ws, source_field):
+            if "claims" in source_field:
+                raise TopicStateNotFoundError("no topics")
+            return {"run_id": 7}
+
+        with self._patch(_state):
+            self.assertEqual(R.current_topic_versions(3), {"effect_summary": 7})
+
+    def test_null_run_id_not_recorded(self):
+        """run_id 為 None 時不落鍵——落了會被比對成「不一致」而亂報。"""
+        from backend.app.worker import ai_report_ppt_runner as R
+
+        with self._patch(lambda ws, sf: {"run_id": None}):
+            self.assertEqual(R.current_topic_versions(3), {})
+
+
+class RecordedVersionReadTests(unittest.TestCase):
+    """從 report_data.json 讀出報表當時記的版本（三種檔案狀態）。"""
+
+    def _read(self, tmp):
+        """重演 run_report_ppt 裡的讀取邏輯（同一段條件）。"""
+        import json
+        from pathlib import Path
+
+        path = Path(tmp) / "report_data.json"
+        try:
+            return (json.loads(path.read_text(encoding="utf-8")).get("parameters") or {}
+                    ).get("topic_run_id") if path.exists() else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def test_reads_recorded_version(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "report_data.json").write_text(
+                json.dumps({"parameters": {"topic_run_id": {"effect_summary": 9}}}),
+                encoding="utf-8")
+            self.assertEqual(self._read(tmp), {"effect_summary": 9})
+
+    def test_missing_file_returns_none(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(self._read(tmp))
+
+    def test_corrupt_json_returns_none(self):
+        """壞檔不得讓 PPT 產製失敗——提示性功能不可反過來擋主流程。"""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "report_data.json").write_text("{壞", encoding="utf-8")
+            self.assertIsNone(self._read(tmp))
+
+
 if __name__ == "__main__":
     unittest.main()

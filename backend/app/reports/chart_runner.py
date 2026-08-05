@@ -525,6 +525,54 @@ def ranking_segments(row: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def structure_bar_svg(row: dict[str, Any], *, left: float, top: float,
+                      max_value: float, plot_w: float) -> list[str]:
+    """畫一列的申請結構長條：兩段色＋各段右端斜紋，回傳 SVG 片段清單。
+
+    抽出來的理由：`render_segmented_bar_chart` 原本同時負責**版面計算**
+    （字級迭代、列高、標籤區）與**繪圖**，兩件事混在一個函式裡改任一邊都要
+    重讀全部。分離後這支可獨立驗證幾何（見 test_ranking_structure_segments）。
+
+    🔴 分段是**類別編碼**，必須固定色：沿用 `ranking_bar_color`（依數值深淺）
+    會讓「單獨申請」在每一列都是不同顏色，圖例說一個色、圖上五種色
+    ——2026-08-05 本機轉圖當場抓到（帝瑪斯深藍、孟喬淺藍，同為單獨段）。
+    ⚠ 取色階最淺一階：W-2 硬約束保證它對白底與深底都 ≥3.0。
+    """
+    seg = ranking_segments(row)
+
+    def width_of(count: int) -> float:
+        return scale(count, 0, max_value, 0, plot_w)
+
+    solo_w, joint_w = width_of(seg["solo"]), width_of(seg["joint"])
+    out = [(f'<rect class="bar-total" x="{left}" y="{top}" width="{solo_w:.1f}" '
+            f'height="{BAR_HEIGHT_PX}" rx="2" fill="{STRUCTURE_SOLO_COLOR}"/>')]
+    if joint_w > 0:
+        out.append(f'<rect class="bar-segment" x="{left + solo_w:.1f}" y="{top}" '
+                   f'width="{joint_w:.1f}" height="{BAR_HEIGHT_PX}" rx="2" fill="{COLOR_SEGMENT}"/>')
+    for hatch_count, seg_start, seg_len in ((seg["solo_hatch"], left, solo_w),
+                                            (seg["joint_hatch"], left + solo_w, joint_w)):
+        hatch_w = width_of(hatch_count)
+        if hatch_w > 0:
+            out.append(f'<rect class="bar-hatch" x="{seg_start + seg_len - hatch_w:.1f}" '
+                       f'y="{top}" width="{hatch_w:.1f}" height="{BAR_HEIGHT_PX}" '
+                       f'rx="2" fill="url(#hatch)"/>')
+    return out
+
+
+def _names_with_count(label: str, names: Any, count: Any) -> str:
+    """把「名單＋件數」組成一段註記；名單或件數缺一即回空字串。
+
+    ⚠ 名單為空卻有件數（或反之）＝資料不一致，寧可整段不印也不要印出
+    「甲 0件」這種讀者無從解讀的東西。SQL 用 `; ` 串接、畫面統一用頓號，
+    兩種分隔混在同一張圖上很雜。
+    """
+    parts = [n.strip() for n in str(names or "").split("; ") if n.strip()]
+    total = int(count or 0)
+    if not parts or total <= 0:
+        return ""
+    return f"{label}：{'、'.join(parts)} {total}件"
+
+
 def ranking_note(row: dict[str, Any], *, co_label: str = "共同申請",
                  with_assignee: bool = True) -> str:
     """組列下註記：`共同申請：X N件｜最新受讓人：Y M件`（並存用 `｜` 串接）。
@@ -532,18 +580,16 @@ def ranking_note(row: dict[str, Any], *, co_label: str = "共同申請",
     ⚠ 不截斷（2026-08-03 使用者定案「資訊不能有被截斷的」）——列高本來就會
     為有註記的列多留一行。專利權人圖 `with_assignee=False`：定案不放受讓人。
     """
-    parts: list[str] = []
-    co_names = str(row.get("co_applicant_names") or row.get("co_owner_names") or "").strip()
-    joint = int(row.get("joint_count") or 0)
-    if co_names and joint:
-        parts.append(f"{co_label}：{co_names.replace('; ', '、')} {joint}件")
+    segments = [_names_with_count(
+        co_label,
+        row.get("co_applicant_names") or row.get("co_owner_names"),
+        row.get("joint_count"))]
     if with_assignee:
-        names = [n.strip() for n in
-                 str(row.get("recent_assignee_display_names") or "").split("; ") if n.strip()]
-        count = int(row.get("recent_assignee_count") or 0)
-        if names and count:
-            parts.append(f"最新受讓人：{'、'.join(names)} {count}件")
-    return "｜".join(parts)
+        segments.append(_names_with_count(
+            "最新受讓人",
+            row.get("recent_assignee_display_names"),
+            row.get("recent_assignee_count")))
+    return "｜".join(part for part in segments if part)
 
 
 def render_segmented_bar_chart(
@@ -629,16 +675,21 @@ def render_segmented_bar_chart(
         f'<text data-role="chart-title" x="28" y="36" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         # #3 圖例：兩段色（申請結構）＋斜紋（已轉讓）。斜紋是**第二個通道**，
         # 疊在段色上——「共同且已轉讓」＝共同色＋斜紋，兩個屬性同時看得到。
-        f'<defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" '
-        f'patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" '
-        f'stroke="{COLOR_TEXT}" stroke-width="2" stroke-opacity="0.55"/></pattern></defs>',
-        f'<rect x="28" y="56" width="12" height="12" fill="{RANKING_BAR_SCALE[0]}"/>'
-        f'<text x="46" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(structure_labels[0])}</text>',
-        f'<rect x="126" y="56" width="12" height="12" fill="{COLOR_SEGMENT}"/>'
-        f'<text x="144" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(structure_labels[1])}</text>',
-        *([f'<rect x="236" y="56" width="12" height="12" fill="{RANKING_BAR_SCALE[0]}"/>'
-           f'<rect x="236" y="56" width="12" height="12" fill="url(#hatch)"/>'
-           f'<text x="254" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(hatch_label)}</text>']
+        (f'<defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" '
+         f'patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" '
+         f'stroke="{COLOR_TEXT}" stroke-width="2" stroke-opacity="0.55"/></pattern></defs>'),
+        (f'<rect x="28" y="56" width="12" height="12" fill="{STRUCTURE_SOLO_COLOR}"/>'
+         f'<text x="46" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">'
+         f'{xml_text(structure_labels[0])}</text>'),
+        (f'<rect x="126" y="56" width="12" height="12" fill="{COLOR_SEGMENT}"/>'
+         f'<text x="144" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">'
+         f'{xml_text(structure_labels[1])}</text>'),
+        # ⚠ 圖例色塊的底色要用**淺階**：深底配深斜紋等於看不見
+        #   （2026-08-05 轉圖當場抓到，圖例那格是一片實心深藍）。
+        *([(f'<rect x="236" y="56" width="12" height="12" fill="{STRUCTURE_SOLO_COLOR}"/>'
+            f'<rect x="236" y="56" width="12" height="12" fill="url(#hatch)"/>'
+            f'<text x="254" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">'
+            f'{xml_text(hatch_label)}</text>')]
           if hatch_label else []),
         *([f'<text x="{width - 40}" y="67" text-anchor="end" font-size="{note_px:.1f}" '
            f'fill="{COLOR_TEXT_SOFT}">{xml_text(truncation_note(len(data), total_rows))}</text>']
@@ -658,23 +709,8 @@ def render_segmented_bar_chart(
         # 面板底 274A66，對深空背景只有 1.72——簡報上這根長條等於不存在。
         # 改用資料色階（依數值深淺，W-2），最淺一階對兩種背景都 ≥3.0。
         # #3：左＝單獨、右＝共同；各段右端疊斜紋表示「已轉讓」（兩個獨立屬性）。
-        seg = ranking_segments(row)
-        def _w(count: int) -> float:
-            return scale(count, 0, max_value, 0, plot_w)
-        solo_w, joint_w = _w(seg["solo"]), _w(seg["joint"])
-        svg.append(f'<rect class="bar-total" x="{left}" y="{y + 5}" width="{solo_w:.1f}" '
-                   f'height="{BAR_HEIGHT_PX}" rx="2" fill="{ranking_bar_color(total, max_value)}"/>')
-        if joint_w > 0:
-            svg.append(f'<rect class="bar-segment" x="{left + solo_w:.1f}" y="{y + 5}" '
-                       f'width="{joint_w:.1f}" height="{BAR_HEIGHT_PX}" rx="2" fill="{COLOR_SEGMENT}"/>')
-        for hatch_count, seg_start, seg_len in (
-                (seg["solo_hatch"], left, solo_w),
-                (seg["joint_hatch"], left + solo_w, joint_w)):
-            hatch_w = _w(hatch_count)
-            if hatch_w > 0:
-                svg.append(
-                    f'<rect class="bar-hatch" x="{seg_start + seg_len - hatch_w:.1f}" y="{y + 5}" '
-                    f'width="{hatch_w:.1f}" height="{BAR_HEIGHT_PX}" rx="2" fill="url(#hatch)"/>')
+        svg.extend(structure_bar_svg(row, left=left, top=y + 5,
+                                     max_value=max_value, plot_w=plot_w))
         # 🔴 H-7（2026-08-03 實機 p13）：原本一律印「0 / 13」，讀者看不出分子是什麼
         # ——分母是件數，分子是「有最新受讓人」的件數，但數字本身沒有任何線索。
         # 改為：主數字＝總件數；有分段時才用**圖例同色**把它括在後面，
@@ -1526,6 +1562,10 @@ def render_chart_embed(file: str) -> str:
 # 白底（網頁報表）實測對比：10.88／7.43／5.28／3.75／3.08，全數過關。
 # 對應的深底階由 theme.json 的 chart_recolor 映射（對背景 9.24→3.53）。
 RANKING_BAR_SCALE: tuple[str, ...] = ("#0A3A80", "#0B4FB8", "#1268D6", "#2E86E0", "#4A97E3")
+
+#: 申請結構分段的類別色（#3，2026-08-05）。⚠ 類別編碼不得用數值色階——
+#: 同一個「單獨申請」在不同列會變色，圖例就對不上。取最淺一階（W-2 保證 ≥3.0）。
+STRUCTURE_SOLO_COLOR = RANKING_BAR_SCALE[-1]
 
 
 

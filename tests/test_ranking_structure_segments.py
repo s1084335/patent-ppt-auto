@@ -71,8 +71,8 @@ class ReportDefinitionTests(unittest.TestCase):
     def test_source_table_unchanged(self):
         """⚠ 不得換成展開 VIEW：那會讓件數重複計數（60→74），違反加總＝總件數。"""
         from backend.app.reports.report_definitions import (
-            REPORT_SOURCE_TABLE,
             REPORT_DEFINITIONS,
+            REPORT_SOURCE_TABLE,
         )
 
         for name in ("applicant_ranking", "owner_ranking"):
@@ -129,6 +129,45 @@ class NoteCompositionTests(unittest.TestCase):
                             co_label="共同持有人", with_assignee=False)
         self.assertIn("共同持有人：甲 2件", note)
         self.assertNotIn("受讓", note)
+
+
+class CategoricalColorTests(unittest.TestCase):
+    """🔴 分段是類別編碼，不得沿用數值色階（2026-08-05 轉圖當場抓到）。
+
+    沿用 `ranking_bar_color` 會讓同一個「單獨申請」在每列都是不同顏色
+    ——圖例說一個色、圖上五種色，讀者無從對應。
+    """
+
+    def _svg(self, rows, **kwargs):
+        import tempfile
+        from pathlib import Path
+
+        from backend.app.reports import chart_runner as cr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "r.svg"
+            cr.render_segmented_bar_chart(path, "t", rows, "k", total_key="patent_count", **kwargs)
+            return path.read_text(encoding="utf-8")
+
+    def test_solo_color_same_across_rows(self):
+        import re
+
+        svg = self._svg([
+            {"k": "大", "patent_count": 20, "joint_count": 0},
+            {"k": "小", "patent_count": 2, "joint_count": 0},
+        ])
+        colors = set(re.findall(r'class="bar-total"[^>]*fill="([^"]+)"', svg))
+        self.assertEqual(len(colors), 1, f"單獨段在不同列變色了：{colors}")
+
+    def test_legend_hatch_swatch_is_light(self):
+        """圖例的已轉讓色塊底色要用淺階——深底配深斜紋等於看不見。"""
+        from backend.app.reports import chart_runner as cr
+
+        svg = self._svg([{"k": "A", "patent_count": 3, "joint_count": 1,
+                          "solo_transferred_count": 1}])
+        flat = svg.replace(chr(10), "")
+        self.assertIn(f'fill="{cr.STRUCTURE_SOLO_COLOR}"/><rect x="236"', flat)
+        self.assertEqual(cr.STRUCTURE_SOLO_COLOR, cr.RANKING_BAR_SCALE[-1])
 
 
 class RendererContractTests(unittest.TestCase):
