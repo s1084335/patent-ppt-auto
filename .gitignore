@@ -46,3 +46,7 @@ var/
 # pytest 暫存與非程式碼文件（2026-07-26）
 .tmp/
 報告流程測試/
+
+# 模組驗證流程的暫存量測檔（scripts/verify_module.py）
+.coverage
+.verify_coverage.json
