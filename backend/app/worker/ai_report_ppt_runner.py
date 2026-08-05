@@ -285,6 +285,25 @@ def topic_version_warnings(*, recorded: Any, current: Any) -> list[str]:
     return messages
 
 
+def stale_topic_warnings(run_dir: Path, workspace_id: Any) -> list[str]:
+    """報表記的主題版本 vs 現行版本，回傳提示訊息（#3b）。
+
+    抽出來的理由（2026-08-05 度量後）：這段塞在 `run_report_ppt` 裡讓那支
+    由 D(22) 升到 D(25)——本來就過長的函式又多背一件事。
+    抽出後 `run_report_ppt` 回到 D(22)（未再惡化），且讀檔失敗的分支可獨立驗證。
+
+    ⚠ 讀不到就回空：提示性功能不得反過來擋住 PPT 產製。
+    """
+    try:
+        path = run_dir / "report_data.json"
+        recorded = (json.loads(path.read_text(encoding="utf-8")).get("parameters") or {}
+                    ).get("topic_run_id") if path.exists() else None
+    except Exception:  # noqa: BLE001 - 壞檔／權限問題都只是不提示
+        recorded = None
+    return topic_version_warnings(
+        recorded=recorded, current=current_topic_versions(workspace_id))
+
+
 def load_direction_capacity() -> dict[str, int]:
     """研發方向頁的版面容量（R-1，2026-08-05）——與組版端同一個算法。
 
@@ -582,16 +601,8 @@ def run_report_ppt(
 
     if progress is not None:
         progress("報告 PPT 已產出", 100)
-    # #3b：主題版本不一致＝提示（不擋）。報表產製時記下的版本在 report_data.json，
-    # 與現行版本比對；任一邊缺就不提示（舊報表沒有這個欄位）。
-    try:
-        _rd_path = run_dir / "report_data.json"
-        _recorded = (json.loads(_rd_path.read_text(encoding="utf-8")).get("parameters") or {}
-                     ).get("topic_run_id") if _rd_path.exists() else None
-    except Exception:  # noqa: BLE001 - 讀不到就不提示
-        _recorded = None
-    _stale = topic_version_warnings(
-        recorded=_recorded, current=current_topic_versions(workspace_id))
+    # #3b：主題版本不一致＝提示（不擋）；判定與讀檔都在 stale_topic_warnings 內。
+    _stale = stale_topic_warnings(run_dir, workspace_id)
 
     return {
         "based_on_version": version,

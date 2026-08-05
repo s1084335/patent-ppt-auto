@@ -187,19 +187,21 @@ class CurrentVersionsQueryTests(unittest.TestCase):
 
 
 class RecordedVersionReadTests(unittest.TestCase):
-    """從 report_data.json 讀出報表當時記的版本（三種檔案狀態）。"""
+    """從 report_data.json 讀出報表當時記的版本（三種檔案狀態）。
+
+    ⚠ 2026-08-05：原本這裡「重演」讀取邏輯——那是兩處落點，改了 runner 這裡驗不到。
+    抽出 `stale_topic_warnings` 後直接驗它本人（同時把讀檔分支的覆蓋率補上）。
+    """
 
     def _read(self, tmp):
-        """重演 run_report_ppt 裡的讀取邏輯（同一段條件）。"""
-        import json
+        """直接驗真正在跑的那支（current 打樁成空，只看讀檔分支）。"""
         from pathlib import Path
 
-        path = Path(tmp) / "report_data.json"
-        try:
-            return (json.loads(path.read_text(encoding="utf-8")).get("parameters") or {}
-                    ).get("topic_run_id") if path.exists() else None
-        except Exception:  # noqa: BLE001
-            return None
+        from backend.app.worker import ai_report_ppt_runner as R
+
+        with mock.patch.object(R, "current_topic_versions", return_value={"x": 1}),              mock.patch.object(R, "topic_version_warnings",
+                               side_effect=lambda recorded, current: recorded):
+            return R.stale_topic_warnings(Path(tmp), 3)
 
     def test_reads_recorded_version(self):
         import json
