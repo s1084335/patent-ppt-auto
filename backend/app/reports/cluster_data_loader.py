@@ -71,6 +71,7 @@ def load_cluster_workspace_data(
             "topics": [], "assignments": [],
             "normalized_applicants": [], "top_applicants_ws": [],
             "patents": {},
+            "topic_run_id": None, "topic_state_version": None,
         }
 
     topics_out: list[dict[str, Any]] = [
@@ -153,6 +154,11 @@ def load_cluster_workspace_data(
         "normalized_applicants": normalized_applicants,
         "top_applicants_ws": top_applicants_ws,
         "patents": patents,
+        # #3b（2026-08-05）：把 repository 已查到的版本帶出來供報表落章。
+        # ⚠ 不多查一趟 DB——`get_latest_topic_state` 回傳裡本來就有這兩個值，
+        # 只是先前沒往外傳，於是報表無從記錄自己用的是哪一版主題。
+        "topic_run_id": state.get("run_id"),
+        "topic_state_version": state.get("state_run_id"),
     }
 
 

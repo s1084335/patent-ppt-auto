@@ -232,6 +232,59 @@ _PPT_OUTPUT_CONTRACT = {
 }
 
 
+def current_topic_versions(workspace_id: Any) -> dict[str, int]:
+    """查該 workspace 現行的主題版本 `{source_field: run_id}`（#3b）。
+
+    ⚠ 查掛一律回空 dict——版本比對是提示性功能，不得讓它擋住 PPT 產製
+    （沒有比對結果時 `topic_version_warnings` 自然不提示）。
+    """
+    if workspace_id is None:
+        return {}
+    try:
+        from backend.app.clustering.sources import SOURCE_SPECS
+        from backend.app.repositories.topic_state_repository import (
+            PostgresTopicStateRepository,
+            TopicStateNotFoundError,
+        )
+
+        repo = PostgresTopicStateRepository()
+        out: dict[str, int] = {}
+        for source_field in SOURCE_SPECS:
+            try:
+                state = repo.get_latest_topic_state(int(workspace_id), source_field)
+            except TopicStateNotFoundError:
+                continue
+            run_id = state.get("run_id")
+            if run_id is not None:
+                out[source_field] = int(run_id)
+        return out
+    except Exception:  # noqa: BLE001 - 提示性功能，查不到就不提示
+        return {}
+
+
+def topic_version_warnings(*, recorded: Any, current: Any) -> list[str]:
+    """比對報表記下的主題版本與現行版本，回傳提示訊息（一致或無從比對＝空）。
+
+    🔴 **提示不擋**（2026-08-05 使用者定案）：擋會讓使用者在重新分群後
+    再也無法為舊版報表出 PPT；提示已足以避免「拿舊主題當現況解讀」。
+    ⚠ 任一邊沒有版本就不提示——沒有依據的警告只會製造雜訊，
+    而且舊報表本來就沒有這個欄位（本功能之前產的都沒有）。
+    """
+    if not isinstance(recorded, dict) or not isinstance(current, dict):
+        return []
+    messages: list[str] = []
+    for source_field, recorded_id in sorted(recorded.items()):
+        current_id = current.get(source_field)
+        if recorded_id is None or current_id is None:
+            continue
+        if recorded_id != current_id:
+            messages.append(
+                f"主題版本已更新（{source_field}：報表產製時 run {recorded_id}，"
+                f"目前為 run {current_id}）——本份 PPT 的主題標籤沿用產製當時的分群，"
+                f"要反映最新分群請重新產製報表")
+    return messages
+
+
 def load_direction_capacity() -> dict[str, int]:
     """研發方向頁的版面容量（R-1，2026-08-05）——與組版端同一個算法。
 
@@ -529,9 +582,21 @@ def run_report_ppt(
 
     if progress is not None:
         progress("報告 PPT 已產出", 100)
+    # #3b：主題版本不一致＝提示（不擋）。報表產製時記下的版本在 report_data.json，
+    # 與現行版本比對；任一邊缺就不提示（舊報表沒有這個欄位）。
+    try:
+        _rd_path = run_dir / "report_data.json"
+        _recorded = (json.loads(_rd_path.read_text(encoding="utf-8")).get("parameters") or {}
+                     ).get("topic_run_id") if _rd_path.exists() else None
+    except Exception:  # noqa: BLE001 - 讀不到就不提示
+        _recorded = None
+    _stale = topic_version_warnings(
+        recorded=_recorded, current=current_topic_versions(workspace_id))
+
     return {
         "based_on_version": version,
         "run_dir": str(run_dir),
+        "topic_version_warnings": _stale,
         "pptx_filename": pptx_filename,
         "uploaded_files": uploaded,
         "slots_filled": sum(1 for v in approvals["slots"].values() if v),

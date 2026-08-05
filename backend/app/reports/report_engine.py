@@ -46,6 +46,47 @@ AGGREGATE_FUNCTIONS = {
         "WHERE NULLIF(BTRIM(_rev.{col}::text), '') "
         "IS NOT DISTINCT FROM NULLIF(BTRIM({table}.{group_col}::text), ''))::int"
     ),
+    # ── #3 申請結構（2026-08-05 定案）：兩個獨立屬性各自計數 ──
+    # ⚠ 判定一律用**原始多值欄**（`A | B`）。不改 source_table 到展開 VIEW：
+    # 那會讓件數重複計數（實測 60→74），違反「兩段加總＝總件數」。
+    # ⚠ 判定對象是 COALESCE(主欄, 備援欄)——**必須與顯示名的推導同一套順位**。
+    # 實測教訓（2026-08-05）：專利權人顯示名主要來自「最近專利權人」（36 筆非空、
+    # 10 筆多值），而「標準當前專利權人」只有 3 筆非空且 0 筆多值；只看後者的話
+    # 「共同持有」永遠是 0，功能靜默失效而且驗不出來。
+    "count_multivalue": (
+        "COUNT(*) FILTER (WHERE position('|' in "
+        "COALESCE(NULLIF(BTRIM({col}::text), ''), {extra_col}::text, '')) > 0)::int"
+    ),
+    # 已轉讓沿用既有 _excl_group 口徑（受讓人＝自己不算轉讓），再依多值與否分流，
+    # 讓「共同且已轉讓」與「單獨且已轉讓」各自可數——只有總數的話這兩者分不開。
+    "count_multivalue_transferred": (
+        "COUNT(*) FILTER (WHERE position('|' in COALESCE({col}::text, '')) > 0 "
+        "AND NULLIF(BTRIM({extra_col}::text), '') IS NOT NULL "
+        "AND NULLIF(BTRIM({extra_col}::text), '') "
+        "IS DISTINCT FROM NULLIF(BTRIM({group_col}::text), ''))::int"
+    ),
+    "count_singlevalue_transferred": (
+        "COUNT(*) FILTER (WHERE position('|' in COALESCE({col}::text, '')) = 0 "
+        "AND NULLIF(BTRIM({extra_col}::text), '') IS NOT NULL "
+        "AND NULLIF(BTRIM({extra_col}::text), '') "
+        "IS DISTINCT FROM NULLIF(BTRIM({group_col}::text), ''))::int"
+    ),
+    # 共同者名單＝多值欄的**第 2 個以後**（第 1 個就是分組鍵本人：
+    # applicant_display_name 是 split_part(申請人,'|',1) 收斂而來）。
+    # ⚠ 名稱走 company_aliases 收斂，與長條標籤同一套顯示名——
+    # 一邊中文一邊英文原字會被讀成兩家公司。
+    "string_agg_co_values": (
+        "COALESCE((SELECT STRING_AGG(DISTINCT COALESCE("
+        "NULLIF(BTRIM(_ca.\"公司中文名稱\"), ''), NULLIF(BTRIM(_ca.\"正規化名稱\"), ''), _x.part"
+        "), '; ') FROM UNNEST(ARRAY_AGG(COALESCE(NULLIF(BTRIM({col}::text), ''), {extra_col}::text))) AS _raw "
+        "CROSS JOIN LATERAL (SELECT BTRIM(p) AS part, o AS ord FROM "
+        "regexp_split_to_table(COALESCE(_raw, ''), '\\s*\\|\\s*') WITH ORDINALITY AS t(p, o)) _x "
+        "LEFT JOIN LATERAL (SELECT c.\"公司中文名稱\", c.\"正規化名稱\" "
+        "FROM derived_layer.company_aliases c WHERE c.review_status = 'confirmed' "
+        "AND lower(regexp_replace(BTRIM(c.\"別稱\"), '\\s+', ' ', 'g')) "
+        "= lower(regexp_replace(_x.part, '\\s+', ' ', 'g')) ORDER BY c.id LIMIT 1) _ca ON true "
+        "WHERE _x.ord > 1 AND NULLIF(_x.part, '') IS NOT NULL), '')"
+    ),
     "string_agg_distinct_nonblank_excl_group": (
         "COALESCE(STRING_AGG(DISTINCT NULLIF(BTRIM({col}::text), ''), '; ' "
         "ORDER BY NULLIF(BTRIM({col}::text), '')) "
@@ -59,7 +100,13 @@ def build_aggregate_columns(definition: ReportDefinition) -> str:
     """把 definition.aggregates 組成 SELECT 片段（含前置逗號），無聚合時回空字串。"""
     parts: list[str] = []
     group_col = quote_ident(definition.group_by[0]) if definition.group_by else None
-    for func, column, alias in definition.aggregates:
+    for entry in definition.aggregates:
+        # 第四元素（可選）＝第二個來源欄，供需要兩欄的聚合使用
+        # （#3「共同且已轉讓」要同時看多值欄與受讓人欄）。
+        # ⚠ 用可選第四元素而不是把欄名寫死進模板：寫死就等於為單一報表訂做，
+        # 下一個報表要用就得再抄一份模板（本專案已因此犯過多次兩處落點）。
+        func, column, alias = entry[0], entry[1], entry[2]
+        extra_column = entry[3] if len(entry) > 3 else None
         template = AGGREGATE_FUNCTIONS.get(func)
         if template is None:
             raise ValueError(f"Unsupported aggregate function: {func} (report {definition.name})")
@@ -70,6 +117,9 @@ def build_aggregate_columns(definition: ReportDefinition) -> str:
             col=quote_ident(column),
             group_col=group_col,
             table=qualified_table_name(definition.source_table),
+            # 未給第四元素時 extra_col 回落到 col 本身——模板裡的
+            # COALESCE(主欄, 備援欄) 就退化成單欄，單欄與雙欄共用同一組模板。
+            extra_col=quote_ident(extra_column) if extra_column else quote_ident(column),
         )
         parts.append(f"{rendered} AS {quote_ident(alias)}")
     return (", " + ", ".join(parts)) if parts else ""
@@ -160,7 +210,9 @@ def build_order_clause(definition: ReportDefinition) -> str:
     parts = []
     allowed_outputs = {output_alias(column) for column in definition.columns}
     allowed_outputs.add("patent_count")
-    allowed_outputs.update(alias for _func, _column, alias in definition.aggregates)
+    # ⚠ 聚合允許可選第四元素（第二來源欄）——固定長度解包會在加了第四元素的
+    # 報表上炸掉。與 build_aggregate_columns 同一個取法（entry[2]），不另立解析。
+    allowed_outputs.update(entry[2] for entry in definition.aggregates)
     for column, direction in definition.default_order:
         direction_sql = "DESC" if direction.lower() == "desc" else "ASC"
         if column in allowed_outputs:

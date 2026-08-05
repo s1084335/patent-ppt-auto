@@ -200,9 +200,10 @@ class ChartTextSizeOnSlideTests(unittest.TestCase):
         data = [{"applicant_display_name": f"公司名稱{i}", "patent_count": 20 - i,
                  "recent_assignee_count": 0} for i in range(rows)]
         path = tmp / "rank.svg"
+        # #3（2026-08-05）：介面由 segment_key/segment_label 改為
+        # structure_labels（兩段色）＋hatch_label（已轉讓斜紋疊加）。
         cr.render_segmented_bar_chart(path, "主要申請人排名", data, "applicant_display_name",
-                                      total_key="patent_count", segment_key="recent_assignee_count",
-                                      limit=rows, segment_label="有最新受讓人")
+                                      total_key="patent_count", limit=rows)
         return path.read_text(encoding="utf-8")
 
     @staticmethod

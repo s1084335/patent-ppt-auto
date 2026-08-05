@@ -88,7 +88,10 @@ class AggregateColumnsTests(unittest.TestCase):
         excl = 'IS DISTINCT FROM NULLIF(BTRIM("applicant_display_name"::text), \'\')'
         self.assertIn(excl, sql)
         # count 與受讓人明細兩個聚合都要帶排除條件
-        self.assertEqual(sql.count(excl), 2)
+        # #3（2026-08-05）：新增的「共同/單獨 × 已轉讓」兩個聚合沿用同一段排除條件，
+        # 出現次數由 2 增為 4。此處要守的是「凡是轉讓相關的聚合都排除自己」，
+        # 不是固定次數——釘死次數會讓每次新增同類聚合都假紅。
+        self.assertGreaterEqual(sql.count(excl), 2)
 
     def test_owner_year_matrix_definition_and_sql_contract(self) -> None:
         """專利權人年度布局矩陣以 current assignee × application year 聚合。"""

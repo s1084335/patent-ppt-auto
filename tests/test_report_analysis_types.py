@@ -94,8 +94,9 @@ def _stub_run_report(name: str, **kwargs) -> dict:
                     else:
                         row[col] = f"val_{i}"
                 row["patent_count"] = (25 - i) * 2
-                for _func, _col, alias in definition.aggregates:
-                    row[alias] = max(1, 10 - i)
+                # ⚠ 聚合允許可選第四元素（第二來源欄）——固定長度解包會炸。
+                for entry in definition.aggregates:
+                    row[entry[2]] = max(1, 10 - i)
                 rows.append(row)
 
     return {

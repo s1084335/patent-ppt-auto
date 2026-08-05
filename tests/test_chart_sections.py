@@ -286,20 +286,32 @@ class DisplaySpecTests(unittest.TestCase):
         self.assertEqual(len(layout["years"]), 25, "年份軸最多最新 25 年")
         self.assertEqual(layout["years"][-1], 2019)
 
-    def test_segmented_bar_blue_segment_right_aligned(self):
-        rows = [{"applicant_display_name": "Co", "patent_count": 10, "recent_assignee_count": 4}]
+    def test_segmented_bar_two_segments_and_hatch(self):
+        """#3（2026-08-05）：兩段色（單獨／共同）＋各段右端斜紋（已轉讓）。
+
+        ⚠ 契約反轉：舊版是「總長條＋青色區段靠右端」的單一屬性編碼，
+        一件共同又已轉讓時只表達得出一個屬性。現在兩段接續排列
+        （單獨在左、共同在右），已轉讓改用斜紋疊在**各段右端**。
+        """
+        rows = [{"applicant_display_name": "Co", "patent_count": 10,
+                 "joint_count": 4, "solo_transferred_count": 2,
+                 "joint_transferred_count": 3}]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "seg.svg"
             chart_runner.render_segmented_bar_chart(
-                path, "t", rows, "applicant_display_name",
-                total_key="patent_count", segment_key="recent_assignee_count", segment_label="s")
+                path, "t", rows, "applicant_display_name", total_key="patent_count")
             svg = path.read_text(encoding="utf-8")
         total = re.search(r'class="bar-total" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"', svg)
         seg = re.search(r'class="bar-segment" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"', svg)
         self.assertIsNotNone(total); self.assertIsNotNone(seg)
-        total_end = float(total.group(1)) + float(total.group(2))
-        seg_end = float(seg.group(1)) + float(seg.group(2))
-        self.assertAlmostEqual(total_end, seg_end, delta=0.5, msg="藍色區段應靠灰色總量長條右端")
+        # 共同段緊接在單獨段右邊（兩段相接，加總＝總件數）
+        self.assertAlmostEqual(float(total.group(1)) + float(total.group(2)),
+                               float(seg.group(1)), delta=0.5,
+                               msg="共同段應緊接單獨段右緣")
+        hatches = re.findall(r'class="bar-hatch" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"', svg)
+        self.assertEqual(len(hatches), 2, "單獨段與共同段各要有一段斜紋")
+        for x, w in hatches:
+            self.assertGreater(float(w), 0)
 
 
 class BoardQuadrantTests(unittest.TestCase):
@@ -879,6 +891,11 @@ class SelectiveRenderTests(unittest.TestCase):
                 "patent_count": 5,
                 "recent_assignee_count": 2,
                 "recent_assignee_display_names": "Acme; Beta",
+                # #3（2026-08-05）：申請結構兩段＋已轉讓斜紋所需的欄位。
+                "joint_count": 2,
+                "co_applicant_names": "Gamma",
+                "solo_transferred_count": 1,
+                "joint_transferred_count": 1,
             }])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -889,11 +906,18 @@ class SelectiveRenderTests(unittest.TestCase):
             svg = (run_dir / "applicant_ranking.svg").read_text(encoding="utf-8")
             report_data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
 
-        self.assertIn("有最新受讓人", svg)
+        # #3（2026-08-05）：圖例改為「單獨申請／共同申請／已轉讓」三個標籤，
+        # 舊的「有最新受讓人」段名已退場（受讓資訊改由斜紋疊加＋列下註記表達）。
+        self.assertIn("單獨申請", svg)
+        self.assertIn("共同申請", svg)
+        self.assertIn("已轉讓", svg)
+        self.assertIn("最新受讓人：", svg)
         # 🔴 H-7（2026-08-03）：原本印「2 / 5」，讀者看不出分子是什麼。
         # 改為主數字＝總件數，分段用**圖例同色**括在後面（顏色自己對應
         # 圖例的「有最新受讓人」），分段為 0 時整個括號不印。
-        self.assertIn("5<tspan", svg, "分段標示未採用主數字＋同色括號")
+        # #3：青括號「5（2）」已移除（與段色打架，2026-08-05 定案）——
+        # 數字只印總件數，分段資訊由顏色與斜紋表達。
+        self.assertNotIn("<tspan", svg, "青括號分段標示應已移除")
         self.assertIn(chart_runner.COLOR_SEGMENT, svg)
         self.assertNotIn("2 / 5", svg, "還在用讀不出分子的舊寫法")
         self.assertIn("Acme", svg)
@@ -902,8 +926,13 @@ class SelectiveRenderTests(unittest.TestCase):
         segment_rect = re.search(r'<rect class="bar-segment" x="([0-9.]+)"[^>]+width="([0-9.]+)"', svg)
         self.assertIsNotNone(total_rect)
         self.assertIsNotNone(segment_rect)
-        self.assertGreater(float(segment_rect.group(1)), float(total_rect.group(1)))
-        self.assertLess(float(segment_rect.group(2)), float(total_rect.group(2)))
+        # #3：共同段緊接在單獨段右緣（兩段相接、加總＝總件數），不再是疊在總長條上。
+        self.assertAlmostEqual(
+            float(total_rect.group(1)) + float(total_rect.group(2)),
+            float(segment_rect.group(1)), delta=0.5)
+        self.assertEqual(len(re.findall(r'class="bar-hatch"', svg)), 2,
+                         "單獨段與共同段各要有一段已轉讓斜紋")
+        self.assertIn("共同申請：Gamma 2件", svg)
         row = report_data["reports"]["applicant_ranking"]["rows"][0]
         self.assertEqual(row["recent_assignee_count"], 2)
         self.assertEqual(row["recent_assignee_display_names"], "Acme; Beta")

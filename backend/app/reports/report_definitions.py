@@ -50,7 +50,9 @@ class ReportDefinition:
     # aggregate 型報表的額外聚合欄：(函式, 來源欄, 輸出別名)。
     # 函式白名單見 report_engine.AGGREGATE_FUNCTIONS（sum / count_distinct / avg / max）。
     # 例：(("sum", "(F1)引用文獻數", "cited_total"),) → COALESCE(SUM("(F1)引用文獻數"), 0) AS cited_total
-    aggregates: tuple[tuple[str, str, str], ...] = ()
+    # (函式, 來源欄, 輸出別名[, 第二來源欄])——第四元素可選，
+    # 供需要兩欄的聚合使用（#3「共同且已轉讓」要同時看多值欄與受讓人欄）。
+    aggregates: tuple[tuple[str, ...], ...] = ()
     # 資料來源備註：cluster 型報表用來標明分群／市場線等外部依賴（如「待市場線痛點資料」）；
     # 只作說明用途，不影響引擎行為。
     data_source_note: str = ""
@@ -180,6 +182,17 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
             # 受讓取得（2026-07-29 A 方案）：反向計數——有多少專利的最新受讓人是本公司。
             # 上面兩欄是「轉出」方向；沒有這欄的話，受讓方那列看不到自己拿到幾件。
             ("count_as_value_of", "recent_assignee_display_name", "acquired_count"),
+            # ── #3 申請結構兩段（2026-08-05 定案）──
+            # 共同申請＝原始欄「申請人」含 `|`；單獨＝patent_count − joint_count（圖層推導）。
+            # ⚠ 件數與排序完全不動：source_table 仍是 base，一件仍只算一次。
+            ("count_multivalue", "申請人", "joint_count"),
+            # 斜紋疊加（已轉讓）依多值與否分流，「共同且已轉讓」才數得出來。
+            ("count_multivalue_transferred", "申請人", "joint_transferred_count",
+             "recent_assignee_display_name"),
+            ("count_singlevalue_transferred", "申請人", "solo_transferred_count",
+             "recent_assignee_display_name"),
+            # 共同申請人名單（第 2 個以後），供註記「共同申請：X N件」。
+            ("string_agg_co_values", "申請人", "co_applicant_names"),
         ),
         default_order=(("patent_count", "desc"), ("applicant_display_name", "asc")),
         default_limit=100,
@@ -193,6 +206,15 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         source_table=REPORT_SOURCE_TABLE,
         columns=("current_assignee_display_name",),
         group_by=("current_assignee_display_name",),
+        aggregates=(
+            # #3：專利權人圖同一套兩段（單獨／共同持有），**不放受讓人**（定案）。
+            # ⚠ 主欄＋備援欄與 current_assignee_display_name 的推導同一套順位
+            # （標準當前 > 最近專利權人）——只看標準當前的話「共同持有」永遠是 0。
+            ("count_multivalue", "標準當前專利權人[US,JP,KR,CN,CA,AU]", "joint_count",
+             "最近專利權人[US,JP,KR,CN,CA,AU]"),
+            ("string_agg_co_values", "標準當前專利權人[US,JP,KR,CN,CA,AU]", "co_owner_names",
+             "最近專利權人[US,JP,KR,CN,CA,AU]"),
+        ),
         default_order=(("patent_count", "desc"), ("current_assignee_display_name", "asc")),
         default_limit=100,
         exclude_blank_columns=("current_assignee_display_name",),

@@ -307,6 +307,10 @@ def _merge_cluster_channels(
             # ⚠ 複製一份：下面會 append，不能改到來源 dict 的 list。
             merged["normalized_applicants"] = list(part.get("normalized_applicants") or [])
             merged["source_fields"] = [source_field]
+            # #3b：版本**逐通道**記錄——兩通道 run_id 不同，混成一個值就分不出
+            # 是哪一邊過期（技術重跑了、功效沒有，是常見情形）。
+            merged["topic_run_id"] = {source_field: part.get("topic_run_id")}
+            merged["topic_state_version"] = {source_field: part.get("topic_state_version")}
             continue
         merged["topics"] = list(merged["topics"]) + list(part["topics"])
         merged["assignments"] = list(merged["assignments"]) + list(part["assignments"])
@@ -330,6 +334,8 @@ def _merge_cluster_channels(
             if key not in seen:
                 seen.add(key)
                 merged["normalized_applicants"].append(a)
+        merged["topic_run_id"][source_field] = part.get("topic_run_id")
+        merged["topic_state_version"][source_field] = part.get("topic_state_version")
         merged["source_fields"].append(source_field)
     return merged
 

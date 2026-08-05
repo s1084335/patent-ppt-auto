@@ -501,14 +501,60 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
     path.write_text("\n".join(svg), encoding="utf-8")
 
 
+def ranking_segments(row: dict[str, Any]) -> dict[str, int]:
+    """把一列排名資料換算成兩段長度與各段的斜紋長度（#3，2026-08-05 定案）。
+
+    🔴 兩個獨立屬性、兩個視覺通道：
+    - 顏色分段＝申請結構：`solo`（單獨）＋`joint`（共同）＝**總件數**
+    - 斜紋疊加＝已轉讓：`solo_hatch`／`joint_hatch` 畫在各段右端
+
+    ⚠ `solo` 用**減法**推導（總數 − 共同），不另外查一個 solo_count：
+    兩個獨立來源的數字必然有對不起來的一天，減法保證兩段永遠加總＝總件數。
+    ⚠ 斜紋一律夾限在所在段內——資料異常時畫超過段長就變成假資訊。
+    ⚠ 舊報表沒有這些欄位時退化成「全部單獨、無斜紋」，不得爆掉。
+    """
+    total = int(row.get("patent_count") or 0)
+    joint = max(0, min(int(row.get("joint_count") or 0), total))
+    solo = total - joint
+    return {
+        "total": total,
+        "solo": solo,
+        "joint": joint,
+        "solo_hatch": max(0, min(int(row.get("solo_transferred_count") or 0), solo)),
+        "joint_hatch": max(0, min(int(row.get("joint_transferred_count") or 0), joint)),
+    }
+
+
+def ranking_note(row: dict[str, Any], *, co_label: str = "共同申請",
+                 with_assignee: bool = True) -> str:
+    """組列下註記：`共同申請：X N件｜最新受讓人：Y M件`（並存用 `｜` 串接）。
+
+    ⚠ 不截斷（2026-08-03 使用者定案「資訊不能有被截斷的」）——列高本來就會
+    為有註記的列多留一行。專利權人圖 `with_assignee=False`：定案不放受讓人。
+    """
+    parts: list[str] = []
+    co_names = str(row.get("co_applicant_names") or row.get("co_owner_names") or "").strip()
+    joint = int(row.get("joint_count") or 0)
+    if co_names and joint:
+        parts.append(f"{co_label}：{co_names.replace('; ', '、')} {joint}件")
+    if with_assignee:
+        names = [n.strip() for n in
+                 str(row.get("recent_assignee_display_names") or "").split("; ") if n.strip()]
+        count = int(row.get("recent_assignee_count") or 0)
+        if names and count:
+            parts.append(f"最新受讓人：{'、'.join(names)} {count}件")
+    return "｜".join(parts)
+
+
 def render_segmented_bar_chart(
     path: Path,
     title: str,
     rows: list[dict[str, Any]],
     label_key: str,
     total_key: str,
-    segment_key: str,
-    segment_label: str,
+    structure_labels: tuple[str, str] = ("單獨申請", "共同申請"),
+    hatch_label: str | None = "已轉讓",
+    co_label: str = "共同申請",
     limit: int = 20,
 ) -> None:
     """分段長條圖：總長代表 total_key，著色區段代表 segment_key。
@@ -534,8 +580,8 @@ def render_segmented_bar_chart(
     bottom = 34
 
     def _assignees(row: dict[str, Any]) -> str:
-        names = [n.strip() for n in str(row.get("recent_assignee_display_names") or "").split("; ") if n.strip()]
-        return ("最新受讓人：" + "；".join(names)) if names else ""
+        # #3：註記改為「共同申請：X N件｜最新受讓人：Y M件」（見 ranking_note）。
+        return ranking_note(row, co_label=co_label, with_assignee=hatch_label is not None)
 
     # 🔴 2026-08-04：字級由「這張畫布會被縮多少」反推（目標 14pt），
     # 而畫布高度又由字級決定——故迭代求解（見 solve_chart_font）。
@@ -581,8 +627,19 @@ def render_segmented_bar_chart(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="28" y="36" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<rect x="28" y="56" width="12" height="12" fill="{RANKING_BAR_SCALE[0]}"/><text x="46" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">全部專利</text>',
-        f'<rect x="126" y="56" width="12" height="12" fill="{COLOR_SEGMENT}"/><text x="144" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(segment_label)}</text>',
+        # #3 圖例：兩段色（申請結構）＋斜紋（已轉讓）。斜紋是**第二個通道**，
+        # 疊在段色上——「共同且已轉讓」＝共同色＋斜紋，兩個屬性同時看得到。
+        f'<defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" '
+        f'patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" '
+        f'stroke="{COLOR_TEXT}" stroke-width="2" stroke-opacity="0.55"/></pattern></defs>',
+        f'<rect x="28" y="56" width="12" height="12" fill="{RANKING_BAR_SCALE[0]}"/>'
+        f'<text x="46" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(structure_labels[0])}</text>',
+        f'<rect x="126" y="56" width="12" height="12" fill="{COLOR_SEGMENT}"/>'
+        f'<text x="144" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(structure_labels[1])}</text>',
+        *([f'<rect x="236" y="56" width="12" height="12" fill="{RANKING_BAR_SCALE[0]}"/>'
+           f'<rect x="236" y="56" width="12" height="12" fill="url(#hatch)"/>'
+           f'<text x="254" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(hatch_label)}</text>']
+          if hatch_label else []),
         *([f'<text x="{width - 40}" y="67" text-anchor="end" font-size="{note_px:.1f}" '
            f'fill="{COLOR_TEXT_SOFT}">{xml_text(truncation_note(len(data), total_rows))}</text>']
           if truncation_note(len(data), total_rows) else []),
@@ -593,27 +650,40 @@ def render_segmented_bar_chart(
         y_cursor += row_heights[index]
         label = xml_text(row.get(label_key))
         total = int(row.get(total_key) or 0)
-        segment = min(int(row.get(segment_key) or 0), total)
         total_w = scale(total, 0, max_value, 0, plot_w)
-        segment_w = scale(segment, 0, max_value, 0, plot_w)
-        segment_x = left + max(total_w - segment_w, 0)
         # 🔴 I-3：列標籤**左對齊**——字寬估算猜三次仍被裁（實測真實寬度比估算多 13%），
         # 改成從左緣固定位置開始畫，標籤多長都不可能超出左界。
         svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{label}</text>')
         # 🔴 F-2：原本 fill="#CBD5E1"（白底淺灰藍）被 chart_recolor 當結構色轉成
         # 面板底 274A66，對深空背景只有 1.72——簡報上這根長條等於不存在。
         # 改用資料色階（依數值深淺，W-2），最淺一階對兩種背景都 ≥3.0。
-        svg.append(f'<rect class="bar-total" x="{left}" y="{y + 5}" width="{total_w:.1f}" height="{BAR_HEIGHT_PX}" rx="2" fill="{ranking_bar_color(total, max_value)}"/>')
-        svg.append(f'<rect class="bar-segment" x="{segment_x:.1f}" y="{y + 5}" width="{segment_w:.1f}" height="{BAR_HEIGHT_PX}" rx="2" fill="{COLOR_SEGMENT}"/>')
+        # #3：左＝單獨、右＝共同；各段右端疊斜紋表示「已轉讓」（兩個獨立屬性）。
+        seg = ranking_segments(row)
+        def _w(count: int) -> float:
+            return scale(count, 0, max_value, 0, plot_w)
+        solo_w, joint_w = _w(seg["solo"]), _w(seg["joint"])
+        svg.append(f'<rect class="bar-total" x="{left}" y="{y + 5}" width="{solo_w:.1f}" '
+                   f'height="{BAR_HEIGHT_PX}" rx="2" fill="{ranking_bar_color(total, max_value)}"/>')
+        if joint_w > 0:
+            svg.append(f'<rect class="bar-segment" x="{left + solo_w:.1f}" y="{y + 5}" '
+                       f'width="{joint_w:.1f}" height="{BAR_HEIGHT_PX}" rx="2" fill="{COLOR_SEGMENT}"/>')
+        for hatch_count, seg_start, seg_len in (
+                (seg["solo_hatch"], left, solo_w),
+                (seg["joint_hatch"], left + solo_w, joint_w)):
+            hatch_w = _w(hatch_count)
+            if hatch_w > 0:
+                svg.append(
+                    f'<rect class="bar-hatch" x="{seg_start + seg_len - hatch_w:.1f}" y="{y + 5}" '
+                    f'width="{hatch_w:.1f}" height="{BAR_HEIGHT_PX}" rx="2" fill="url(#hatch)"/>')
         # 🔴 H-7（2026-08-03 實機 p13）：原本一律印「0 / 13」，讀者看不出分子是什麼
         # ——分母是件數，分子是「有最新受讓人」的件數，但數字本身沒有任何線索。
         # 改為：主數字＝總件數；有分段時才用**圖例同色**把它括在後面，
         # 顏色自己會對應到圖例的「有最新受讓人」，不必再加一段說明文字。
         # ⚠ 分段為 0 時整個括號不印——印「(0)」只是噪音。
-        segment_mark = (f'<tspan fill="{COLOR_SEGMENT}">（{segment}）</tspan>'
-                        if segment > 0 else "")
+        # ⚠ 舊「13（2）」青括號寫法已移除（2026-08-05 定案）：與段色打架，
+        # 分段資訊現在由顏色與斜紋表達，數字只印總件數。
         svg.append(f'<text x="{left + total_w + 8:.1f}" y="{y + 20}" font-size="{label_px:.1f}" '
-                   f'fill="{COLOR_TEXT}">{total}{segment_mark}</text>')
+                   f'fill="{COLOR_TEXT}">{total}</text>')
         # 受讓人名單完整輸出、不截斷——這一列本來就多給了一行。
         # 🔴 I-8（2026-08-03 實機 p13）：原本 y 是 `y + 20 + row_h`，
         # 隔了**一整個列高**，視覺上飄到下一列旁邊，讀者以為那是下一家的註記。
@@ -2510,9 +2580,10 @@ def _build_applicant_ranking_section(ctx: ChartContext) -> None:
         report["rows"],
         "applicant_display_name",
         total_key="patent_count",
-        segment_key="recent_assignee_count",
+        structure_labels=("單獨申請", "共同申請"),
+        hatch_label="已轉讓",
+        co_label="共同申請",
         limit=CHART_ROW_LIMIT,
-        segment_label="有最新受讓人",
     )
     ctx.sections.append({
         "title": report["label_zh"],
@@ -2524,9 +2595,25 @@ def _build_applicant_ranking_section(ctx: ChartContext) -> None:
 def _build_owner_ranking_section(ctx: ChartContext) -> None:
     report = ctx.report("owner_ranking")
     # F-12：與申請人排名同一套規則——列數收斂到可讀，被截時圖上標示。
-    render_bar_chart(ctx.run_dir / "owner_ranking.svg", report["label_zh"], report["rows"],
-                     "current_assignee_display_name", limit=CHART_ROW_LIMIT)
-    ctx.sections.append({"title": report["label_zh"], "variants": [{"label": "Assignees", "file": "owner_ranking.svg", "variant_key": "default"}]})
+    # #3（2026-08-05）：改走同一支分段渲染，兩段＝單獨／共同持有。
+    # ⚠ 定案：專利權人圖**不放最新受讓人**（hatch_label=None），權利已經在誰手上
+    # 就是這張圖本身的意思，再疊轉讓只會與申請人圖重複。
+    render_segmented_bar_chart(
+        ctx.run_dir / "owner_ranking.svg",
+        report["label_zh"],
+        report["rows"],
+        "current_assignee_display_name",
+        total_key="patent_count",
+        structure_labels=("單獨持有", "共同持有"),
+        hatch_label=None,
+        co_label="共同持有人",
+        limit=CHART_ROW_LIMIT,
+    )
+    ctx.sections.append({
+        "title": report["label_zh"],
+        "variants": [{"label": "Assignees", "file": "owner_ranking.svg", "variant_key": "default"}],
+        "note": "條長＝該權利人持有件數；顏色分段＝單獨／共同持有（多權利人）。",
+    })
 
 
 
@@ -3345,6 +3432,28 @@ def _create_run_dir(output_dir: Path, prefix: str) -> Path:
     raise RuntimeError(f"無法在 {output_dir} 建立唯一輸出資料夾（同名資料夾過多）")
 
 
+def build_report_parameters(*, cluster_data: dict[str, Any] | None) -> dict[str, Any]:
+    """報表版本要記下來的**主題版本**（#3b，2026-08-05 定案）。
+
+    🔴 為什麼要記：分群改版後重跑，舊報表的主題標籤與現行分群就不一致了，
+    但報表本身看不出來——使用者拿舊版報表出 PPT，圖上主題與現況對不起來而
+    完全無從察覺。記下版本後，產 PPT 時才比對得出來（走**提示不擋**，
+    擋會讓重新分群後再也無法為舊版報表出 PPT）。
+
+    ⚠ 取不到就**不落鍵**（不是落 null）：下游以「鍵不存在」代表「這份報表沒有
+    版本可比」，落 null 會被讀成「版本是空的」而誤報不一致。
+    值為 `{source_field: run_id}`——雙通道各記各的，混成單一值就分不出哪邊過期。
+    """
+    if not cluster_data:
+        return {}
+    out: dict[str, Any] = {}
+    for key in ("topic_run_id", "topic_state_version"):
+        value = cluster_data.get(key)
+        if value:
+            out[key] = value
+    return out
+
+
 def run_chart_trial(
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     ranking_limit: int = 20,
@@ -3398,6 +3507,7 @@ def run_chart_trial(
     version = run_dir.name
     selected_report_names = sorted(fetched)
     parameters = {
+        **build_report_parameters(cluster_data=cluster_data),
         "ranking_limit": ranking_limit,
         "ipc_levels": list(ctx.ipc_levels),
         "cpc_levels": list(ctx.cpc_levels),
