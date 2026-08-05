@@ -4655,10 +4655,16 @@ async function runNarrativeThenExportPpt() {
     const created = await getJson(API + '/ai-tasks', {
       method: 'POST',
       headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ task_type: 'ai:narrative', based_on_version: version }),
+      // R-5：帶 then_export_ppt 旗標——解讀成功後由 **worker 端**接續派 PPT。
+      // 下方輪詢保留（顯示進度、完成後載預覽），但不再是 PPT 會不會排出來的必要條件：
+      // 使用者關掉分頁離開，流程照樣走完（2026-08-05 實測 #200 斷鏈後定案）。
+      body: JSON.stringify({
+        task_type: 'ai:narrative', based_on_version: version,
+        then_export_ppt: true, workspace_id: state.workspaceId || undefined,
+      }),
     });
     if (wrap) wrap.innerHTML = '<div class="hint">尚無 AI 解讀，已先送出 narrative 任務（run '
-      + escHtml(created.run_id) + '）；成功後會接續產生 PPT。</div>';
+      + escHtml(created.run_id) + '）；成功後系統會自動接續產生 PPT（可關閉本頁）。</div>';
     await fetchTasks();
     pollNarrativeThenExportPpt(created.run_id);
   } catch (e) {
@@ -4673,9 +4679,11 @@ async function pollNarrativeThenExportPpt(runId) {
     try {
       const t = await getJson(API + '/ai-tasks/' + runId, { headers: aiAuthHeaders() });
       if (t.status === 'succeeded') {
-        if (wrap) wrap.innerHTML = '<div class="hint">AI 解讀完成，接續產生 PPT…</div>';
+        // R-5：PPT 由 **worker 端**接續派工（then_export_ppt 旗標），這裡只負責顯示。
+        // ⚠ 不得在此再送一次 requestExportPpt——兩邊都派就會產生兩個 PPT 任務。
+        if (wrap) wrap.innerHTML = '<div class="hint">AI 解讀完成，系統已接續產生 PPT…</div>';
         if (exportPreview.version) await loadExportPreview(exportPreview.version);
-        await requestExportPpt({ skipNarrativeCheck: true });
+        await fetchTasks();
         return;
       }
       if (['failed', 'cancelled'].includes(t.status)) {
