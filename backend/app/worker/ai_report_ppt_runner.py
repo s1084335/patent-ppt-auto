@@ -232,6 +232,20 @@ _PPT_OUTPUT_CONTRACT = {
 }
 
 
+def load_direction_capacity() -> dict[str, int]:
+    """研發方向頁的版面容量（R-1，2026-08-05）——與組版端同一個算法。
+
+    ⚠ 字數上限不得寫死在規範檔：12.5pt 時代算出的「≤20 字」在 K-10 改 16pt 後
+    直接失真，AI 照寫、組版照截。改由 build_ppt.direction_capacity() 供給，
+    改字級時提示自動跟著變。取不到（載不到 builder）就回空，退化為原行為。
+    """
+    try:
+        builder = _load_builder()
+        return builder.direction_capacity(builder.Theme.load())
+    except Exception:  # noqa: BLE001 - 容量拿不到不該擋整個 PPT 產製
+        return {}
+
+
 def build_report_ppt_payload(report_data: Any, slot_keys: list[str],
                              narratives: Any | None = None) -> dict[str, Any]:
     """組資料檔內容（取代把報表數據截斷後串進命令列）。
@@ -261,6 +275,8 @@ def build_report_ppt_payload(report_data: Any, slot_keys: list[str],
             "只產文案，不碰排版、不碰數字。"
         ),
         "rules": [load_content_rules()],
+        # R-1：版面容量隨提示給到 CLI（字數上限不寫死在規則檔，見 load_direction_capacity）。
+        "layout_capacity": load_direction_capacity(),
         "slot_keys": list(slot_keys),
         "report_data": report_data,
         "narratives": narratives if narratives is not None else {"reports": {}},

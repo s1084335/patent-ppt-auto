@@ -2325,6 +2325,86 @@ def _render_table_with_points(slide, theme: Theme, spec: PageSpec, ctx: dict[str
                      _rows_note(shown, rows, int(g["max_columns"]), _visible_column_count(rows, excluded)))
 
 
+#: 題目卡明細的標籤成本（「依據｜」「行動｜」各 3 字）。
+DIRECTION_DETAIL_LABEL_COST = 3
+
+
+def direction_capacity(theme: Theme, *, topic_text_pt: float | None = None) -> dict[str, int]:
+    """研發方向頁（p19）各欄位的**實際版面容量**，由 theme 幾何推導。
+
+    🔴 R-1（2026-08-05 實機 p19）：規範檔原本寫死「basis／action 各 ≤20 字」，
+    那個 20 是 **12.5pt 時代**算出來的（卡片文字寬 3.5in ÷ (12.5/72) ＝ 20.1 字，
+    剛好對上）。K-10 把 `topic_text_pt` 改 16pt 後每行只剩 15.7 字、再扣掉
+    「依據｜」3 字＝12.7 字——20 字必被 `_fit_text` 截成「…」。
+    ⚠ 改字級沒同步字數上限，就是「同一份知識兩處落點」的第 15 例；
+    故上限一律**從幾何算**，不再寫死：日後改字級、改卡片大小都自動跟著動。
+
+    回傳的鍵直接進 PPT 文案提示（見 ai_report_ppt_runner.build_report_ppt_payload），
+    讓 CLI 拿到的數字與組版端量的是同一個。
+    """
+    g = theme.geometry["direction_flow"]
+    size = float(topic_text_pt if topic_text_pt is not None else theme.size("topic_text_pt"))
+    flow_size = theme.size("flow_text_pt")
+    detail_width = g["topic_width_in"] - g["topic_inset_in"] * 2
+    detail_height = g["topic_height_in"] - g["topic_text_top_offset_in"] - g["topic_inset_in"]
+    detail_per_line, detail_lines = _text_capacity(
+        theme, width_in=detail_width, height_in=detail_height, size_pt=size)
+    step_width = g["step_width_in"] - g["step_inset_in"] * 2
+    step_height = g["step_height_in"] - g["step_text_top_offset_in"] - g["step_inset_in"]
+    step_per_line, step_lines = _text_capacity(
+        theme, width_in=step_width, height_in=step_height, size_pt=flow_size)
+    concl_width = g["conclusion_width_in"] - g["conclusion_inset_in"] * 2
+    concl_per_line, _ = _text_capacity(
+        theme, width_in=concl_width,
+        height_in=g["conclusion_height_in"] - g["conclusion_text_top_offset_in"] * 2,
+        size_pt=theme.size("conclusion_pt"))
+    return {
+        "topic_detail_per_line": int(detail_per_line),
+        "topic_detail_lines": int(detail_lines),
+        # 每段（依據／行動）各佔一段，扣掉標籤成本後的正文上限
+        "topic_detail_max_chars": max(1, int(detail_per_line) * max(1, int(detail_lines) // 2)
+                                      - DIRECTION_DETAIL_LABEL_COST),
+        "topic_name_max_chars": int((g["topic_width_in"] - g["topic_inset_in"] * 2)
+                                    / (theme.size("topic_name_pt") / 72.0)),
+        "step_line_max_chars": int(step_per_line),
+        "step_max_lines": int(step_lines),
+        "conclusion_max_chars": max(1, int(concl_per_line) - len("核心結論：")),
+        "topic_max": int(g["topic_max"]),
+    }
+
+
+def validate_direction_body(theme: Theme, body: dict[str, Any]) -> list[str]:
+    """驗 direction.body 各欄位是否在版面容量內，回傳警告清單（合規＝空）。
+
+    ⚠ 只寫在提示裡、沒有程式驗證的規則等於沒有規則（known-issues C-1）——
+    截斷是 `_fit_text` 的最後防線，但截了讀者就看不到後半句，必須在這裡先叫出來。
+    """
+    cap = direction_capacity(theme)
+    warnings: list[str] = []
+    for index, topic in enumerate(body.get("topics") or []):
+        for field in ("basis", "action"):
+            text = str((topic or {}).get(field) or "")
+            if len(text) > cap["topic_detail_max_chars"]:
+                warnings.append(
+                    f"direction.topics[{index}].{field} 超出卡片容量"
+                    f"（{len(text)} 字 > {cap['topic_detail_max_chars']}）——會被截斷")
+        name = str((topic or {}).get("name") or "")
+        if len(name) > cap["topic_name_max_chars"]:
+            warnings.append(
+                f"direction.topics[{index}].name 超限（{len(name)} 字 > "
+                f"{cap['topic_name_max_chars']}）")
+    for key in ("situation", "opportunity", "direction"):
+        for index, line in enumerate(body.get(key) or []):
+            if len(str(line)) > cap["step_line_max_chars"] * cap["step_max_lines"]:
+                warnings.append(f"direction.{key}[{index}] 超出色塊容量")
+    conclusion = str(body.get("conclusion") or "")
+    if len(conclusion) > cap["conclusion_max_chars"]:
+        warnings.append(
+            f"direction.conclusion 超限（{len(conclusion)} 字 > "
+            f"{cap['conclusion_max_chars']}）")
+    return warnings
+
+
 def _parse_direction_body(body: str) -> dict[str, Any] | None:
     """解析結構化 direction.body（P1-7 合併版契約）；不是合法 JSON 就回 None。
 
@@ -3691,6 +3771,12 @@ def build_ppt(
         pages.append(page_info)
 
     warnings.extend(audit_layout(prs, theme))
+
+    # R-1：direction.body 超出卡片容量要說出來（截斷是最後防線，不是合格狀態）。
+    _direction_body = _parse_direction_body(slots.get("direction.body") or "")
+    if _direction_body:
+        for message in validate_direction_body(theme, _direction_body):
+            warnings.append({"type": "direction_capacity_exceeded", "detail": message})
 
     # 🔴 H-2：整條放不下而被丟掉的要點必須說出來。
     # ⚠ 本專案的原則是「沒有靜默的截斷」——舊做法是截字加「…」，使用者當場抓到

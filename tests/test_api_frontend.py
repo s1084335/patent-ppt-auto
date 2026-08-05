@@ -862,7 +862,14 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("requestExportPpt", body)
 
     def test_export_ppt_missing_narrative_chains_narrative_before_ppt(self):
-        """批次二：按產生 PPT 時，缺 narrative 要先送 ai:narrative，成功後才送 ai:report_ppt。"""
+        """按產生 PPT 時，缺 narrative 要先送 ai:narrative，並帶接續旗標。
+
+        🔴 契約變更（R-5，2026-08-05）：接續派 `ai:report_ppt` 由**前端輪詢**改為
+        **worker 端**（`_enqueue_chained_report_ppt`）——原做法在使用者關掉分頁時
+        整條鏈斷在解讀完成，PPT 任務從未建立（實測 #200 後無 #201）。
+        故本測試改為斷言「前端送旗標、且輪詢不再重複派工」；
+        兩邊都派會產生兩個 PPT 任務。
+        """
         request_body = self.js_function("requestExportPpt")
         chain_body = self.js_function("runNarrativeThenExportPpt")
         poll_body = self.js_function("pollNarrativeThenExportPpt")
@@ -870,8 +877,9 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("exportReportHasNarratives", request_body)
         self.assertIn("runNarrativeThenExportPpt", request_body)
         self.assertIn("ai:narrative", chain_body)
+        self.assertIn("then_export_ppt", chain_body)
         self.assertIn("pollNarrativeThenExportPpt", chain_body)
-        self.assertIn("requestExportPpt({ skipNarrativeCheck: true })", poll_body)
+        self.assertNotIn("requestExportPpt({ skipNarrativeCheck: true })", poll_body)
 
     # ── 2026-07-30 起：CSS 模擬版面移除，預覽一律走真實 .pptx 渲染 ──
     # 原本這裡有五支測試斷言「模擬投影片渲染器存在」（loadPptLayout／

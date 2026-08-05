@@ -54,9 +54,14 @@ PPT 階段的 AI **只產一個 slot**：`direction.body`。其餘頁面的標�
 
 | 欄位 | 寫法 | 硬限制 |
 |---|---|---|
-| `situation`／`opportunity`／`direction` | 各 1–3 句短判讀（色塊內逐行呈現） | 每句 ≤28 字；不空 |
-| `topics` | 2–3 個具體研發題目卡 | `name` ≤12 字；`basis`／`action` 各 ≤20 字；依據必須對得到報表數據 |
-| `conclusion` | 整份報告一句話收束（底部深藍條） | ≤40 字；低承諾語氣（檢視／候選／覆核），不下投資指令 |
+| `situation`／`opportunity`／`direction` | 各 1–3 句短判讀（色塊內逐行呈現） | 每句 ≤ `layout_capacity.step_line_max_chars` 字；不空 |
+| `topics` | 2–3 個具體研發題目卡 | 字數上限一律**以任務提示 `layout_capacity` 給的容量為準**（`topic_name_max_chars`／`topic_detail_max_chars`）；依據必須對得到報表數據 |
+| `conclusion` | 整份報告一句話收束（底部深藍條） | ≤ `layout_capacity.conclusion_max_chars` 字；低承諾語氣（檢視／候選／覆核），不下投資指令 |
+
+🔴 **字數上限不寫死在本檔**（2026-08-05 R-1）：卡片容量隨字級與版面而變——
+「≤20 字」是 12.5pt 時代算出來的，字級改 16pt 後每行只剩約 12 字，照舊寫必被截斷。
+任務提示的 `layout_capacity` 由組版端 `direction_capacity()` 從實際幾何算出，
+**以它為準**；超出容量會被記為 warning 並在版面上截斷。
 
 不得輸出 JSON 以外的文字；不得把單一圖表結論擴大成整份策略；
 不得寫「建議投入」卻沒有資料支撐。
