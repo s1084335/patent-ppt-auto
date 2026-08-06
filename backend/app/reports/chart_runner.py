@@ -17,6 +17,7 @@ from backend.app.reports.cluster_analytics import (
     build_opportunity_matrix,
     build_topic_effect_table,
 )
+from backend.app.reports.population import population_notes
 from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 from backend.app.reports.report_engine import parse_json_arg, run_report
 
@@ -28,6 +29,39 @@ def _app_layer_connect():
     from backend.app.db.connection import get_connection_kwargs
 
     return psycopg.connect(**get_connection_kwargs(), row_factory=dict_row, connect_timeout=15)
+
+
+def fetch_patent_kind_summary() -> dict[str, Any]:
+    """取專利種類三分法的統計與說明字串（A4，2026-08-06）。
+
+    ⚠ **為什麼要單獨查一次**：所有 aggregate 報表的 rows 都已經 group by 過，
+    帶不到 `patent_type`／`document_kind` 這種逐件欄位；從別的報表反推
+    （例如「總數 − IPC 母體＝設計案」）會在 IPC 母體因其他原因變動時**靜默算錯**。
+    一次查兩欄、資料量等同專利數（本案 55 列），成本可忽略。
+
+    ⚠ 分類邏輯不在這裡——一律呼叫唯一定義處 `transforms/patent_kind.py`。
+    本函式只負責把資料撈出來。
+
+    ⚠ **本函式是 DB 接縫**：與 `run_report` 同層，測試以 `mock.patch.object`
+    注入即可完全不碰 DB（本專案硬規則：不得為了跑測試起本機 postgres）。
+    ⚠ 不做「連不上就回空」的軟退化——那會讓設計案備註在正式環境**靜默消失**，
+    而頁面看起來完全正常。連不上就讓它炸，由呼叫端決定。
+    """
+    from backend.app.transforms.patent_kind import (
+        design_exclusion_note,
+        kind_summary,
+        kind_tally,
+    )
+
+    with _app_layer_connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT patent_type, document_kind FROM derived_layer.report_patent_base")
+        rows = [dict(r) for r in cur.fetchall()]
+    return {
+        "tally": kind_tally(rows),
+        "summary": kind_summary(rows),
+        "design_note": design_exclusion_note(rows),
+    }
 
 
 def fetch_analysis_patent_ids(analysis_id: int) -> list[int]:
@@ -3588,6 +3622,23 @@ def run_chart_trial(
             },
             "chart_rows": persist_chart_rows,
             "chart_rows_total": chart_rows_total,
+            # 母體對帳（A3，2026-08-06）：每張報表的「母體 X/Y 件（原因）」。
+            # ⚠ **引擎算、PPT 消費**——`build_ppt` 是會佈署到使用者機器的可攜 skill，
+            # 不能 import backend，故不得由它自己算（全域規則「一方產生、一方消費」）。
+            # ⚠ 這也是唯一定義處：頁尾註記與日後的「讀圖須知」頁共用這一份，
+            # 不得兩處各算，否則會出現「讀圖須知說 19 件無權人、權人頁尾說母體 36/55」
+            # 卻是兩套算法的情形。
+            # 🔴 用 `fetched`（未截斷）不是 `persist_reports`（2026-08-06 Codex 驗收揪出）。
+            # ⚠ `PERSIST_TOP20_REPORTS` 會把 `applicant_ranking`／`ipc_main_distribution`／
+            # `cpc_main_distribution` 等入庫時截前 20 列；拿截斷後的 rows 加總，
+            # 母體會變成「**前 20 列的母體**」而不是完整分析母體——讀者看到的數字直接是錯的，
+            # 而且不會報錯、測試也不會紅。
+            "population": population_notes({**fetched, **ctx.cluster_reports}),
+            # 設計案標示（A4，2026-08-06）：封面 muted 小字與母體說明用。
+            # ⚠ 設計案 11 件本來就被兩個分群通道自動排除（無獨立項、無效果摘要），
+            # 但簡報上完全沒說——讀者看到封面 55、分類頁 44 只會覺得數字錯。
+            # 判定一律走唯一定義處 `transforms/patent_kind.py`，不在此自行比對。
+            "patent_kind": fetch_patent_kind_summary(),
             # sections 持久化：--refresh-index 由此重建 index（解讀回填後重渲染）
             "sections": persistable_sections(ctx.sections),
             # 表格顯示規格（2026-07-31）：欄名對照、排除欄與儲存格呈現字串由引擎寫出，

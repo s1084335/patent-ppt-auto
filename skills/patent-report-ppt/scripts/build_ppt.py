@@ -1591,17 +1591,47 @@ def _render_header(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> 
               size=theme.size("page_number_pt"), color="accent", bold=True, align=PP_ALIGN.RIGHT)
 
 
+def _population_note(report_data: dict[str, Any], report_keys: tuple[str, ...]) -> str:
+    """本頁的母體註記；**引擎算好寫在 `report_data["population"]`，這裡只取用**。
+
+    ⚠ 不在此計算：本檔是會佈署到使用者機器的可攜 skill，不能 import backend
+    （全域規則「跨部署單元改走一方產生、一方消費」）。
+
+    一頁掛多張報表時只取第一個有註記的——多張的母體通常相同（同頁對照用），
+    全部印出來會把頁尾撐爆。
+    """
+    population = report_data.get("population") or {}
+    for key in report_keys:
+        note = population.get(key)
+        if note:
+            return note
+    return ""
+
+
 def _render_footnote(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any], extra: str = "") -> None:
-    """頁底資料來源註：資料來源、統計期間、判讀限制聲明。"""
+    """頁底註記：母體 → 資料來源 → 統計期間。
+
+    🔴 **母體排最前**（A3，2026-08-06）：`_fit_text` 截斷是砍尾巴，
+    母體若排在來源／期間之後，版面一擠就被砍掉，而**頁面看起來完全正常**
+    ——讀者不會知道少了什麼。這種靜默消失比擠版更難查。
+
+    ⚠ 濃縮（實測 55 字 → 41 字）：`資料來源：`→`來源：`、`統計期間：`→`期間`。
+    頁尾實測容量 `12.13in × 0.22in @ 12pt` ＝ 單行約 72 中文字，而 `sources`
+    是變數（4 頁掛兩個 report_key、最長報表名 11 字），濃縮只降低觸發機率，
+    **排序才是護欄**。
+    """
     g = theme.geometry["footnote"]
     sources = "、".join(_label_of(ctx["report_data"], key) for key in spec.report_keys) or "本次報表版本"
     period = ctx["period"] or "未標示"
     # ⚠ 2026-07-31 使用者定案：頁尾**不印報表版本**（「這種報表版本這種字不要有」）。
     # 原本印 report_trial_20260731_… 這種內部識別碼，對讀者毫無意義又佔掉頁尾寬度；
     # 可追溯性由 manifest 保留，不必寫在簡報上。
-    text = f"資料來源：{sources}｜統計期間：{period}"
+    parts = [p for p in (_population_note(ctx["report_data"], spec.report_keys),) if p]
+    parts.append(f"來源：{sources}")
+    parts.append(f"期間 {period}")
     if extra:
-        text = f"{text}｜{extra}"
+        parts.append(extra)
+    text = "｜".join(parts)
     text, _ = _fit_text(theme, text, width_in=g["width_in"], height_in=g["height_in"],
                         size_pt=theme.size("footnote_pt"))
     _add_text(slide, theme, text,
@@ -1941,8 +1971,18 @@ def _render_cover(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> N
     period = ctx["period"]
     # ⚠ 2026-07-31 使用者定案：封面也不印報表版本（內部識別碼對讀者無意義）。
     #    可追溯性由 manifest 保留；頁尾同步移除，見 _render_footnote。
-    _add_text(slide, theme,
-              f"統計期間 {period}" if period else "",
+    # 統計期間＋設計案備註併成一行 muted 小字（A4，2026-08-06）。
+    #
+    # ⚠ 為什麼併進這一行而不另開一列：另開要在 theme 加一組座標，且**實測封面
+    # 統計卡下方沒有餘裕**；併行則零版面改動。⚠ 也不得併進統計卡的 value
+    # ——`_cover_stat_size()` 四張卡同級、級數由最長值決定，併進去會把四張卡一起縮小。
+    #
+    # ⚠ 備註文字由**引擎**產（`report_data["patent_kind"]["design_note"]`），
+    # 本檔不自行判定設計案——判定的唯一定義處在 backend 的 `transforms/patent_kind.py`，
+    # 而本檔是會佈署到使用者機器的可攜 skill，不能 import backend。
+    design_note = ((ctx["report_data"].get("patent_kind") or {}).get("design_note") or "")
+    subtitle = "｜".join(p for p in (f"統計期間 {period}" if period else "", design_note) if p)
+    _add_text(slide, theme, subtitle,
               left=g["period_left_in"], top=g["period_top_in"],
               width=g["period_width_in"], height=g["period_height_in"],
               size=theme.size("cover_subtitle_pt"), color="muted")

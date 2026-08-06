@@ -493,5 +493,56 @@ class NarrativeContractV6Tests(unittest.TestCase):
         self.assertFalse(self._pick(warns, "IPC"))
 
 
+class MissingVariantIsAViolationTests(unittest.TestCase):
+    """A1（2026-08-06）：漏產變體必須現形為警告。
+
+    ⚠ 原缺口：`refresh_index` 早就算出 `pending`（哪些變體沒解讀），
+    `run_narrative` 也把它放進 summary，但**沒有任何地方把它當違規**；
+    而 `validate_narrative_contract` 只走訪 narratives 裡**已存在**的變體，
+    結構上不可能察覺「少了一個」。兩層都不守 → 16/19 卻回報 0 警告。
+    """
+
+    def _run(self, pending):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            version = "report_trial_20260806_010000"
+            run_dir = _write_run_dir(base, version)
+
+            def _cli(argv, timeout):
+                (run_dir / "narratives.json").write_text(
+                    json.dumps({"based_on_version": version, "reports": {}}),
+                    encoding="utf-8")
+                return CliResult(exit_code=0, stdout='{"result": "done"}', stderr="")
+
+            return runner.run_narrative(
+                version,
+                cli_runner=_cli,
+                refresh_index=lambda rd: {
+                    "narrated": 16, "variants_total": 19,
+                    "pending": pending, "narratives_expired": False},
+                root=base,
+                upload_run_dir=lambda rd: 1,
+            )
+
+    def test_pending_variants_become_contract_warning(self):
+        """16/19 時 contract_warnings 必須點名那 3 個缺的變體。"""
+        summary = self._run(["a:default", "b:L4", "c:tech"])
+        warns = summary["contract_warnings"]
+        hit = [w for w in warns if "漏產" in w]
+        self.assertTrue(hit, f"漏產 3 個變體卻沒有任何警告：{warns}")
+        joined = " ".join(hit)
+        for key in ("a:default", "b:L4", "c:tech"):
+            self.assertIn(key, joined, f"警告沒點名 {key}：{joined}")
+        self.assertIn("16", joined, "警告應帶覆蓋數（narrated/total）")
+        self.assertIn("19", joined, "警告應帶覆蓋數（narrated/total）")
+
+    def test_full_coverage_produces_no_missing_warning(self):
+        """全數產齊時不得有漏產警告（避免誤報）。"""
+        summary = self._run([])
+        self.assertFalse([w for w in summary["contract_warnings"] if "漏產" in w])
+
+
 if __name__ == "__main__":
     unittest.main()

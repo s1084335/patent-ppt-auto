@@ -717,6 +717,25 @@ def run_narrative(
     # 確定性程式重渲染 index（嵌入解讀）；CLI 不碰 index.html。
     refresh = refresh_index(run_dir)
 
+    # 🔴 A1（2026-08-06）：漏產變體必須現形為警告。
+    #
+    # ⚠ 原缺口是**兩層都不守**：`refresh_index` 早就算出 `pending`（哪些變體沒解讀），
+    # `run_narrative` 也把它放進 summary，但沒有任何地方把它當違規；而
+    # `validate_narrative_contract` 只走訪 narratives 裡**已存在**的變體，
+    # 結構上不可能察覺「少了一個」。結果就是 16/19 卻回報 0 警告。
+    #
+    # ⚠ 只警告不 raise：漏產的變體在報表頁會顯示「⏳ 待解讀」——使用者看得到，
+    # 不是靜默資料損失（與同檔「限定重產範圍外解讀消失」那條 raise 的性質不同：
+    # 那個是既有內容被覆蓋消失，這個是本來就沒產出）。已產的部分仍可用，
+    # 整批 fail 反而讓使用者連能用的都拿不到。
+    pending_variants = list(refresh.get("pending") or [])
+    if pending_variants:
+        contract_warnings.append(
+            f"漏產解讀變體 {len(pending_variants)} 個"
+            f"（覆蓋 {refresh.get('narrated')}/{refresh.get('variants_total')}）："
+            f"{'、'.join(pending_variants)}"
+        )
+
     # ⚠ 把 narratives.json 上傳回 report_artifacts（2026-07-27 待辦 9d 的「寫」那一段）。
     # CLI 寫的是**本機檔案系統**，但 backend 從 DB 讀（report_artifact_store.read_file）——
     # 不傳回去就永遠讀不到，解讀區維持空白。upload_run_dir 會整包 upsert（同版本同名
