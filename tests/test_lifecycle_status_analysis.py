@@ -165,5 +165,53 @@ class StatusChartSvgTests(unittest.TestCase):
         self.assertNotIn(STATUS_BUCKET_COLORS["審查中"], body)
 
 
+class SegmentCountLabelTests(unittest.TestCase):
+    """🔴 2026-08-07 使用者指正：「看不出各狀態件數」——段內要標件數。
+
+    規則：段寬放得下數字才標（窄段不硬塞——塞了會疊到相鄰段更不可讀，
+    完整數字永遠在網頁報表的數據表）；字色依段底色用 readable_text_on 決定，
+    並帶 data-on-fill 讓 PPT 深色轉色後重算字色。
+    """
+
+    def _svg(self, rows):
+        import tempfile
+        from pathlib import Path
+
+        from backend.app.reports.chart_runner import render_status_stacked_chart
+
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "s.svg"
+            render_status_stacked_chart(p, "專利狀態分析", rows, rows_total=len(rows))
+            return p.read_text(encoding="utf-8")
+
+    def test_wide_segments_carry_counts(self):
+        svg = self._svg([{"applicant_display_name": "公司A", "已授權": 9, "審查中": 2,
+                          "已失效": 1, "未知": 2, "patent_count": 14}])
+        import re
+
+        seg_labels = re.findall(r'data-on-fill="[^"]+"[^>]*>(\d+)<', svg)
+        self.assertIn("9", seg_labels, "已授權段內要有件數 9")
+        self.assertIn("2", seg_labels, "審查中段內要有件數 2")
+
+    def test_segment_label_pairs_fill_for_recolor(self):
+        """段內字必須帶 data-on-fill＝該段底色——深色轉色後字色才會重算。"""
+        svg = self._svg([{"applicant_display_name": "公司A", "已授權": 9, "審查中": 0,
+                          "已失效": 0, "未知": 0, "patent_count": 9}])
+        from backend.app.reports.chart_runner import STATUS_BUCKET_COLORS
+
+        self.assertIn(f'data-on-fill="{STATUS_BUCKET_COLORS["已授權"]}"', svg)
+
+    def test_narrow_segment_skips_label(self):
+        """極窄段（大母體下 1 件）不硬塞數字。"""
+        rows = [{"applicant_display_name": "巨量公司", "已授權": 200, "審查中": 1,
+                 "已失效": 0, "未知": 0, "patent_count": 201}]
+        svg = self._svg(rows)
+        import re
+
+        seg_labels = re.findall(r'data-on-fill="[^"]+"[^>]*>(\d+)<', svg)
+        self.assertIn("200", seg_labels)
+        self.assertNotIn("1", seg_labels, "1 件段在 201 件尺度下塞不進數字，應略過")
+
+
 if __name__ == "__main__":
     unittest.main()

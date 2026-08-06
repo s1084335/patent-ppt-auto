@@ -2877,7 +2877,17 @@ def render_status_stacked_chart(path: Path, title: str,
             if value <= 0:
                 continue
             seg_w = scale(value, 0, max_total, 0, plot_w)
-            svg.append(f'<rect x="{x:.1f}" y="{y + 6}" width="{max(seg_w, 1):.1f}" height="{row_h - 14}" fill="{STATUS_BUCKET_COLORS[bucket]}"/>')
+            fill = STATUS_BUCKET_COLORS[bucket]
+            svg.append(f'<rect x="{x:.1f}" y="{y + 6}" width="{max(seg_w, 1):.1f}" height="{row_h - 14}" fill="{fill}"/>')
+            # 🔴 2026-08-07 使用者指正「看不出各狀態件數」：段內直接標件數。
+            # 段寬放得下才標（窄段硬塞會疊到相鄰段更不可讀；完整數字在網頁數據表）；
+            # 字色依段底色即時算，並帶 data-on-fill 供 PPT 深色轉色後重算。
+            digits_w = note_px * 0.62 * len(str(value)) + 8
+            if seg_w >= digits_w:
+                svg.append(
+                    f'<text x="{x + seg_w / 2:.1f}" y="{y + 20}" text-anchor="middle" '
+                    f'font-size="{note_px:.1f}" fill="{readable_text_on(fill)}" '
+                    f'data-on-fill="{fill}">{value}</text>')
             x += seg_w
         total = int(row.get("patent_count") or 0)
         svg.append(f'<text x="{x + 8:.1f}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{total}件</text>')
