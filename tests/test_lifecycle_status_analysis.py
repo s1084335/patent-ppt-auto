@@ -57,6 +57,29 @@ class StatusBucketTests(unittest.TestCase):
         """沒見過的字面（未來 WIPS 新增）→ 未知，不炸、不猜。"""
         self.assertEqual(self._bucket("某種新狀態"), "未知")
 
+    def test_tw_curation_nine_values_bucket_correctly(self):
+        """🔴 銜接 openspec `add-tw-legal-status-curation`（Codex 線）：
+        人工登錄的九項 TW 狀態字面必須各自落進正確桶。
+
+        ⚠ 沒有這一段，「已核准」會被判成**未知**——登錄了等於白登。
+        桶邏輯唯一定義處在本模組；Codex 端只消費、不得另寫 mapping
+        （它 spec 裡的 pending/alive/dead/unknown 彙總即對應本表四桶）。
+        """
+        expected = {
+            "已申請": "審查中",     # pending
+            "已公開": "審查中",     # pending
+            "審查中": "審查中",     # pending
+            "已核准": "已授權",     # alive
+            "放棄": "已失效",       # dead
+            "核駁": "已失效",       # dead
+            "撤回": "已失效",       # dead
+            "已失效": "已失效",     # dead
+            "屆滿失效": "已失效",   # dead
+        }
+        for value, bucket in expected.items():
+            with self.subTest(value=value):
+                self.assertEqual(self._bucket(value), bucket)
+
     def test_bucket_order_is_stable(self):
         """桶順序是呈現契約（堆疊段序／圖例序），固定不得隨 dict 序漂。"""
         from backend.app.transforms.legal_status import STATUS_BUCKET_ORDER

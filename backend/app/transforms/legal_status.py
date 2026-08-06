@@ -12,10 +12,14 @@ annual fee)`）、以及 None（7 件新型無狀態值）。直接 GROUP BY 原
 
 | 桶 | 收斂自 | 語意 |
 |---|---|---|
-| 已授權 | 授权／授權 | 權利存續中 |
-| 審查中 | 审查中／審查中／申请／申請 | 尚未取得權利 |
-| 已失效 | 到期(任何括號寫法)／放弃／放棄／无效／無效／撤回 | 權利已不存續（仍具前案價值） |
+| 已授權 | 授权／授權／已核准 | 權利存續中 |
+| 審查中 | 审查中／審查中／申请／申請／已申請／已公開 | 尚未取得權利 |
+| 已失效 | 到期(任何括號寫法)／放弃／放棄／无效／無效／撤回／核駁／已失效／屆滿失效 | 權利已不存續（仍具前案價值） |
 | 未知 | None／空白／未見過的字面 | 資料缺——**誠實呈現，不得歸進實桶**（吞掉會虛增授權率） |
+
+⚠ 「已核准」等九項＝TW 人工登錄值域（openspec `add-tw-legal-status-curation`，
+Codex 線）。該 change 的 pending/alive/dead/unknown 彙總即對應本表四桶——
+**登錄端只消費本模組，不得另寫 mapping**（同一份知識兩個落點必分岔）。
 
 ⚠ 消費端（報表 pivot、堆疊段序、圖例、narrative）一律 import 本模組，
 不得各自寫字面比對——散開後 WIPS 換寫法時只會改到一處，另一處靜默錯。
@@ -35,12 +39,18 @@ STATUS_BUCKET_ORDER: tuple[str, ...] = (
 # 前綴比對表（⚠ 到期後面跟著各種括號說明，用 startswith 才收得齊）。
 _PREFIX_BUCKETS: tuple[tuple[str, str], ...] = (
     ("授权", BUCKET_GRANTED), ("授權", BUCKET_GRANTED),
+    ("已核准", BUCKET_GRANTED),
     ("审查中", BUCKET_PENDING), ("審查中", BUCKET_PENDING),
+    # ⚠ 「已申請」「已公開」要排在「申请/申請」前綴之前無所謂（startswith 都會中
+    # 「已申請」→需明列：它不以「申請」開頭），但「已失效」必須明列——
+    # 它不以「到期」開頭，漏了會落進未知。
+    ("已申請", BUCKET_PENDING), ("已公開", BUCKET_PENDING),
     ("申请", BUCKET_PENDING), ("申請", BUCKET_PENDING),
     ("到期", BUCKET_DEAD),
     ("放弃", BUCKET_DEAD), ("放棄", BUCKET_DEAD),
     ("无效", BUCKET_DEAD), ("無效", BUCKET_DEAD),
-    ("撤回", BUCKET_DEAD),
+    ("撤回", BUCKET_DEAD), ("核駁", BUCKET_DEAD),
+    ("已失效", BUCKET_DEAD), ("屆滿失效", BUCKET_DEAD),
 )
 
 
