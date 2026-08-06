@@ -493,7 +493,7 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
     left = label_gutter([
         (lambda raw: raw if tech_name(raw) == raw else f"{raw}　{tech_name(raw)}")(
             str(row.get(label_key) or "")) for row in data], font_px=label_px)
-    height = int(_canvas_height(label_px))
+    height = round(_canvas_height(label_px))
     plot_w = width - left - right
     max_value = max([int(row[value_key]) for row in data] + [1])
     svg = [
@@ -1305,7 +1305,7 @@ QUADRANT_TARGET_ASPECT = 1.78
 #: 象限板圖例前綴（唯一來源——量寬度與畫出來必須是同一個字串，
 #: 否則改了文字卻沒改寬度，又會壓在一起）。
 # 🔴 2026-08-04 用詞規範：「龍頭」避免使用——只說資料能證明的（前三大申請人）。
-LEGEND_PREFIX_TEXT = "色＝主要申請人涉入｜數字＝件/家"
+LEGEND_PREFIX_TEXT = "色＝主要申請人涉入｜N件/M家＝專利件數/申請人家數"
 
 #: 圖例項之間的間距（px）。
 LEGEND_ITEM_GAP_PX = 24
@@ -1462,85 +1462,6 @@ def place_point_labels(
             break
         placed.append(chosen)
     return placed
-
-
-def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -> None:
-    """生命週期軌跡圖：X=申請人家數、Y=件數，依年份連線（技術生命週期判讀用）。"""
-    width, height = CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT
-    left, right, top, bottom = 90, 40, 64, 84
-    plot_w, plot_h = width - left - right, height - top - bottom
-    # 字級由縮放反推（資料 14pt／註記 12pt）；本圖畫布固定，不需迭代。
-    label_px = chart_font_px(width, height)
-    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
-    data = [
-        (int(r["application_year"]), int(r["applicant_count"]), int(r["patent_count"]))
-        for r in rows
-        if r.get("application_year") is not None
-    ]
-    data.sort()
-    # 🔴 J-5：不再乘 1.15 餘裕——nice_ticks 本身就會把頂格補到資料之上，
-    # 兩層餘裕疊加正是「資料最大 7、軸畫到 10」的來源。
-    x_max = max([d[1] for d in data] + [1])
-    y_max = max([d[2] for d in data] + [1])
-    svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
-        '<rect width="100%" height="100%" fill="white"/>',
-        f'<text data-role="chart-title" x="{left}" y="34" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-    ]
-    # F-11：兩軸都用等差好讀刻度（原本 max*i/4 取整後印出 0/4/9/13/17）。
-    y_ticks = nice_ticks(y_max)
-    x_ticks = nice_ticks(x_max)
-    y_max = max(y_ticks[-1], 1)
-    x_max = max(x_ticks[-1], 1)
-    for y_tick in y_ticks:
-        y = scale(y_tick, 0, y_max, top + plot_h, top)
-        svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 4:.1f}" text-anchor="end" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{y_tick}</text>')
-    for x_tick in x_ticks:
-        x = scale(x_tick, 0, x_max, left, left + plot_w)
-        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{x_tick}</text>')
-    svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
-    svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
-    svg.append(f'<text x="{left + plot_w / 2:.0f}" y="{height - 20}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">申請人家數</text>')
-    points = " ".join(
-        f"{scale(a, 0, x_max, left, left + plot_w):.1f},{scale(c, 0, y_max, top + plot_h, top):.1f}"
-        for _y, a, c in data
-    )
-    svg.append(f'<polyline points="{points}" fill="none" stroke="#94A3B8" stroke-width="1.5"/>')
-    coords = [
-        (scale(a, 0, x_max, left, left + plot_w), scale(c, 0, y_max, top + plot_h, top))
-        for _y, a, c in data
-    ]
-    for x, y in coords:
-        svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{COLOR_APPLICATION}"/>')
-    # 🔴 標籤避讓改用碰撞偵測（2026-08-02）。
-    # 第一版（07-31）只依折線走向把標籤放到線的另一側——解了「被折線壓過」，
-    # 但解不了標籤彼此重疊、標籤壓到別的資料點。實機 p4 仍有兩個年份疊成「20**」。
-    # ⚠ 所有資料點都是障礙物（不只自己那一個），放不下就不標。
-    label_step = max(1, math.ceil(len(data) / 12))
-    wanted = [i for i in range(len(data)) if i % label_step == 0 or i == len(data) - 1]
-    # 🔴 I-4：先合併同座標的年份，再避讓。
-    # ⚠ 順序不能反：先避讓會讓同一個點的多個年份各自找位置、彼此推開，
-    # 看起來像好幾個不同的點——那正是實機 p3「2021 2011」並排的成因。
-    items = merge_colocated_labels(
-        [(coords[i][0], coords[i][1], str(data[i][0])) for i in wanted])
-    # 🔴 J-5：軸線與刻度區也是障礙——原本只把資料點列為障礙，
-    # 合併後的年份標籤落在低家數低件數的角落時，避讓就把它推到 x 軸上、
-    # 與刻度數字重疊。障礙半徑蓋住軸線帶與每個刻度數字。
-    obstacles = [(x, y, 4.0) for x, y in coords] + [
-        (scale(t, 0, x_max, left, left + plot_w), top + plot_h + 18, 16.0)
-        for t in x_ticks
-    ] + [
-        (left + plot_w * i / 12, top + plot_h + 2, 6.0) for i in range(13)
-    ]
-    for (_x, _y, text), position in zip(
-            items, place_point_labels(items, obstacles, label_px, min_x=left + 2)):
-        if position is None:
-            continue
-        svg.append(f'<text x="{position[0]:.1f}" y="{position[1]:.1f}" font-size="{label_px:.1f}" '
-                   f'fill="{COLOR_TEXT_SOFT}">{xml_text(text)}</text>')
-    svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
 
 
 def _tech_year_topics(cluster_data: dict[str, Any]) -> dict[int, set[str]]:
@@ -2090,7 +2011,7 @@ CHART_ENCODING_NOTES: dict[str, str] = {
     "applicant_ranking": "條長＝件數｜排序＝件數由高至低",
     "applicant_country_distribution": "格值＝件數｜列＝申請人、欄＝受理國",
     "applicant_year_matrix": "泡泡大小與顏色＝件數｜列＝申請人、欄＝申請年",
-    "lifecycle": "橫軸＝申請人家數｜縱軸＝專利件數｜連線＝依年份先後",
+    "lifecycle": "條長＝件數｜分段＝狀態桶｜列＝前十大申請人（含共同申請）",
     "family_country_layout": "條長＝存活家族數｜分組＝受理國",
 }
 
@@ -2855,14 +2776,135 @@ def _build_applicant_country_section(ctx: ChartContext) -> None:
     })
 
 
+#: 狀態桶類別色（2026-08-07 lifecycle 改版）。⚠ 類別編碼不用數值色階（同 #3 教訓）；
+#: 四色全部取 theme chart_recolor **既有映射鍵**（雙底可讀、色相分離）：
+#: 已授權=排名藍階第二深(白底 7.43)、審查中=青(0891B2→2F9FD8)、
+#: 已失效=暖沙(C99A5B→FFD9A0)、未知=中性灰(6B7280→8FB2C4，白底 4.8)。
+#: 「未知」偏灰是刻意的——資料缺就該視覺降權，但仍過 WCAG 3.0。
+STATUS_BUCKET_COLORS: dict[str, str] = {
+    "已授權": "#0B4FB8",
+    "審查中": "#0891B2",
+    "已失效": "#C99A5B",
+    "未知": "#6B7280",
+}
+
+
+def lifecycle_status_pivot(rows: list[dict[str, Any]], limit: int = CHART_ROW_LIMIT) -> list[dict[str, Any]]:
+    """(申請人, 原始狀態, 件數) 長格式 → 前 N 大申請人 × 四狀態桶。
+
+    桶收斂一律走唯一定義處 `transforms.legal_status.status_bucket`，
+    本函式不出現任何狀態字面。輸出每列：
+    {applicant_display_name, 已授權, 審查中, 已失效, 未知, patent_count}，
+    依總件數降冪取前 `limit` 家（與排名圖同一個天花板）。
+    """
+    from backend.app.transforms.legal_status import STATUS_BUCKET_ORDER, status_bucket
+
+    by_applicant: dict[str, dict[str, int]] = {}
+    for row in rows:
+        name = str(row.get("applicant_display_name") or "").strip()
+        if not name:
+            continue
+        count = int(row.get("patent_count") or 0)
+        bucket = status_bucket(row.get("legal_status"))
+        entry = by_applicant.setdefault(name, {b: 0 for b in STATUS_BUCKET_ORDER})
+        entry[bucket] += count
+    ranked = sorted(by_applicant.items(),
+                    key=lambda kv: (-sum(kv[1].values()), kv[0]))[:limit]
+    return [
+        {"applicant_display_name": name, **buckets,
+         "patent_count": sum(buckets.values())}
+        for name, buckets in ranked
+    ]
+
+
+def _status_legend_fragments(note_px: float, width: int,
+                             shown: int, rows_total: int) -> list[str]:
+    """狀態圖圖例列（四桶色格＋截斷註記）；抽出讓渲染主體專注畫條。"""
+    from backend.app.transforms.legal_status import STATUS_BUCKET_ORDER
+
+    frags: list[str] = []
+    lx = 28
+    for bucket in STATUS_BUCKET_ORDER:
+        frags.append(f'<rect x="{lx}" y="56" width="12" height="12" fill="{STATUS_BUCKET_COLORS[bucket]}"/>')
+        frags.append(f'<text x="{lx + 18}" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(bucket)}</text>')
+        lx += 18 + int(note_px * (len(bucket) + 1)) + 26
+    note = truncation_note(shown, rows_total)
+    if note:
+        frags.append(f'<text x="{width - 40}" y="67" text-anchor="end" font-size="{note_px:.1f}" '
+                     f'fill="{COLOR_TEXT_SOFT}">{xml_text(note)}</text>')
+    return frags
+
+
+def render_status_stacked_chart(path: Path, title: str,
+                                pivot_rows: list[dict[str, Any]],
+                                rows_total: int) -> None:
+    """前十大申請人 × 狀態桶的堆疊長條圖。
+
+    形式沿割草機範例 p5（每家一列、分段堆疊）；字級／標籤區／截斷註記
+    全走既有機制（solve_chart_font／label_gutter／truncation_note），
+    不另立一套版面常數。
+    """
+    from backend.app.transforms.legal_status import STATUS_BUCKET_ORDER
+
+    width = CHART_CANVAS_WIDTH
+    top, right, bottom = 90, 120, 34
+
+    def _canvas_height(font_px: float) -> float:
+        row_px = font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX
+        return top + bottom + row_px * max(len(pivot_rows), 1)
+
+    label_px, height = solve_chart_font(width, _canvas_height)
+    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
+    row_h = round(label_px * CHART_ROW_HEIGHT / CHART_LABEL_PX)
+    left = label_gutter([r["applicant_display_name"] for r in pivot_rows], font_px=label_px)
+    height = round(_canvas_height(label_px))
+    plot_w = width - left - right
+    max_total = max([int(r.get("patent_count") or 0) for r in pivot_rows] + [1])
+
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
+        '<rect width="100%" height="100%" fill="white"/>',
+        f'<text data-role="chart-title" x="28" y="36" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        *_status_legend_fragments(note_px, width, len(pivot_rows), rows_total),
+    ]
+
+    for index, row in enumerate(pivot_rows):
+        y = top + index * row_h
+        svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{xml_text(row["applicant_display_name"])}</text>')
+        x = float(left)
+        for bucket in STATUS_BUCKET_ORDER:
+            value = int(row.get(bucket) or 0)
+            if value <= 0:
+                continue
+            seg_w = scale(value, 0, max_total, 0, plot_w)
+            svg.append(f'<rect x="{x:.1f}" y="{y + 6}" width="{max(seg_w, 1):.1f}" height="{row_h - 14}" fill="{STATUS_BUCKET_COLORS[bucket]}"/>')
+            x += seg_w
+        total = int(row.get("patent_count") or 0)
+        svg.append(f'<text x="{x + 8:.1f}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{total}件</text>')
+    svg.append('</svg>')
+    path.write_text("".join(svg), encoding="utf-8")
+
+
 def _build_lifecycle_section(ctx: ChartContext) -> None:
-    """生命週期軌跡圖：年度 × 申請人家數 vs 件數。"""
+    """專利狀態分析（2026-08-07 改版）：前十大申請人 × 狀態桶堆疊。
+
+    原「件數×家數散點」與趨勢頁重複，年度家數判讀已由趨勢頁年度四欄承接；
+    本頁改答「誰的權利存續、誰還在審、誰只剩前案價值」。
+    """
     report = ctx.report("lifecycle")
-    render_lifecycle_chart(ctx.run_dir / "lifecycle.svg", report["label_zh"], report["rows"])
+    pivot = lifecycle_status_pivot(report["rows"])
+    applicants_total = len({str(r.get("applicant_display_name") or "").strip()
+                            for r in report["rows"]
+                            if str(r.get("applicant_display_name") or "").strip()})
+    render_status_stacked_chart(
+        ctx.run_dir / "lifecycle.svg", report["label_zh"], pivot, applicants_total)
+    ctx.chart_rows["lifecycle"] = pivot
     ctx.sections.append({
         "title": report["label_zh"],
-        "variants": [{"label": "Lifecycle", "file": "lifecycle.svg", "variant_key": "default"}],
-        "note": "各點＝一個申請年；依申請件數與申請人數的年度軌跡判讀，不作生命週期階段斷言。",
+        "report_key": "lifecycle",
+        "variants": [{"label": "Status", "file": "lifecycle.svg", "variant_key": "default"}],
+        "note": "條長＝件數（含共同申請）；分段＝狀態桶（已授權／審查中／已失效／未知）。"
+                "「未知」為來源無狀態值的案件，據實呈現不併入他桶。",
     })
 
 
@@ -3171,7 +3213,9 @@ def render_opportunity_quadrant_svg(
             if involved:
                 tooltip += f"｜主要申請人：{involved}"
             bucket.append({
-                "text": f'{label} {int(r["patent_count"])}/{int(r["applicant_count"])}',
+                # 🔴 2026-08-07 使用者指正：「4/4 代表啥」——單位只放在圖例太遠，
+                # 讀者看到 chip 時對不上。單位直接跟著數字走：「4件/4家」。
+                "text": f'{label} {int(r["patent_count"])}件/{int(r["applicant_count"])}家',
                 "fill": _TIER_COLORS[_tier_key(lc)],
                 "topic": str(r.get("topic_code", "")),
                 "tooltip": tooltip,

@@ -330,14 +330,14 @@ class AllChartsReadableOnSlideTests(unittest.TestCase):
             self._check(path.read_text(encoding="utf-8"), "申請趨勢折線")
 
     def test_lifecycle_chart(self):
-        """p3 生命週期。"""
+        """p3 專利狀態分析（2026-08-07 改版：散點→狀態桶堆疊，深底轉色契約不變）。"""
         from backend.app.reports import chart_runner as cr
-        rows = [{"application_year": 2011 + i, "applicant_count": i % 8 + 1,
-                 "patent_count": (i * 2) % 16 + 1} for i in range(15)]
+        pivot = [{"applicant_display_name": f"公司{i}", "已授權": 5, "審查中": 2,
+                  "已失效": 1, "未知": 0, "patent_count": 8} for i in range(6)]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "c.svg"
-            cr.render_lifecycle_chart(path, "專利生命週期", rows)
-            self._check(path.read_text(encoding="utf-8"), "生命週期軌跡")
+            cr.render_status_stacked_chart(path, "專利狀態分析", pivot, rows_total=6)
+            self._check(path.read_text(encoding="utf-8"), "狀態堆疊")
 
 
 class ChartTitleStrippedOnSlideTests(unittest.TestCase):

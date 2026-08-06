@@ -247,17 +247,22 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         exclude_blank_columns=("applicant_display_name", "application_year"),
     ),
     # 生命週期：年度 × 申請人家數 vs 件數（技術生命週期判讀的標準圖）。
+    # 🔴 2026-08-07 使用者定案：lifecycle 改版「專利狀態分析」＋套前十大申請人。
+    # 原「件數×家數散點」與趨勢頁重複（趨勢頁已有年度四欄承接家數判讀）。
+    # ⚠ report key 沿用 `lifecycle`——前端／PPT／artifact 對照鍵不連動。
+    # 走展開 VIEW（共同申請各自計數，同 applicant_ranking；母體註記標含共同申請）。
+    # 狀態桶收斂在 chart_runner 端呼叫 transforms/legal_status（唯一定義處），
+    # SQL 只回 (申請人, 原值, 件數)——桶邏輯不複製進 SQL。
     "lifecycle": ReportDefinition(
         name="lifecycle",
         report_type="aggregate",
-        label="Patent Lifecycle",
-        label_zh="專利生命週期",
-        source_table=REPORT_SOURCE_TABLE,
-        columns=("application_year",),
-        group_by=("application_year",),
-        aggregates=(("count_distinct", "applicant_display_name", "applicant_count"),),
-        default_order=(("application_year", "asc"),),
-        exclude_blank_columns=("application_year",),
+        label="Patent Status Analysis",
+        label_zh="專利狀態分析",
+        source_table=APPLICANT_EXPANDED_TABLE,
+        columns=("applicant_display_name", "legal_status"),
+        group_by=("applicant_display_name", "legal_status"),
+        default_order=(("patent_count", "desc"), ("applicant_display_name", "asc")),
+        exclude_blank_columns=("applicant_display_name",),
     ),
     # 國家佈局（現有保護口徑）：家族×國家 一列，COUNT(family_id) = 各國家族數。
     # rows 已按 (family_id, country_code) 去重，alias 沿用 patent_count 讓

@@ -209,8 +209,9 @@ class OpportunityQuadrantLegendTests(unittest.TestCase):
         for battle in ("多方投入技術", "低件數·多申請人", "低件數·少申請人", "集中持有"):
             self.assertEqual(svg.count(battle), 1,
                              f"戰場語言「{battle}」應恰出現一次（格 header），實得 {svg.count(battle)}")
-        # chip 文字用中文 label 非 code，格式「label 件/家」
-        self.assertIn("散熱防塵 11/6", svg)
+        # chip 文字用中文 label 非 code；🔴 2026-08-07 使用者指正「4/4 代表啥」——
+        # 單位改跟著數字走（「11件/6家」），不再只靠圖例遠端釋義。
+        self.assertIn("散熱防塵 11件/6家", svg)
         self.assertNotIn(">T01 ", svg)
 
 
@@ -1296,8 +1297,12 @@ class EncodingNoteAccuracyTests(unittest.TestCase):
         同檔 `render_lifecycle_chart` 的 docstring 與 SVG 副題（connected by year）
         都寫著依年份，說明卻寫成技術群——2026-08-02 使用者當場抓到。
         """
+        # 🔴 2026-08-07 契約變更：lifecycle 改版「專利狀態分析」（堆疊長條），
+        # 「依年份連線」的散點編碼已不存在——本測試改守新編碼三要素。
         note = chart_runner.CHART_ENCODING_NOTES["lifecycle"]
-        self.assertIn("年份", note)
+        self.assertIn("狀態桶", note)
+        self.assertIn("條長", note)
+        self.assertIn("含共同申請", note)
         self.assertNotIn("技術群", note)
 
 
@@ -1698,12 +1703,13 @@ class NoEnglishDebugSubtitleTests(unittest.TestCase):
         self.assertIn("授權公告年", svg)
 
     def test_lifecycle_svg_has_no_english_subtitle(self):
+        # 🔴 2026-08-07：lifecycle 改版狀態堆疊；防護意圖不變——SVG 不得殘留英文副題。
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "lifecycle.svg"
-            chart_runner.render_lifecycle_chart(path, "專利生命週期", [
-                {"application_year": 2020, "applicant_count": 3, "patent_count": 7},
-                {"application_year": 2022, "applicant_count": 7, "patent_count": 15},
-            ])
+            chart_runner.render_status_stacked_chart(path, "專利狀態分析", [
+                {"applicant_display_name": "公司A", "已授權": 5, "審查中": 2,
+                 "已失效": 1, "未知": 0, "patent_count": 8},
+            ], rows_total=1)
             svg = path.read_text(encoding="utf-8")
         self.assertNotIn("connected by year", svg)
         self.assertNotIn("applicant count", svg)
@@ -1959,35 +1965,9 @@ class PointLabelPlacementTests(unittest.TestCase):
             self.assertFalse(chart_runner.boxes_overlap(box, (ox - r, oy - r, ox + r, oy + r)),
                              "標籤壓在資料點上")
 
-    def test_real_lifecycle_data_has_no_overlap(self):
-        """🔴 G-6：實機 p3 仍有兩處年份標籤疊在一起（2021/2011、2026/2017）。
-
-        ⚠ 用**實際資料形狀**驗，不是理想化的測資——E7 的碰撞避讓在單元測試下
-        一直是綠的，實機卻還在疊，因為真實資料點的密集程度不同。
-        本測試以實機生命週期的座標分布重現：多年落在 1–2 家、1–2 件，點擠成一團。
-        """
-        rows = [{"application_year": y, "applicant_count": a, "patent_count": c}
-                for y, a, c in [(2011, 1, 1), (2013, 1, 2), (2015, 2, 4), (2016, 1, 1),
-                                (2017, 1, 1), (2018, 3, 5), (2019, 3, 3), (2020, 5, 7),
-                                (2021, 1, 1), (2022, 7, 15), (2023, 4, 4), (2024, 5, 11),
-                                (2025, 4, 4), (2026, 1, 1)]]
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "lc.svg"
-            chart_runner.render_lifecycle_chart(path, "專利生命週期", rows)
-            svg = path.read_text(encoding="utf-8")
-        # ⚠ 字級改由 chart_font_px() 反推後帶小數（20.7），`\d+` 抓不到 →
-        # 標籤清單變空 → 測試以「一個年份標籤都沒畫出來」失敗，而不是真的重疊。
-        labels = re.findall(
-            r'<text x="([0-9.]+)" y="([0-9.]+)" font-size="[0-9.]+" fill="[^"]+">(\d{4})</text>', svg)
-        self.assertTrue(labels, "一個年份標籤都沒畫出來")
-        for i, (x1, y1, t1) in enumerate(labels):
-            for x2, y2, t2 in labels[i + 1:]:
-                self.assertFalse(
-                    chart_runner.boxes_overlap(
-                        chart_runner.label_box(float(x1), float(y1), t1),
-                        chart_runner.label_box(float(x2), float(y2), t2)),
-                    f"年份標籤 {t1} 與 {t2} 重疊")
-
+    # 🔴 test_real_lifecycle_data_has_no_overlap 已裁撤（2026-08-07）：
+    # lifecycle 改版狀態堆疊長條，散點年份標籤（G-6 守的對象）不存在了。
+    # 堆疊圖的標籤是固定列位（左欄公司名＋條尾件數），無碰撞避讓問題。
     def test_gives_up_instead_of_stacking(self):
         """四個候選位置全被占滿時回 None（不標），不得硬疊上去。"""
         crowd = [(100.0 + i * 2, 100.0, f"20{i:02d}") for i in range(12)]
