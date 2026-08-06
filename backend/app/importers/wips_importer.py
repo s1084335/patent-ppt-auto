@@ -127,24 +127,44 @@ _UPDATE_COLUMN_PARAMS: tuple[tuple[str, str], ...] = (
     ("legal_status", "legal_status"),
     ('"WIPS同族ID"', "WIPS同族ID"),
     # ── 欄位重分類（0046，2026-08-06）：原本落在 patent_attributes 的 14 欄 ──
-    # 參數名一律＝欄名：`normalize_record` 產出的 patent dict 以**目標欄名**為 key
-    # （`for source, target in PATENT_FIELDS.items()`），故不需要像上面那批舊欄
-    # 另立英文別名。⚠ 別名那批是歷史包袱，新增欄位不要跟著立別名。
-    ('"摘要(原文)"', "摘要(原文)"),
-    ('"未審查的公開日"', "未審查的公開日"),
-    ('"授權公告日"', "授權公告日"),
-    ('"優先權號"', "優先權號"),
-    ('"優先權國家"', "優先權國家"),
-    ('"優先權日"', "優先權日"),
-    ('"詳細查看連結(登入)"', "詳細查看連結(登入)"),
-    ('"文圖像文件(PDF)連結"', "文圖像文件(PDF)連結"),
-    ('"WIPS同族各國家文獻數量(申請為準)"', "WIPS同族各國家文獻數量(申請為準)"),
-    ('"EPC有效國家[EP]"', "EPC有效國家[EP]"),
-    ('"EPC無效國家[EP]"', "EPC無效國家[EP]"),
-    ('"(F1)引用文獻數"', "(F1)引用文獻數"),
-    ('"(B1)引用文獻數"', "(B1)引用文獻數"),
-    ('"解決課題 摘要[US,EP,PCT,JP,KR,CN,TW]"', "解決課題 摘要[US,EP,PCT,JP,KR,CN,TW]"),
+    # 🔴 參數名**不得含括號**：psycopg 解析 `%(name)s` 時以第一個 `)` 為結尾，
+    # `%(摘要(原文)_cmp)s` 會被截斷，整句 UPDATE 拋 ProgrammingError。
+    # ⚠ 這正是上面那批舊欄一律用英文別名的原因——不是歷史包袱，是這條限制的產物。
+    # （0046 初版誤判為包袱、直接拿欄名當參數名，實機跑真 DB 才炸出來；
+    #   字串契約測試看不到這種錯，已補 `test_param_names_are_psycopg_safe`。）
+    ('"摘要(原文)"', "abstract_original"),
+    # ⚠ 不可叫 publication_date——那個參數名已被「解析後的公開日期」佔用（見上）。
+    ('"未審查的公開日"', "unexamined_publication_date"),
+    ('"授權公告日"', "grant_date"),
+    ('"優先權號"', "priority_number"),
+    ('"優先權國家"', "priority_country"),
+    ('"優先權日"', "priority_date"),
+    ('"詳細查看連結(登入)"', "detail_url"),
+    ('"文圖像文件(PDF)連結"', "pdf_url"),
+    ('"WIPS同族各國家文獻數量(申請為準)"', "family_country_doc_counts"),
+    ('"EPC有效國家[EP]"', "epc_valid_countries"),
+    ('"EPC無效國家[EP]"', "epc_invalid_countries"),
+    ('"(F1)引用文獻數"', "f1_citation_count"),
+    ('"(B1)引用文獻數"', "b1_citation_count"),
+    ('"解決課題 摘要[US,EP,PCT,JP,KR,CN,TW]"', "problem_summary"),
 )
+
+
+def build_patent_params(patent: dict[str, Any]) -> dict[str, Any]:
+    """把 normalize_record 的 patent dict 補上 `_UPDATE_COLUMN_PARAMS` 需要的別名。
+
+    `patent` 的 key 是**目標欄名**（`normalize_record` 以 `PATENT_FIELDS` 的 target
+    為 key），而 SQL 用的是參數名——兩者在有別名的欄位上不同，必須補齊。
+
+    ⚠ 0046 前這裡是一段**手寫的 12 行別名 dict**，等於 `_UPDATE_COLUMN_PARAMS`
+    的第三份落點。漏補一個的症狀是靜默的：`.get(param)` 回 None → 該欄永遠寫入
+    NULL，不報錯。改為由 `_UPDATE_COLUMN_PARAMS` 推導後，加欄只改那一張表。
+    `setdefault` 讓已算好的衍生值（publication_date／application_year 等）不被蓋掉。
+    """
+    params = {**patent}
+    for column, param in _UPDATE_COLUMN_PARAMS:
+        params.setdefault(param, patent.get(column.strip('"')))
+    return params
 
 
 def _patent_insert_sql() -> str:
@@ -949,21 +969,7 @@ def upsert_patent(
     其中真的有任一欄差異更新（update_patent_changed_fields 回 True）才另計 stats["updated"]。
     更新採 2026-07-22「差異即更新（新值非空）」政策，不改既有 mapping 與去重機制。
     """
-    patent_params = {
-        **patent,
-        "claim_count": patent.get("權利要求的項數"),
-        "all_claims": patent.get("所有權利要求[JP,KR,CN]"),
-        "main_claim": patent.get("主權項"),
-        "main_claim_original": patent.get("主權項(原文)"),
-        "independent_claim_count": patent.get("獨立項數量[KR,JP,US,CN,EP,IN]"),
-        "independent_claims": patent.get("獨立項[KR,JP,US,CN,EP,IN]"),
-        "independent_claims_original": patent.get("獨立項(原文)[KR,JP,CN,EP]"),
-        "effect_summary": patent.get("效果 摘要[US,EP,PCT,JP,KR,CN,TW]"),
-        "orig_cpc_main": patent.get("Orig. CPC(Main)"),
-        "orig_ipc_main": patent.get("Orig. IPC(Main)"),
-        "curr_cpc_main": patent.get("Curr. CPC(Main)"),
-        "curr_ipc_main": patent.get("Curr. IPC(Main)"),
-    }
+    patent_params = build_patent_params(patent)
     patent_id = find_existing_patent_id(cur, patent)
     if patent_id:
         changed = update_patent_changed_fields(cur, patent_id, patent_params)

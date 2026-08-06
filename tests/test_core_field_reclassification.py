@@ -199,6 +199,46 @@ class ImporterContractTests(unittest.TestCase):
                 self.assertIn(column, sql)
                 self.assertIn(f"%({param})s", sql)
 
+    def test_param_names_are_psycopg_safe(self):
+        """🔴 regression：具名參數名**不得含括號**。
+
+        2026-08-06 實機重現：0046 初版把 14 個新欄的參數名直接用欄名，其中 6 個含
+        括號（`摘要(原文)`／`詳細查看連結(登入)`／`文圖像文件(PDF)連結`／
+        `WIPS同族各國家文獻數量(申請為準)`／`(F1)引用文獻數`／`(B1)引用文獻數`）。
+        psycopg 解析 `%(name)s` 時**以第一個 `)` 為結尾**，於是
+        `%(摘要(原文)_cmp)s` 被截成 `%(摘要(原文)`，整句 UPDATE 拋
+        `ProgrammingError: only '%s', '%b', '%t' are allowed as placeholders`。
+
+        ⚠ 這也解釋了既有欄位為何一律用英文別名（`claim_count`／`main_claim_original`…）
+        ——那不是歷史包袱，是這條限制的產物。初版註解誤判為包袱，一併更正。
+
+        ⚠ 為什麼上面那條 `test_insert_and_update_share_one_column_list` 沒擋住：
+        它斷言 `"%(param)s" in sql`，是**字串比對**——字串確實在，但 psycopg 解析不了。
+        字串契約驗不到真 SQL 能不能跑，這條才是。
+        """
+        for column, param in self.imp._UPDATE_COLUMN_PARAMS:
+            with self.subTest(column=column):
+                self.assertNotIn("(", param, f"{column} 的參數名 {param} 含括號")
+                self.assertNotIn(")", param, f"{column} 的參數名 {param} 含括號")
+
+    def test_every_param_resolves_to_a_value(self):
+        """每個參數名都要能從 normalize_record 的 patent dict 取到值。
+
+        ⚠ 參數名一旦不等於欄名，`patent_params` 就必須補上對應——漏補的症狀是
+        該欄永遠寫入 NULL（`.get(param)` 回 None），而且**不會報錯**。
+        """
+        from backend.app.mappings import wips
+
+        patent = {target: f"v-{target}" for target in wips.PATENT_FIELDS.values()}
+        params = self.imp.build_patent_params(patent)
+        for column, param in self.imp._UPDATE_COLUMN_PARAMS:
+            expected_col = column.strip('"')
+            if expected_col not in patent:
+                continue        # 衍生欄（application_date 等）不由 PATENT_FIELDS 提供
+            with self.subTest(column=column):
+                self.assertEqual(params.get(param), patent[expected_col],
+                                 f"參數 {param} 取不到 {expected_col} 的值")
+
     def test_people_stat_fields_are_inserted(self):
         """發明人數／申請人數要真的寫進 patent_people。"""
         for field in MOVE_TO_PEOPLE:
