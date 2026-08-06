@@ -271,6 +271,32 @@ PATENT_FIELDS = {
     "Curr. IPC(Main)": "Curr. IPC(Main)",
     "状态[US,JP,KR,CN,EP,CA,AU]": "legal_status",
     "WIPS同族ID": "WIPS同族ID",
+    # ── 欄位重分類（0046，2026-08-06）──────────────────────────────
+    # 規格＝`docs/patent_core_field_reclassification_spec.md`：
+    # **會被程式用到的欄位一律歸 core table**，`patent_attributes` 只留未使用欄位。
+    #
+    # ⚠ 加進本 dict 就會自動從 `ATTRIBUTE_FIELDS` 掉出來（見檔尾的推導），
+    # 這是唯一定義處——不需要也不得在 `FIELD_GROUPS` 另外刪一次。
+    #
+    # 逐欄的實際讀取點（preflight 實查，證據見 patent-db-claude-plan.md）：
+    #   patent_queries `_ATTRIBUTE_FIELDS` 8 欄
+    "摘要(原文)": "摘要(原文)",
+    "未审查的公开日": "未審查的公開日",
+    "授权公告日": "授權公告日",
+    "优先权号": "優先權號",
+    "优先权国家": "優先權國家",
+    "优先权日": "優先權日",
+    "详细查看链接(登录)": "詳細查看連結(登入)",
+    #   target_source（案件比對取 PDF）＋ patent_queries
+    "文图像文件(PDF)链接": "文圖像文件(PDF)連結",
+    #   refresh_report_patent_base（報表 derived）
+    "WIPS同族各国家文献数量(申请为准)": "WIPS同族各國家文獻數量(申請為準)",
+    "EPC有效国家[EP]": "EPC有效國家[EP]",
+    "EPC无效国家[EP]": "EPC無效國家[EP]",
+    "(F1)引用文献数": "(F1)引用文獻數",
+    "(B1)引用文献数": "(B1)引用文獻數",
+    #   功效通道 AI 補分的輸入（2026-08-05 定案）——已是分析輸入，不得留在 attributes
+    "解决课题 摘要[US,EP,PCT,JP,KR,CN,TW]": "解決課題 摘要[US,EP,PCT,JP,KR,CN,TW]",
 }
 
 APPLICATION_DATE_FIELD = "申请日"
@@ -321,6 +347,14 @@ PEOPLE_GROUPS = {
     },
 }
 
+# 人員統計欄（0046，2026-08-06）：不屬於任何一個「人」的分組，但語意上是 people 資料。
+# ⚠ 單獨列出而非塞進上面某一組——它們是**整件專利的人數**，不是某個申請人的屬性；
+# 塞進 `applicant` 會讓 `PEOPLE_GROUPS` 的語意（一組＝一種角色的欄位集）走樣。
+PEOPLE_STAT_FIELDS = {
+    "发明人数": "發明人數",
+    "申请人数": "申請人數",
+}
+
 PEOPLE_FIELD_COLUMNS = {
     "申请人": "申請人",
     "申请人(第2语言)": "申請人(第2語言)",
@@ -339,6 +373,15 @@ PEOPLE_FIELD_COLUMNS = {
     "最近转让人[US,KR,CN]": "最近轉讓人[US,KR,CN]",
     "申报（登记）人": "申報（登記）人",
     "申报（登记）人国籍": "申報（登記）人國籍",
+    # ── 欄位重分類（0046，2026-08-06）──────────────────────────────
+    # 人員統計欄歸 people，不留在 attributes。
+    # ⚠ `发明人数` 已被報表 derived 使用（`refresh_report_patent_base`）；
+    #    `申请人数` 語意上屬 people 統計，與人員資料同表才不會兩處各查一次。
+    # ⚠ 它們原本在 `FIELD_GROUPS["people_stats"]`——那一組**不叫 `people`**，
+    #    所以不在 `PEOPLE_FIELD_SET` 內，才會落進 ATTRIBUTE_FIELDS。
+    #    加進本 dict 並補進 PEOPLE_GROUPS 後，兩邊都會正確排除。
+    "发明人数": "發明人數",
+    "申请人数": "申請人數",
 }
 
 CLASSIFICATION_FIELDS = {
@@ -422,7 +465,11 @@ FIELD_GROUPS = {
     "standard": {"标准化机构", "标准号码", "申报日", "申报（登记）人", "申报（登记）人国籍"},
     "people_stats": {"申请人数", "标准化申请人[KR]", "申请人名称标准化代码[JP]", "发明人数"},
 }
-PEOPLE_FIELD_SET = set().union(*(set(values.values()) for values in PEOPLE_GROUPS.values()))
+PEOPLE_FIELD_SET = set().union(
+    *(set(values.values()) for values in PEOPLE_GROUPS.values()),
+    # 0046：人數統計欄一併算 people，才會從 ATTRIBUTE_FIELDS 排除。
+    set(PEOPLE_STAT_FIELDS),
+)
 FIELD_GROUPS["people"] = PEOPLE_FIELD_SET
 
 ATTRIBUTE_FIELDS = tuple(

@@ -9,8 +9,8 @@
 - workspace 歸屬（list_patents）以「本頁 patent_id 一次批次反查」求得，不對每筆專利另發查詢
   （避免 N+1）；查詢次數固定三條（count / items / membership），不隨資料量成長。
 - 顯示欄位（2026-07-23 定案，見 `.agents/context/patent-display-spec.md`）分散在
-  core_layer.patents／patent_attributes／patent_people 三張表，一次 JOIN 帶回，
-  前端不逐筆補查；主附圖 bytea 一律不進清單（只回 has_figure 布林）。
+  core_layer.patents／patent_people／derived_layer.report_patent_base，一次 JOIN 帶回，
+  前端不逐筆補查（0046 起顯示欄位已無一欄來自 patent_attributes）；主附圖 bytea 一律不進清單（只回 has_figure 布林）。
 """
 from __future__ import annotations
 
@@ -30,11 +30,10 @@ from backend.app.repositories.topic_state_repository import (
 # ── 顯示欄位單一事實來源 ──────────────────────────────────────────────
 # 2026-07-23 定案的專利顯示欄位：回應 key → 取值 SQL 運算式。清單與詳情共用同一組欄位
 # （使用者定案「不做兩套」），前端亦由單一欄位定義驅動表頭與資料列。
-# 分三份 dict 對應三張表，避免把來源混在一起看不出落點：
+# 分三份 dict 對應三處來源，避免把來源混在一起看不出落點：
 #   _PATENT_FIELDS    ── core_layer.patents（主表，一對一）
 #   _PEOPLE_FIELDS    ── core_layer.patent_people（一對一，LEFT JOIN）
-#   _ATTRIBUTE_FIELDS ── core_layer.patent_attributes（一對多，取「最新非空」，見 _attribute_pick）
-# 新增／移除顯示欄位只需改這三份 dict，SQL 投影與回應 key 自動跟著變（不寫死欄位數）。
+# 新增／移除顯示欄位只需改這幾份 dict，SQL 投影與回應 key 自動跟著變（不寫死欄位數）。
 # workspace 專利清單（分類區）匯入同一份定義，兩區共用同一組欄位，不做兩套。
 
 # patents 主表欄位：直接投影，NULLIF(BTRIM(...)) 把 WIPS 的空白字元正規化成 NULL
@@ -59,6 +58,26 @@ _PATENT_FIELDS: dict[str, str] = {
     # 文獻備註 0032 起搬到 patents 主表（一專利一列，AI 回寫直接 WHERE id）；
     # 不再從 patent_attributes「最新非空」取，避免多列選列不一致。
     "patent_note": 'NULLIF(BTRIM({p}."文獻備註"), \'\')',
+    # ── 欄位重分類（0046，2026-08-06）─────────────────────────────
+    # 這 8 欄原本走 `_attribute_pick` 的「最新非空」相關子查詢，0046 起已在 patents。
+    # ⚠ 為什麼要搬：`patent_attributes` 是一 raw_record 一列的寬表，每個讀取端都得
+    # 自己實作一次「哪一列才算數」——`patent_queries` 用 `raw_record_id DESC`、
+    # `refresh_report_patent_base` 用另一個子查詢，**選列規則散在多處且不保證一致**。
+    # 搬進 patents 後一專利一列，canonical value 只有一個，選列問題消失。
+    "abstract_original": 'NULLIF(BTRIM({p}."摘要(原文)"), \'\')',
+    "publication_date": 'NULLIF(BTRIM({p}."未審查的公開日"), \'\')',
+    "grant_date": 'NULLIF(BTRIM({p}."授權公告日"), \'\')',
+    "priority_number": 'NULLIF(BTRIM({p}."優先權號"), \'\')',
+    "priority_country": 'NULLIF(BTRIM({p}."優先權國家"), \'\')',
+    "priority_date": 'NULLIF(BTRIM({p}."優先權日"), \'\')',
+    "detail_url": 'NULLIF(BTRIM({p}."詳細查看連結(登入)"), \'\')',
+    "pdf_url": 'NULLIF(BTRIM({p}."文圖像文件(PDF)連結"), \'\')',
+    # 授權公告年＝授權公告日的衍生欄（前端詳情與年度報表同一口徑）。
+    # ⚠ 只取「授權公告日」，不 fallback 到公開日或審查公告日——沿 0046 前的既有規則。
+    "grant_year": (
+        'CASE WHEN BTRIM(COALESCE({p}."授權公告日", \'\')) ~ \'^[0-9]{{4}}\' '
+        'THEN SUBSTRING(BTRIM({p}."授權公告日") FROM 1 FOR 4)::integer END'
+    ),
 }
 
 # patent_people：patent_id 為 PK（一對一），LEFT JOIN 即可，不會放大列數。
@@ -86,25 +105,12 @@ _REPORT_BASE_FIELDS: dict[str, str] = {
     "recent_assignee": "{rpb}.recent_assignee_display_name",
 }
 
-# patent_attributes：PK 為 (patent_id, raw_record_id)，同一專利可有多列（多次匯入）。
-# 取值規則沿用 refresh_report_patent_base 既有做法：**每欄各取最新非空**的 raw_record，
-# 而非「取最新列」——最新一次匯出可能是精簡版（該欄為空白），取最新列會把有值的舊資料蓋成空。
-_ATTRIBUTE_FIELDS: dict[str, str] = {
-    "abstract_original": "摘要(原文)",
-    "publication_date": "未審查的公開日",
-    "grant_date": "授權公告日",
-    "priority_number": "優先權號",
-    "priority_country": "優先權國家",
-    "priority_date": "優先權日",
-    "detail_url": "詳細查看連結(登入)",
-    "pdf_url": "文圖像文件(PDF)連結",
-}
-
-_ATTRIBUTE_YEAR_FIELDS: dict[str, str] = {
-    # 授權公告年是授權公告日的衍生欄位，前端詳情與年度報表同一口徑：
-    # 只取「授權公告日」，不 fallback 到公開日或審查公告日。
-    "grant_year": "授權公告日",
-}
+# ⚠ 0046（2026-08-06）**移除了 `_ATTRIBUTE_FIELDS` 與 `_ATTRIBUTE_YEAR_FIELDS`**。
+# 那 8 欄＋衍生的 grant_year 已搬進 `core_layer.patents`（見 _PATENT_FIELDS 尾段），
+# 顯示欄位不再有任何一欄來自 `patent_attributes`——連同 `_attribute_pick` /
+# `_attribute_year_pick` 兩支子查詢組裝函式一併刪除（無人使用的轉手層）。
+# 需要重新讀 attributes 時，請先確認該欄是否**真的**該留在 attributes（規格：
+# 只有「完全沒被程式使用」的 WIPS 欄位才放那裡），而不是直接把機制加回來。
 
 
 def topic_label_key(source_field: str) -> str:
@@ -116,50 +122,13 @@ def topic_label_key(source_field: str) -> str:
     return f"topic_label_{source_field}"
 
 
-def _attribute_pick(response_key: str, column: str, *, patents_alias: str = "p") -> str:
-    """組出「某 patent_attributes 欄取最新非空值」的相關子查詢投影。
-
-    以 raw_record_id DESC 取第一筆非空；同一專利多列時不會放大結果列數（純量子查詢），
-    也不需要對每筆專利另發查詢（隨 items SQL 一起在 DB 內求值，非 Python 層 N+1）。
-    取「最新非空」而非「最新列」：最新一次匯出可能是精簡版（該欄為空白字元），
-    取最新列會把有值的舊資料蓋成空——沿 refresh_report_patent_base 既有規則。
-    """
-    quoted = f'pa."{column}"'
-    return (
-        f"(SELECT NULLIF(BTRIM({quoted}), '') "
-        "FROM core_layer.patent_attributes pa "
-        f"WHERE pa.patent_id = {patents_alias}.id "
-        f"AND NULLIF(BTRIM({quoted}), '') IS NOT NULL "
-        "ORDER BY pa.raw_record_id DESC "
-        f"LIMIT 1) AS {response_key}"
-    )
-
-
-def _attribute_year_pick(response_key: str, column: str, *, patents_alias: str = "p") -> str:
-    """從 patent_attributes 日期文字欄位衍生西元年份，取值規則同 _attribute_pick。"""
-    quoted = f'pa."{column}"'
-    picked = (
-        f"SELECT NULLIF(BTRIM({quoted}), '') "
-        "FROM core_layer.patent_attributes pa "
-        f"WHERE pa.patent_id = {patents_alias}.id "
-        f"AND NULLIF(BTRIM({quoted}), '') IS NOT NULL "
-        "ORDER BY pa.raw_record_id DESC "
-        "LIMIT 1"
-    )
-    return (
-        "CASE WHEN BTRIM(COALESCE((" + picked + "), '')) ~ '^[0-9]{4}' "
-        "THEN SUBSTRING(BTRIM((" + picked + ")) FROM 1 FOR 4)::integer END "
-        f"AS {response_key}"
-    )
-
-
 def display_field_keys() -> tuple[str, ...]:
     """回傳全部顯示欄位的回應 key（欄位清單的唯一來源，供其他模組與測試取用）。
 
     專利總覽與分類區共用同一組欄位（使用者定案「不做兩套」），兩邊都由此推導，
     不各自維護一份欄名清單，也不寫死欄位數。
     """
-    return (*_PATENT_FIELDS, *_PEOPLE_FIELDS, *_REPORT_BASE_FIELDS, *_ATTRIBUTE_FIELDS, *_ATTRIBUTE_YEAR_FIELDS)
+    return (*_PATENT_FIELDS, *_PEOPLE_FIELDS, *_REPORT_BASE_FIELDS)
 
 
 def display_projection(
@@ -168,12 +137,12 @@ def display_projection(
     people_alias: str = "pp",
     report_base_alias: str = "rpb",
 ) -> str:
-    """把四張表的顯示欄位定義攤成 SQL 投影片段（欄位清單的唯一 SQL 來源）。
+    """把三處顯示欄位定義攤成 SQL 投影片段（欄位清單的唯一 SQL 來源）。
 
     alias 可覆寫，讓 workspace 專利清單（workspace_queries）用相同投影而不必改自己的
     表別名——兩區的欄位定義因此只有這一份。呼叫端須自行 LEFT JOIN patent_people
-    （別名 people_alias）與 derived_layer.report_patent_base（別名 report_base_alias）；
-    patent_attributes 由本函式產生的純量子查詢自行處理。
+    （別名 people_alias）與 derived_layer.report_patent_base（別名 report_base_alias）。
+    ⚠ 0046 起全部欄位都是直接投影，不再有相關子查詢。
     """
     parts = [
         f"{expr.format(p=patents_alias)} AS {key}" for key, expr in _PATENT_FIELDS.items()
@@ -184,14 +153,6 @@ def display_projection(
     parts += [
         f"{expr.format(rpb=report_base_alias)} AS {key}"
         for key, expr in _REPORT_BASE_FIELDS.items()
-    ]
-    parts += [
-        _attribute_pick(key, column, patents_alias=patents_alias)
-        for key, column in _ATTRIBUTE_FIELDS.items()
-    ]
-    parts += [
-        _attribute_year_pick(key, column, patents_alias=patents_alias)
-        for key, column in _ATTRIBUTE_YEAR_FIELDS.items()
     ]
     return ",\n        ".join(parts)
 
@@ -378,7 +339,7 @@ def list_patents(
     resolve_topic_workspace_id() 決定」（唯一切換點）；傳 None 則不取主題（兩欄皆空）。
 
     效率：SQL 固定三條（count / items / 本頁 patent_id 批次反查 workspace 歸屬），
-    不對每筆專利另發查詢（無 N+1）；patent_people 以 LEFT JOIN、patent_attributes 以
+    不對每筆專利另發查詢（無 N+1）；patent_people 與 report_patent_base 皆以
     純量子查詢隨 items SQL 一起求值，不逐筆補查；主附圖 bytea 不進清單。
     歸屬與分類標籤在 Python 層以 dict 合併回清單。
     """
