@@ -16,7 +16,7 @@
 - [x] 3.2 匯入可追查的小型 WIPS 樣本，先保留並回報測試資料，不在未獲使用者同意前清除
 - [x] 3.3 以 SQL 對帳來源列、核心欄位、people、attributes、derived 與報表輸出，確認 selected/persisted/rendered 集合一致
 - [x] 3.4 執行目標 pytest、相關模組回歸與 `scripts/verify_module.py`；記錄未測項目、環境與結果
-- [ ] 3.5 提交 schema diff、欄位用途矩陣、SQL 對帳與代表性輸出供使用者驗收；明確同意前不得 archive change
+- [x] 3.5 提交 schema diff、欄位用途矩陣、SQL 對帳與代表性輸出供使用者驗收；明確同意前不得 archive change
 
 ## 執行紀錄（2026-08-06，Claude；細節見 work-log 與 output/_verify/p0/）
 
@@ -39,4 +39,5 @@
   差異來自 company_aliases 人工累積（正式庫 74 筆 confirmed、隔離庫僅匯入時建 1 筆），
   屬預期，非缺陷。
 - 3.4：`verify_module` 量測項全數達標（新增行 lint 0）；範圍回歸 151 passed。
-- 3.5：⬜ 證據已備妥，**待使用者逐項確認後才 archive**。
+- 3.5：✅ 使用者驗收通過（2026-08-06）：「P0 可以 archive」。
+  隔離庫 migcheck_0046 依裁決（「那就刪唄」）已 DROP，Supabase 僅剩 postgres 主庫。

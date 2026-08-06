@@ -1,0 +1,38 @@
+schema: spec-driven
+
+context: |
+  專案為專利資料匯入、治理、分群、分析、報表與簡報輸出工具。
+  技術棧為 Python 3.11+、FastAPI、PostgreSQL、Alembic、pytest，以及純 HTML/JavaScript 前端。
+  所有規格與說明使用繁體中文；程式識別字、API、SQL 物件與指令保留英文。
+  動工前必須讀取專案根目錄 AGENTS.md，以及 D:/力山/.ai-rules/shared.md 與 workflows.md。
+  openspec/specs 是已實作且已接受之現行能力的唯一規格來源。
+  openspec/changes 是尚未完成或尚未驗收的變更，不得描述成現行能力。
+  docs 只保存架構參考、操作 runbook 與外部參考資料；D:/力山/.agents/context 只保存背景、狀態與決策。
+
+rules:
+  proposal:
+    - 必須包含 Intent、Scope、Non-goals、Impact、Activation 與 Acceptance Gate。
+    - 影響 DB 時列出 migration、資料搬移、derived refresh、重匯與 rollback 需求。
+    - 需求依可獨立驗收的功能切片描述，不按 DB、API、前端水平拆分。
+  specs:
+    - 每項 Requirement 使用穩定識別碼與 SHALL，並至少有一個 GIVEN/WHEN/THEN Scenario。
+    - 只寫外部可觀察行為、資料契約與輸出，不把函式名稱當需求。
+    - 正常、空值、邊界、錯誤與資料保留情境按風險納入。
+  design:
+    - 必須列出現況證據、架構與資料流、程式落點、測試對照、輸出契約、風險與回復方式。
+    - 同一份知識只能有一個定義處；跨行程資料必須說明唯一交換媒介。
+  tasks:
+    - 行為變更依 Red、最小 Green、必要時 Refactor 排列，並記錄真實 Red 失敗原因。
+    - 每個功能切片都要對應 Requirement/Scenario、目標測試、範圍回歸與停止點。
+    - 交付前必須包含 verify_module.py、適用的 DB/API/前端/PPT 實物驗收與未驗項目揭露。
+
+operations:
+  apply:
+    guidance:
+      - 開工前先記錄測試基線；每批完成即回報 Red、Green、Refactor 與驗證結果。
+      - 不得為了讓測試變綠而改寫需求；實測推翻規格時先回寫 change artifacts。
+  archive:
+    guidance:
+      - openspec validate、適用測試與實物驗收全部完成後，才可請使用者裁決。
+      - 只有使用者明確確認驗收通過，才可 archive 並合併到 main specs。
+      - archive 前確認舊規格已記入 migration-ledger，且沒有第二份仍在維護的規格正文。
