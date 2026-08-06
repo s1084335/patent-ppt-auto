@@ -1,4 +1,4 @@
-"""專利欄位重分類契約（規格＝`docs/patent_core_field_reclassification_spec.md`）。
+"""專利欄位重分類契約（規格＝`openspec/changes/complete-core-field-reclassification/`）。
 
 ## 目標
 
@@ -326,3 +326,69 @@ class MigrationContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FieldUsageMatrixTests(unittest.TestCase):
+    """P0-1.2/1.3（openspec complete-core-field-reclassification）：四集合契約。
+
+    四個欄位集合：selected（WIPS 來源被選用）→ persisted（core 或 attributes）
+    → derived（report_patent_base）→ rendered（顯示／報表輸出）。
+    契約＝「會被運算、分群、篩選、顯示或輸出的欄位只進 core table」，
+    attributes 只是未使用欄位的保存區。
+    """
+
+    def test_no_runtime_sql_reads_patent_attributes(self):
+        """🔴 全 backend 掃描：不得有任何 SQL 從 patent_attributes 讀資料。
+
+        ⚠ 逐檔白名單而非逐檔盤點——新增檔案自動被掃到。
+        唯二例外：`wips_importer.py`（`replace_attributes` 的 INSERT 是寫入保存區，
+        設計如此）；migrations 不在 backend/app 底下，天然排除。
+        """
+        import re
+
+        pattern = re.compile(r"(FROM|JOIN|UPDATE|INTO)\s+(core_layer\.)?patent_attributes",
+                             re.IGNORECASE)
+        offenders: list[str] = []
+        for path in (PROJECT_ROOT / "backend" / "app").rglob("*.py"):
+            rel = path.relative_to(PROJECT_ROOT).as_posix()
+            if rel.endswith("importers/wips_importer.py"):
+                continue
+            for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith(("#", "--")):
+                    continue  # 註解不算讀取點
+                if pattern.search(line):
+                    offenders.append(f"{rel}:{i}")
+        self.assertEqual(offenders, [],
+                         f"runtime 出現 patent_attributes 的 SQL 存取：{offenders}")
+
+    def test_persisted_buckets_are_disjoint(self):
+        """同一目標欄不得同時落在 core 與 attributes（兩處落點必分岔）。"""
+        from backend.app.mappings import wips
+
+        core_targets = set(wips.PATENT_FIELDS.values())
+        attr_targets = set(wips.ATTRIBUTE_FIELD_COLUMNS.values())
+        people_targets = set(wips.PEOPLE_FIELD_COLUMNS.values())
+        self.assertEqual(core_targets & attr_targets, set())
+        self.assertEqual(people_targets & attr_targets, set())
+
+    def test_selected_source_fields_partition(self):
+        """每個被選用的 WIPS 來源欄恰好屬於一個 bucket（patents/people/attributes）。"""
+        from backend.app.mappings import wips
+
+        pat = set(wips.PATENT_FIELDS)
+        ppl = set(wips.PEOPLE_FIELD_SET)
+        att = set(wips.ATTRIBUTE_FIELDS)
+        self.assertEqual(pat & att, set(), "同一來源欄同時進 patents 與 attributes")
+        self.assertEqual(ppl & att, set(), "同一來源欄同時進 people 與 attributes")
+
+    def test_rendered_fields_never_come_from_attributes(self):
+        """rendered 集合（顯示欄位投影）不得含 attributes 目標欄。"""
+        from backend.app.app_layer import patent_queries
+        from backend.app.mappings import wips
+
+        projection = patent_queries.display_projection()
+        for column in wips.ATTRIBUTE_FIELD_COLUMNS.values():
+            with self.subTest(column=column):
+                self.assertNotIn(f'"{column}"', projection,
+                                 f"顯示投影引用了 attributes 欄 {column}")
