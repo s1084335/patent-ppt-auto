@@ -115,6 +115,11 @@ class DirtyValueTests(unittest.TestCase):
 class PopulationNotesBatchTests(unittest.TestCase):
     """`population_notes()`：落進 report_data 的那一份。"""
 
+    def _notes(self, reports):
+        from backend.app.reports.population import population_notes
+
+        return population_notes(reports)
+
     def _reports(self):
         return {
             "application_trend": {"rows": [{"patent_count": 55}]},
@@ -166,6 +171,102 @@ class FootnoteCompositionTests(unittest.TestCase):
 
         text = compose_footnote("", sources="IPC 主分類分布", period="2011-2026")
         self.assertTrue(text.startswith("來源："), text)
+
+
+class ChannelSplitPopulationTests(unittest.TestCase):
+    """🔴 regression（2026-08-06 實機驗出）：分群報表的母體必須**分通道**算。
+
+    ## 症狀
+
+    `report_trial_20260806_034610` 的 p11／p12／p17／p18／p20–22 共 7 頁，
+    頁尾全寫「母體 79/55 件」且無說明。79 ＝ 技術 35 ＋ 功效 44，
+    但每一頁只呈現**單一通道**：技術頁應為 35/55、功效頁應為 44/55。
+
+    ⚠ 79 > 55 卻沒有過計數說明，讀者只會判定報表算錯——比不標更糟。
+
+    ## 根因
+
+    `cluster_topic_table`／`opportunity_quadrant` 的 rows 是**兩通道合併**
+    （`chart_runner` 以 `{**row, "source_field": sf}` 疊進同一個 list），
+    而 `population_notes` 對整個 report_key 的 rows 一次加總。
+    A3 初版的單元測試只涵蓋「一個 report_key 對一個母體」，沒有多通道情形。
+
+    ## 契約
+
+    分通道報表**只產出逐通道的鍵**（`report_key:slug`），不產出合併鍵——
+    合併鍵是錯的數字，寧可讓消費端拿不到而不印，也不要印錯的。
+    """
+
+    def _rows(self):
+        return [
+            {"source_field": "wips_independent_claims", "patent_count": 9},
+            {"source_field": "wips_independent_claims", "patent_count": 8},
+            {"source_field": "wips_independent_claims", "patent_count": 7},
+            {"source_field": "wips_independent_claims", "patent_count": 6},
+            {"source_field": "wips_independent_claims", "patent_count": 5},
+            {"source_field": "effect_summary", "patent_count": 9},
+            {"source_field": "effect_summary", "patent_count": 7},
+            {"source_field": "effect_summary", "patent_count": 7},
+            {"source_field": "effect_summary", "patent_count": 6},
+            {"source_field": "effect_summary", "patent_count": 5},
+            {"source_field": "effect_summary", "patent_count": 5},
+            {"source_field": "effect_summary", "patent_count": 4},
+            {"source_field": "effect_summary", "patent_count": 1},
+        ]
+
+    def _notes(self, reports):
+        from backend.app.reports.population import population_notes
+
+        return population_notes(reports)
+
+    def _reports(self):
+        return {
+            "application_trend": {"rows": [{"patent_count": 55}]},
+            "cluster_topic_table": {"rows": self._rows()},
+            "opportunity_quadrant": {"rows": self._rows()},
+        }
+
+    def test_tech_and_effect_get_separate_notes(self):
+        notes = self._notes(self._reports())
+        self.assertIn("母體 35/55 件", notes.get("cluster_topic_table:tech", ""),
+                      f"技術通道母體不對：{notes.get('cluster_topic_table:tech')!r}")
+        self.assertIn("母體 44/55 件", notes.get("cluster_topic_table:effect", ""),
+                      f"功效通道母體不對：{notes.get('cluster_topic_table:effect')!r}")
+
+    def test_merged_key_is_not_emitted(self):
+        """🔴 合併鍵不得存在——它就是那個 79/55。"""
+        notes = self._notes(self._reports())
+        self.assertNotIn("cluster_topic_table", notes,
+                         "仍產出合併鍵，消費端會拿到兩通道加總的錯誤母體")
+        self.assertNotIn("opportunity_quadrant", notes)
+
+    def test_opportunity_quadrant_split_too(self):
+        """機會矩陣兩頁同樣分通道（p17 技術／p18 功效）。"""
+        notes = self._notes(self._reports())
+        self.assertIn("母體 35/55 件", notes.get("opportunity_quadrant:tech", ""))
+        self.assertIn("母體 44/55 件", notes.get("opportunity_quadrant:effect", ""))
+
+    def test_reason_uses_per_channel_shortfall(self):
+        """排除件數要用**該通道**的差額，不是合併後的差額。
+
+        技術 35/55 → 少 20 件；功效 44/55 → 少 11 件。
+        合併算法會得出 79 > 55 而完全不印理由。
+        """
+        notes = self._notes(self._reports())
+        self.assertIn("20 件無分群來源文本", notes["cluster_topic_table:tech"])
+        self.assertIn("11 件無分群來源文本", notes["cluster_topic_table:effect"])
+
+    def test_slug_comes_from_one_definition_point(self):
+        """⚠ 通道 slug 只能有一個定義處（`clustering.sources`）。
+
+        `chart_runner` 的圖檔名（`opportunity_quadrant_tech.svg`）與本模組的
+        population 鍵必須用**同一份** slug，否則 PPT 端對不上而靜默無註記。
+        """
+        from backend.app.clustering import sources
+        from backend.app.reports import chart_runner  # noqa: F401
+
+        self.assertIs(chart_runner.SOURCE_SEGMENT_SLUGS, sources.SOURCE_SEGMENT_SLUGS,
+                      "chart_runner 另存了一份 slug——兩份會各自漂移")
 
 
 if __name__ == "__main__":

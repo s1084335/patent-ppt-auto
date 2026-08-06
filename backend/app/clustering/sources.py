@@ -8,6 +8,12 @@ from dataclasses import dataclass
 SOURCE_FIELD_TECHNICAL = "wips_independent_claims"
 SOURCE_FIELD_EFFECT = "effect_summary"
 
+# 通道短名（唯一定義處）。用於分群產物的檔名後綴（`opportunity_quadrant_tech.svg`）
+# 與母體註記的鍵（`cluster_topic_table:tech`）。
+# ⚠ 2026-08-06 從 `chart_runner` 搬來：`population.py` 也需要它，而 chart_runner
+# 反過來 import population，直接引用會成環。更根本的理由是——**通道是什麼**屬於
+# clustering 的定義，不屬於畫圖那一層；放這裡兩邊都能取到同一份，不會漂移。
+
 
 @dataclass(frozen=True)
 class ClusteringSourceSpec:
@@ -23,6 +29,8 @@ class ClusteringSourceSpec:
     # label 該以什麼角度命名，避免技術通道出現功效式名稱（或相反）。
     naming_hint: str
 
+
+SOURCE_SEGMENT_SLUGS = {SOURCE_FIELD_TECHNICAL: "tech", SOURCE_FIELD_EFFECT: "effect"}
 
 SOURCE_SPECS = {
     SOURCE_FIELD_TECHNICAL: ClusteringSourceSpec(

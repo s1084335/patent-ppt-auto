@@ -17,6 +17,7 @@ from backend.app.reports.cluster_analytics import (
     build_opportunity_matrix,
     build_topic_effect_table,
 )
+from backend.app.clustering.sources import SOURCE_SEGMENT_SLUGS as _SOURCE_SEGMENT_SLUGS
 from backend.app.reports.population import population_notes
 from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 from backend.app.reports.report_engine import parse_json_arg, run_report
@@ -2830,7 +2831,9 @@ def _build_lifecycle_section(ctx: ChartContext) -> None:
 
 # 主題來源段名／檔名後綴（2026-07-21 定案：技術、功效不混；原始欄名不進使用者介面）
 SOURCE_SEGMENT_LABELS = {"wips_independent_claims": "技術主題", "effect_summary": "功效分類"}
-SOURCE_SEGMENT_SLUGS = {"wips_independent_claims": "tech", "effect_summary": "effect"}
+# ⚠ slug 的唯一定義處在 `clustering.sources`（2026-08-06 搬移）——本檔只轉引用。
+# 母體註記（`population.py`）用同一份組鍵，各存一份會讓 PPT 端對不上鍵而靜默無註記。
+SOURCE_SEGMENT_SLUGS = _SOURCE_SEGMENT_SLUGS
 
 
 def pivot_year_matrix(rows: list[dict[str, Any]], entity_key: str) -> list[dict[str, Any]]:

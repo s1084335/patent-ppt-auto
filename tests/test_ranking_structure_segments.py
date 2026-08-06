@@ -39,13 +39,29 @@ class AggregateFunctionTests(unittest.TestCase):
         for name in ("count_multivalue_transferred", "count_singlevalue_transferred"):
             self.assertIn("{group_col}", AGGREGATE_FUNCTIONS[name])
 
-    def test_co_values_skips_first_part(self):
-        """共同申請人＝第 2 個以後的名稱——第 1 個就是分組鍵本人。"""
+    def test_co_values_excludes_the_group_key_not_the_first_position(self):
+        """共同申請人＝**排除分組鍵本人**，不是「排除第 1 順位」。
+
+        ⚠ 2026-08-06 契約變更（Codex 驗收 A1–A4 時揪出）：原本用 `ord > 1`
+        ——那假設「第 1 順位一定是分組鍵本人」。在**展開口徑**（0045／0042 的
+        `report_patent_applicant_expanded`）下這個假設不成立：同一件專利會展開成
+        多列，每列的分組鍵是不同的申請人，但 `申請人` 原字面的順序不變。
+        於是替共同申請人 B 分組時，`ord > 1` 會把 B 自己也算成共同申請人，
+        而真正的第 1 順位 A 反而被漏掉——**名單直接錯人**。
+
+        改為比對「收斂後顯示名 IS DISTINCT FROM 分組鍵」，與 refresh／展開 VIEW
+        的收斂順位同一套（對照表中文名 > 正規化名 > 原字面）。
+
+        ⚠ `ORDINALITY` 仍在（要拆多值），但**順位不再是判準**，故本測試不再斷言它。
+        """
         from backend.app.reports.report_engine import AGGREGATE_FUNCTIONS
 
         sql = AGGREGATE_FUNCTIONS["string_agg_co_values"]
         self.assertIn("ORDINALITY", sql.upper())
-        self.assertTrue(re.search(r"ord\s*>\s*1", sql), sql)
+        self.assertIn("IS DISTINCT FROM", sql.upper(),
+                      "共同申請人未以分組鍵排除自己")
+        self.assertIsNone(re.search(r"ord\s*>\s*1", sql),
+                          "仍以順位判定共同申請人——展開口徑下會把自己算進去")
 
 
 class ReportDefinitionTests(unittest.TestCase):
@@ -68,15 +84,36 @@ class ReportDefinitionTests(unittest.TestCase):
         self.assertFalse([a for a in aliases if "assignee" in a or "transferred" in a],
                          "專利權人圖不得帶受讓人欄")
 
-    def test_source_table_unchanged(self):
-        """⚠ 不得換成展開 VIEW：那會讓件數重複計數（60→74），違反加總＝總件數。"""
+    def test_applicant_reports_use_expanded_view(self):
+        """申請人三報表走**展開 VIEW**；專利權人報表維持 base 表。
+
+        ⚠ 這條斷言在本專案**翻轉過三次**，寫下沿革免得再翻回去：
+
+        1. 0042（2026-07-27）建展開 VIEW，申請人報表改用它——共同申請一件算兩家，
+           是專利分析慣例。
+        2. 2026-07-31 改回 base 表，理由是「加總＝總件數」的視覺定案
+           （長條總長要等於總件數）。本測試就是那次寫下的**反向契約**。
+        3. 🔴 2026-08-05 使用者**再次推翻**，理由是**正確性不是偏好**：實測「曾晴」
+           在 14 件專利／4 個國家具名為共同申請人，報表卻只顯示 2 件／1 國——
+           **報表在陳述不實資訊**。「總和大於件數」是標示問題，用頁尾註記交代
+           （`population.OVER_COUNTING_REPORTS`），不是改口徑的理由。
+
+        ⚠ `owner_ranking` 沒跟著換：它已定案刪除（B 段），不值得為它再開一支
+        migration 建權人展開 VIEW。
+        """
         from backend.app.reports.report_definitions import (
             REPORT_DEFINITIONS,
             REPORT_SOURCE_TABLE,
         )
 
-        for name in ("applicant_ranking", "owner_ranking"):
-            self.assertEqual(REPORT_DEFINITIONS[name].source_table, REPORT_SOURCE_TABLE)
+        expanded = "derived_layer.report_patent_applicant_expanded"
+        for name in ("applicant_ranking", "applicant_country_distribution",
+                     "applicant_year_matrix"):
+            with self.subTest(report=name):
+                self.assertEqual(REPORT_DEFINITIONS[name].source_table, expanded,
+                                 f"{name} 未走展開 VIEW——共同申請人會被漏掉")
+        self.assertEqual(REPORT_DEFINITIONS["owner_ranking"].source_table,
+                         REPORT_SOURCE_TABLE)
 
 
 class SegmentMathTests(unittest.TestCase):

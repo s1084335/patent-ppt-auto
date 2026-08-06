@@ -1591,7 +1591,36 @@ def _render_header(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> 
               size=theme.size("page_number_pt"), color="accent", bold=True, align=PP_ALIGN.RIGHT)
 
 
-def _population_note(report_data: dict[str, Any], report_keys: tuple[str, ...]) -> str:
+# 通道短名（`tech`／`effect`）：分群產物的檔名後綴與母體註記鍵共用同一份，
+# 上游唯一定義處在 `backend/app/clustering/sources.py::SOURCE_SEGMENT_SLUGS`。
+# ⚠ 本檔是可攜 skill 不能 import backend，故這裡**由既有資料推導、不另抄一份**：
+# `CHANNEL_NARRATIVE_VARIANTS` 的值就是 `topic_table_<slug>`，取尾段即得。
+CHANNEL_SLUGS: tuple[str, ...] = tuple(
+    variant.rsplit("_", 1)[-1] for variant in CHANNEL_NARRATIVE_VARIANTS.values())
+
+
+def _page_channel_slug(spec: PageSpec) -> str:
+    """本頁屬於哪個分群通道；判不出回空字串。
+
+    兩種拆頁方式各有各的線索，都要認：
+    - **主題分布頁**依列值拆（`_expand_page_layout`），通道在 `row_filter`
+    - **機會矩陣頁**依圖檔拆（`_split_multi_chart_page`），通道在圖名後綴
+
+    ⚠ 不要只認其中一種：0846 修正前兩類頁面都印合併母體，正是因為
+    「一個 report_key 對兩頁」這種形狀沒有被任何一層考慮到。
+    """
+    source_field = dict(spec.row_filter).get("source_field")
+    if source_field:
+        variant = CHANNEL_NARRATIVE_VARIANTS.get(source_field, "")
+        return variant.rsplit("_", 1)[-1] if variant else ""
+    for name in spec.charts:
+        tail = name.rsplit(".", 1)[0].rsplit("_", 1)[-1]
+        if tail in CHANNEL_SLUGS:
+            return tail
+    return ""
+
+
+def _population_note(report_data: dict[str, Any], spec: PageSpec) -> str:
     """本頁的母體註記；**引擎算好寫在 `report_data["population"]`，這裡只取用**。
 
     ⚠ 不在此計算：本檔是會佈署到使用者機器的可攜 skill，不能 import backend
@@ -1599,11 +1628,19 @@ def _population_note(report_data: dict[str, Any], report_keys: tuple[str, ...]) 
 
     一頁掛多張報表時只取第一個有註記的——多張的母體通常相同（同頁對照用），
     全部印出來會把頁尾撐爆。
+
+    🔴 分群報表的鍵帶通道後綴（`cluster_topic_table:tech`）。2026-08-06 實機驗出：
+    技術頁與功效頁原本都印「母體 79/55 件」＝兩通道加總，而每頁只呈現單一通道；
+    79 > 55 又無過計數說明，讀者只會判定報表算錯。
+    ⚠ 判不出通道時**寧可不印**——引擎已刻意不再產出合併鍵，印不出來是預期行為，
+    印一個錯的母體才是災難。
     """
     population = report_data.get("population") or {}
-    for key in report_keys:
-        note = population.get(key)
-        if note:
+    slug = _page_channel_slug(spec)
+    for key in spec.report_keys:
+        if slug and (note := population.get(f"{key}:{slug}")):
+            return note
+        if note := population.get(key):
             return note
     return ""
 
@@ -1626,7 +1663,7 @@ def _render_footnote(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any], e
     # ⚠ 2026-07-31 使用者定案：頁尾**不印報表版本**（「這種報表版本這種字不要有」）。
     # 原本印 report_trial_20260731_… 這種內部識別碼，對讀者毫無意義又佔掉頁尾寬度；
     # 可追溯性由 manifest 保留，不必寫在簡報上。
-    parts = [p for p in (_population_note(ctx["report_data"], spec.report_keys),) if p]
+    parts = [p for p in (_population_note(ctx["report_data"], spec),) if p]
     parts.append(f"來源：{sources}")
     parts.append(f"期間 {period}")
     if extra:

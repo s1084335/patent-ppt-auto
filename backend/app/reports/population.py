@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.app.clustering.sources import SOURCE_SEGMENT_SLUGS
+
 # 專利總數的來源報表。
 # ⚠ 為什麼是申請趨勢：每件專利恰好落在一個申請年，逐年加總即總數；
 # 這也是封面統計卡既有的算法（`build_ppt._cover_stats`），沿用同一條路不另立。
@@ -92,22 +94,57 @@ def population_note(report_key: str, rows: list[dict[str, Any]], total: int) -> 
     return f"{head}（{template.format(excluded=total - covered)}）"
 
 
+# 分通道報表：rows 是技術＋功效**兩通道合併**的一份 list，每列帶 `source_field`。
+# 🔴 2026-08-06 實機驗出：不拆通道就會得到「母體 79/55 件」（35+44）掛在
+# 只呈現單一通道的 7 頁上，而且 79 > 55 又沒有過計數說明，讀者只會判定報表算錯。
+# ⚠ 這兩個 report_key 在 PPT 端本來就是**一通道一頁**（`SPLIT_PAIR_REPORTS`），
+# 母體卻是整包算——A3 初版只涵蓋「一個 report_key 對一個母體」，漏了這種形狀。
+CHANNEL_SPLIT_REPORTS = frozenset({"cluster_topic_table", "opportunity_quadrant"})
+CHANNEL_FIELD = "source_field"
+
+
+def _channel_notes(report_key: str, rows: list[dict[str, Any]], total: int) -> dict[str, str]:
+    """把分通道報表拆成 `report_key:slug` 逐通道註記。
+
+    ⚠ 只產逐通道鍵、**不產合併鍵**：合併鍵的數字是錯的，寧可讓消費端拿不到而不印，
+    也不要印一個會誤導的母體（沿本模組「拿不到就不印」的既有原則）。
+    """
+    by_channel: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        slug = SOURCE_SEGMENT_SLUGS.get(row.get(CHANNEL_FIELD))
+        if slug:
+            by_channel.setdefault(slug, []).append(row)
+    return {
+        f"{report_key}:{slug}": note
+        for slug, channel_rows in by_channel.items()
+        if (note := population_note(report_key, channel_rows, total))
+    }
+
+
 def population_notes(reports: dict[str, Any]) -> dict[str, str]:
     """一次算出全部報表的母體註記，供 `report_data["population"]` 落檔。
 
     ⚠ **引擎算、PPT 消費**：`build_ppt` 是會佈署到使用者機器的可攜 skill，
     不能 import 本模組，故母體只能由引擎算好寫進 `report_data`
     （全域規則「跨部署單元改走一方產生、一方消費」）。
+
+    ⚠ 分通道報表的鍵是 `report_key:slug`（slug 來自 `clustering.sources` 的唯一
+    定義處，與圖檔名後綴同一份）。消費端若解析不出通道就拿不到註記——
+    這是刻意的，見 `_channel_notes`。
     """
     total = _sum_patent_count(
         ((reports.get(TOTAL_SOURCE_REPORT) or {}).get("rows")) or [])
     if total <= 0:
         return {}
-    return {
-        name: note
-        for name, report in reports.items()
-        if (note := population_note(name, report.get("rows") or [], total))
-    }
+    notes: dict[str, str] = {}
+    for name, report in reports.items():
+        rows = report.get("rows") or []
+        if name in CHANNEL_SPLIT_REPORTS:
+            notes.update(_channel_notes(name, rows, total))
+            continue
+        if note := population_note(name, rows, total):
+            notes[name] = note
+    return notes
 
 
 def compose_footnote(population: str, *, sources: str, period: str) -> str:
