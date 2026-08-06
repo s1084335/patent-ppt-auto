@@ -43,3 +43,15 @@ CI SHALL 保存測試摘要、lint/type/spec 結果與必要 coverage/diff metad
 #### Scenario: 部分 integration test 被跳過
 - **WHEN** 環境不具備 DB/browser/AI 前置而跳過測試
 - **THEN** 結果 SHALL 明列 skipped 範圍與原因，不得用整體綠燈暗示已驗收該層
+
+### Requirement: QUA-006 分支與主線合併閘門
+
+所有規格、設定、程式與測試改動 SHALL 由已推送的工作分支透過 PR 進入 `main`／`master`；required checks、組合驗收與使用者接受未全部成立時 MUST NOT 合併或直接推送主線。
+
+#### Scenario: Required check 尚未通過
+- **WHEN** PR 的 OpenSpec 或其他 required check 失敗、尚未完成或缺少組合驗收證據
+- **THEN** 主線合併 SHALL 被阻擋，agent MUST 回報缺少的證據而不是繞過保護
+
+#### Scenario: 三種 agent 開始功能改動
+- **WHEN** Claude Code、Codex 或 OpenCode 準備第一次寫入規格、設定、程式或測試
+- **THEN** agent SHALL 先確認需求阻塞問題已清空，且目前位於已推送並有 remote tracking 的非主線分支

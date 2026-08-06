@@ -1,5 +1,6 @@
 ## 1. 基準與 required checks
 
+- [x] 1.0 建立並推送非主線工作分支；補齊 Claude Code／Codex／OpenCode 共用需求、OpenSpec、TDD、組合驗收與 PR 合併閘門
 - [ ] 1.1 記錄 Python/Docker/uv 版本、現有無 DB/DB tests、ruff/mypy 歷史基準、OpenSpec 與 `verify_module.py` 現況
 - [ ] 1.2 定義 fast required、DB/browser/AI integration profiles、skip manifest 與 CI artifact 保留契約
 - [ ] 1.3 固定 changed-scope blocking 規則，禁止以本次量測結果回頭放寬門檻
@@ -22,6 +23,7 @@
 
 ## 4. CI 驗收
 
+- [ ] 4.0 在 PR 實跑 `OpenSpec strict` 最小閘門，確認失敗會阻擋後再設定 `master` branch protection
 - [ ] 4.1 在乾淨環境依序跑 version、OpenSpec strict、lint、type、無 DB tests、contract checks，保存所有 artifacts
 - [ ] 4.2 對 spec/lint/type/test/contract 各做一次 mutation，記錄真紅與還原後全綠
 - [ ] 4.3 執行本 change 的目標測試與 `scripts/verify_module.py`；揭露未啟用的 DB/browser/AI profiles

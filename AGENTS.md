@@ -6,7 +6,29 @@
   - 當日紀錄：`D:\力山\.agents\work-logs\專利_ppt自動\{日期}.md`（三 agent 共用同一檔，依線分節）。
   - 穩定背景：`D:\力山\.agents\context\`（路由見該目錄 `README.md`）。
 - 本 repo 內**不建立** `.agents/` 目錄；若發現殘留，先併回中央再移除。
-- 全域規則唯一來源：`D:\力山\.ai-rules\`（shared.md 為主）。
+- 全域規則唯一來源：`D:\力山\.ai-rules\`；開始工作前必須讀取 `shared.md` 與 `workflows.md`，不得只讀本檔。
+
+## OpenSpec 規格管理
+
+- 功能規格唯一來源為本 repo 的 `openspec/`：
+  - `openspec/specs/`：已實作、已驗收且目前有效的能力。
+  - `openspec/changes/`：規劃中、實作中或尚未完成驗收的變更。
+  - `openspec/changes/archive/`：已驗收變更的歷史與決策軌跡。
+- `docs/` 只保存架構參考、操作 Runbook 與外部參考；不得再新增功能規格正文。
+- `D:\力山\.agents\context\` 只保存背景、狀態與正式決策；若提及需求，只交叉引用 OpenSpec，不複製規格。
+- OpenSpec 的 `validate` 只驗規格結構，不能取代本檔的精準 TDD、模組驗證、DB smoke 或實物驗收。
+- 只有使用者明確確認驗收通過，才可執行 OpenSpec archive。
+- OpenSpec 產生的 Codex skills 一律放中央 `D:\力山\.agents\skills\`；本 repo 仍不得建立 `.agents/`。
+
+### 需求、分支與交付閘門
+
+- 所有 agent 依相同順序工作：需求釐清 → 遠端工作分支 → OpenSpec 規劃與規格確認 → TDD → 組合驗收 → 使用者接受 → archive → PR checks → 合併主線。
+- 可由程式、DB、設定、log 或輸出查到的事實自行查；會影響 scope、行為、資料、權限、輸出或驗收的決策依相依順序一次問一題。阻塞問題未清空前不得寫規格。
+- proposal 必須明列已確認決策、未決問題與 Acceptance Gate；使用者確認完整 artifacts 前不得執行 apply。
+- 第一次改檔前必須從最新 `master` 建立 `<type>/<change-id>` 分支並先推到 `origin`。不得直接在 `master` 修改、提交、推送或繞過 PR；原則上一個 OpenSpec change 對應一個 branch／PR。
+- 組合驗收至少包含 OpenSpec strict validation、目標測試、範圍回歸、結構檢查，以及適用的 DB／API／前端／CLI／PPT 實物驗收。未適用與未執行必須分開列出。
+- 只有使用者明確接受組合驗收才可 archive；archive 後提交並推送同一分支，required checks 全綠且使用者允許後才可合併 `master`。
+- Claude Code 由 `CLAUDE.md` 匯入本檔；Codex 直接讀本檔；OpenCode 由 repo `opencode.json` 匯入本檔。工具專屬 OpenSpec commands／skills 不得覆蓋上述閘門。
 
 ## 精準 TDD（本專案試行，自 2026-07-21）
 

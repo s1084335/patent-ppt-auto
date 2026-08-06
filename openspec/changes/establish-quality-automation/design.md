@@ -28,10 +28,15 @@ required：version、OpenSpec strict、diff-scoped ruff/mypy、無 DB tests、co
 
 CI 與人工驗收呼叫既有 script 或共用底層命令；AGENTS.md 是門檻唯一來源。script output 保存 commit、base、paths、tests、skips。
 
+### 5. 主線只接受通過閘門的 PR
+
+Claude Code 經 `CLAUDE.md`、Codex 經 `AGENTS.md`、OpenCode 經 `opencode.json` 讀取同一份 repo 規則。第一次改檔前建立並推送對應 OpenSpec change 的工作分支；archive 也在同一分支完成。GitHub Actions 先提供 `OpenSpec strict` check，確認 PR 實跑後再把它設為 `master` required check，後續依本 change 的 TDD 擴充 lint、type、test 與 contract jobs。
+
 ## Files And Pipeline
 
 - `.python-version`、`pyproject.toml` tool sections、lockfile（若依賴改變）。
 - `.github/workflows/` 或實際採用 CI 目錄。
+- `CLAUDE.md`、`AGENTS.md`、`opencode.json` 與工具專屬 OpenSpec commands／skills 路由。
 - `scripts/` contract export/compare 與 `verify_module.py` 最小必要擴充。
 - `tests/` mutation/contract tests。
 
