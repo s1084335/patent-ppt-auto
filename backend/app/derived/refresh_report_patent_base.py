@@ -10,15 +10,10 @@ from typing import Any
 REFRESH_SQL = """
 TRUNCATE TABLE legacy_0021.report_patent_base;
 
-WITH source_one AS (
-    SELECT DISTINCT ON (ps.patent_id)
-        ps.patent_id,
-        ps.raw_record_id
-    FROM core_layer.patent_sources ps
-    -- patent_sources.id 已移除，改用 raw_record_id DESC 取最新來源（raw_record_id 隨匯入遞增）
-    ORDER BY ps.patent_id, ps.raw_record_id DESC
-),
-base AS (
+-- ⚠ 0046（2026-08-06）移除了 `source_one` CTE。它存在的唯一理由是「配對出該專利
+-- 最新的 raw_record，好去 patent_attributes 取那一列」；欄位搬進 core table 後
+-- 一專利一列，**沒有列要選了**，這個 CTE 與底下三個 attributes JOIN 一併消失。
+WITH base AS (
     SELECT
         p.id AS patent_id,
         p."授權公告號",
@@ -30,8 +25,8 @@ base AS (
         p.application_year,
         p.publication_year,
         CASE
-            WHEN BTRIM(COALESCE(grant_date_source."授權公告日", '')) ~ '^[0-9]{4}'
-            THEN SUBSTRING(BTRIM(grant_date_source."授權公告日") FROM 1 FOR 4)::integer
+            WHEN BTRIM(COALESCE(p."授權公告日", '')) ~ '^[0-9]{4}'
+            THEN SUBSTRING(BTRIM(p."授權公告日") FROM 1 FOR 4)::integer
         END AS "授權公告年",
         p.title,
         -- abstract（2026-07-28 補搬）：文獻備註第三級來源。外觀設計沒有任何權利要求
@@ -62,44 +57,31 @@ base AS (
         p."所有權利要求[JP,KR,CN]",
         p."WIPS同族ID",
         p.legal_status,
-        fam."WIPS同族各國家文獻數量(申請為準)",
-        pa."EPC有效國家[EP]",
-        pa."EPC無效國家[EP]",
-        -- 引用數/發明人數是快照值，取最新 raw_record（與 EPC 同一組 pa），驗證純數字才轉型
-        CASE WHEN BTRIM(COALESCE(pa."(F1)引用文獻數", '')) ~ '^[0-9]+$'
-             THEN BTRIM(pa."(F1)引用文獻數")::integer END AS "(F1)引用文獻數",
-        CASE WHEN BTRIM(COALESCE(pa."(B1)引用文獻數", '')) ~ '^[0-9]+$'
-             THEN BTRIM(pa."(B1)引用文獻數")::integer END AS "(B1)引用文獻數",
-        CASE WHEN BTRIM(COALESCE(pa."發明人數", '')) ~ '^[0-9]+$'
-             THEN BTRIM(pa."發明人數")::integer END AS "發明人數"
+        -- 專利種類兩欄（0045，2026-08-06）：A4 設計案標示與專利種類維度用。
+        -- ⚠ 這裡只**搬運**兩個原始欄，判定邏輯一律呼叫唯一定義處
+        -- `backend/app/transforms/patent_kind.py`（`is_design()`／`patent_kind()`），
+        -- 不得在此或任何消費端自行寫字面比對——散開後改一處另一處不會報錯。
+        -- 那份模組也寫明了為何不能用 patent_type 判定（它天生只有 P／U 兩值，
+        -- 11 件設計案全被歸進 P，實測發明實為 17 件而非 28）。
+        p.patent_type,
+        p.document_kind,
+        p."WIPS同族各國家文獻數量(申請為準)",
+        -- ⚠ EPC 有效／無效兩欄的**成對性**現由 migration 0046 的 `PAIRED_GROUPS` 保證
+        -- （回填時一次從同一 raw_record 取整組）。原因不變：「空」本身是規則輸入
+        -- ——剛授權判定靠無效國為空、到期判定靠有效國清空，兩欄若來自不同批次就算錯。
+        p."EPC有效國家[EP]",
+        p."EPC無效國家[EP]",
+        -- 引用數是快照值，驗證純數字才轉型（非數字一律回 NULL，不讓髒值中斷整批 refresh）
+        CASE WHEN BTRIM(COALESCE(p."(F1)引用文獻數", '')) ~ '^[0-9]+$'
+             THEN BTRIM(p."(F1)引用文獻數")::integer END AS "(F1)引用文獻數",
+        CASE WHEN BTRIM(COALESCE(p."(B1)引用文獻數", '')) ~ '^[0-9]+$'
+             THEN BTRIM(p."(B1)引用文獻數")::integer END AS "(B1)引用文獻數",
+        -- 發明人數在 patent_people（它是人員統計，不是專利屬性）
+        CASE WHEN BTRIM(COALESCE(pp."發明人數", '')) ~ '^[0-9]+$'
+             THEN BTRIM(pp."發明人數")::integer END AS "發明人數"
     FROM core_layer.patents p
-    LEFT JOIN source_one so ON so.patent_id = p.id
+    -- patent_people 的 PK 為 patent_id（一對一），LEFT JOIN 不放大列數。
     LEFT JOIN core_layer.patent_people pp ON pp.patent_id = p.id
-    -- EPC 有效/無效兩欄必須成對取自同一（最新）raw_record：
-    -- 「空」本身是規則輸入（剛授權判定靠無效國為空、到期判定靠有效國清空），
-    -- 若各自取最新非空，到期件的清空會被舊值蓋回，直接算錯。
-    LEFT JOIN core_layer.patent_attributes pa
-        ON pa.patent_id = p.id AND pa.raw_record_id = so.raw_record_id
-    -- 授權公告年只取 WIPS「授權公告日」，不得 fallback 到未審查公開日或審查公告日。
-    -- 同一專利多 raw_record 時沿用詳情層口徑：取最新非空欄位，避免新列空白蓋掉舊值。
-    LEFT JOIN LATERAL (
-        SELECT pa2."授權公告日"
-        FROM core_layer.patent_attributes pa2
-        WHERE pa2.patent_id = p.id
-          AND NULLIF(BTRIM(pa2."授權公告日"), '') IS NOT NULL
-        ORDER BY pa2.raw_record_id DESC NULLS LAST
-        LIMIT 1
-    ) grant_date_source ON true
-    -- 同族明細是家族層級常數（同家族每列相同），可安全取最新非空，
-    -- 避免最新來源是精簡匯出（無此欄）時整欄變 NULL。
-    LEFT JOIN LATERAL (
-        SELECT pa2."WIPS同族各國家文獻數量(申請為準)"
-        FROM core_layer.patent_attributes pa2
-        WHERE pa2.patent_id = p.id
-          AND NULLIF(BTRIM(pa2."WIPS同族各國家文獻數量(申請為準)"), '') IS NOT NULL
-        ORDER BY pa2.raw_record_id DESC NULLS LAST
-        LIMIT 1
-    ) fam ON true
 ),
 -- 代碼→對照表公司名（2026-07-23 定案「申請人代碼是公司收斂的依據」）。
 -- 對照表的正式名是人工裁決過的顯示名，優先級高於任何從專利資料統計出來的名稱。
@@ -225,6 +207,8 @@ INSERT INTO legacy_0021.report_patent_base (
     "比對用權利要求",
     "WIPS同族ID",
     legal_status,
+    patent_type,
+    document_kind,
     "WIPS同族各國家文獻數量(申請為準)",
     "EPC有效國家[EP]",
     "EPC無效國家[EP]",
@@ -281,6 +265,8 @@ SELECT
     COALESCE(NULLIF(BTRIM(b."獨立項[KR,JP,US,CN,EP,IN]"), ''), NULLIF(BTRIM(b."主權項"), ''), NULLIF(BTRIM(b."所有權利要求[JP,KR,CN]"), '')) AS "比對用權利要求",
     b."WIPS同族ID",
     b.legal_status,
+    b.patent_type,
+    b.document_kind,
     b."WIPS同族各國家文獻數量(申請為準)",
     b."EPC有效國家[EP]",
     b."EPC無效國家[EP]",

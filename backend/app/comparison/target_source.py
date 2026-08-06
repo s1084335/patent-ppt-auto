@@ -2,8 +2,11 @@
 
 欄位查證（information_schema，patent_ppt_understanding，2026-07-21 實查）：
 - 文字欄自 core_layer.patents 取：title、abstract、"主權項"。
-- PDF 連結自 core_layer.patent_attributes."文圖像文件(PDF)連結"（931/932 非空）；
-  同 patent 多列取 raw_record_id 最大者。"主附圖" 僅 1 筆有值不採用；
+- PDF 連結自 core_layer.patents."文圖像文件(PDF)連結"（931/932 非空）。
+  ⚠ 0046（2026-08-06）前它在 patent_attributes（一 raw_record 一列），本模組得自己
+  寫「取 raw_record_id 最大者」；搬進 patents 後一專利一列，**選列規則消失**——
+  這正是搬欄位的目的（原本 patent_queries／refresh 各寫一套選列，不保證一致）。
+  "主附圖" 僅 1 筆有值不採用；
   "詳細查看連結(登入)" 需登入不採用。
 - patent_number 依 0020 定案的專利號查找順序取第一個非空值：
   授權公告號 → 審查的公告號 → 未審查的公開號(轉換後) → 申請號(轉換後)。
@@ -69,9 +72,8 @@ def extract_target_from_db(patent_id: int,
     with _connect(connect_kwargs) as conn:
         row = conn.execute(
             f'SELECT p.title, p.abstract, p."主權項", {number_cols}, '
-            # 同 patent 多列取 raw_record_id 最大者的 PDF 連結（定案規則）
-            f'(SELECT a."{COL_PDF_URL}" FROM core_layer.patent_attributes a '
-            " WHERE a.patent_id = p.id ORDER BY a.raw_record_id DESC LIMIT 1) "
+            # 0046 起 PDF 連結就在 patents 主表，一專利一列、直接投影
+            f'p."{COL_PDF_URL}" '
             "FROM core_layer.patents p WHERE p.id = %s",
             (patent_id,),
         ).fetchone()
@@ -95,9 +97,9 @@ def extract_target_from_db(patent_id: int,
         "pdf_url": pdf_url,
         # 來源註記：讓下游知道欄位出處與 pdf_url 取值規則
         "source": {
-            "tables": ["core_layer.patents", "core_layer.patent_attributes"],
+            "tables": ["core_layer.patents"],
             "text_fields": ["title", "abstract", "主權項"],
-            "pdf_url_rule": "同 patent 多列取 raw_record_id 最大者",
+            "pdf_url_rule": "core_layer.patents 主表直取（0046 起一專利一列）",
         },
         # 本輪以一件專利模擬標的（真標的來源為使用者提供的產品資料，尚未接）
         "simulated": True,

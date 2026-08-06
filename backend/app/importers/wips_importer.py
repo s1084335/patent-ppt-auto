@@ -20,6 +20,7 @@ from backend.app.mappings.wips import (
     PATENT_FIELDS,
     PEOPLE_FIELD_COLUMNS,
     PEOPLE_GROUPS,
+    PEOPLE_STAT_FIELDS,
     PUBLICATION_DATE_FIELDS,
     SOURCE_SYSTEM,
     canonical_field_name,
@@ -53,7 +54,15 @@ PATENT_IDENTIFIER_LOOKUP_ORDER = (
     "審查的公告號",
     UNEXAMINED_PUBLICATION_NUMBER_TRANSFORMED,
 )
-PEOPLE_FIELDS = tuple(dict.fromkeys(field for fields in PEOPLE_GROUPS.values() for field in fields.values()))
+# patent_people 要寫入的 WIPS 來源欄（順序即 INSERT 欄序，`dict.fromkeys` 去重保序）。
+# ⚠ 必須是 `PEOPLE_GROUPS` ∪ `PEOPLE_STAT_FIELDS` 兩者聯集：發明人數／申請人數是
+# **人員統計**而非某個角色的欄位，放進 `PEOPLE_GROUPS["applicant"]` 會讓
+# 「一組＝一種角色的欄位集」的語意走樣，故 mapping 端刻意分開宣告（見 wips.py）。
+# 這裡只漏掉統計那組的話，症狀是「欄位存在、匯入不報錯、值永遠 NULL」——不會有錯誤訊息。
+PEOPLE_FIELDS = tuple(dict.fromkeys(
+    [field for fields in PEOPLE_GROUPS.values() for field in fields.values()]
+    + list(PEOPLE_STAT_FIELDS)
+))
 # core_layer.patents 的代表圖欄（0026 起 bytea）；0031 起語意降為「最新階段圖的快取」，
 # 完整保存在 core_layer.patent_figures。值來自 xlsx 內嵌浮動圖片，非儲存格文字。
 FIGURE_COLUMN = "主附圖"
@@ -117,7 +126,38 @@ _UPDATE_COLUMN_PARAMS: tuple[tuple[str, str], ...] = (
     ('"Curr. IPC(Main)"', "curr_ipc_main"),
     ("legal_status", "legal_status"),
     ('"WIPS同族ID"', "WIPS同族ID"),
+    # ── 欄位重分類（0046，2026-08-06）：原本落在 patent_attributes 的 14 欄 ──
+    # 參數名一律＝欄名：`normalize_record` 產出的 patent dict 以**目標欄名**為 key
+    # （`for source, target in PATENT_FIELDS.items()`），故不需要像上面那批舊欄
+    # 另立英文別名。⚠ 別名那批是歷史包袱，新增欄位不要跟著立別名。
+    ('"摘要(原文)"', "摘要(原文)"),
+    ('"未審查的公開日"', "未審查的公開日"),
+    ('"授權公告日"', "授權公告日"),
+    ('"優先權號"', "優先權號"),
+    ('"優先權國家"', "優先權國家"),
+    ('"優先權日"', "優先權日"),
+    ('"詳細查看連結(登入)"', "詳細查看連結(登入)"),
+    ('"文圖像文件(PDF)連結"', "文圖像文件(PDF)連結"),
+    ('"WIPS同族各國家文獻數量(申請為準)"', "WIPS同族各國家文獻數量(申請為準)"),
+    ('"EPC有效國家[EP]"', "EPC有效國家[EP]"),
+    ('"EPC無效國家[EP]"', "EPC無效國家[EP]"),
+    ('"(F1)引用文獻數"', "(F1)引用文獻數"),
+    ('"(B1)引用文獻數"', "(B1)引用文獻數"),
+    ('"解決課題 摘要[US,EP,PCT,JP,KR,CN,TW]"', "解決課題 摘要[US,EP,PCT,JP,KR,CN,TW]"),
 )
+
+
+def _patent_insert_sql() -> str:
+    """由 `_UPDATE_COLUMN_PARAMS` 生成 INSERT——欄位清單不再抄第二份。
+
+    ⚠ 0046 前 INSERT 是一段寫死的 SQL 字面，與 `_UPDATE_COLUMN_PARAMS` 內容
+    **一字不差地重複**（實測 29 欄、同序、同參數名）。兩份各自演進的後果是靜默的：
+    新欄只加進其中一份時，另一條路徑照跑不報錯，值卻永遠是 NULL。
+    收成一處後，加欄只改 `_UPDATE_COLUMN_PARAMS`，insert／update 同時跟上。
+    """
+    columns = ", ".join(column for column, _ in _UPDATE_COLUMN_PARAMS)
+    values = ", ".join(f"%({param})s" for _, param in _UPDATE_COLUMN_PARAMS)
+    return f"INSERT INTO patents (\n            {columns}\n        )\n        VALUES (\n            {values}\n        )\n        RETURNING id"
 
 
 def file_sha256(path: Path) -> str:
@@ -933,31 +973,9 @@ def upsert_patent(
                 stats["updated"] = stats.get("updated", 0) + 1
         return patent_id
 
+    # SQL 由 _UPDATE_COLUMN_PARAMS 生成（0046 起 insert／update 共用同一份欄位清單）
     cur.execute(
-        """
-        INSERT INTO patents (
-            "授權公告號", "審查的公告號", "未審查的公開號", "申請號", country_code,
-            database_name, document_kind, patent_type, publication_date, publication_year,
-            application_date, application_year, title, title_original, abstract,
-            "權利要求的項數", "所有權利要求[JP,KR,CN]", "主權項", "主權項(原文)",
-            "獨立項數量[KR,JP,US,CN,EP,IN]", "獨立項[KR,JP,US,CN,EP,IN]",
-            "獨立項(原文)[KR,JP,CN,EP]", "效果 摘要[US,EP,PCT,JP,KR,CN,TW]",
-            "Orig. CPC(Main)", "Orig. IPC(Main)",
-            "Curr. CPC(Main)", "Curr. IPC(Main)", legal_status, "WIPS同族ID"
-        )
-        VALUES (
-            %(授權公告號)s, %(審查的公告號)s, %(未審查的公開號)s, %(申請號)s,
-            %(country_code)s, %(database_name)s, %(document_kind)s, %(patent_type)s,
-            %(publication_date)s, %(publication_year)s, %(application_date)s,
-            %(application_year)s, %(title)s, %(title_original)s, %(abstract)s,
-            %(claim_count)s, %(all_claims)s, %(main_claim)s, %(main_claim_original)s,
-            %(independent_claim_count)s, %(independent_claims)s,
-            %(independent_claims_original)s, %(effect_summary)s,
-            %(orig_cpc_main)s, %(orig_ipc_main)s,
-            %(curr_cpc_main)s, %(curr_ipc_main)s, %(legal_status)s, %(WIPS同族ID)s
-        )
-        RETURNING id
-        """,
+        _patent_insert_sql(),
         patent_params,
     )
     patent_id = cur.fetchone()[0]

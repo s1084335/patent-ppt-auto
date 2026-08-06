@@ -553,8 +553,12 @@ def test_every_content_page_has_source_footnote(built):
             if shape.has_text_frame
         ]
         joined = "\n".join(texts)
-        assert "資料來源" in joined, f"第 {page['page']} 頁缺資料來源註"
-        assert "統計期間" in joined, f"第 {page['page']} 頁缺統計期間"
+        # ⚠ 契約於 2026-08-06（A3）改變：頁尾為了容納母體註記而**濃縮**用語
+        # ——`資料來源：`→`來源：`、`統計期間：`→`期間`（實測 55 字 → 41 字）。
+        # 頁尾只有單行約 72 中文字，不濃縮就會把母體擠掉。
+        # 這裡改斷言濃縮後的字樣，**不是放寬**：兩項該有的資訊一項都沒少。
+        assert "來源：" in joined, f"第 {page['page']} 頁缺資料來源註"
+        assert "期間 " in joined, f"第 {page['page']} 頁缺統計期間"
 
 
 def test_cover_has_stat_cards_and_framework_banner(built):

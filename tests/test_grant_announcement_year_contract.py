@@ -24,12 +24,20 @@ class GrantAnnouncementYearContractTests(unittest.TestCase):
         self.assertLessEqual(len(match.group(1)), 32)
 
     def test_refresh_derives_year_from_grant_announcement_date(self) -> None:
+        """授權公告年只由「授權公告日」衍生，不得混用公開日或審查公告日。
+
+        ⚠ 2026-08-06（migration 0046）**契約的取值路徑變了，規則本身沒變**：
+        原本「授權公告日」在 `patent_attributes`（一 raw_record 一列），refresh 得靠
+        `grant_date_source` 這個 LATERAL 子查詢挑出最新非空的那一列；欄位搬進
+        `core_layer.patents` 後一專利一列，**沒有列要選**，該子查詢連同別名一併刪除。
+        故斷言由 `grant_date_source."授權公告日"` 改為 `p."授權公告日"`。
+        要守的東西不變——底下兩條 assertNotIn 仍擋住混用其他日期欄。
+        """
         src = REFRESH.read_text(encoding="utf-8")
         self.assertIn('"授權公告年"', src)
-        self.assertIn('"授權公告日"', src)
-        self.assertIn('grant_date_source."授權公告日"', src)
-        self.assertNotIn('grant_date_source."未審查的公開日"', src)
-        self.assertNotIn('grant_date_source."審查的公告日"', src)
+        self.assertIn('p."授權公告日"', src)
+        self.assertNotIn('"未審查的公開日"', src)
+        self.assertNotIn('"審查的公告日"', src)
 
     def test_migration_adds_chinese_column_to_report_base(self) -> None:
         src = MIGRATION.read_text(encoding="utf-8")

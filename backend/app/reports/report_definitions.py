@@ -65,9 +65,20 @@ REPORT_SOURCE_TABLE = "derived_layer.report_patent_base"
 # 否則專利總數會從 60 變成 74（重複計數）。
 # ⚠ 件數總和大於專利總數是刻意的（使用者確認為專利分析慣例），報表需加註。
 APPLICANT_EXPANDED_TABLE = "derived_layer.report_patent_applicant_expanded"
-# ⚠ 2026-07-31 起無報表引用：使用者推翻 07-28「共同申請人各自計數」定案，
-#   分析統計一律只計第一順位（權人與分群家數本來就是 split_part 第一個）。
-#   VIEW 與 migration 保留不刪（架構不動），僅停止引用。
+#
+# 🔴 口徑沿革（兩度翻轉，寫下來免得再翻第三次）：
+#   07-28 定「共同申請人各自計數」→ 建 0042 VIEW
+#   07-31 推翻，改「分析只計第一順位」→ VIEW 保留但停止引用
+#   08-06 **再次推翻，改回展開口徑** → 三張申請人報表重新引用本 VIEW
+#
+# ⚠ 08-06 這次的理由與前兩次不同層級：**是正確性，不是偏好**。
+#   實測「曾晴」在 14 件專利／4 個國家具名為共同申請人，第一順位口徑只顯示
+#   2 件／1 國——報表在陳述不實資訊。而「總和大於專利件數」是**標示問題**，
+#   加註即可（0042 原文件本就要求加註）。真相問題與標示問題不對等。
+#
+# ⚠ 0045 為此補了五欄：`申請人`（原始字面，供 4 個 aggregate）／`WIPS同族ID`／
+#   `legal_status`／`patent_type`／`document_kind`。沒補 `權利要求的項數`——
+#   權利強度已收斂為三維，「權利範圍」該維度已否決。
 
 REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
     "application_trend": ReportDefinition(
@@ -130,7 +141,11 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         report_type="aggregate",
         label="Applicant × Jurisdiction Matrix",
         label_zh="公司×國家交叉表",
-        source_table=REPORT_SOURCE_TABLE,  # 2026-07-31 推翻 0042：分析只計第一順位申請人（瀏覽顯示仍完整）
+        # 🔴 2026-08-06 再次推翻 07-31：改回 0042 展開口徑（共同申請人各自計數）。
+        # 理由是**正確性不是偏好**——實測「曾晴」在 14 件／4 國具名為共同申請人，
+        # 第一順位口徑只顯示 2 件／1 國，是報表在陳述不實資訊（問題 16）。
+        # ⚠ 件數總和會大於專利件數（55→68 列），此頁必須加註「含共同申請」。
+        source_table=APPLICANT_EXPANDED_TABLE,
         columns=("applicant_display_name", "country_code"),
         group_by=("applicant_display_name", "country_code"),
         default_order=(
@@ -172,7 +187,11 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         report_type="aggregate",
         label="Top Patent Applicants",
         label_zh="主要申請人排名",
-        source_table=REPORT_SOURCE_TABLE,  # 2026-07-31 推翻 0042：分析只計第一順位申請人（瀏覽顯示仍完整）
+        # 🔴 2026-08-06 再次推翻 07-31：改回 0042 展開口徑（共同申請人各自計數）。
+        # 理由是**正確性不是偏好**——實測「曾晴」在 14 件／4 國具名為共同申請人，
+        # 第一順位口徑只顯示 2 件／1 國，是報表在陳述不實資訊（問題 16）。
+        # ⚠ 件數總和會大於專利件數（55→68 列），此頁必須加註「含共同申請」。
+        source_table=APPLICANT_EXPANDED_TABLE,
         columns=("applicant_display_name",),
         group_by=("applicant_display_name",),
         aggregates=(
@@ -225,7 +244,11 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         report_type="aggregate",
         label="Applicant Year Matrix",
         label_zh="申請人年度專利分布矩陣",
-        source_table=REPORT_SOURCE_TABLE,  # 2026-07-31 推翻 0042：分析只計第一順位申請人（瀏覽顯示仍完整）
+        # 🔴 2026-08-06 再次推翻 07-31：改回 0042 展開口徑（共同申請人各自計數）。
+        # 理由是**正確性不是偏好**——實測「曾晴」在 14 件／4 國具名為共同申請人，
+        # 第一順位口徑只顯示 2 件／1 國，是報表在陳述不實資訊（問題 16）。
+        # ⚠ 件數總和會大於專利件數（55→68 列），此頁必須加註「含共同申請」。
+        source_table=APPLICANT_EXPANDED_TABLE,
         columns=("applicant_display_name", "application_year"),
         group_by=("applicant_display_name", "application_year"),
         default_order=(

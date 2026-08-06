@@ -24,6 +24,28 @@ from backend.app.reports import chart_runner
 from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 
 
+# ⚠ `fetch_patent_kind_summary` 是 A4（2026-08-06）新增的 DB 接縫，
+# 與 `run_report` 同層。本檔宣告「不碰 DB」，故在模組層一次注入
+# ——否則每個 `with mock.patch.object(..., "run_report", ...)` 都要多包一層。
+# 回空 dict＝沒有專利種類資料，封面就不印設計案備註（與真實情境一致：
+# 選擇性出圖時本來就可能沒有這份資料）。
+_patent_kind_patcher = None
+
+
+def setUpModule():
+    global _patent_kind_patcher
+    _patent_kind_patcher = mock.patch.object(
+        chart_runner, "fetch_patent_kind_summary", dict)
+    _patent_kind_patcher.start()
+
+
+def tearDownModule():
+    if _patent_kind_patcher is not None:
+        _patent_kind_patcher.stop()
+
+
+
+
 # ── 標準報表型（#1–#3）：REPORT_DEFINITIONS 中的正式 report key ──
 STANDARD_ANALYSIS_REPORTS: dict[str, str] = {
     "申請人分析": "applicant_ranking",

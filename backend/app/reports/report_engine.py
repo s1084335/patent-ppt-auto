@@ -71,10 +71,18 @@ AGGREGATE_FUNCTIONS = {
         "AND NULLIF(BTRIM({extra_col}::text), '') "
         "IS DISTINCT FROM NULLIF(BTRIM({group_col}::text), ''))::int"
     ),
-    # 共同者名單＝多值欄的**第 2 個以後**（第 1 個就是分組鍵本人：
-    # applicant_display_name 是 split_part(申請人,'|',1) 收斂而來）。
-    # ⚠ 名稱走 company_aliases 收斂，與長條標籤同一套顯示名——
-    # 一邊中文一邊英文原字會被讀成兩家公司。
+    # 共同者名單＝多值欄裡**除了分組鍵本人以外**的其他人。
+    #
+    # 🔴 2026-08-06 修正（Codex 驗收揪出）：原本用序位 `_x.ord > 1` 排除第 1 個，
+    # 那是「分組鍵一定是第 1 個」的假設——在 **base 表**成立（`applicant_display_name`
+    # ＝`split_part(申請人,'|',1)`），但三張申請人報表 2026-08-06 改讀**展開 VIEW** 後
+    # **不成立**：展開後分組鍵可能是第 2 個。
+    # 實例：`廈門帝瑪斯 | 曾晴` 這件在「曾晴」那一列，`ord > 1` 會留下**曾晴自己**、
+    # 反而漏掉真正的夥伴帝瑪斯——欄位語意整個反過來，而且不會報錯。
+    #
+    # ⚠ 比對必須用**收斂後**的名字：分組鍵是走過 `company_aliases` 的中文顯示名，
+    # 多值欄拆出來的是英文原字面，直接比字面永遠不相等 → 本人不會被排除。
+    # 故 `_ca` 收斂結果同時用於輸出與比對，兩邊同一套（一邊中文一邊英文會被讀成兩家公司）。
     "string_agg_co_values": (
         "COALESCE((SELECT STRING_AGG(DISTINCT COALESCE("
         "NULLIF(BTRIM(_ca.\"公司中文名稱\"), ''), NULLIF(BTRIM(_ca.\"正規化名稱\"), ''), _x.part"
@@ -85,7 +93,10 @@ AGGREGATE_FUNCTIONS = {
         "FROM derived_layer.company_aliases c WHERE c.review_status = 'confirmed' "
         "AND lower(regexp_replace(BTRIM(c.\"別稱\"), '\\s+', ' ', 'g')) "
         "= lower(regexp_replace(_x.part, '\\s+', ' ', 'g')) ORDER BY c.id LIMIT 1) _ca ON true "
-        "WHERE _x.ord > 1 AND NULLIF(_x.part, '') IS NOT NULL), '')"
+        "WHERE NULLIF(_x.part, '') IS NOT NULL "
+        "AND COALESCE(NULLIF(BTRIM(_ca.\"公司中文名稱\"), ''), "
+        "NULLIF(BTRIM(_ca.\"正規化名稱\"), ''), _x.part) "
+        "IS DISTINCT FROM NULLIF(BTRIM({group_col}::text), '')), '')"
     ),
     "string_agg_distinct_nonblank_excl_group": (
         "COALESCE(STRING_AGG(DISTINCT NULLIF(BTRIM({col}::text), ''), '; ' "
