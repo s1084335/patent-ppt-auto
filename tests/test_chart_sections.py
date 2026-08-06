@@ -1299,9 +1299,10 @@ class EncodingNoteAccuracyTests(unittest.TestCase):
         """
         # 🔴 2026-08-07 契約變更：lifecycle 改版「專利狀態分析」（堆疊長條），
         # 「依年份連線」的散點編碼已不存在——本測試改守新編碼三要素。
+        # 二改（2026-08-07 使用者：「不要做 bar，像公司×國家交叉表」）：堆疊→矩陣。
         note = chart_runner.CHART_ENCODING_NOTES["lifecycle"]
         self.assertIn("狀態桶", note)
-        self.assertIn("條長", note)
+        self.assertIn("格值", note)
         self.assertIn("含共同申請", note)
         self.assertNotIn("技術群", note)
 
@@ -1704,12 +1705,15 @@ class NoEnglishDebugSubtitleTests(unittest.TestCase):
 
     def test_lifecycle_svg_has_no_english_subtitle(self):
         # 🔴 2026-08-07：lifecycle 改版狀態堆疊；防護意圖不變——SVG 不得殘留英文副題。
+        from backend.app.transforms.legal_status import STATUS_BUCKET_ORDER
+
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "lifecycle.svg"
-            chart_runner.render_status_stacked_chart(path, "專利狀態分析", [
-                {"applicant_display_name": "公司A", "已授權": 5, "審查中": 2,
-                 "已失效": 1, "未知": 0, "patent_count": 8},
-            ], rows_total=1)
+            chart_runner.render_matrix_chart(path, "專利狀態分析", [
+                {"applicant_display_name": "公司A", "status_bucket": "已授權",
+                 "patent_count": 5},
+            ], row_key="applicant_display_name", col_key="status_bucket",
+                col_order=STATUS_BUCKET_ORDER)
             svg = path.read_text(encoding="utf-8")
         self.assertNotIn("connected by year", svg)
         self.assertNotIn("applicant count", svg)

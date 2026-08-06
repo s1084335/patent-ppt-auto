@@ -330,14 +330,19 @@ class AllChartsReadableOnSlideTests(unittest.TestCase):
             self._check(path.read_text(encoding="utf-8"), "申請趨勢折線")
 
     def test_lifecycle_chart(self):
-        """p3 專利狀態分析（2026-08-07 改版：散點→狀態桶堆疊，深底轉色契約不變）。"""
+        """p3 專利狀態分析（2026-08-07 二改：堆疊→交叉矩陣，深底轉色契約不變）。"""
         from backend.app.reports import chart_runner as cr
-        pivot = [{"applicant_display_name": f"公司{i}", "已授權": 5, "審查中": 2,
-                  "已失效": 1, "未知": 0, "patent_count": 8} for i in range(6)]
+        from backend.app.transforms.legal_status import STATUS_BUCKET_ORDER
+        # ⚠ fixture 用貼近實機的尺寸（10 列 × 4 欄）——6×2 的迷你矩陣畫布過小，
+        # 縮放門檻差 0.005pt 假紅過一次。
+        rows = [{"applicant_display_name": f"公司{i}", "status_bucket": b,
+                 "patent_count": 3} for i in range(10) for b in STATUS_BUCKET_ORDER]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "c.svg"
-            cr.render_status_stacked_chart(path, "專利狀態分析", pivot, rows_total=6)
-            self._check(path.read_text(encoding="utf-8"), "狀態堆疊")
+            cr.render_matrix_chart(path, "專利狀態分析", rows,
+                                   row_key="applicant_display_name",
+                                   col_key="status_bucket", col_order=STATUS_BUCKET_ORDER)
+            self._check(path.read_text(encoding="utf-8"), "狀態矩陣")
 
 
 class ChartTitleStrippedOnSlideTests(unittest.TestCase):

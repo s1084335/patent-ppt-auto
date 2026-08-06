@@ -126,91 +126,105 @@ class LifecycleSectionTests(unittest.TestCase):
         self.assertIn("lifecycle", OVER_COUNTING_REPORTS)
 
 
-class StatusChartSvgTests(unittest.TestCase):
-    """渲染器直測：圖例四桶、單位在條尾、截斷註記有無、零值段不畫。"""
+class StatusMatrixSvgTests(unittest.TestCase):
+    """渲染契約：🔴 2026-08-07 使用者定案「不要做 bar，像公司×國家交叉表的形式」。
 
-    def _svg(self, rows, total):
-        import tempfile
-        from pathlib import Path
-
-        from backend.app.reports.chart_runner import render_status_stacked_chart
-
-        with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "s.svg"
-            render_status_stacked_chart(p, "專利狀態分析", rows, rows_total=total)
-            return p.read_text(encoding="utf-8")
-
-    ROW = {"applicant_display_name": "公司A", "已授權": 9, "審查中": 2,
-           "已失效": 1, "未知": 2, "patent_count": 14}
-
-    def test_legend_and_total_label(self):
-        svg = self._svg([self.ROW], total=1)
-        for bucket in ("已授權", "審查中", "已失效", "未知"):
-            self.assertIn(f">{bucket}</text>", svg, f"圖例缺 {bucket}")
-        self.assertIn(">14件</text>", svg, "條尾件數要帶單位")
-
-    def test_truncation_note_only_when_truncated(self):
-        self.assertNotIn("顯示前", self._svg([self.ROW], total=1))
-        self.assertIn("顯示前 1/25 名", self._svg([self.ROW], total=25))
-
-    def test_zero_segment_not_drawn(self):
-        """零值段不畫（畫 0 寬 rect 只是 DOM 垃圾，還可能蓋掉相鄰段邊界）。"""
-        row = {"applicant_display_name": "公司B", "已授權": 5, "審查中": 0,
-               "已失效": 0, "未知": 0, "patent_count": 5}
-        svg = self._svg([row], total=1)
-        from backend.app.reports.chart_runner import STATUS_BUCKET_COLORS
-
-        body = svg.split("</text>", 6)[-1]   # 跳過圖例區只看條區
-        self.assertIn(STATUS_BUCKET_COLORS["已授權"], body)
-        self.assertNotIn(STATUS_BUCKET_COLORS["審查中"], body)
-
-
-class SegmentCountLabelTests(unittest.TestCase):
-    """🔴 2026-08-07 使用者指正：「看不出各狀態件數」——段內要標件數。
-
-    規則：段寬放得下數字才標（窄段不硬塞——塞了會疊到相鄰段更不可讀，
-    完整數字永遠在網頁報表的數據表）；字色依段底色用 readable_text_on 決定，
-    並帶 data-on-fill 讓 PPT 深色轉色後重算字色。
+    複用 render_matrix_chart：列＝申請人、欄＝狀態桶（語意序）、儲存格＝件數。
+    ⚠ 原堆疊長條版（render_status_stacked_chart）連同段內標數、四桶類別色一併
+    刪除——矩陣格值天生就是件數，「看不出各狀態件數」的問題由形式本身解掉。
     """
+
+    LONG_ROWS = (
+        {"applicant_display_name": "公司A", "status_bucket": "已授權", "patent_count": 9},
+        {"applicant_display_name": "公司A", "status_bucket": "審查中", "patent_count": 2},
+        {"applicant_display_name": "公司A", "status_bucket": "未知", "patent_count": 2},
+        {"applicant_display_name": "公司B", "status_bucket": "已失效", "patent_count": 2},
+        {"applicant_display_name": "公司B", "status_bucket": "未知", "patent_count": 3},
+    )
 
     def _svg(self, rows):
         import tempfile
         from pathlib import Path
 
-        from backend.app.reports.chart_runner import render_status_stacked_chart
+        from backend.app.reports.chart_runner import render_matrix_chart
+        from backend.app.transforms.legal_status import STATUS_BUCKET_ORDER
 
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "s.svg"
-            render_status_stacked_chart(p, "專利狀態分析", rows, rows_total=len(rows))
+            render_matrix_chart(p, "專利狀態分析", list(rows),
+                                row_key="applicant_display_name",
+                                col_key="status_bucket",
+                                col_order=STATUS_BUCKET_ORDER)
             return p.read_text(encoding="utf-8")
 
-    def test_wide_segments_carry_counts(self):
-        svg = self._svg([{"applicant_display_name": "公司A", "已授權": 9, "審查中": 2,
-                          "已失效": 1, "未知": 2, "patent_count": 14}])
-        import re
+    def test_columns_follow_semantic_order(self):
+        """欄序＝語意序（已授權→未知），不按量排——按量排會讓每份報告欄序不同。"""
+        svg = self._svg(self.LONG_ROWS)
+        positions = [svg.index(f">{b}<") for b in ("已授權", "審查中", "已失效", "未知")]
+        self.assertEqual(positions, sorted(positions), "欄序未照語意序")
 
-        seg_labels = re.findall(r'data-on-fill="[^"]+"[^>]*>(\d+)<', svg)
-        self.assertIn("9", seg_labels, "已授權段內要有件數 9")
-        self.assertIn("2", seg_labels, "審查中段內要有件數 2")
+    def test_cells_carry_counts(self):
+        svg = self._svg(self.LONG_ROWS)
+        for v in (">9<", ">3<"):
+            self.assertIn(v, svg, f"儲存格缺件數 {v}")
 
-    def test_segment_label_pairs_fill_for_recolor(self):
-        """段內字必須帶 data-on-fill＝該段底色——深色轉色後字色才會重算。"""
-        svg = self._svg([{"applicant_display_name": "公司A", "已授權": 9, "審查中": 0,
-                          "已失效": 0, "未知": 0, "patent_count": 9}])
-        from backend.app.reports.chart_runner import STATUS_BUCKET_COLORS
-
-        self.assertIn(f'data-on-fill="{STATUS_BUCKET_COLORS["已授權"]}"', svg)
-
-    def test_narrow_segment_skips_label(self):
-        """極窄段（大母體下 1 件）不硬塞數字。"""
-        rows = [{"applicant_display_name": "巨量公司", "已授權": 200, "審查中": 1,
-                 "已失效": 0, "未知": 0, "patent_count": 201}]
+    def test_absent_bucket_column_omitted(self):
+        """全場沒有某桶（例如無失效案）→ 該欄不出現，不畫整欄空格。"""
+        rows = [r for r in self.LONG_ROWS if r["status_bucket"] != "已失效"]
         svg = self._svg(rows)
-        import re
+        self.assertNotIn(">已失效<", svg)
 
-        seg_labels = re.findall(r'data-on-fill="[^"]+"[^>]*>(\d+)<', svg)
-        self.assertIn("200", seg_labels)
-        self.assertNotIn("1", seg_labels, "1 件段在 201 件尺度下塞不進數字，應略過")
+    def test_country_matrix_order_unchanged(self):
+        """⚠ 反向鎖：col_order 不給時維持按量排——公司×國家矩陣行為不得被波及。"""
+        import tempfile
+        from pathlib import Path
+
+        from backend.app.reports.chart_runner import render_matrix_chart
+
+        rows = [
+            {"applicant_display_name": "A", "country_code": "TW", "patent_count": 1},
+            {"applicant_display_name": "A", "country_code": "CN", "patent_count": 9},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "m.svg"
+            render_matrix_chart(p, "t", rows, row_key="applicant_display_name",
+                                col_key="country_code")
+            svg = p.read_text(encoding="utf-8")
+        self.assertLess(svg.index(">CN<"), svg.index(">TW<"), "量大的欄應在前")
+
+
+class LifecycleBuilderIntegrationTests(unittest.TestCase):
+    """builder 端到端：假 ctx＋stub 報表 → 矩陣 SVG＋pivot 數據表＋section note。"""
+
+    def test_builder_renders_matrix_and_pivot(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from backend.app.reports import chart_runner
+
+        rows = [
+            {"applicant_display_name": "公司A", "legal_status": "授权", "patent_count": 9},
+            {"applicant_display_name": "公司A", "legal_status": "审查中", "patent_count": 2},
+            {"applicant_display_name": "公司B", "legal_status": None, "patent_count": 3},
+        ]
+
+        def report(_key):
+            return {"report_name": "lifecycle", "label_zh": "專利狀態分析", "rows": rows}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = SimpleNamespace(run_dir=Path(tmp), chart_rows={}, sections=[],
+                                  report=report, cluster_data=None, cluster_reports={},
+                                  meta={}, ipc_levels=(4,), cpc_levels=(4,))
+            chart_runner._build_lifecycle_section(ctx)
+            svg = (Path(tmp) / "lifecycle.svg").read_text(encoding="utf-8")
+        self.assertIn(">已授權<", svg)
+        self.assertIn(">未知<", svg)
+        pivot = ctx.chart_rows["lifecycle"]
+        self.assertEqual(pivot[0]["已授權"], 9)
+        note = ctx.sections[0]["note"]
+        self.assertIn("含共同申請", note)
+        self.assertIn("未知", note)
 
 
 if __name__ == "__main__":
