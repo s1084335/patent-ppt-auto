@@ -12,6 +12,8 @@ context: |
 rules:
   proposal:
     - 必須包含 Intent、Scope、Non-goals、Impact、Activation 與 Acceptance Gate。
+    - 必須明列 Confirmed Decisions 與 Open Questions；影響 scope、行為、資料、權限、輸出或驗收的阻塞問題未清空前不得完成 proposal。
+    - 使用者確認完整 planning artifacts 前不得進入 apply。
     - 影響 DB 時列出 migration、資料搬移、derived refresh、重匯與 rollback 需求。
     - 需求依可獨立驗收的功能切片描述，不按 DB、API、前端水平拆分。
   specs:
@@ -29,6 +31,7 @@ rules:
 operations:
   apply:
     guidance:
+      - 第一次改檔前確認不在 main/master，工作分支已建立、推到遠端並設定 tracking；原則上一個 change 對應一個 branch/PR。
       - 開工前先記錄測試基線；每批完成即回報 Red、Green、Refactor 與驗證結果。
       - 不得為了讓測試變綠而改寫需求；實測推翻規格時先回寫 change artifacts。
   archive:
@@ -36,3 +39,4 @@ operations:
       - openspec validate、適用測試與實物驗收全部完成後，才可請使用者裁決。
       - 只有使用者明確確認驗收通過，才可 archive 並合併到 main specs。
       - archive 前確認舊規格已記入 migration-ledger，且沒有第二份仍在維護的規格正文。
+      - archive 後須在同一工作分支提交並推送；PR required checks 全綠且使用者允許後才可合併 main/master，不得直接推送主線。
