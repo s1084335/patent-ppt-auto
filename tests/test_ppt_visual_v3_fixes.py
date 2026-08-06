@@ -784,9 +784,10 @@ class YearMatrixMainOnlyTests(unittest.TestCase):
     """2026-07-31 使用者二輪回饋：年度矩陣只用前 10 名主表那張，「更多」圖不上 PPT。"""
 
     def test_more_chart_filtered(self):
-        files = ("owner_year_matrix.svg", "owner_year_matrix_more.svg")
-        kept = bp._filter_report_charts(("owner_year_matrix",), files)
-        self.assertEqual(kept, ("owner_year_matrix.svg",))
+        # RPT-011：owner 矩陣已刪，改以 applicant 矩陣驗同一條「_more 不上 PPT」規則。
+        files = ("applicant_year_matrix.svg", "applicant_year_matrix_more.svg")
+        kept = bp._filter_report_charts(("applicant_year_matrix",), files)
+        self.assertEqual(kept, ("applicant_year_matrix.svg",))
 
     def test_other_reports_unaffected(self):
         files = ("ipc_main_distribution_L4.svg", "ipc_main_distribution_L5.svg")

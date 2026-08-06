@@ -1,4 +1,10 @@
-"""chart_runner 選擇性出圖（section registry）的單元測試。
+"""⚠ 2026-08-06 契約變更（RPT-011，openspec improve-report-professionalism）：
+owner_ranking／owner_year_matrix／family_quality_detail 三張報表已刪
+（留痕見 tests/test_report_catalog_removals.py 檔頭）。本檔原以 applicant_year_matrix
+當泡泡矩陣／refresh 的 fixture——**防護意圖不變**，fixture 全面改用仍存在的
+applicant_year_matrix（同一支 builder、同樣 default+more 兩變體）。
+
+chart_runner 選擇性出圖（section registry）的單元測試。
 
 不碰 DB：run_report 以 stub 取代，只驗 registry 覆蓋、選擇解析、
 選擇性渲染的檔案輸出與唯一輸出資料夾行為。
@@ -111,9 +117,13 @@ class SectionRegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             chart_runner.resolve_sections(["recent_assignee_ranking"])
 
-    def test_resolve_family_reports_share_one_section(self):
-        keys = [spec.key for spec in chart_runner.resolve_sections(["family_quality_detail"])]
+    def test_resolve_family_layout_alone(self):
+        """RPT-011：family_quality_detail 已刪，家族 section 只剩佈局報表；
+        品質資訊降級為國家佈局頁的註記（builder 直查 view，不經 registry）。"""
+        keys = [spec.key for spec in chart_runner.resolve_sections(["family_country_layout"])]
         self.assertEqual(keys, ["family_layout"])
+        with self.assertRaises(ValueError):
+            chart_runner.resolve_sections(["family_quality_detail"])
 
     def test_resolve_unknown_report_raises(self):
         with self.assertRaises(ValueError):
@@ -147,10 +157,10 @@ class MatrixChartTests(unittest.TestCase):
         keys = [s.key for s in chart_runner.resolve_sections(["applicant_country_distribution"])]
         self.assertEqual(keys, ["applicant_country"])
 
-    def test_owner_year_matrix_section_and_artifact_mapping(self):
-        keys = [s.key for s in chart_runner.resolve_sections(["owner_year_matrix"])]
-        self.assertEqual(keys, ["owner_year_matrix"])
-        self.assertEqual(chart_runner.CHART_FILE_REPORTS["owner_year_matrix.svg"], ["owner_year_matrix"])
+    def test_applicant_year_matrix_section_and_artifact_mapping(self):
+        keys = [s.key for s in chart_runner.resolve_sections(["applicant_year_matrix"])]
+        self.assertEqual(keys, ["applicant_year_matrix"])
+        self.assertEqual(chart_runner.CHART_FILE_REPORTS["applicant_year_matrix.svg"], ["applicant_year_matrix"])
 
     def test_matrix_top_limit_and_per_company_cells(self):
         rows = []
@@ -215,9 +225,11 @@ class DisplaySpecTests(unittest.TestCase):
         def report(key):
             return reports[key]
 
+        # ⚠ meta 是 ChartContext 的必備屬性（S2 起分類 builder 會寫出頁門檻 metadata）。
         return SimpleNamespace(
             run_dir=Path(tmp), chart_rows={}, sections=[], report=report,
-            cluster_data=None, cluster_reports={}, ipc_levels=ipc_levels, cpc_levels=ipc_levels)
+            cluster_data=None, cluster_reports={}, meta={},
+            ipc_levels=ipc_levels, cpc_levels=ipc_levels)
 
     def test_data_table_max_20_rows_no_full_expand(self):
         """數據區最多 20 筆＋總計列；不提供全量展開（2026-07-21 使用者補充），只註記共幾列。
@@ -508,7 +520,8 @@ class TopicSegmentTests(unittest.TestCase):
 
         return SimpleNamespace(
             run_dir=Path(tmp), chart_rows={}, sections=[], report=None,
-            cluster_data=None, cluster_reports={}, ipc_levels=(4, 5), cpc_levels=(4, 5))
+            cluster_data=None, cluster_reports={}, meta={},
+            ipc_levels=(4, 5), cpc_levels=(4, 5))
 
     _TWO_SOURCE_DATA = {
         "topics": [
@@ -695,13 +708,13 @@ class NarrativeRefreshTests(unittest.TestCase):
 
     @staticmethod
     def _stub_run_report(name, filters=None, limit=None, patent_ids=None):
-        rows = [{"current_assignee_display_name": f"Owner {i:02d}", "application_year": 2020,
+        rows = [{"applicant_display_name": f"App {i:02d}", "application_year": 2020,
                  "patent_count": 30 - i} for i in range(12)]
         return fake_report(name, rows)
 
     def _make_run(self, tmp: str) -> Path:
         with mock.patch.object(chart_runner, "run_report", self._stub_run_report):
-            result = chart_runner.run_chart_trial(output_dir=Path(tmp), report_names=["owner_year_matrix"])
+            result = chart_runner.run_chart_trial(output_dir=Path(tmp), report_names=["applicant_year_matrix"])
         return Path(result["output_dir"])
 
     def test_sections_persisted_in_report_data(self):
@@ -712,7 +725,7 @@ class NarrativeRefreshTests(unittest.TestCase):
         self.assertIsInstance(sections, list, "report_data.json 應含 sections 鍵")
         self.assertEqual(len(sections), 1)
         self.assertIn("title", sections[0])
-        self.assertEqual(sections[0]["variants"][0]["file"], "owner_year_matrix.svg")
+        self.assertEqual(sections[0]["variants"][0]["file"], "applicant_year_matrix.svg")
 
     def test_refresh_index_embeds_narratives_and_clears_pending(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -720,7 +733,7 @@ class NarrativeRefreshTests(unittest.TestCase):
             narratives = {
                 "based_on_version": run_dir.name,
                 "reports": {
-                    "owner_year_matrix": {
+                    "applicant_year_matrix": {
                         "text": "測試解讀文字XYZ",
                         "ai_model": "test-model",
                         "prompt_version": "report_narrative_v1",
@@ -736,7 +749,7 @@ class NarrativeRefreshTests(unittest.TestCase):
         self.assertIn("測試解讀文字XYZ", index_html, "解讀文字應嵌入每張圖表變體面板內")
         self.assertNotIn("待解讀", index_html, "解讀齊備後不得殘留待解讀佔位")
         self.assertEqual(stats["pending"], [], "無缺漏 key")
-        # owner_year_matrix has 2 variants (default + more); v1 direct text serves both
+        # applicant_year_matrix has 2 variants (default + more); v1 direct text serves both
         self.assertEqual(stats["narrated"], 2)
 
     def test_narrative_lookup_strips_level_suffix(self):
@@ -755,7 +768,7 @@ class NarrativeRefreshTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = self._make_run(tmp)
             narratives = {"based_on_version": "report_trial_other",
-                          "reports": {"owner_year_matrix": {"text": "舊解讀"}}}
+                          "reports": {"applicant_year_matrix": {"text": "舊解讀"}}}
             (run_dir / "narratives.json").write_text(
                 json.dumps(narratives, ensure_ascii=False), encoding="utf-8")
             chart_runner.refresh_index(run_dir)
@@ -957,31 +970,31 @@ class SelectiveRenderTests(unittest.TestCase):
         self.assertEqual(row["recent_assignee_count"], 2)
         self.assertEqual(row["recent_assignee_display_names"], "Acme; Beta")
 
-    def test_owner_year_matrix_outputs_bubble_svg_json_and_expand_html(self):
+    def test_applicant_year_matrix_outputs_bubble_svg_json_and_expand_html(self):
         """專利權人 × 年份矩陣使用泡泡圖，JSON 不因圖表前 20 家而裁切。"""
 
         matrix_rows = [
-            {"current_assignee_display_name": f"Owner {index:02d}", "application_year": 2020, "patent_count": 30 - index}
+            {"applicant_display_name": f"Owner {index:02d}", "application_year": 2020, "patent_count": 30 - index}
             for index in range(1, 23)
         ]
 
         def stub_run_report(name, filters=None, limit=None, patent_ids=None):
-            self.assertEqual(name, "owner_year_matrix")
+            self.assertEqual(name, "applicant_year_matrix")
             return fake_report(name, matrix_rows)
 
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(chart_runner, "run_report", stub_run_report):
-                result = chart_runner.run_chart_trial(output_dir=Path(tmp), report_names=["owner_year_matrix"])
+                result = chart_runner.run_chart_trial(output_dir=Path(tmp), report_names=["applicant_year_matrix"])
 
             run_dir = Path(result["output_dir"])
-            svg = (run_dir / "owner_year_matrix.svg").read_text(encoding="utf-8")
-            more_svg = (run_dir / "owner_year_matrix_more.svg").read_text(encoding="utf-8")
+            svg = (run_dir / "applicant_year_matrix.svg").read_text(encoding="utf-8")
+            more_svg = (run_dir / "applicant_year_matrix_more.svg").read_text(encoding="utf-8")
             index_html = (run_dir / "index.html").read_text(encoding="utf-8")
             report_data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(result["sections_rendered"], ["owner_year_matrix"])
-        self.assertIn("owner_year_matrix.svg", result["files"])
-        self.assertIn("owner_year_matrix_more.svg", result["files"])
+        self.assertEqual(result["sections_rendered"], ["applicant_year_matrix"])
+        self.assertIn("applicant_year_matrix.svg", result["files"])
+        self.assertIn("applicant_year_matrix_more.svg", result["files"])
         self.assertIn("<circle", svg)
         self.assertIn("<title>Owner 01 / 2020 / 29</title>", svg)
         self.assertIn(">29</text>", svg)
@@ -999,9 +1012,9 @@ class SelectiveRenderTests(unittest.TestCase):
         self.assertIn("＋查看全部（第 11～20 名）", index_html)
         self.assertIn("data-expand-target", index_html)
         self.assertIn("2020", svg)
-        rows = report_data["reports"]["owner_year_matrix"]["rows"]
+        rows = report_data["reports"]["applicant_year_matrix"]["rows"]
         self.assertEqual(len(rows), 22)
-        self.assertEqual(rows[0]["current_assignee_display_name"], "Owner 01")
+        self.assertEqual(rows[0]["applicant_display_name"], "Owner 01")
 
     def test_applicant_year_matrix_outputs_bubbles_and_keeps_full_rows(self):
         matrix_rows = [
@@ -1033,26 +1046,26 @@ class SelectiveRenderTests(unittest.TestCase):
 
     def test_year_bubble_matrix_uses_latest_25_years_and_large_bubbles(self):
         matrix_rows = [
-            {"current_assignee_display_name": "Owner A", "application_year": 2000 + index, "patent_count": index + 1}
+            {"applicant_display_name": "Owner A", "application_year": 2000 + index, "patent_count": index + 1}
             for index in range(30)
         ] + [
-            {"current_assignee_display_name": "Owner B", "application_year": 2000 + index, "patent_count": 1}
+            {"applicant_display_name": "Owner B", "application_year": 2000 + index, "patent_count": 1}
             for index in range(30)
         ]
 
         def stub_run_report(name, filters=None, limit=None, patent_ids=None):
-            self.assertEqual(name, "owner_year_matrix")
+            self.assertEqual(name, "applicant_year_matrix")
             return fake_report(name, matrix_rows)
 
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(chart_runner, "run_report", stub_run_report):
-                result = chart_runner.run_chart_trial(output_dir=Path(tmp), report_names=["owner_year_matrix"])
+                result = chart_runner.run_chart_trial(output_dir=Path(tmp), report_names=["applicant_year_matrix"])
 
             run_dir = Path(result["output_dir"])
-            svg = (run_dir / "owner_year_matrix.svg").read_text(encoding="utf-8")
+            svg = (run_dir / "applicant_year_matrix.svg").read_text(encoding="utf-8")
             report_data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
 
-        self.assertIn("owner_year_matrix.svg", result["files"])
+        self.assertIn("applicant_year_matrix.svg", result["files"])
         for year in range(2000, 2005):
             self.assertNotIn(f">{year}<", svg)
             self.assertNotIn(f"/ {year} /", svg)
@@ -1074,8 +1087,8 @@ class SelectiveRenderTests(unittest.TestCase):
         self.assertLessEqual(height, chart_runner.CHART_CANVAS_MAX_HEIGHT)
         # 2026-07-21 定案修正（規格變更註記）：年度序列「保存」只留最新 25 年——
         # fixture 30 年×2 家＝60 列，入庫截為 25 年×2 家＝50 列（原斷言 60）。
-        self.assertEqual(len(report_data["reports"]["owner_year_matrix"]["rows"]), 50)
-        self.assertEqual(report_data["reports"]["owner_year_matrix"]["rows_total"], 60)
+        self.assertEqual(len(report_data["reports"]["applicant_year_matrix"]["rows"]), 50)
+        self.assertEqual(report_data["reports"]["applicant_year_matrix"]["rows_total"], 60)
         # 🔴 2026-08-04：字級改由 chart_font_px() 依縮放反推，不再是固定的
         # CHART_LABEL_PX。⚠ 判準也跟著換——驗的是「縮放到投影片上是不是 14pt」，
         # 那才是使用者定的目標；驗 SVG 裡的 px 數字等於把中間值當規格。
@@ -1189,13 +1202,6 @@ class SectionReportKeyTests(unittest.TestCase):
         "publication_trend": [{"授權公告年": 2021, "patent_count": 3}],
         "country_distribution": [{"country_code": "TW", "patent_count": 7}],
         "family_country_layout": [{"country_code": "US", "patent_count": 2}],
-        "family_quality_detail": [{
-            "family_id": "F1", "is_surrogate_family": False, "member_rows": 2,
-            "expected_counts_raw": "", "family_incomplete": False,
-            "unknown_status_count": 0, "pending_status_count": 0,
-            "ep_in_transition_count": 0, "ep_missing_epc_count": 0,
-            "non_country_row_count": 0,
-        }],
         "applicant_country_distribution": [
             {"applicant_display_name": "REXON", "country_code": "TW", "patent_count": 4}
         ],
@@ -1479,12 +1485,13 @@ class RankingTruncationNoteTests(unittest.TestCase):
         self.assertEqual(source.count('顯示前 {shown}/{total} 名，完整名單見網頁報表'), 1,
                          "截斷註記的文案不只一處——兩張圖會各自漂移")
 
-    def test_owner_ranking_section_applies_the_row_limit(self):
-        """🔴 p15 沒傳 limit，預設 20 列全畫。"""
+    def test_applicant_ranking_section_applies_the_row_limit(self):
+        """🔴 排名圖沒傳 limit 會 20 列全畫（原以 owner 排名驗證；RPT-011 該報表
+        已刪，防護意圖不變——改驗仍存在的申請人排名 builder）。"""
         source = Path(chart_runner.__file__).read_text(encoding="utf-8")
-        start = source.index("def _build_owner_ranking_section")
-        body = source[start:start + 600]
-        self.assertIn("CHART_ROW_LIMIT", body, "專利權人排名未套用列數上限")
+        start = source.index("def _build_applicant_ranking_section")
+        body = source[start:start + 900]
+        self.assertIn("CHART_ROW_LIMIT", body, "申請人排名未套用列數上限")
 
 
 class SparseChartFillsFrameTests(unittest.TestCase):

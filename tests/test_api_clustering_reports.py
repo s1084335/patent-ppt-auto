@@ -29,7 +29,9 @@ class ClusteringReportsConstantTests(unittest.TestCase):
         # 同日再把「痛點四象限」排出預設批次（使用者定案「整個藏起來，等市場線做好再放
         # 出來」——市場線未實作時痛點軸全是「待調查」，產出的圖看不出不完整）→ 15 種。
         # 數字鎖在這裡是刻意的——報表增減必須是有意識的決定，不能悄悄漂移。
-        self.assertEqual(len(DEFAULT_REPORT_NAMES), 15)
+        # RPT-011（2026-08-06）刪三張（owner_ranking／owner_year_matrix／
+        # family_quality_detail）→ 15 - 3 = 12。留痕見 test_report_catalog_removals.py。
+        self.assertEqual(len(DEFAULT_REPORT_NAMES), 12)
         # ⚠ 不再等於 tuple(REPORT_DEFINITIONS)：痛點四象限的**定義保留**（市場線做好後
         # 只需解除過濾，不必重寫報表），只是不進預設批次。改驗「扣除需市場資料者相等」，
         # 順序仍鎖住。

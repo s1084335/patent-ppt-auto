@@ -271,10 +271,11 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("error_message", self.html)
         self.assertIn("current_stage", self.html)
 
-    def test_reports_include_family_quality_detail(self):
-        """報表清單必含家族完整性明細（report_key=family_quality_detail）。"""
-        self.assertIn("family_quality_detail", self.html)
-        self.assertIn("家族完整性明細", self.html)
+    def test_reports_exclude_removed_catalog_entries(self):
+        """RPT-011（2026-08-06）反轉原契約：三張已刪報表不得再出現在前端清單，
+        留著任何一張都會讓「全選」整批 400（07-29 受讓人排名同型事故）。"""
+        for name in ("family_quality_detail", "owner_ranking", "owner_year_matrix"):
+            self.assertNotIn(f"'{name}'", self.html)
 
     def test_reports_default_all_checked(self):
         """報表種類預設全部勾選（首次進報表區把全部填入選取集合）。"""

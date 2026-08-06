@@ -93,20 +93,22 @@ class AggregateColumnsTests(unittest.TestCase):
         # 不是固定次數——釘死次數會讓每次新增同類聚合都假紅。
         self.assertGreaterEqual(sql.count(excl), 2)
 
-    def test_owner_year_matrix_definition_and_sql_contract(self) -> None:
-        """專利權人年度布局矩陣以 current assignee × application year 聚合。"""
-        definition = REPORT_DEFINITIONS["owner_year_matrix"]
-        self.assertEqual(definition.label_zh, "專利權人年度布局矩陣")
-        self.assertEqual(definition.columns, ("current_assignee_display_name", "application_year"))
-        self.assertEqual(definition.group_by, ("current_assignee_display_name", "application_year"))
+    def test_applicant_year_matrix_definition_and_sql_contract(self) -> None:
+        # ⚠ 原以 owner_year_matrix 驗矩陣 SQL 形狀；RPT-011 刪該報表後改驗
+        # applicant_year_matrix（同構，走展開 VIEW）。防護意圖不變。
+        """申請人年度矩陣以 applicant × application year 聚合（展開口徑）。"""
+        definition = REPORT_DEFINITIONS["applicant_year_matrix"]
+        self.assertEqual(definition.label_zh, "申請人年度專利分布矩陣")
+        self.assertEqual(definition.columns, ("applicant_display_name", "application_year"))
+        self.assertEqual(definition.group_by, ("applicant_display_name", "application_year"))
         self.assertEqual(
             definition.default_order,
-            (("patent_count", "desc"), ("current_assignee_display_name", "asc"), ("application_year", "asc")),
+            (("patent_count", "desc"), ("applicant_display_name", "asc"), ("application_year", "asc")),
         )
         sql, params = build_report_sql(definition, filters=None, limit=None, patent_ids=[7, 9])
-        self.assertIn('GROUP BY "current_assignee_display_name", "application_year"', sql)
-        self.assertIn('ORDER BY "patent_count" DESC, "current_assignee_display_name" ASC, "application_year" ASC', sql)
-        self.assertIn('NULLIF(BTRIM("current_assignee_display_name"::text), \'\') IS NOT NULL', sql)
+        self.assertIn('GROUP BY "applicant_display_name", "application_year"', sql)
+        self.assertIn('ORDER BY "patent_count" DESC, "applicant_display_name" ASC, "application_year" ASC', sql)
+        self.assertIn('NULLIF(BTRIM("applicant_display_name"::text), \'\') IS NOT NULL', sql)
         self.assertIn('NULLIF(BTRIM("application_year"::text), \'\') IS NOT NULL', sql)
         self.assertIn('patent_id = ANY(%(patent_ids)s)', sql)
         self.assertEqual(params["patent_ids"], [7, 9])

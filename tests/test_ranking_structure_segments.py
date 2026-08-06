@@ -74,15 +74,12 @@ class ReportDefinitionTests(unittest.TestCase):
                       "solo_transferred_count", "co_applicant_names"):
             self.assertIn(alias, aliases)
 
-    def test_owner_ranking_has_joint_holding(self):
-        """專利權人圖只要單獨／共同持有，**不放受讓人**（定案）。"""
+    def test_owner_ranking_removed(self):
+        """RPT-011（2026-08-06）：owner_ranking 已刪（母體 36/55、19 件尚無權利人）；
+        「已轉讓」訊號由申請人排名的斜紋段承接。⚠ 原「共同持有」聚合契約隨之作廢。"""
         from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 
-        aliases = {entry[2] for entry in REPORT_DEFINITIONS["owner_ranking"].aggregates}
-        self.assertIn("joint_count", aliases)
-        self.assertIn("co_owner_names", aliases)
-        self.assertFalse([a for a in aliases if "assignee" in a or "transferred" in a],
-                         "專利權人圖不得帶受讓人欄")
+        self.assertNotIn("owner_ranking", REPORT_DEFINITIONS)
 
     def test_applicant_reports_use_expanded_view(self):
         """申請人三報表走**展開 VIEW**；專利權人報表維持 base 表。
@@ -98,8 +95,7 @@ class ReportDefinitionTests(unittest.TestCase):
            **報表在陳述不實資訊**。「總和大於件數」是標示問題，用頁尾註記交代
            （`population.OVER_COUNTING_REPORTS`），不是改口徑的理由。
 
-        ⚠ `owner_ranking` 沒跟著換：它已定案刪除（B 段），不值得為它再開一支
-        migration 建權人展開 VIEW。
+        ⚠ owner_ranking 已刪（RPT-011 執行完畢），本測試只驗申請人三張。
         """
         from backend.app.reports.report_definitions import (
             REPORT_DEFINITIONS,
@@ -112,8 +108,7 @@ class ReportDefinitionTests(unittest.TestCase):
             with self.subTest(report=name):
                 self.assertEqual(REPORT_DEFINITIONS[name].source_table, expanded,
                                  f"{name} 未走展開 VIEW——共同申請人會被漏掉")
-        self.assertEqual(REPORT_DEFINITIONS["owner_ranking"].source_table,
-                         REPORT_SOURCE_TABLE)
+
 
 
 class SegmentMathTests(unittest.TestCase):

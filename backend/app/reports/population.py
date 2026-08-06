@@ -35,7 +35,6 @@ POPULATION_REASONS: dict[str, str] = {
     # 設計案的分類欄裝的是洛迦諾碼，非 IPC 體系；`IPC_LIKE_PATTERN` 早已擋掉。
     "ipc_main_distribution": "排除外觀設計 {excluded}",
     "cpc_main_distribution": "{excluded} 件無 CPC 分類",
-    "owner_ranking": "{excluded} 件尚無專利權人",
     # ⚠ 同族合併後仍是「件」（2026-08-05 單位定案），故與其他頁同句型，不寫「家族 48 個」。
     "family_country_layout": "同族合併後",
     # 分群兩通道：技術缺無獨立項者、功效缺設計案。

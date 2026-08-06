@@ -30,7 +30,8 @@ class FamilyReportSqlTests(unittest.TestCase):
 
     def test_family_reports_translate_patent_ids_to_family_scope(self) -> None:
         """家族報表收到 patent_ids → 轉譯成「選中專利所屬家族」的 IN 子查詢。"""
-        for name in ("family_country_layout", "family_quality_detail"):
+        # RPT-011：family_quality_detail 已刪，家族報表只剩佈局一張。
+        for name in ("family_country_layout",):
             sql, params = build_report_sql(
                 REPORT_DEFINITIONS[name], filters=None, limit=None, patent_ids=[1, 2]
             )
@@ -76,12 +77,10 @@ class FamilyReportSqlTests(unittest.TestCase):
         self.assertIn("patent_id = ANY(%(patent_ids)s)", sql)
         self.assertEqual(params["patent_ids"], [1, 2])
 
-    def test_quality_detail_is_detail_report(self) -> None:
-        """family_quality_detail 為 detail 型，欄位齊、排序把不完整排前面。"""
-        definition = REPORT_DEFINITIONS["family_quality_detail"]
-        sql, _params = build_report_sql(definition, filters=None, limit=None)
-        self.assertIn('"family_incomplete"', sql)
-        self.assertIn('ORDER BY "family_incomplete" DESC', sql)
+    def test_quality_detail_report_removed(self) -> None:
+        """RPT-011（2026-08-06）：品質稽核不給決策者看，報表已刪；
+        家族完整性由國家佈局頁註記承接（chart_runner 直查 view）。"""
+        self.assertNotIn("family_quality_detail", REPORT_DEFINITIONS)
 
 
 if __name__ == "__main__":

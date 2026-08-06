@@ -297,14 +297,10 @@ CHART_FILE_REPORTS: dict[str, list[str]] = {
     "cpc_main_distribution_L4.svg": ["cpc_main_distribution"],
     "cpc_main_distribution_L5.svg": ["cpc_main_distribution"],
     "applicant_ranking.svg": ["applicant_ranking"],
-    "owner_ranking.svg": ["owner_ranking"],
     "applicant_country_matrix.svg": ["applicant_country_distribution"],
     "applicant_year_matrix.svg": ["applicant_year_matrix"],
     "applicant_year_matrix_more.svg": ["applicant_year_matrix"],
-    "owner_year_matrix.svg": ["owner_year_matrix"],
-    "owner_year_matrix_more.svg": ["owner_year_matrix"],
     "lifecycle.svg": ["lifecycle"],
-    "family_quality.json": ["family_quality_detail"],
     # 三個分群 artifact 各自對回自己的報表名（供 manifest／解讀查找定位到正確報表）。
     "cluster_topic_table.html": ["cluster_topic_table"],
     "opportunity_quadrant.svg": ["opportunity_quadrant"],
@@ -1547,32 +1543,89 @@ def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -
     path.write_text("\n".join(svg), encoding="utf-8")
 
 
+def _tech_year_topics(cluster_data: dict[str, Any]) -> dict[int, set[str]]:
+    """年 → 該年觸及的技術通道主題集合（缺申請年的專利不入任何年）。"""
+    from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL
+
+    tech_topics = {t["topic_code"] for t in cluster_data.get("topics") or []
+                   if t.get("source_field") == SOURCE_FIELD_TECHNICAL}
+    patents = cluster_data.get("patents") or {}
+    year_topics: dict[int, set[str]] = {}
+    for a in cluster_data.get("assignments") or []:
+        code = a.get("topic_code")
+        if code not in tech_topics:
+            continue
+        year = (patents.get(a.get("patent_id")) or {}).get("application_year")
+        if year is not None:
+            year_topics.setdefault(int(year), set()).add(code)
+    return year_topics
+
+
+def annual_topic_columns(cluster_data: dict[str, Any] | None) -> dict[int, dict[str, int]]:
+    """年度 ×（涉及技術群／首現技術群）——問題 9 四欄的分群那半。
+
+    ⚠ 只算**技術通道**：技術演進看的是技術線，功效主題混進來會虛增主題數。
+    無分群資料回空 dict——呼叫端據此**不補技術群欄**，
+    0（有分群沒觸及）與缺鍵（沒分群）是兩個不同的事實。
+    """
+    if not cluster_data:
+        return {}
+    year_topics = _tech_year_topics(cluster_data)
+    first_year = {}
+    for year in sorted(year_topics):
+        for code in year_topics[year]:
+            first_year.setdefault(code, year)
+    return {
+        year: {
+            "topic_count": len(codes),
+            "new_topic_count": sum(1 for c in codes if first_year[c] == year),
+        }
+        for year, codes in year_topics.items()
+    }
+
+
+def _trend_row(year: int, app: dict[int, dict[str, Any]], pub: dict[int, int],
+               topic_columns: dict[int, dict[str, int]] | None) -> dict[str, Any]:
+    """單一年份的合併列；family／技術群欄依「有資料才有鍵」原則組裝。"""
+    row: dict[str, Any] = {
+        "year": year,
+        "application_count": app.get(year, {}).get("count", 0),
+        "授權公告件數": pub.get(year, 0),
+    }
+    family = app.get(year, {}).get("family")
+    if family is not None:
+        row["family_count"] = family
+    if topic_columns is not None:
+        info = topic_columns.get(year) or {}
+        row["topic_count"] = int(info.get("topic_count") or 0)
+        row["new_topic_count"] = int(info.get("new_topic_count") or 0)
+    return row
+
+
 def merge_annual_trend_rows(
     application_rows: list[dict[str, Any]],
     publication_rows: list[dict[str, Any]],
+    topic_columns: dict[int, dict[str, int]] | None = None,
 ) -> list[dict[str, int]]:
-    """將申請年與授權公告年趨勢合併成前端表格可直接交叉對照的 rows。"""
-    app = {
-        year: count
-        for row in application_rows
-        if (year := _int_or_none(row.get("application_year"))) is not None
-        if (count := _int_or_none(row.get("patent_count"))) is not None
-    }
+    """將申請年與授權公告年趨勢合併成前端表格可直接交叉對照的 rows。
+
+    年度四欄（問題 9）：`family_count` 由 SQL 聚合隨 application_rows 帶入；
+    `topic_columns` 有給（有分群）才補「涉及／首現技術群」兩欄——
+    ⚠ 沒分群時**缺鍵**而非補 0（0＝有分群沒觸及，缺鍵＝沒分群，混同會誤導解讀）。
+    """
+    app: dict[int, dict[str, Any]] = {}
+    for row in application_rows:
+        year = _int_or_none(row.get("application_year"))
+        count = _int_or_none(row.get("patent_count"))
+        if year is not None and count is not None:
+            app[year] = {"count": count, "family": _int_or_none(row.get("family_count"))}
     pub = {
         year: count
         for row in publication_rows
         if (year := _int_or_none(row.get("授權公告年"))) is not None
         if (count := _int_or_none(row.get("patent_count"))) is not None
     }
-    years = sorted(set(app) | set(pub))
-    return [
-        {
-            "year": year,
-            "application_count": app.get(year, 0),
-            "授權公告件數": pub.get(year, 0),
-        }
-        for year in years
-    ]
+    return [_trend_row(year, app, pub, topic_columns) for year in sorted(set(app) | set(pub))]
 
 
 def render_chart_embed(file: str) -> str:
@@ -1788,6 +1841,10 @@ def tech_name(code: str) -> str:
 
 
 DATA_COLUMN_LABELS: dict[str, str] = {
+    # 年度四欄（問題 9）
+    "family_count": "家族數",
+    "topic_count": "涉及技術群",
+    "new_topic_count": "首現技術群",
     "patent_count": "專利件數",
     "year": "年份",
     "application_count": "申請件數",
@@ -2031,13 +2088,10 @@ CHART_ENCODING_NOTES: dict[str, str] = {
     "opportunity_quadrant": "橫軸＝申請人家數｜縱軸＝專利件數｜點＝技術主題",
     "cluster_topic_table": "條長＝主題件數｜家數＝投入該主題的申請人數",
     "applicant_ranking": "條長＝件數｜排序＝件數由高至低",
-    "owner_ranking": "條長＝件數｜排序＝件數由高至低",
     "applicant_country_distribution": "格值＝件數｜列＝申請人、欄＝受理國",
     "applicant_year_matrix": "泡泡大小與顏色＝件數｜列＝申請人、欄＝申請年",
-    "owner_year_matrix": "泡泡大小與顏色＝件數｜列＝專利權人、欄＝申請年",
     "lifecycle": "橫軸＝申請人家數｜縱軸＝專利件數｜連線＝依年份先後",
     "family_country_layout": "條長＝存活家族數｜分組＝受理國",
-    "family_quality_detail": "條長＝家族成員件數｜分組＝家族",
 }
 
 
@@ -2381,7 +2435,7 @@ CLASSIFICATION_LEVEL_LABELS = {4: "Level 4 (Subclass)", 5: "Level 5 (Main Group)
 # ---------------------------------------------------------------------------
 
 # 排名類報表出圖時套 ranking_limit（其餘報表用各自定義的預設列數）。
-RANKING_LIMIT_REPORTS = ("applicant_ranking", "owner_ranking")
+RANKING_LIMIT_REPORTS = ("applicant_ranking",)
 
 # 🔴 排名的兩端上限（2026-08-04 使用者定案）：**網頁端前 20、簡報端（圖）前 10**。
 # 都是天花板——資料不足不補。網頁 20 由 main.py 的 _limit_rows_per_source 執行；
@@ -2400,7 +2454,7 @@ PERSIST_YEAR_SPAN = 25      # 年度序列入庫年份數上限（取最新）
 
 # 排名類報表：入庫 rows 截前 20（含 IPC/CPC 分布與公司×國家交叉）
 PERSIST_TOP20_REPORTS = (
-    "applicant_ranking", "owner_ranking",
+    "applicant_ranking",
     "applicant_country_distribution", "ipc_main_distribution", "cpc_main_distribution",
 )
 # 年度序列報表：入庫只留最新 25 年（value＝該報表的年份欄位名）
@@ -2408,7 +2462,6 @@ PERSIST_YEAR_KEYS = {
     "application_trend": "application_year",
     "publication_trend": "授權公告年",
     "applicant_year_matrix": "application_year",
-    "owner_year_matrix": "application_year",
 }
 # chart_rows 中需截前 20 的鍵（IPC/CPC 各階聚合列）
 _CHART_ROWS_TOP20_PREFIXES = ("ipc_main_distribution_L", "cpc_main_distribution_L")
@@ -2517,7 +2570,10 @@ def _build_trend_section(ctx: ChartContext) -> None:
     publication = ctx.report("publication_trend")
     trend_title = f'{application["label_zh"]}與{publication["label_zh"]}'
     render_line_chart(ctx.run_dir / "annual_trend.svg", trend_title, application["rows"], publication["rows"])
-    ctx.chart_rows["annual_trend"] = merge_annual_trend_rows(application["rows"], publication["rows"])
+    # 年度四欄（問題 9）：圖不改（仍是件數雙線），四欄只進數據表與解讀素材。
+    topic_cols = annual_topic_columns(ctx.cluster_data) or None
+    ctx.chart_rows["annual_trend"] = merge_annual_trend_rows(
+        application["rows"], publication["rows"], topic_columns=topic_cols)
     # report_key 指向 chart_rows.annual_trend，讓表格可同列對照申請年與授權公告年；
     # 圖檔仍由 application_trend + publication_trend 兩份報表共同產生。
     ctx.sections.append({
@@ -2544,6 +2600,28 @@ def _build_country_map_section(ctx: ChartContext) -> None:
         "variants": [{"label": "Bar", "file": "jurisdiction_distribution.svg", "variant_key": "default"}],
         "note": "專利受理局分布以 country_code group by，與全庫或 workspace patent_ids 快照共用同一報表定義。",
     })
+
+
+def _fetch_family_quality_rows() -> list[dict[str, Any]]:
+    """直查 derived_layer.report_family_quality 供國家佈局頁註記。
+
+    ⚠ 只給註記彙總用——family_quality_detail 報表已刪（RPT-011），
+    不得把這份 rows 重新落成報表或 JSON 明細。查詢失敗回空列表，
+    註記會呈現「本次無家族資料可核對」而非讓整批出圖失敗。
+    """
+    from psycopg.rows import dict_row
+
+    from backend.app.db.connection import get_pool
+
+    try:
+        with get_pool().connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT family_incomplete, is_surrogate_family, unknown_status_count, "
+                "pending_status_count, ep_in_transition_count, ep_missing_epc_count "
+                "FROM derived_layer.report_family_quality")
+            return list(cur.fetchall())
+    except Exception:  # noqa: BLE001 —— 註記是附註不是主體，任何取數失敗都不得讓出圖整批掛掉
+        return []
 
 
 def family_quality_note(quality_rows: list[dict[str, Any]]) -> str:
@@ -2585,8 +2663,9 @@ def _build_family_layout_section(ctx: ChartContext) -> None:
     全體成員；不帶篩選＝全庫。
     """
     family_report = ctx.report("family_country_layout")
-    quality_report = ctx.report("family_quality_detail")
-    quality_rows = quality_report["rows"]
+    # 🔴 RPT-011：family_quality_detail 報表已刪（品質稽核不給決策者看），但定案
+    # 「家族完整性**併入國家佈局頁註記**」——資料改直查 derived view，不走 registry。
+    quality_rows = _fetch_family_quality_rows()
     family_notes = [
         "計數單位是「同族（發明）」：group by 同族ID，做到申請國（受理局）層級；EP 以區域標示呈現，暫不展開生效國。",
         family_quality_note(quality_rows),
@@ -2606,10 +2685,12 @@ def _build_family_layout_section(ctx: ChartContext) -> None:
         "title": family_report["label_zh"],
         "report_key": "family_country_layout",
         "variants": [{"label": "Bar", "file": "family_country_distribution.svg", "variant_key": "default"}],
-        "links": [{"label": "家族品質明細 JSON", "file": "family_quality.json"}],
         "note": " ".join(family_notes),
     })
-    write_json(ctx.run_dir / "family_quality.json", {"report": quality_report["report_name"], "rows": quality_rows})
+
+# IPC/CPC 出頁門檻：4 階（subclass）distinct 種類數低於此值＝該報表不進簡報。
+CLASSIFICATION_MIN_DISTINCT_L4 = 3
+
 
 def _build_classification_section(
     ctx: ChartContext, report_key: str, source_column: str, levels: tuple[int, ...]
@@ -2617,6 +2698,20 @@ def _build_classification_section(
     """IPC/CPC 分布共用：每階一個 variant，L4/L5 切換鈕對照（2026-07-21 三次修正定版——
     兩階對照是核心價值；「不收合」只指不用查看全部式展開鈕，不禁 toggle）；每階各截前 20。"""
     report = ctx.report(report_key)
+    # 🔴 出頁門檻（2026-08-05 使用者定案：「4 階沒有 3 種以上，IPC/CPC 就不出現在簡報」）。
+    # 判定寫進 metadata（design #5），**這裡不跳過任何渲染**——網頁報表照產，
+    # 只有 PPT 端讀 `classification_thresholds` 決定不出頁；缺頁原因由 manifest 現形。
+    # ⚠ 門檻看 4 階 distinct 種類數，與 levels 參數無關（就算只選 L5 也用 L4 判）。
+    level4_rows = collapse_classification_rows(report["rows"], source_column, 4)
+    distinct_l4 = len(level4_rows)
+    ctx.meta.setdefault("classification_thresholds", {})[report_key] = {
+        "distinct_level4": distinct_l4,
+        "min_distinct_level4": CLASSIFICATION_MIN_DISTINCT_L4,
+        "below_threshold": distinct_l4 < CLASSIFICATION_MIN_DISTINCT_L4,
+        "reason": (f"4 階 subclass 僅 {distinct_l4} 種"
+                   f"（門檻 {CLASSIFICATION_MIN_DISTINCT_L4}）——分類近乎單一，"
+                   "整頁只會是一兩根長條，無判讀價值"),
+    }
     variants: list[dict[str, str]] = []
     for level in levels:
         rows = collapse_classification_rows(report["rows"], source_column, level)
@@ -2665,31 +2760,6 @@ def _build_applicant_ranking_section(ctx: ChartContext) -> None:
         "variants": [{"label": "Applicants", "file": "applicant_ranking.svg", "variant_key": "default"}],
         "note": "總長＝申請人全部專利；藍色區段＝轉讓他家（最新受讓人≠申請人）的專利，同名未離手不計。CSV/JSON 保留受讓人公司明細欄。",
     })
-
-
-def _build_owner_ranking_section(ctx: ChartContext) -> None:
-    report = ctx.report("owner_ranking")
-    # F-12：與申請人排名同一套規則——列數收斂到可讀，被截時圖上標示。
-    # #3（2026-08-05）：改走同一支分段渲染，兩段＝單獨／共同持有。
-    # ⚠ 定案：專利權人圖**不放最新受讓人**（hatch_label=None），權利已經在誰手上
-    # 就是這張圖本身的意思，再疊轉讓只會與申請人圖重複。
-    render_segmented_bar_chart(
-        ctx.run_dir / "owner_ranking.svg",
-        report["label_zh"],
-        report["rows"],
-        "current_assignee_display_name",
-        total_key="patent_count",
-        structure_labels=("單獨持有", "共同持有"),
-        hatch_label=None,
-        co_label="共同持有人",
-        limit=CHART_ROW_LIMIT,
-    )
-    ctx.sections.append({
-        "title": report["label_zh"],
-        "variants": [{"label": "Assignees", "file": "owner_ranking.svg", "variant_key": "default"}],
-        "note": "條長＝該權利人持有件數；顏色分段＝單獨／共同持有（多權利人）。",
-    })
-
 
 
 def shared_matrix_max(ctx: "ChartContext", *report_names: str) -> int | None:
@@ -2753,39 +2823,6 @@ def _build_applicant_year_matrix_section(ctx: ChartContext) -> None:
         "more_variants": more_variants,
         "more_label": "＋查看全部（第 11～20 名）",
         "note": f"縱軸為申請人公司，橫軸為申請年份，泡泡大小＝patent_count；依公司跨年度總量排序，預設顯示前 {min(10, len(top_rows))} / {layout['rows_total']} 家。CSV/JSON 保留完整 rows。",
-    })
-
-
-def _build_owner_year_matrix_section(ctx: ChartContext) -> None:
-    """專利權人 × 申請年份泡泡矩陣。"""
-    report = ctx.report("owner_year_matrix")
-    layout = year_bubble_matrix_layout(report["rows"], "current_assignee_display_name")
-    top_rows = layout["top_rows"]
-    render_year_bubble_matrix_chart(
-        ctx.run_dir / "owner_year_matrix.svg",
-        report["label_zh"],
-        layout,
-        top_rows[:10],
-    )
-    more_variants = []
-    if len(top_rows) > 10:
-        render_year_bubble_matrix_chart(
-            ctx.run_dir / "owner_year_matrix_more.svg",
-            f'{report["label_zh"]}（第 11～20 名）',
-            layout,
-            top_rows[10:20],
-        )
-        more_variants.append({"label": "11-20", "file": "owner_year_matrix_more.svg", "variant_key": "more"})
-    # 數據區改交叉表（2026-07-29 使用者定案「數據表是長格式，難讀」）：
-    # 原本每列 (公司, 年份, 件數)，同一家公司的不同年份分散在不同列。
-    # 轉置在後端做，前端不必知道差異。
-    ctx.chart_rows["owner_year_matrix"] = pivot_year_matrix(report["rows"], "current_assignee_display_name")
-    ctx.sections.append({
-        "title": report["label_zh"],
-        "variants": [{"label": "Top 10", "file": "owner_year_matrix.svg", "variant_key": "default"}],
-        "more_variants": more_variants,
-        "more_label": "＋查看全部（第 11～20 名）",
-        "note": f"縱軸為專利權人公司，橫軸為申請年份，泡泡大小＝patent_count；依公司跨年度總量排序，預設顯示前 {min(10, len(top_rows))} / {layout['rows_total']} 家。CSV/JSON 保留完整 rows。",
     })
 
 
@@ -3462,13 +3499,11 @@ class SectionSpec:
 SECTION_SPECS: tuple[SectionSpec, ...] = (
     SectionSpec("annual_trend", ("application_trend", "publication_trend"), _build_trend_section),
     SectionSpec("country_map", ("country_distribution",), _build_country_map_section),
-    SectionSpec("family_layout", ("family_country_layout", "family_quality_detail"), _build_family_layout_section),
+    SectionSpec("family_layout", ("family_country_layout",), _build_family_layout_section),
     SectionSpec("ipc", ("ipc_main_distribution",), _build_ipc_section),
     SectionSpec("cpc", ("cpc_main_distribution",), _build_cpc_section),
     SectionSpec("applicant_ranking", ("applicant_ranking",), _build_applicant_ranking_section),
-    SectionSpec("owner_ranking", ("owner_ranking",), _build_owner_ranking_section),
     SectionSpec("applicant_year_matrix", ("applicant_year_matrix",), _build_applicant_year_matrix_section),
-    SectionSpec("owner_year_matrix", ("owner_year_matrix",), _build_owner_year_matrix_section),
     SectionSpec("applicant_country", ("applicant_country_distribution",), _build_applicant_country_section),
     SectionSpec("lifecycle", ("lifecycle",), _build_lifecycle_section),
     # 分群卡片＝一張 section 出三個 artifact（主題統計表＋機會板＋痛點板）。三個報表名

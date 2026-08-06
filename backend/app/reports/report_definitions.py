@@ -89,6 +89,10 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         source_table=REPORT_SOURCE_TABLE,
         columns=("application_year",),
         group_by=("application_year",),
+        # 年度四欄（問題 9，2026-08-05 定案）之「家族數」：真爆發 vs 同族延伸的
+        # 判別燃料（2020＝4 件 2 族＝延伸；2022＝10 件 10 族＝真爆發）。
+        # 另兩欄（涉及／首現技術群）需分群資料，由 chart_runner 於出圖時併入。
+        aggregates=(("count_distinct_family", "WIPS同族ID", "family_count"),),
         default_order=(("application_year", "asc"),),
         exclude_blank_columns=("application_year",),
         allowed_filter_columns=(
@@ -217,27 +221,11 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         default_limit=100,
         exclude_blank_columns=("applicant_display_name",),
     ),
-    "owner_ranking": ReportDefinition(
-        name="owner_ranking",
-        report_type="aggregate",
-        label="Current Patent Assignee Ranking",
-        label_zh="現專利權人排名",
-        source_table=REPORT_SOURCE_TABLE,
-        columns=("current_assignee_display_name",),
-        group_by=("current_assignee_display_name",),
-        aggregates=(
-            # #3：專利權人圖同一套兩段（單獨／共同持有），**不放受讓人**（定案）。
-            # ⚠ 主欄＋備援欄與 current_assignee_display_name 的推導同一套順位
-            # （標準當前 > 最近專利權人）——只看標準當前的話「共同持有」永遠是 0。
-            ("count_multivalue", "標準當前專利權人[US,JP,KR,CN,CA,AU]", "joint_count",
-             "最近專利權人[US,JP,KR,CN,CA,AU]"),
-            ("string_agg_co_values", "標準當前專利權人[US,JP,KR,CN,CA,AU]", "co_owner_names",
-             "最近專利權人[US,JP,KR,CN,CA,AU]"),
-        ),
-        default_order=(("patent_count", "desc"), ("current_assignee_display_name", "asc")),
-        default_limit=100,
-        exclude_blank_columns=("current_assignee_display_name",),
-    ),
+    # 🔴 RPT-011 刪除留痕（2026-08-05 使用者裁決；openspec improve-report-professionalism）：
+    #   owner_ranking——母體僅 36/55（19 件尚無專利權人），「已轉讓」由申請人排名斜紋段承接；
+    #   owner_year_matrix——與 applicant_year_matrix 重疊 58%（19/33 格相同），年度布局由申請人矩陣承接；
+    #   family_quality_detail——資料品質稽核不給決策者看，家族完整性併入國家佈局頁註記。
+    # ⚠ 不得把它們加回來——要先推翻上面的裁決並更新 report-professionalism-spec.md。
     "applicant_year_matrix": ReportDefinition(
         name="applicant_year_matrix",
         layout="stacked",  # 交叉表欄多，需滿寬
@@ -257,22 +245,6 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
             ("application_year", "asc"),
         ),
         exclude_blank_columns=("applicant_display_name", "application_year"),
-    ),
-    "owner_year_matrix": ReportDefinition(
-        name="owner_year_matrix",
-        layout="stacked",  # 交叉表欄多，需滿寬
-        report_type="aggregate",
-        label="Owner Year Matrix",
-        label_zh="專利權人年度布局矩陣",
-        source_table=REPORT_SOURCE_TABLE,
-        columns=("current_assignee_display_name", "application_year"),
-        group_by=("current_assignee_display_name", "application_year"),
-        default_order=(
-            ("patent_count", "desc"),
-            ("current_assignee_display_name", "asc"),
-            ("application_year", "asc"),
-        ),
-        exclude_blank_columns=("current_assignee_display_name", "application_year"),
     ),
     # 生命週期：年度 × 申請人家數 vs 件數（技術生命週期判讀的標準圖）。
     "lifecycle": ReportDefinition(
@@ -301,28 +273,6 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         count_column="family_id",
         default_order=(("patent_count", "desc"), ("country_code", "asc")),
         exclude_blank_columns=("country_code",),
-        supports_patent_ids=False,
-    ),
-    # 家族品質明細：完整性核對與異常現形（不完整/生效程序進行中/unknown 狀態等）。
-    "family_quality_detail": ReportDefinition(
-        name="family_quality_detail",
-        report_type="detail",
-        label="Family Coverage Quality Detail",
-        label_zh="家族完整性明細",
-        source_table="derived_layer.report_family_quality",
-        columns=(
-            "family_id",
-            "is_surrogate_family",
-            "member_rows",
-            "expected_counts_raw",
-            "family_incomplete",
-            "unknown_status_count",
-            "pending_status_count",
-            "ep_in_transition_count",
-            "ep_missing_epc_count",
-            "non_country_row_count",
-        ),
-        default_order=(("family_incomplete", "desc"), ("family_id", "asc")),
         supports_patent_ids=False,
     ),
     # ── 分群相關報表（report_type="cluster"）──────────────────────────────
