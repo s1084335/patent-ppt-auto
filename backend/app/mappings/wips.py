@@ -272,7 +272,7 @@ PATENT_FIELDS = {
     "状态[US,JP,KR,CN,EP,CA,AU]": "legal_status",
     "WIPS同族ID": "WIPS同族ID",
     # ── 欄位重分類（0046，2026-08-06）──────────────────────────────
-    # 規格＝`docs/patent_core_field_reclassification_spec.md`：
+    # 規格＝`openspec/changes/archive/complete-core-field-reclassification/`（已 archive；現行契約 DAT-006）：
     # **會被程式用到的欄位一律歸 core table**，`patent_attributes` 只留未使用欄位。
     #
     # ⚠ 加進本 dict 就會自動從 `ATTRIBUTE_FIELDS` 掉出來（見檔尾的推導），
