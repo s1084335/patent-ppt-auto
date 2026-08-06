@@ -163,6 +163,20 @@ class BuildCliCommandTests(unittest.TestCase):
         self.assertIn("--output-format", argv)
         self.assertIn("json", argv)
 
+    def test_claude_allows_scoped_bash_for_evidence_queries(self):
+        """🔴 v5 自主取證：白名單須含 scoped Bash，否則查詢工具形同虛設。
+
+        2026-08-06 定案：解讀 CLI 依判斷自行查 DB 取證（使用者：「自主判斷的目標是
+        讓 CLI 可以自己根據圖表和數據判斷需要哪些資訊拿來寫」）。查詢走 skill 的
+        `query_patents.py`（連線層強制唯讀），CLI 端須能執行 `uv run ...`。
+        ⚠ 用 `Bash(uv run:*)` 前綴限定，不開全域 Bash——CLI 只需要跑 uv 工具鏈。
+        """
+        argv = runner.build_cli_command("claude", "PROMPT")
+        allowed = argv[argv.index("--allowedTools") + 1:]
+        self.assertIn("Bash(uv run:*)", allowed,
+                      "缺 scoped Bash——自主取證的查詢工具跑不起來")
+        self.assertNotIn("Bash", allowed, "不得開無範圍限制的全域 Bash")
+
     def test_opencode_command_switchable(self):
         """cli_kind 可換成 opencode，二進位隨對照表切換，不寫死 claude。"""
         argv = runner.build_cli_command("opencode", "PROMPT")

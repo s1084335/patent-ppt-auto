@@ -3,6 +3,11 @@
 本檔是「匯出報告」PPT 文案產製服務的 runtime 規則來源。`ai:report_ppt` payload 必須載入
 本檔內容；`SKILL.md` 只保留流程與產品契約，不重複維護全文規則。
 
+> v5：內容專業度以同目錄 `content_standard.md` 為唯一標準（判讀式標題、數字校正、
+> 具名發現、方法論誠實）。`direction.body` 的 `topics`（方向｜依據｜行動三欄）寫法
+> 對齊該標準第一節第 4 條；`narratives.json` 若帶 `evidence`，依據欄可引用其中的
+> 專利層事實，但不得引入 evidence 以外的新數字。
+
 ## 分工邊界
 
 PPT 階段的 AI **只產一個 slot**：`direction.body`。其餘頁面的標題與要點一律來自

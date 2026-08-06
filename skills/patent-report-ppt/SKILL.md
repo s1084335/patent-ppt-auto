@@ -1,7 +1,16 @@
 # 專利分析報告 PPT 組版
 
 把已產出的專利報表版本（數據＋圖表＋解讀）組成一份可直接對外簡報的 `.pptx`。
-數字全部來自報表引擎，組版由程式 deterministic 完成，AI 只負責一段文案（研發方向建議）。
+聚合數字全部來自報表引擎，組版由程式 deterministic 完成。
+
+v5（2026-08-06）三份新核心文件：
+
+- **`content_standard.md`**——內容專業度的唯一標準（由兩份定案範例反解），
+  解讀與文案階段的 AI 寫每一段之前都要對照。⚠ 本 skill 服務**平台上所有
+  workspace**，任何技術領域走同一份標準；範例是品質校準標杆，不是內容模板。
+- **`data_access.md`** ＋ **`scripts/query_patents.py`**——解讀階段的 AI 可
+  **自主查詢資料庫取證**（唯讀閘道），依它看到的圖表與數據自行判斷要撈什麼
+  來把分析寫到標準要求的深度；不再受限於引擎預先聚合的欄位。
 
 ---
 
@@ -17,7 +26,8 @@
 
 1. 報表版本目錄已存在，且含 `report_data.json`、`artifact_manifest.json` 與圖表檔。
 2. `narratives.json` 已產出（逐報表解讀）。若尚未產出或不完整，先跑 `ai:narrative`，
-   完成後才接續本流程。
+   完成後才接續本流程。解讀階段依 `report-narrative-flow.md` v5 執行
+   （含自主取證：需環境變數 `DATABASE_URL` 供 `scripts/query_patents.py` 連線）。
 3. 需要 `uv`，且能取用 `python-pptx` 與 `pymupdf` 套件（下方指令會自動取得）。
 
 ### 輸入契約
@@ -178,9 +188,12 @@ v3 針對這五項逐一重做，並補上產後自檢把版面缺陷變成可�
 | `scripts/build_ppt.py` | deterministic 組版與產後自檢，不呼叫 AI |
 | `theme.json` | 配色、字級、**全部版面座標**、裝飾參數的唯一來源 |
 | `report_ppt_content_rules.md` | 文案產製服務的 runtime 規則 |
-| `report-narrative-flow.md` | 上游逐報表解讀（`ai:narrative`）的口徑 |
+| `report-narrative-flow.md` | 上游逐報表解讀（`ai:narrative`）的口徑（v5 含自主取證階段） |
+| `content_standard.md` | 內容專業度唯一標準（兩份定案範例反解；全 workspace 通用） |
+| `data_access.md` | 自主取證的資料庫地圖與守則 |
+| `scripts/query_patents.py` | 唯讀查詢閘道（連線層強制 read-only＋30s 逾時＋列數上限） |
 
-四份檔案必須隨 repo／Docker image 一起提供；缺 `build_ppt.py` 或 `theme.json` 時
+七份檔案必須隨 repo／Docker image 一起提供；缺 `build_ppt.py` 或 `theme.json` 時
 版型 API 會回 503（部署環境沒帶到 skill 檔案的明確徵狀）。
 
 ### 設計決策

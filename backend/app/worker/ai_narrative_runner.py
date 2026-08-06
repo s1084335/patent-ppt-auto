@@ -275,7 +275,11 @@ _CLI_SPECS: dict[str, dict[str, Any]] = {
         "model_flag": "--model",
         "tail_args": [
             "--output-format", "json",
-            "--allowedTools", "Read", "Glob", "Grep", "Write",
+            # v5 自主取證（2026-08-06 定案）：解讀 CLI 依判斷自行查 DB。
+            # ⚠ Bash 用 `uv run:*` 前綴限定——只放行 uv 工具鏈（查詢閘道
+            # query_patents.py 靠它跑），不開全域 Bash；寫入防護在閘道的
+            # 連線層（default_transaction_read_only），不是靠這裡。
+            "--allowedTools", "Read", "Glob", "Grep", "Write", "Bash(uv run:*)",
         ],
     },
     "opencode": {
