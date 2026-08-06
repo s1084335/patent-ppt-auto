@@ -129,8 +129,10 @@ PAGE_LAYOUT: tuple[PageSpec, ...] = (
     # 主題分布：rows 帶 source_field 兩通道，展開時依通道拆成兩張表格頁（P1-3）。
     PageSpec(page=5, kind="table_with_points", title="技術主題分布", topic="技術主題分布",
              report_keys=("cluster_topic_table",)),
+    # 🔴 RPT-011（2026-08-06）：owner_ranking 已刪（母體 36/55；「已轉讓」由
+    # 申請人排名斜紋承接）——本頁只掛申請人排名。
     PageSpec(page=6, kind="chart_hero", title="競爭者佈局", topic="競爭者佈局",
-             report_keys=("applicant_ranking", "owner_ranking")),
+             report_keys=("applicant_ranking",)),
     PageSpec(page=7, kind="comparison", title="機會評估", topic="機會評估",
              report_keys=("opportunity_quadrant",)),
     PageSpec(page=8, kind="direction", title="研發方向建議", topic="研發方向建議",
@@ -159,14 +161,16 @@ EVIDENCE_ORDER: tuple[str, ...] = (
     "country_distribution", "applicant_country_distribution",           # 空間
     "family_country_layout",
     "ipc_main_distribution", "cpc_main_distribution", "cluster_topic_table",  # 技術
-    "applicant_ranking", "owner_ranking",                               # 競爭
-    "applicant_year_matrix", "owner_year_matrix",
+    # ⚠ owner_ranking／owner_year_matrix 已刪（RPT-011）；舊報表版本仍可能帶
+    # 這兩鍵的資料，但不在此序＝動態插頁也不會撿——刪除是刻意的，不是漏排。
+    "applicant_ranking",                                                # 競爭
+    "applicant_year_matrix",
     "opportunity_quadrant",                                             # 機會
 )
 
-# 不進 PPT 的報表（2026-07-31 使用者定案）：家族完整性明細屬資料品質稽核，
-# 不是給決策者看的證據；對照 297 期論述與割草機範例，附錄也沒有這張。
-# ⚠ 報表頁仍照常產出，只是不上簡報。
+# 不進 PPT 的報表。⚠ RPT-011（2026-08-06）後 family_quality_detail 連報表都刪了
+# （家族完整性併入國家佈局頁註記），本集合仍保留該鍵：**舊報表版本**的 report_data
+# 還帶著它，缺了這行會被當成動態插頁撿回簡報。
 EXCLUDED_FROM_PPT = frozenset({"family_quality_detail"})
 
 # 截斷時優先切在這些標點之後（見 `_truncate_to_width`）：斷在標點像「話沒說完」，
@@ -257,7 +261,7 @@ SPLIT_PAIR_REPORTS = frozenset({"cluster_topic_table", "opportunity_quadrant"})
 
 # 只上主圖的報表（2026-07-31 使用者定案）：年度矩陣只用前 10 名主表那張，
 # 「更多」長尾圖不上 PPT（報表頁仍看得到，PPT 給決策者看主要玩家就夠）。
-MAIN_CHART_ONLY_REPORTS = frozenset({"applicant_year_matrix", "owner_year_matrix"})
+MAIN_CHART_ONLY_REPORTS = frozenset({"applicant_year_matrix"})
 
 
 def _filter_report_charts(report_keys: tuple[str, ...], files: tuple[str, ...]) -> tuple[str, ...]:
@@ -288,10 +292,8 @@ ENCODING_NOTES = {
     "opportunity_quadrant": "橫軸＝申請人家數｜縱軸＝專利件數｜點＝技術主題",
     "cluster_topic_table": "條長＝主題件數｜家數＝投入該主題的申請人數",
     "applicant_ranking": "條長＝件數｜排序＝件數由高至低",
-    "owner_ranking": "條長＝件數｜排序＝件數由高至低",
     "applicant_country_distribution": "格值＝件數｜列＝申請人、欄＝受理國",
     "applicant_year_matrix": "格值＝件數｜列＝申請人、欄＝申請年",
-    "owner_year_matrix": "格值＝件數｜列＝專利權人、欄＝申請年",
     "lifecycle": "面積／條長＝當年件數｜橫軸＝申請年",
     "family_country_layout": "條長＝家族成員件數｜分組＝受理國",
 }
@@ -1059,7 +1061,33 @@ def _label_of(report_data: dict[str, Any], report_key: str, fallback: str = "") 
     return str(entry.get("label_zh") or entry.get("label") or fallback or report_key)
 
 
+def threshold_skips(report_data: dict[str, Any]) -> list[dict[str, str]]:
+    """低於出頁門檻的分類報表清單（供 manifest 記缺頁原因）。
+
+    🔴 缺頁不得靜默（design #5「門檻與缺頁原因進 metadata」）：頁面消失而
+    manifest 無痕，讀者只會以為漏產。舊版本沒有 `classification_thresholds`
+    鍵 → 回空清單，行為不變。
+    """
+    thresholds = report_data.get("classification_thresholds") or {}
+    return [
+        {"type": "below_threshold_skipped", "report_key": key,
+         "reason": str(info.get("reason") or "低於出頁門檻")}
+        for key, info in thresholds.items()
+        if isinstance(info, dict) and info.get("below_threshold")
+    ]
+
+
+def _below_threshold(report_data: dict[str, Any], report_key: str) -> bool:
+    info = (report_data.get("classification_thresholds") or {}).get(report_key)
+    return bool(isinstance(info, dict) and info.get("below_threshold"))
+
+
 def _report_key_has_data(report_data: dict[str, Any], report_key: str) -> bool:
+    # 🔴 IPC/CPC 出頁門檻（2026-08-05 定案「4 階沒有 3 種以上就不出現在簡報」）：
+    # below_threshold 的報表視同無資料——這裡是**唯一接縫**（固定頁、動態插頁、
+    # 拆頁全走本函式），別處不再各自判斷。網頁報表不受影響（引擎照產）。
+    if _below_threshold(report_data, report_key):
+        return False
     entry = _entry_of(report_data, report_key)
     rows = entry.get("rows")
     if isinstance(rows, list) and rows:
@@ -3715,6 +3743,9 @@ def build_ppt(
     """依版型表組出報告 PPTX，回傳輸出路徑、manifest 路徑與 manifest 內容。"""
     report_dir = Path(report_dir)
     report_data = _load_json(report_dir / "report_data.json", {})
+    # 門檻缺頁現形（design #5）：低於 IPC/CPC 出頁門檻的報表不出頁，
+    # 原因記進 manifest warnings——沒有這一筆，讀者只會以為漏產。
+    threshold_warnings = threshold_skips(report_data)
     narratives = _load_json(report_dir / "narratives.json", {})
     artifact_manifest = _load_json(report_dir / "artifact_manifest.json", {})
     approvals = _load_json(Path(approvals_path), {}) if approvals_path else {}
@@ -3733,7 +3764,7 @@ def build_ppt(
     reset_dropped_points()
     charts = ChartIndex(report_dir, output_dir / ".cache", artifact_manifest, theme)
 
-    warnings: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = list(threshold_warnings)
     if not charts.manifest_found:
         warnings.append({
             "type": "artifact_manifest_missing",

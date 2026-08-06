@@ -18,3 +18,30 @@
 - [ ] 3.2 產生 HTML、goal-driven PPTX、manifest/metadata 與 narratives/evidence artifact，核對檔案存在、選圖／章節、dataset id 與 checksum；不以固定頁數判定成功
 - [ ] 3.3 以桌面與行動視窗檢查 HTML，渲染 PPTX 全頁縮圖並檢查截字、重疊、空白圖、圖例與中文字型
 - [ ] 3.4 保存前後對照、已知限制與未測項目，由使用者逐項確認內容與視覺品質後才 archive
+
+## 執行紀錄（2026-08-06，Claude；切片 1/3——報表口徑與 registry）
+
+依 Migration Plan 的第一片「口徑／registry」完成三個可獨立驗收的功能切片：
+
+- **S1 報表組合先刪後改（RPT-011）**：刪 `owner_ranking`／`owner_year_matrix`／
+  `family_quality_detail`（15→12 張），registry／前端／引擎／population／PPT／
+  測試同步；家族完整性依定案降級為國家佈局頁註記（chart_runner 直查 view）。
+  留痕＋反向鎖：`tests/test_report_catalog_removals.py`（含 EXCLUDED_FROM_PPT
+  必須保留 family_quality_detail 鍵的向後相容守門）。
+- **S2 IPC/CPC 出頁門檻（design #5）**：4 階 subclass distinct <3 → 判定寫進
+  `report_data.classification_thresholds`（含 reason），PPT 端 `_report_key_has_data`
+  單一接縫排除＋manifest `below_threshold_skipped` 現形；**網頁報表照產**。
+  舊版本無該鍵 → 行為不變。`tests/test_classification_threshold.py`。
+- **S3 趨勢年度四欄（問題 9）**：`application_trend` 加 `family_count`
+  （SQL：COUNT(DISTINCT COALESCE(同族ID, patent_id))，無 ID 各算一族）；
+  `topic_count`／`new_topic_count` 由 cluster_data 技術通道算（無分群→缺鍵不補 0）。
+  圖不改。`tests/test_annual_trend_four_columns.py`（14 條）。
+
+守門：verify_module 新增行 lint 0／覆蓋 98%／CC 唯一超標為 `build_ppt`（F60，
+既有債，本次僅改一行，記錄不順手改）。大回歸 969 passed；5 failed 全屬
+既有本機 postgres 依賴（stash 比對證實非本輪造成）。
+
+⚠ 未完成（後續切片）：通道資料改版（技術頁概覽欄位／功效頁精簡與 tech_means）、
+具名發現敘述（RPT-012）、內容元件（EXP-008/009）、容量誠實驗證（EXP-010）。
+⚠ 兩個待使用者決策：`lifecycle` 處置（改版候選未定案）；
+`applicant_ranking` 加 legal_status／專利種類維度的視覺設計（通道已被兩段色＋斜紋用滿）。

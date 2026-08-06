@@ -47,9 +47,10 @@ def tearDownModule():
 
 
 # ── 標準報表型（#1–#3）：REPORT_DEFINITIONS 中的正式 report key ──
+# ⚠ RPT-011（2026-08-06）：「專利權人分析」型（owner_ranking）已刪——母體僅 36/55，
+# 「已轉讓」由申請人排名的斜紋段承接；六分析型收斂為五。
 STANDARD_ANALYSIS_REPORTS: dict[str, str] = {
     "申請人分析": "applicant_ranking",
-    "專利權人分析:專利權人": "owner_ranking",
     "公司×國家分": "applicant_country_distribution",
 }
 

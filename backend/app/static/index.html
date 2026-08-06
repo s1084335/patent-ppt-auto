@@ -3124,7 +3124,7 @@ function topicPatentsTableHtml(data, scope) {
 // ══════════ 報表種類勾選（POST /reports → GET /reports/{job_id} 輪詢） ══════════
 // 報表清單直接內嵌（來源：backend report_definitions；label_zh）。
 // 報表清單涵蓋引擎所有 active 報表（對齊 report_definitions.DEFAULT_REPORT_NAMES，
-// 含家族完整性明細 family_quality_detail），預設全部勾選（使用者可再取消個別項）。
+// 預設全部勾選（使用者可再取消個別項）。
 // 須列出 report_definitions 全部可用報表（含分群 cluster_topic_table／
 // opportunity_quadrant）。2026-07-24「不隱藏任一種現況支援的報表」仍適用，但
 // 2026-07-29 使用者定案將 requires_market_data 者（痛點四象限）整個藏起來——
@@ -3144,14 +3144,15 @@ const REPORT_TYPES = [
   ['ipc_main_distribution', 'IPC 主分類分布'],
   ['cpc_main_distribution', 'CPC 主分類分布'],
   ['applicant_ranking', '主要申請人排名'],
-  ['owner_ranking', '現專利權人排名'],
   // 最新受讓人排名已整合進 applicant_ranking（2026-07-29 使用者定案「整合就對了」）；
   // 後端無此定義，留著會讓「全選」整批 400（unknown report_names）。
+  // 🔴 RPT-011（2026-08-05 定案、08-06 執行）刪三張：owner_ranking（母體 36/55，
+  // 「已轉讓」由申請人排名斜紋承接）、owner_year_matrix（與申請人矩陣重疊 58%）、
+  // family_quality_detail（品質稽核不給決策者看，家族完整性併入國家佈局頁註記）。
+  // ⚠ 後端 registry 已同步刪除——任一張留在這裡都會讓「全選」整批 400。
   ['applicant_year_matrix', '申請人年度分布矩陣'],
-  ['owner_year_matrix', '專利權人年度布局矩陣'],
   ['lifecycle', '專利生命週期'],
   ['family_country_layout', '國家佈局（現有保護）'],
-  ['family_quality_detail', '家族完整性明細'],
   ['cluster_topic_table', '主題分類統計表'],
   ['opportunity_quadrant', '機會四象限'],
   // 痛點四象限（pain_point_quadrant）暫不列出：需市場資料，而市場線（上傳→AI 摘要→
@@ -3159,7 +3160,7 @@ const REPORT_TYPES = [
   // 原行為是照產但痛點軸全標「待調查」，圖看不出不完整，匯進 PPT 會被誤讀成痛點都很低。
   // 後端定義保留（DEFAULT_REPORT_NAMES 已排除），將來只需解除這裡與後端的過濾。
 ];
-// 預設全勾：首次進報表區時，把全部報表填入選取集合（含 family_quality_detail）。
+// 預設全勾：首次進報表區時，把全部報表填入選取集合。
 let reportSelectionInitialized = false;
 function ensureReportSelectionDefault() {
   if (reportSelectionInitialized) return;

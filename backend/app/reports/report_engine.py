@@ -53,6 +53,12 @@ AGGREGATE_FUNCTIONS = {
     # 實測教訓（2026-08-05）：專利權人顯示名主要來自「最近專利權人」（36 筆非空、
     # 10 筆多值），而「標準當前專利權人」只有 3 筆非空且 0 筆多值；只看後者的話
     # 「共同持有」永遠是 0，功能靜默失效而且驗不出來。
+    # 年度家族數（問題 9 四欄之一）：該年 distinct 同族 ID。
+    # ⚠ 無同族 ID 的案 COALESCE 到 patent_id **各算一族**——NULL 進 DISTINCT 會把
+    # 全部無 ID 案合併成一族（甚至被忽略），家族數直接失真。
+    "count_distinct_family": (
+        "COUNT(DISTINCT COALESCE(NULLIF(BTRIM({col}::text), ''), patent_id::text))::int"
+    ),
     "count_multivalue": (
         "COUNT(*) FILTER (WHERE position('|' in "
         "COALESCE(NULLIF(BTRIM({col}::text), ''), {extra_col}::text, '')) > 0)::int"
