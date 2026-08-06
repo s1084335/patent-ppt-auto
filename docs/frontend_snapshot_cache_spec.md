@@ -1,5 +1,7 @@
 # Frontend Snapshot Cache Spec
 
+> Legacy source：本檔只保留尚待逐條吸收的細部決策。權威變更規格、設計與任務位於 `openspec/changes/add-frontend-snapshot-cache/`；兩者衝突時以 OpenSpec 為準。
+
 ## Summary Card
 
 - 更新：2026-08-03（三個開放問題已定案；v1 2026-07-30）

@@ -1,4 +1,4 @@
-"""專利欄位重分類契約（規格＝`openspec/changes/complete-core-field-reclassification/`）。
+"""專利欄位重分類契約（規格＝`openspec/changes/archive/complete-core-field-reclassification/`，已 archive；現行契約 DAT-006）。
 
 ## 目標
 
