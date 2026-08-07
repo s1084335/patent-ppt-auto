@@ -48,6 +48,12 @@ class FrontendKindColumnTests(unittest.TestCase):
         self.assertIn("'patent_kind_display'", HTML)
         self.assertIn("專利種類", HTML)
 
+    def test_raw_patent_type_column_removed(self):
+        """🔴 2026-08-07 使用者定案：兩層都只用專利種類，原始 patent_type 欄收掉
+        （P 同時蓋發明與設計）；表頭帶推導說明 tooltip。"""
+        self.assertNotIn("{ label: '專利類型', key: 'patent_type'", HTML)
+        self.assertIn("由 document_kind＋patent_type 推導", HTML)
+
 
 if __name__ == "__main__":
     unittest.main()
