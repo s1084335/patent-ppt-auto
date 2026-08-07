@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Any
 
 from psycopg.rows import dict_row
-from psycopg.types.json import Jsonb
 
 from backend.app.clustering.backfill import backfill_candidates
 from backend.app.clustering.sources import PATENT_NOTE_SOURCE_COLUMNS, get_source_spec

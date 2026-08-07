@@ -22,7 +22,8 @@ cli_runner／candidate_fetcher／topics_fetcher／persister 皆可注入，
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 # 版本隨 prompt 契約升版而變，寫進 analysis_outputs 供追溯。
 PROMPT_VERSION = "topic_backfill_v1"
@@ -74,6 +75,46 @@ def _parse_reply(raw: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _validate_suggestions(
+    rows: list[dict[str, Any]],
+    by_pid: dict[int, dict[str, Any]],
+    known_keys: set[str],
+) -> list[dict[str, Any]]:
+    """CLI 建議驗收：清單外主題標 invalid、少回佔位現形、未知 patent_id 整批作廢。"""
+    suggestions: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for row in rows:
+        pid = int(row.get("patent_id", -1))
+        if pid not in by_pid:
+            raise TopicBackfillError(f"CLI 回吐未知 patent_id={pid}——建議可能錯位，整批作廢")
+        seen.add(pid)
+        key = str(row.get("suggested_topic_key") or "")
+        valid = key in known_keys
+        suggestions.append({
+            "patent_id": pid,
+            "patent_number": by_pid[pid].get("patent_number"),
+            "title": by_pid[pid].get("title"),
+            "suggested_topic_key": key,
+            "reason": str(row.get("reason") or ""),
+            "valid": valid,
+            **({} if valid else {"invalid_reason": f"建議主題 {key!r} 不在現有主題清單"}),
+        })
+    # CLI 少回的候選：佔位現形，不得整批當成功。
+    for pid, cand in by_pid.items():
+        if pid not in seen:
+            suggestions.append({
+                "patent_id": pid,
+                "patent_number": cand.get("patent_number"),
+                "title": cand.get("title"),
+                "suggested_topic_key": "",
+                "reason": "",
+                "valid": False,
+                "invalid_reason": "CLI 未回覆此件建議",
+            })
+    suggestions.sort(key=lambda s: s["patent_id"])
+    return suggestions
+
+
 def run_topic_backfill(
     *,
     workspace_id: int,
@@ -108,37 +149,7 @@ def run_topic_backfill(
     rows = _parse_reply(raw)
 
     _tick("驗收建議", 80)
-    suggestions: list[dict[str, Any]] = []
-    seen: set[int] = set()
-    for row in rows:
-        pid = int(row.get("patent_id", -1))
-        if pid not in by_pid:
-            raise TopicBackfillError(f"CLI 回吐未知 patent_id={pid}——建議可能錯位，整批作廢")
-        seen.add(pid)
-        key = str(row.get("suggested_topic_key") or "")
-        valid = key in known_keys
-        suggestions.append({
-            "patent_id": pid,
-            "patent_number": by_pid[pid].get("patent_number"),
-            "title": by_pid[pid].get("title"),
-            "suggested_topic_key": key,
-            "reason": str(row.get("reason") or ""),
-            "valid": valid,
-            **({} if valid else {"invalid_reason": f"建議主題 {key!r} 不在現有主題清單"}),
-        })
-    # CLI 少回的候選：佔位現形，不得整批當成功。
-    for pid, cand in by_pid.items():
-        if pid not in seen:
-            suggestions.append({
-                "patent_id": pid,
-                "patent_number": cand.get("patent_number"),
-                "title": cand.get("title"),
-                "suggested_topic_key": "",
-                "reason": "",
-                "valid": False,
-                "invalid_reason": "CLI 未回覆此件建議",
-            })
-    suggestions.sort(key=lambda s: s["patent_id"])
+    suggestions = _validate_suggestions(rows, by_pid, known_keys)
 
     invalid = sum(1 for s in suggestions if not s["valid"])
     _tick("回存建議", 90)

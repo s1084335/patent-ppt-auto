@@ -561,7 +561,7 @@ def _run_ai_topic_backfill_job(payload: dict[str, Any], context: JobContext) -> 
             parse_cli_result,
         )
 
-        def cli(prompt: str, *, timeout_seconds: float) -> str:  # noqa: ANN001
+        def cli(prompt: str, *, timeout_seconds: float) -> str:
             argv = build_cli_command(cli_kind, prompt, model=model)
             # ⚠ --output-format json 的 stdout 是 envelope（type/result/…），
             # AI 內文在 "result" 欄——直接回 stdout 會讓 runner 解析到外殼
