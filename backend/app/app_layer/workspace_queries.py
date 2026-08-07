@@ -359,8 +359,11 @@ def list_workspace_patents(
     # 顯示字面（2026-08-07）：與全庫清單同一份唯一定義處，前端只消費此欄。
     from backend.app.mappings.legal_status import display_legal_status
 
+    from backend.app.transforms.patent_kind import patent_kind
+
     for it in items:
         it["legal_status_display"] = display_legal_status(it.get("legal_status"))
+        it["patent_kind_display"] = patent_kind(it)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 

@@ -487,7 +487,7 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIsNotNone(m, "找不到 PATENT_COLUMNS 定義")
         block = m.group(1)
         expected_order = [
-            "主附圖", "申請國家", "專利類型", "專利狀態",
+            "主附圖", "申請國家", "專利種類", "專利狀態",  # 2026-08-07 類型→種類（P 蓋發明與設計，原欄收掉）
             "技術分類", "功效分類",
             "文獻備註", "申請人", "標題", "標題(原文)", "摘要", "摘要(原文)",
             "申請號", "申請日", "申請年", "未審查的公開號", "未審查的公開日",

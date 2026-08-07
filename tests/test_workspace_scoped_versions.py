@@ -42,7 +42,8 @@ class VersionMetaWrittenTests(unittest.TestCase):
 
     def test_meta_file_written_with_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(chart_runner, "run_report", self._stub_run_report):
+            with mock.patch.object(chart_runner, "run_report", self._stub_run_report), \
+                 mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict):
                 result = chart_runner.run_chart_trial(
                     output_dir=Path(tmp), report_names=["application_trend"],
                     workspace_id=7, workspace_name="滑雪機")
@@ -57,7 +58,8 @@ class VersionMetaWrittenTests(unittest.TestCase):
     def test_parameters_carry_workspace_id(self):
         """workspace_id 也進 parameters（name 會撞名，id 才是穩定歸屬鍵）。"""
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(chart_runner, "run_report", self._stub_run_report):
+            with mock.patch.object(chart_runner, "run_report", self._stub_run_report), \
+                 mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict):
                 result = chart_runner.run_chart_trial(
                     output_dir=Path(tmp), report_names=["application_trend"],
                     workspace_id=7, workspace_name="滑雪機")
@@ -68,7 +70,8 @@ class VersionMetaWrittenTests(unittest.TestCase):
     def test_no_workspace_no_meta_keys(self):
         """⚠ 不給 workspace＝meta 檔不含歸屬鍵（版本不歸屬任何 workspace）。"""
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(chart_runner, "run_report", self._stub_run_report):
+            with mock.patch.object(chart_runner, "run_report", self._stub_run_report), \
+                 mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict):
                 result = chart_runner.run_chart_trial(
                     output_dir=Path(tmp), report_names=["application_trend"])
             meta = json.loads((Path(result["output_dir"]) / "version_meta.json")
