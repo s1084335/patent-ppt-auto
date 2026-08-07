@@ -62,7 +62,19 @@ class LabelFreePointsTests(unittest.TestCase):
 
         prompt = runner.build_prompt(Path("X"), "v")
         self.assertNotIn("不得增減、不得改名", prompt)
-        self.assertIn("成因", prompt, "prompt 必須要求解釋現象背後的原因")
+        self.assertIn("原因和結論", prompt, "prompt 必須要求講得出原因和結論")
+
+    def test_prompt_format_is_truly_free(self):
+        """🔴 2026-08-07 使用者指正：拿掉標籤後格式仍固定＝只是換皮。
+        prompt 不得再規定固定句型或逐條角色公式；版本字串必須注入
+        （v9 沒注入，模型自己編了 report_narrative_v3 的假版本號）。"""
+        from pathlib import Path
+
+        prompt = runner.build_prompt(Path("X"), "v")
+        self.assertNotIn("固定句型", prompt)
+        self.assertNotIn("建議進一步檢視 X，以確認 Y", prompt)
+        self.assertIn("格式完全不固定", prompt)
+        self.assertIn(runner.PROMPT_VERSION, prompt)
 
 
 if __name__ == "__main__":
