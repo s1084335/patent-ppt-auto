@@ -531,8 +531,54 @@ def _run_ai_irrelevant_filter_job(payload: dict[str, Any], context: JobContext) 
     return merged
 
 
+def _run_ai_topic_backfill_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """技術通道補分建議（openspec change add-technical-channel-ai-backfill 第二段）。
+
+    payload：workspace_id（必填）、source_field（預設技術通道）、cli_kind／model／
+    cli_timeout_seconds；_cli_runner 供測試注入（收 prompt 回字串）。
+    建議只落 analysis_outputs，不碰 topic_assignments（批核走 API）。
+    """
+    from backend.app.app_layer import topic_backfill
+    from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL
+
+    from . import ai_topic_backfill_runner
+
+    context.heartbeat("開始補分建議", 10)
+    workspace_id = payload.get("workspace_id")
+    if workspace_id is None:
+        raise ValueError("ai:topic_backfill payload requires workspace_id")
+    source_field = str(payload.get("source_field") or SOURCE_FIELD_TECHNICAL)
+    cli_kind = str(payload.get("cli_kind") or "claude")
+    model = payload.get("model") or None
+    timeout = float(payload.get("cli_timeout_seconds")
+                    or ai_topic_backfill_runner.DEFAULT_CLI_TIMEOUT_SECONDS)
+
+    cli = payload.get("_cli_runner")
+    if cli is None:
+        from .ai_narrative_runner import _subprocess_cli_runner, build_cli_command
+
+        def cli(prompt: str, *, timeout_seconds: float) -> str:  # noqa: ANN001
+            argv = build_cli_command(cli_kind, prompt, model=model)
+            return _subprocess_cli_runner(argv, timeout_seconds).stdout
+
+    result = ai_topic_backfill_runner.run_topic_backfill(
+        workspace_id=int(workspace_id),
+        source_field=source_field,
+        candidate_fetcher=lambda: topic_backfill.fetch_candidates(int(workspace_id), source_field),
+        topics_fetcher=lambda: topic_backfill.fetch_topics(int(workspace_id), source_field),
+        cli_runner=cli,
+        persister=topic_backfill.persist_suggestions,
+        ai_model=model or cli_kind,
+        timeout_seconds=timeout,
+        progress=lambda stage, pct: context.heartbeat(stage, pct),
+    )
+    context.heartbeat("補分建議完成", 100)
+    return result
+
+
 _AI_JOB_RUNNERS: dict[str, str] = {
     "ai:narrative": "_run_ai_narrative_job",
+    "ai:topic_backfill": "_run_ai_topic_backfill_job",
     "ai:topic_label": "_run_ai_topic_label_job",
     "ai:patent_note": "_run_ai_patent_note_job",
     "ai:candidate_explanation": "_run_ai_candidate_explanation_job",

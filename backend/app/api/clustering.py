@@ -316,3 +316,60 @@ def _candidates_response(run: dict[str, Any]) -> dict[str, Any]:
             for r in rows
         ],
     }
+
+
+# ══ 技術通道 AI 補分（openspec change add-technical-channel-ai-backfill）══
+# 三段式：run（排 AI 建議 job）→ suggestions（讀最新建議＋主題選單）→
+# approve（批次核准，確定性寫入 topic_assignments）。
+
+
+class TopicBackfillRunRequest(BaseModel):
+    """排一筆 ai:topic_backfill（建議產出走 Companion，不碰正式指派）。"""
+
+    source_field: str | None = None
+    model: str | None = None
+
+
+class TopicBackfillApprovalItem(BaseModel):
+    patent_id: int = Field(..., ge=1)
+    topic_key: str = Field(..., min_length=1)
+
+
+class TopicBackfillApproveRequest(BaseModel):
+    source_field: str
+    approvals: list[TopicBackfillApprovalItem]
+
+
+@router.post("/workspaces/{workspace_id}/topic-backfill/run")
+def run_topic_backfill_job(workspace_id: int, request: TopicBackfillRunRequest) -> dict[str, Any]:
+    from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL
+
+    payload: dict[str, Any] = {
+        "workspace_id": workspace_id,
+        "source_field": request.source_field or SOURCE_FIELD_TECHNICAL,
+    }
+    if request.model:
+        payload["model"] = request.model
+    job = job_repository.create_job("ai:topic_backfill", payload, workspace_id=workspace_id)
+    return {"job_id": job.job_id, "status": "queued"}
+
+
+@router.get("/workspaces/{workspace_id}/topic-backfill/suggestions")
+def get_topic_backfill_suggestions(workspace_id: int, source_field: str) -> dict[str, Any]:
+    from backend.app.app_layer import topic_backfill
+
+    return topic_backfill.latest_suggestions(workspace_id, source_field)
+
+
+@router.post("/workspaces/{workspace_id}/topic-backfill/approve")
+def approve_topic_backfill(workspace_id: int, request: TopicBackfillApproveRequest) -> dict[str, Any]:
+    from backend.app.app_layer import topic_backfill
+
+    try:
+        return topic_backfill.approve_batch(
+            workspace_id,
+            request.source_field,
+            [item.model_dump() for item in request.approvals],
+        )
+    except topic_backfill.TopicBackfillApprovalError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
