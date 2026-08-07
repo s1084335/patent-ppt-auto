@@ -5799,7 +5799,7 @@ function renderTopicBackfill(data, sf) {
       + '</tr>').join('')
     + '</tbody></table></div>'
     + '<div class="toolbar" style="margin:.5rem 0 0">'
-    + '<button class="btn btn-primary" onclick="approveTopicBackfill('' + escHtml(sf) + '')">全部核准</button> '
+    + '<button class="btn btn-primary" onclick="approveTopicBackfill()">全部核准</button> '
     + runBtn + '</div>';
   state.backfillItems = items.filter(it => it.valid !== false).map(it => it.patent_id);
 }
@@ -5815,7 +5815,8 @@ async function runTopicBackfill() {
     if (body) body.innerHTML = '<div class="card">排程失敗（' + escHtml((e && e.message) || '') + '）。</div>';
   }
 }
-async function approveTopicBackfill(sf) {
+async function approveTopicBackfill() {
+  const sf = state.topicSourceField || 'wips_independent_claims';
   const msg = el('topic-backfill-msg');
   const approvals = (state.backfillItems || []).map(pid => {
     const sel = el('backfill-topic-' + pid);
