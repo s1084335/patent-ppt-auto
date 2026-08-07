@@ -224,8 +224,13 @@ def chart_font_px(width_px: float, height_px: float, *,
 
     **唯一定義處**——圖表字級一律問這裡，不再寫死數字。
     新增任何圖都自動達標，不必逐張調。
+
+    ⚠ 乘 1.005 的 epsilon 餘裕（2026-08-07）：解算命中 target 後，實際縮放的
+    浮點誤差可能落在下緣——實測 4 欄狀態矩陣（828px 窄畫布）縮放後 11.9957pt，
+    差 0.004pt 跌破 12pt 下限。同「文字容量估算加 epsilon」教訓：
+    邊界值必須留餘裕，不能指望浮點剛好站在線上。
     """
-    return target_pt / PT_PER_PX / chart_scale(width_px, height_px)
+    return target_pt * 1.005 / PT_PER_PX / chart_scale(width_px, height_px)
 CHART_ROW_HEIGHT = _SIZING.row_height
 #: 年度矩陣泡泡的最小「大泡泡」半徑——格內兩位數（18px 字）放得下的下限。
 #: ⚠ 比這更窄時不再縮泡泡（改為壓縮大小差異），否則數字會滿出來。
@@ -493,7 +498,7 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
     left = label_gutter([
         (lambda raw: raw if tech_name(raw) == raw else f"{raw}　{tech_name(raw)}")(
             str(row.get(label_key) or "")) for row in data], font_px=label_px)
-    height = int(_canvas_height(label_px))
+    height = round(_canvas_height(label_px))
     plot_w = width - left - right
     max_value = max([int(row[value_key]) for row in data] + [1])
     svg = [
@@ -690,7 +695,10 @@ def render_segmented_bar_chart(
     for row in data:
         note = _assignees(row)
         needed = row_h * (2 if note else 1)
-        if kept and used + needed > CHART_CANVAS_MAX_HEIGHT:
+        # 🔴 前十一致（2026-08-07 使用者裁決）：limit 內（前十大）一律畫滿、
+        # 到 limit 即停——原「高度上限中途砍列」讓排名頁 7 列、矩陣頁 10 列，
+        # 跨頁對不上。畫布長高由字級解算補償（字仍 14pt，圖變窄）。
+        if len(kept) >= limit:
             break
         kept.append(row)
         notes.append(note)
@@ -968,6 +976,7 @@ def render_matrix_chart(
     col_key: str,
     value_key: str = "patent_count",
     row_limit: int = 20,
+    col_order: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """二維交叉矩陣（如 公司×國家）：一列＝一個 row_key 值，儲存格＝該列×該欄的量。
 
@@ -990,9 +999,13 @@ def render_matrix_chart(
         col_totals[col_label] = col_totals.get(col_label, 0) + value
 
     top_rows = [name for name, _ in sorted(row_totals.items(), key=lambda kv: (-kv[1], kv[0]))[:row_limit]]
-    # 欄只留 top rows 實際出現過的，按整體總量排序。
+    # 欄只留 top rows 實際出現過的。預設按整體總量排序；`col_order` 給了就照它
+    # ——狀態桶這類**語意序**欄位（已授權→未知）不能按量排，排了每份報告欄序都不同。
     used_cols = {col for (row_label, col) in cells if row_label in set(top_rows)}
-    cols = [name for name, _ in sorted(col_totals.items(), key=lambda kv: (-kv[1], kv[0])) if name in used_cols]
+    if col_order is not None:
+        cols = [name for name in col_order if name in used_cols]
+    else:
+        cols = [name for name, _ in sorted(col_totals.items(), key=lambda kv: (-kv[1], kv[0])) if name in used_cols]
 
     # 🔴 P-2（2026-08-03）：畫布以**最終顯示尺寸**設計。
     # 原本 240+54×欄、26×列，22 列讓畫布 480×688px；塞進 8.9×4.32in 圖框後
@@ -1008,7 +1021,11 @@ def render_matrix_chart(
     cell_h = max(30, int(round(_f0 * 30 / CHART_LABEL_PX)))
     label_width, cell_w, top_margin = 300, 66, 96
     usable = CHART_CANVAS_MAX_HEIGHT - top_margin - 28
-    max_visible_rows = max(1, usable // cell_h)
+    # 🔴 前十一致（2026-08-07 使用者裁決「排名就是取前十個」）：高度上限**不得**
+    # 把列數砍進 row_limit 以內——同一個「前十大」在排名/年度矩陣/狀態矩陣三頁
+    # 曾是 7/10/9 三種數。列數優先於高度：畫布長高由字級解算補償（字仍 14pt，
+    # 代價是圖在版面上變窄，一致性比寬度重要）。
+    max_visible_rows = max(row_limit, max(1, usable // cell_h))
     rows_total_count = len(top_rows)
     top_rows = top_rows[:max_visible_rows]
     # 欄寬吃滿畫布：欄少時把剩餘寬度分給列標籤與格子，避免圖過窄而字被縮小。
@@ -1082,6 +1099,7 @@ def year_bubble_matrix_layout(
     year_key: str = "application_year",
     value_key: str = "patent_count",
     row_limit: int = 20,
+    col_order: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """年度矩陣泡泡圖版面資料：依公司總量取前 20，缺值視為 0。"""
     totals: dict[str, int] = {}
@@ -1305,7 +1323,7 @@ QUADRANT_TARGET_ASPECT = 1.78
 #: 象限板圖例前綴（唯一來源——量寬度與畫出來必須是同一個字串，
 #: 否則改了文字卻沒改寬度，又會壓在一起）。
 # 🔴 2026-08-04 用詞規範：「龍頭」避免使用——只說資料能證明的（前三大申請人）。
-LEGEND_PREFIX_TEXT = "色＝主要申請人涉入｜數字＝件/家"
+LEGEND_PREFIX_TEXT = "色＝主要申請人涉入｜N件/M家＝專利件數/申請人家數"
 
 #: 圖例項之間的間距（px）。
 LEGEND_ITEM_GAP_PX = 24
@@ -1462,85 +1480,6 @@ def place_point_labels(
             break
         placed.append(chosen)
     return placed
-
-
-def render_lifecycle_chart(path: Path, title: str, rows: list[dict[str, Any]]) -> None:
-    """生命週期軌跡圖：X=申請人家數、Y=件數，依年份連線（技術生命週期判讀用）。"""
-    width, height = CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT
-    left, right, top, bottom = 90, 40, 64, 84
-    plot_w, plot_h = width - left - right, height - top - bottom
-    # 字級由縮放反推（資料 14pt／註記 12pt）；本圖畫布固定，不需迭代。
-    label_px = chart_font_px(width, height)
-    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
-    data = [
-        (int(r["application_year"]), int(r["applicant_count"]), int(r["patent_count"]))
-        for r in rows
-        if r.get("application_year") is not None
-    ]
-    data.sort()
-    # 🔴 J-5：不再乘 1.15 餘裕——nice_ticks 本身就會把頂格補到資料之上，
-    # 兩層餘裕疊加正是「資料最大 7、軸畫到 10」的來源。
-    x_max = max([d[1] for d in data] + [1])
-    y_max = max([d[2] for d in data] + [1])
-    svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
-        '<rect width="100%" height="100%" fill="white"/>',
-        f'<text data-role="chart-title" x="{left}" y="34" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-    ]
-    # F-11：兩軸都用等差好讀刻度（原本 max*i/4 取整後印出 0/4/9/13/17）。
-    y_ticks = nice_ticks(y_max)
-    x_ticks = nice_ticks(x_max)
-    y_max = max(y_ticks[-1], 1)
-    x_max = max(x_ticks[-1], 1)
-    for y_tick in y_ticks:
-        y = scale(y_tick, 0, y_max, top + plot_h, top)
-        svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
-        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 4:.1f}" text-anchor="end" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{y_tick}</text>')
-    for x_tick in x_ticks:
-        x = scale(x_tick, 0, x_max, left, left + plot_w)
-        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{x_tick}</text>')
-    svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
-    svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
-    svg.append(f'<text x="{left + plot_w / 2:.0f}" y="{height - 20}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">申請人家數</text>')
-    points = " ".join(
-        f"{scale(a, 0, x_max, left, left + plot_w):.1f},{scale(c, 0, y_max, top + plot_h, top):.1f}"
-        for _y, a, c in data
-    )
-    svg.append(f'<polyline points="{points}" fill="none" stroke="#94A3B8" stroke-width="1.5"/>')
-    coords = [
-        (scale(a, 0, x_max, left, left + plot_w), scale(c, 0, y_max, top + plot_h, top))
-        for _y, a, c in data
-    ]
-    for x, y in coords:
-        svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{COLOR_APPLICATION}"/>')
-    # 🔴 標籤避讓改用碰撞偵測（2026-08-02）。
-    # 第一版（07-31）只依折線走向把標籤放到線的另一側——解了「被折線壓過」，
-    # 但解不了標籤彼此重疊、標籤壓到別的資料點。實機 p4 仍有兩個年份疊成「20**」。
-    # ⚠ 所有資料點都是障礙物（不只自己那一個），放不下就不標。
-    label_step = max(1, math.ceil(len(data) / 12))
-    wanted = [i for i in range(len(data)) if i % label_step == 0 or i == len(data) - 1]
-    # 🔴 I-4：先合併同座標的年份，再避讓。
-    # ⚠ 順序不能反：先避讓會讓同一個點的多個年份各自找位置、彼此推開，
-    # 看起來像好幾個不同的點——那正是實機 p3「2021 2011」並排的成因。
-    items = merge_colocated_labels(
-        [(coords[i][0], coords[i][1], str(data[i][0])) for i in wanted])
-    # 🔴 J-5：軸線與刻度區也是障礙——原本只把資料點列為障礙，
-    # 合併後的年份標籤落在低家數低件數的角落時，避讓就把它推到 x 軸上、
-    # 與刻度數字重疊。障礙半徑蓋住軸線帶與每個刻度數字。
-    obstacles = [(x, y, 4.0) for x, y in coords] + [
-        (scale(t, 0, x_max, left, left + plot_w), top + plot_h + 18, 16.0)
-        for t in x_ticks
-    ] + [
-        (left + plot_w * i / 12, top + plot_h + 2, 6.0) for i in range(13)
-    ]
-    for (_x, _y, text), position in zip(
-            items, place_point_labels(items, obstacles, label_px, min_x=left + 2)):
-        if position is None:
-            continue
-        svg.append(f'<text x="{position[0]:.1f}" y="{position[1]:.1f}" font-size="{label_px:.1f}" '
-                   f'fill="{COLOR_TEXT_SOFT}">{xml_text(text)}</text>')
-    svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
 
 
 def _tech_year_topics(cluster_data: dict[str, Any]) -> dict[int, set[str]]:
@@ -2090,7 +2029,7 @@ CHART_ENCODING_NOTES: dict[str, str] = {
     "applicant_ranking": "條長＝件數｜排序＝件數由高至低",
     "applicant_country_distribution": "格值＝件數｜列＝申請人、欄＝受理國",
     "applicant_year_matrix": "泡泡大小與顏色＝件數｜列＝申請人、欄＝申請年",
-    "lifecycle": "橫軸＝申請人家數｜縱軸＝專利件數｜連線＝依年份先後",
+    "lifecycle": "格值＝件數｜列＝申請人（前十大，含共同申請）、欄＝狀態桶",
     "family_country_layout": "條長＝存活家族數｜分組＝受理國",
 }
 
@@ -2839,6 +2778,9 @@ def _build_applicant_country_section(ctx: ChartContext) -> None:
         report["rows"],
         row_key="applicant_display_name",
         col_key="country_code",
+        # 前十一致（2026-08-07）：顯示列數與排名／狀態矩陣同一個上限；
+        # 完整 20 名資料仍在 rows／網頁報表。
+        row_limit=CHART_ROW_LIMIT,
     )
     note = (
         f"一列＝一家公司（前 {meta['rows_drawn']} 大／共 {meta['rows_total']} 家，按總件數排序），"
@@ -2855,15 +2797,70 @@ def _build_applicant_country_section(ctx: ChartContext) -> None:
     })
 
 
+def lifecycle_status_pivot(rows: list[dict[str, Any]], limit: int = CHART_ROW_LIMIT) -> list[dict[str, Any]]:
+    """(申請人, 原始狀態, 件數) 長格式 → 前 N 大申請人 × 四狀態桶（數據表用）。
+
+    桶收斂一律走唯一定義處 `transforms.legal_status.status_bucket`。
+    輸出每列：{applicant_display_name, 已授權, 審查中, 已失效, 未知, patent_count}，
+    依總件數降冪取前 `limit` 家。矩陣圖走長格式另餵 render_matrix_chart，
+    本函式只服務 chart_rows 數據表——同一份桶邏輯、兩種消費形狀。
+    """
+    from backend.app.transforms.legal_status import STATUS_BUCKET_ORDER, status_bucket
+
+    by_applicant: dict[str, dict[str, int]] = {}
+    for row in rows:
+        name = str(row.get("applicant_display_name") or "").strip()
+        if not name:
+            continue
+        bucket = status_bucket(row.get("legal_status"))
+        entry = by_applicant.setdefault(name, {b: 0 for b in STATUS_BUCKET_ORDER})
+        entry[bucket] += int(row.get("patent_count") or 0)
+    ranked = sorted(by_applicant.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))[:limit]
+    return [{"applicant_display_name": name, **buckets, "patent_count": sum(buckets.values())}
+            for name, buckets in ranked]
+
+
 def _build_lifecycle_section(ctx: ChartContext) -> None:
-    """生命週期軌跡圖：年度 × 申請人家數 vs 件數。"""
+    """專利狀態分析（2026-08-07 改版）：前十大申請人 × 狀態桶。
+
+    🔴 呈現形式＝**交叉矩陣**（2026-08-07 使用者定案「不要做 bar，像公司×國家
+    交叉表的形式」）：列＝申請人、欄＝狀態桶、儲存格＝件數＋藍階色階——
+    格值就是件數，直接解掉「堆疊段看不出各狀態件數」的問題。
+    複用 render_matrix_chart（同一支畫公司×國家），欄序用 col_order 固定為
+    語意序（已授權→審查中→已失效→未知），不按量排。
+    """
+    from backend.app.transforms.legal_status import STATUS_BUCKET_ORDER, status_bucket
+
     report = ctx.report("lifecycle")
-    render_lifecycle_chart(ctx.run_dir / "lifecycle.svg", report["label_zh"], report["rows"])
+    # 長格式＋桶收斂（唯一定義處），餵矩陣渲染器
+    bucketed = [
+        {"applicant_display_name": str(r.get("applicant_display_name") or "").strip(),
+         "status_bucket": status_bucket(r.get("legal_status")),
+         "patent_count": int(r.get("patent_count") or 0)}
+        for r in report["rows"]
+        if str(r.get("applicant_display_name") or "").strip()
+    ]
+    meta = render_matrix_chart(
+        ctx.run_dir / "lifecycle.svg",
+        report["label_zh"],
+        bucketed,
+        row_key="applicant_display_name",
+        col_key="status_bucket",
+        row_limit=CHART_ROW_LIMIT,
+        col_order=STATUS_BUCKET_ORDER,
+    )
+    ctx.chart_rows["lifecycle"] = lifecycle_status_pivot(report["rows"])
     ctx.sections.append({
         "title": report["label_zh"],
-        "variants": [{"label": "Lifecycle", "file": "lifecycle.svg", "variant_key": "default"}],
-        "note": "各點＝一個申請年；依申請件數與申請人數的年度軌跡判讀，不作生命週期階段斷言。",
+        "report_key": "lifecycle",
+        "variants": [{"label": "Status", "file": "lifecycle.svg", "variant_key": "default"}],
+        "note": (
+            f"一列＝一位申請人（前 {meta['rows_drawn']} 大／共 {meta['rows_total']} 位，"
+            "含共同申請，總和大於專利件數）；欄＝狀態桶（已授權／審查中／已失效／未知）；"
+            "儲存格＝件數。「未知」為來源無狀態值的案件，據實呈現不併入他桶。"
+        ),
     })
+
 
 
 # 主題來源段名／檔名後綴（2026-07-21 定案：技術、功效不混；原始欄名不進使用者介面）
@@ -3171,7 +3168,9 @@ def render_opportunity_quadrant_svg(
             if involved:
                 tooltip += f"｜主要申請人：{involved}"
             bucket.append({
-                "text": f'{label} {int(r["patent_count"])}/{int(r["applicant_count"])}',
+                # 🔴 2026-08-07 使用者指正：「4/4 代表啥」——單位只放在圖例太遠，
+                # 讀者看到 chip 時對不上。單位直接跟著數字走：「4件/4家」。
+                "text": f'{label} {int(r["patent_count"])}件/{int(r["applicant_count"])}家',
                 "fill": _TIER_COLORS[_tier_key(lc)],
                 "topic": str(r.get("topic_code", "")),
                 "tooltip": tooltip,

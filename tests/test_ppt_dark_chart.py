@@ -330,14 +330,19 @@ class AllChartsReadableOnSlideTests(unittest.TestCase):
             self._check(path.read_text(encoding="utf-8"), "申請趨勢折線")
 
     def test_lifecycle_chart(self):
-        """p3 生命週期。"""
+        """p3 專利狀態分析（2026-08-07 二改：堆疊→交叉矩陣，深底轉色契約不變）。"""
         from backend.app.reports import chart_runner as cr
-        rows = [{"application_year": 2011 + i, "applicant_count": i % 8 + 1,
-                 "patent_count": (i * 2) % 16 + 1} for i in range(15)]
+        from backend.app.transforms.legal_status import STATUS_BUCKET_ORDER
+        # ⚠ fixture 用貼近實機的尺寸（10 列 × 4 欄）——6×2 的迷你矩陣畫布過小，
+        # 縮放門檻差 0.005pt 假紅過一次。
+        rows = [{"applicant_display_name": f"公司{i}", "status_bucket": b,
+                 "patent_count": 3} for i in range(10) for b in STATUS_BUCKET_ORDER]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "c.svg"
-            cr.render_lifecycle_chart(path, "專利生命週期", rows)
-            self._check(path.read_text(encoding="utf-8"), "生命週期軌跡")
+            cr.render_matrix_chart(path, "專利狀態分析", rows,
+                                   row_key="applicant_display_name",
+                                   col_key="status_bucket", col_order=STATUS_BUCKET_ORDER)
+            self._check(path.read_text(encoding="utf-8"), "狀態矩陣")
 
 
 class ChartTitleStrippedOnSlideTests(unittest.TestCase):
