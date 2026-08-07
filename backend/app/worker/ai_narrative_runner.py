@@ -68,13 +68,14 @@ NARRATIVE_HEADLINE_MAX = 20   # 一句判讀結論（PPT 標題「{主題}：{he
 # 以下三個是**全域上限**，實際能寫多少以 build_ppt.narrative_capacity() 逐報表算出的
 # 版面容量為準（同一份數字同時餵給 prompt、validator 與裁切）。
 NARRATIVE_POINT_TEXT_MAX = 55  # 每條要點的字數（2026-07-31 50→55，使用者選定）
-# 🔴 2026-08-04 使用者定案：要點改**三層說明**，不再是一堆並列的短列點。
-# 16pt＋行距 1.65 後側欄頁只放得下 5 條 × 19 字，碎成 5 個短句反而難讀；
-# 改為三段有層次的敘述，同樣的資訊用更少字講完（濃縮，不是少講）。
-NARRATIVE_LAYER_LABELS = ("現況", "意涵", "後續")
-NARRATIVE_LAYERS = len(NARRATIVE_LAYER_LABELS)
-NARRATIVE_POINTS_MIN = 3       # 2026-08-04 4→3（固定三層）
-NARRATIVE_POINTS_MAX = 3       # 2026-08-04 7→3（同上）
+# 🔴 2026-08-07 使用者定案：要點**取消固定標籤**（推翻 08-04 三層定案）——
+# 「ppt解讀格式不用再定標籤，但一樣要能解釋現象背後的原因」。
+# 條數上限維持 3（版面容量不變，容量另由 build_ppt.narrative_capacity 逐頁算）；
+# 標籤欄位對舊檔**容忍**（照渲染），新產出不再要求。
+# ⚠ 拿掉的是標籤形式，不是品質要求——數字事實與成因解釋改為頁級檢查（見鎖四／鎖五）。
+NARRATIVE_LAYER_LABELS = ("現況", "意涵", "後續")   # legacy：僅供舊檔容忍與文件對照
+NARRATIVE_POINTS_MIN = 2       # 2026-08-07 固定 3→2–3（自由條列，依內容）
+NARRATIVE_POINTS_MAX = 3
 
 # 要點與長文的數字一致性檢查用（含小數、百分比與千分位）。
 _NUMBER_PATTERN = re.compile(r"\d+(?:[.,]\d+)*%?")
@@ -105,8 +106,12 @@ def effective_max_chars(limits: dict[str, int] | None) -> int:
 # 「數據代表什麼 → 為何重要 → 對技術布局有何意義」。
 # ⚠ 只寫在給 AI 看的提示、沒有程式驗證的規則，等於沒有規則
 #   （known-issues-optimization C-1 的教訓）。以下三件是可程式化的部分。
-NARRATIVE_EVIDENCE_LABELS = ("現況",)      # 這一類在講數據 → 必須有數字
-NARRATIVE_IMPLICATION_LABELS = ("意涵",)   # 這一類在講意義 → 每頁至少要有一條
+# 2026-08-07 起標籤不再是檢查對象；兩個語意鎖改**頁級**：
+# 至少一條帶統計數字（原鎖四）、至少一條解釋成因（原鎖五）。
+# ⚠ 成因檢查是啟發式（找因果語彙）：驗得到「完全沒解釋」，驗不出「解釋得對不對」
+# ——後者從標籤時代起就靠 prompt 與人工，這裡沒有變弱。
+NARRATIVE_CAUSAL_MARKERS = ("因", "由", "來自", "反映", "顯示", "導致", "意味",
+                            "使得", "代表", "屬", "源於", "隨", "受")
 
 # 🔴 濃縮五規則的可程式化部分（2026-08-04 使用者定案「不走硬性字數路線」）：
 # 填充詞禁詞——刪掉後句意不變的詞，出現即代表還有濃縮空間。
@@ -201,13 +206,6 @@ def validate_narrative_contract(
                     warnings.append(f"{where} points[{i}] 句號過多（一條只講一個論點）")
                 if text.count("，") > 2:
                     warnings.append(f"{where} points[{i}] 逗號過多（一條只講一個論點）")
-                # 鎖四·現況要帶數字（W-1 的正面要求）。
-                # 只放寬形式不會讓數字自己回來——「現況」是講數據的那一類，
-                # 沒有數字就只剩形容詞（實機原句：「IPC大方向幾乎全落在運動訓練器材領域」）。
-                label = str((point or {}).get("label") or "")
-                if label in NARRATIVE_EVIDENCE_LABELS and not _NUMBER_PATTERN.search(text):
-                    warnings.append(
-                        f"{where} points[{i}]（{label}）沒有任何數字——現況要有數據依據")
                 # 鎖二·數字一致：要點裡的數字必須在長文也出現，否則兩邊會漂移
                 # （網頁報表頁讀 text、PPT 讀 points，讀者會看到互相對不上的數字）。
                 for number in _NUMBER_PATTERN.findall(text):
@@ -237,12 +235,20 @@ def validate_narrative_contract(
                             f"數字 {number}——同頁數字只寫一次，其他段講意義不抄數字")
                     else:
                         seen_numbers.setdefault(number, i)
-            # 鎖五·每頁至少一條「意涵」（C-6）。
-            # ⚠ 全部都是「現況」＝把數據複述一遍就交差，讀者仍要自己想「所以呢」。
-            labels = [str((p or {}).get("label") or "") for p in points]
-            if not any(label in NARRATIVE_IMPLICATION_LABELS for label in labels):
+            # 鎖四（2026-08-07 頁級版）·至少一條帶統計數字——標籤沒了，
+            # 「數據依據」的要求不跟著消失；整頁零數字＝只剩形容詞。
+            all_texts = [str((p or {}).get("text") or "") for p in points]
+            if points and not any(_NUMBER_PATTERN.search(t) for t in all_texts):
                 warnings.append(
-                    f"{where} 沒有任何「意涵」——只描述數據不說意義，停在「看到什麼數據」那一層")
+                    f"{where} 整頁沒有任何數字——要點必須有數據依據")
+            # 鎖五（2026-08-07 無標籤版）·至少一條解釋成因（使用者：「一樣要能
+            # 解釋現象背後的原因」）。啟發式找因果語彙；只描述現象不說為什麼＝
+            # 停在「看到什麼數據」那一層。
+            if points and not any(
+                    any(m in t for m in NARRATIVE_CAUSAL_MARKERS) for t in all_texts):
+                warnings.append(
+                    f"{where} 沒有任何一條解釋成因——只描述現象，"
+                    "要說出為什麼會這樣（背後的驅動、結構或機制）")
             # 鎖六·該對照的要對照著講（CPC vs IPC）。
             counterpart = NARRATIVE_CONTRAST_WITH.get(report_key)
             if counterpart:
@@ -495,13 +501,13 @@ def build_prompt(
         "   report_key→variants→variant_key→\n"
         "   {points,headline,text,ai_model,prompt_version,generated_at} 兩層結構。\n"
         "   ⚠ **依此順序逐欄寫，不要跳著寫**——順序就是撰寫程序：\n"
-        f"   points＝**固定 {NARRATIVE_LAYERS} 段**，label 依序為 "
-        f"{'／'.join(NARRATIVE_LAYER_LABELS)}，不得增減、不得改名：\n"
-        "     現況＝圖上讀得到的數據事實，**必須帶數字**；\n"
-        "     意涵＝這些數據代表什麼、為什麼會這樣（不重複數字，要說「所以呢」）；\n"
-        "     後續＝據此下一步該看什麼／查什麼（可執行，不是空話）。\n"
-        "   ⚠ 這是**三層說明**不是三個短列點：同一層的多件事要**合併在同一段**講完，\n"
-        "   不要為了短而砍掉資訊——目標是濃縮（同樣的事用更少字），不是少講。\n"
+        f"   points＝**{NARRATIVE_POINTS_MIN}–{NARRATIVE_POINTS_MAX} 條自由要點**"
+        "（2026-08-07 起**不再加「現況／意涵／後續」標籤**，不要輸出 label 欄）：\n"
+        "     · 至少一條是**帶數字的數據事實**（圖上讀得到的）；\n"
+        "     · 至少一條**解釋現象背後的成因**——為什麼會這樣、由什麼驅動\n"
+        "       （結構、行為、制度因素），不重複數字，不是換句話再描述一次現象；\n"
+        "     · 下一步建議**有可執行內容才寫**，不硬湊第三條。\n"
+        "   ⚠ 同一件事的多個面向**合併在同一條**講完——目標是濃縮，不是少講。\n"
         "   ⚠ 每段 text 不得超過下方列出的該頁字數上限，且**至多 3 句**\n"
         "   ——句子再多就變字牆，讀者一眼抓不到重點。\n"
         "   ⚠ 公司名第一次寫全名，之後用短稱（「廈門帝瑪斯健康科技」→「帝瑪斯」）；\n"

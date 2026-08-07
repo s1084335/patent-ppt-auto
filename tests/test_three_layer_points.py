@@ -80,8 +80,11 @@ class ThreeLayerBudgetTests(unittest.TestCase):
 
 
 class ContractIsThreeLayerTests(unittest.TestCase):
-    def test_points_count_is_three(self):
-        self.assertEqual(runner.NARRATIVE_POINTS_MIN, 3)
+    def test_points_count_is_free_form_two_to_three(self):
+        """🔴 2026-08-07 契約更新（推翻 08-04 固定三段）：自由條列 2–3 條，
+        不再強制湊滿第三條（「下一步建議有可執行內容才寫」）。上限仍 3
+        ——版面容量沒變，變的是形式。"""
+        self.assertEqual(runner.NARRATIVE_POINTS_MIN, 2)
         self.assertEqual(runner.NARRATIVE_POINTS_MAX, 3)
 
     def test_caveat_label_not_in_allowed_labels(self):

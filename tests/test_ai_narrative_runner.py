@@ -427,10 +427,14 @@ class NarrativeContractV6Tests(unittest.TestCase):
         self.assertTrue(self._pick(warns, "數字"))
 
     def test_variant_must_have_an_implication(self):
-        """C-6：只描述數據不給意義，就是停在「看到什麼數據」那一層。"""
-        points = [{"label": "現況", "text": f"第{i}類達{i}件"} for i in range(1, 5)]
+        """C-6：只描述數據不給意義，就是停在「看到什麼數據」那一層。
+
+        🔴 2026-08-07 契約更新：標籤取消（使用者「不用再定標籤，但一樣要能
+        解釋現象背後的原因」）——檢查對象由「有無意涵標籤」改為
+        「有無因果語彙」，防護意圖不變。"""
+        points = [{"text": f"第{i}類達{i}件"} for i in range(1, 5)]
         warns = self._warn(points, "\n\n".join(p["text"] for p in points))
-        self.assertTrue(self._pick(warns, "意涵"))
+        self.assertTrue(self._pick(warns, "成因"))
 
     def test_implication_satisfies_the_rule(self):
         points = [{"label": "現況", "text": "A63B達47件"},
