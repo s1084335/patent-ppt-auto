@@ -10,12 +10,12 @@ from unittest import mock
 from backend.app.mappings import legal_status
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-# \ud83d\udd34 2026-08-07 \u4f7f\u7528\u8005\u5b9a\u6848\uff1a\u300c\u5df2\u6838\u51c6\u300d\u2192\u300c\u6388\u6b0a\u300d\uff08WIPS \u6388\u6b0a\u516c\u544a\u6a19\u300c\u6388\u6b0a\u300d\uff09\u3002
+# 2026-08-07 定版：值域＝WIPS「專利狀態」欄實測聯集，granted＝「已核准」（曾誤改「授權」已回退）。
 CURATED_TW_STATUSES = (
     "\u5df2\u7533\u8acb",
     "\u5df2\u516c\u958b",
     "\u5be9\u67e5\u4e2d",
-    "\u6388\u6b0a",
+    "\u5df2\u6838\u51c6",
     "\u653e\u68c4",
     "\u6838\u99c1",
     "\u64a4\u56de",
@@ -33,7 +33,7 @@ class TwLegalStatusMappingContractTests(unittest.TestCase):
             "\u5df2\u7533\u8acb": "pending",
             "\u5df2\u516c\u958b": "pending",
             "\u5be9\u67e5\u4e2d": "pending",
-            "\u6388\u6b0a": "alive",
+            "\u5df2\u6838\u51c6": "alive",
             "\u653e\u68c4": "dead",
             "\u6838\u99c1": "dead",
             "\u64a4\u56de": "dead",

@@ -14,10 +14,12 @@ from backend.app.mappings import legal_status as m
 
 
 class AllowedListTests(unittest.TestCase):
-    def test_granted_term_is_shou_quan(self):
-        """🔴 值域改「授權」：WIPS 授權公告標「授權」，不是「核准」。"""
-        self.assertIn("授權", m.TW_LEGAL_STATUS_ALLOWED)
-        self.assertNotIn("已核准", m.TW_LEGAL_STATUS_ALLOWED)
+    def test_granted_term_matches_wips_column(self):
+        """🔴 值域＝WIPS「專利狀態」欄實測聯集（2026-08-07 同日二修定版）：
+        granted 該欄標「已核准」×180——「授權」是另一欄用詞，曾誤改已回退。
+        使用者原則：值要跟 WIPS 的值一樣，不然等於自加。"""
+        self.assertIn("已核准", m.TW_LEGAL_STATUS_ALLOWED)
+        self.assertNotIn("授權", m.TW_LEGAL_STATUS_ALLOWED)
 
     def test_legacy_value_still_normalizes(self):
         """已登錄過的「已核准」仍收斂到 alive——容忍不刪，報表不因遷移空窗出錯。"""
@@ -70,9 +72,9 @@ class ReviseAndClearContractTests(unittest.TestCase):
         from backend.app.app_layer import patent_queries as q
 
         self.assertIsNone(q.normalize_tw_status_input(None))
-        self.assertEqual(q.normalize_tw_status_input("授權"), "授權")
+        self.assertEqual(q.normalize_tw_status_input("已核准"), "已核准")
         with self.assertRaises(ValueError):
-            q.normalize_tw_status_input("已核准")
+            q.normalize_tw_status_input("授權")
 
     def test_panel_lists_all_tw_not_only_pending(self):
         """面板要列**全部** TW 案（含已登錄者才有東西可反悔），items 帶現值。"""
