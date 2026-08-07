@@ -536,6 +536,54 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
     path.write_text("\n".join(svg), encoding="utf-8")
 
 
+def _paired_legend_svg(
+    series: tuple[tuple[str, str], ...],
+    colors: tuple[str, ...],
+    legend_x: float,
+    top: int,
+    label_px: float,
+) -> list[str]:
+    """合併頁圖例：右上色塊＋圖例名，兩條 bar 的定義由此對照。"""
+    parts: list[str] = []
+    for i, (name, _key) in enumerate(series):
+        lx = legend_x + i * 140
+        parts.append(f'<rect x="{lx}" y="{top - 26}" width="14" height="14" rx="2" fill="{colors[i]}"/>')
+        parts.append(f'<text x="{lx + 20}" y="{top - 14}" font-size="{label_px * 0.85:.1f}" fill="{COLOR_TEXT}">{xml_text(name)}</text>')
+    return parts
+
+
+def _paired_rows_svg(
+    data: list[dict[str, Any]],
+    series: tuple[tuple[str, str], ...],
+    colors: tuple[str, ...],
+    *,
+    label_key: str,
+    top: int,
+    row_h: int,
+    bar_h: int,
+    gap: int,
+    left: int,
+    plot_w: float,
+    max_value: int,
+    label_px: float,
+) -> list[str]:
+    """合併頁資料列：每列標籤＋兩條同尺 bar，值一律標「N 件」（口徑＝件 vs 件）。"""
+    parts: list[str] = []
+    for index, row in enumerate(data):
+        y = top + index * row_h
+        label = xml_text(str(row.get(label_key) or ""))
+        parts.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + row_h / 2 + label_px / 3:.1f}" '
+                     f'font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{label}</text>')
+        for i, (_name, key) in enumerate(series):
+            value = int(row.get(key) or 0)
+            bar_w = scale(value, 0, max_value, 0, plot_w)
+            by = y + gap + i * (bar_h + gap)
+            parts.append(f'<rect x="{left}" y="{by}" width="{bar_w:.1f}" height="{bar_h}" rx="2" fill="{colors[i]}"/>')
+            parts.append(f'<text x="{left + bar_w + 8:.1f}" y="{by + bar_h - 3}" '
+                         f'font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value} 件</text>')
+    return parts
+
+
 def render_paired_bar_chart(
     path: Path,
     title: str,
@@ -559,7 +607,7 @@ def render_paired_bar_chart(
     gap = 4
 
     def _row_h(font_px: float) -> int:
-        base = int(round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX)) * 2
+        base = round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX) * 2
         rh = _fill_row_height(len(data), top=top, bottom=bottom, base=base)
         cap = int((CHART_CANVAS_MAX_HEIGHT - top - bottom) / max(1, len(data)))
         return max(bar_h * 2 + gap * 3, min(rh, cap))
@@ -580,28 +628,15 @@ def render_paired_bar_chart(
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="28" y="36" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
     ]
-    # 圖例：右上一組色塊＋圖例名，兩條 bar 的定義由此對照。
-    legend_x = width - right - 260
-    for i, (name, _key) in enumerate(series):
-        lx = legend_x + i * 140
-        svg.append(f'<rect x="{lx}" y="{top - 26}" width="14" height="14" rx="2" fill="{colors[i]}"/>')
-        svg.append(f'<text x="{lx + 20}" y="{top - 14}" font-size="{label_px * 0.85:.1f}" fill="{COLOR_TEXT}">{xml_text(name)}</text>')
+    svg.extend(_paired_legend_svg(series, colors, width - right - 260, top, label_px))
     note = truncation_note(len(data), len(rows))
     if note:
         svg.append(f'<text x="{width - 40}" y="36" text-anchor="end" font-size="{label_px:.1f}" '
                    f'fill="{COLOR_TEXT_SOFT}">{xml_text(note)}</text>')
-    for index, row in enumerate(data):
-        y = top + index * row_h
-        label = xml_text(str(row.get(label_key) or ""))
-        svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + row_h / 2 + label_px / 3:.1f}" '
-                   f'font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{label}</text>')
-        for i, (_name, key) in enumerate(series):
-            value = int(row.get(key) or 0)
-            bar_w = scale(value, 0, max_value, 0, plot_w)
-            by = y + gap + i * (bar_h + gap)
-            svg.append(f'<rect x="{left}" y="{by}" width="{bar_w:.1f}" height="{bar_h}" rx="2" fill="{colors[i]}"/>')
-            svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{by + bar_h - 3}" '
-                       f'font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value} 件</text>')
+    svg.extend(_paired_rows_svg(
+        data, series, colors, label_key=label_key, top=top, row_h=row_h,
+        bar_h=bar_h, gap=gap, left=left, plot_w=plot_w,
+        max_value=max_value, label_px=label_px))
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
