@@ -695,7 +695,10 @@ def render_segmented_bar_chart(
     for row in data:
         note = _assignees(row)
         needed = row_h * (2 if note else 1)
-        if kept and used + needed > CHART_CANVAS_MAX_HEIGHT:
+        # 🔴 前十一致（2026-08-07 使用者裁決）：limit 內（前十大）一律畫滿、
+        # 到 limit 即停——原「高度上限中途砍列」讓排名頁 7 列、矩陣頁 10 列，
+        # 跨頁對不上。畫布長高由字級解算補償（字仍 14pt，圖變窄）。
+        if len(kept) >= limit:
             break
         kept.append(row)
         notes.append(note)
@@ -1018,7 +1021,11 @@ def render_matrix_chart(
     cell_h = max(30, int(round(_f0 * 30 / CHART_LABEL_PX)))
     label_width, cell_w, top_margin = 300, 66, 96
     usable = CHART_CANVAS_MAX_HEIGHT - top_margin - 28
-    max_visible_rows = max(1, usable // cell_h)
+    # 🔴 前十一致（2026-08-07 使用者裁決「排名就是取前十個」）：高度上限**不得**
+    # 把列數砍進 row_limit 以內——同一個「前十大」在排名/年度矩陣/狀態矩陣三頁
+    # 曾是 7/10/9 三種數。列數優先於高度：畫布長高由字級解算補償（字仍 14pt，
+    # 代價是圖在版面上變窄，一致性比寬度重要）。
+    max_visible_rows = max(row_limit, max(1, usable // cell_h))
     rows_total_count = len(top_rows)
     top_rows = top_rows[:max_visible_rows]
     # 欄寬吃滿畫布：欄少時把剩餘寬度分給列標籤與格子，避免圖過窄而字被縮小。
@@ -2771,6 +2778,9 @@ def _build_applicant_country_section(ctx: ChartContext) -> None:
         report["rows"],
         row_key="applicant_display_name",
         col_key="country_code",
+        # 前十一致（2026-08-07）：顯示列數與排名／狀態矩陣同一個上限；
+        # 完整 20 名資料仍在 rows／網頁報表。
+        row_limit=CHART_ROW_LIMIT,
     )
     note = (
         f"一列＝一家公司（前 {meta['rows_drawn']} 大／共 {meta['rows_total']} 家，按總件數排序），"
