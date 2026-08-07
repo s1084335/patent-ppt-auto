@@ -437,8 +437,12 @@ class FrontendSkeletonTests(unittest.TestCase):
     # ── B4. 專利總覽跨所有 workspace ──
 
     def test_overview_lists_all_patents_across_workspaces(self):
-        """專利總覽接全庫專利端點（GET /patents，不分 workspace），非只列選定 workspace。"""
-        self.assertIn("loadAllPatents", self.html)
+        """全庫視角接全庫專利端點（GET /patents，不分 workspace）。
+
+        🔴 2026-08-07 契約更新：專利總覽頁已刪（與瀏覽專利選全庫重複，
+        同一概念兩處落點）——全庫清單由 loadBrowsePatents 承接，端點不變。"""
+        self.assertIn("loadBrowsePatents", self.html)
+        self.assertNotIn("loadAllPatents", self.html)
         # 端點：API 前綴 + '/patents'（全庫清單），帶分頁參數。
         self.assertRegex(self.html, r"""API\s*\+\s*['"]/patents\?""")
         for qs in ("limit=", "offset="):
@@ -452,9 +456,12 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("workspacesCell", self.html)
 
     def test_overview_paginated_not_full_load(self):
-        """全庫專利分頁載入，不一次撈全部。"""
+        """全庫專利分頁載入，不一次撈全部。
+
+        🔴 2026-08-07：總覽刪除後分頁器＝瀏覽專利的 pageBrowse（原 pagePatents 死碼一併清）。"""
         self.assertIn("PATENTS_PAGE_SIZE", self.html)
-        self.assertIn("pagePatents", self.html)
+        self.assertIn("pageBrowse", self.html)
+        self.assertNotIn("pagePatents", self.html)
 
     # ── B5. 專利顯示欄位（2026-07-23 定案）＋版面歸屬（2026-07-24） ──
 
@@ -548,8 +555,10 @@ class FrontendSkeletonTests(unittest.TestCase):
             self.html.count("function patentTableHtml("), 1,
             "patentTableHtml 有多份實作——分類區與總覽又走回兩套")
         self.assertIn("patentTableHtml(data, scope)", self.html)
-        self.assertIn("patentTableHtml(data, 'overview')", self.html)
-        # 「所屬 Workspace」欄只在總覽出現，且以資料驅動（不是硬寫在某個表頭字串裡）。
+        # 🔴 2026-08-07 總覽刪除：'overview' 欄位組由瀏覽專利選全庫時傳入
+        # （browsePatentsTableHtml(data, isGlobalSelected() ? 'overview' : 'topics')）。
+        self.assertIn("isGlobalSelected() ? 'overview' : 'topics'", self.html)
+        # 「所屬 Workspace」欄只在全庫視角出現，且以資料驅動（不是硬寫在某個表頭字串裡）。
         self.assertRegex(self.html, r"'所屬 Workspace',\s*key:\s*'workspaces',\s*scope:\s*\['overview'\]")
 
     def test_overview_merged_into_workspace_dropdown_not_topbar(self):
