@@ -30,14 +30,11 @@ def _report_data(*, family_total=48, topic_rows=None):
                 {"country_code": "TW", "patent_count": 9},
             ]},
         },
-        "family_reports": {
-            "family_country_layout": {"rows": [
-                {"country_code": "CN", "patent_count": 30},
-                {"country_code": "TW", "patent_count": family_total - 30},
-            ]},
-        },
+        # 🔴 2026-08-07 口徑更正：第二層＝引擎給的 distinct 家族數
+        # （原本用各國家族數加總，跨國家族會重複計）。
+        "family_reports": {},
         "chart_rows": {"cluster_topic_table": rows},
-        "parameters": {"family_total": family_total},
+        "parameters": {"family_merged_total": family_total},
     }
 
 
@@ -73,10 +70,69 @@ class FunnelCellTests(unittest.TestCase):
     def test_missing_family_or_topics_degrades_quietly(self):
         """缺同族或分群資料時不出漏斗格（不硬湊、不寫 0）。"""
         data = _report_data()
-        data["family_reports"] = {}
+        data["parameters"] = {}
         data["chart_rows"] = {}
         self.assertIsNone(self._funnel(data))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CountryCellRegressionTests(unittest.TestCase):
+    """🔴 2026-08-07 真資料驗收抓到的迴歸：country_distribution 改 (國×狀態)
+    群組後（受理局合併頁），封面直接取前幾列會讓同一國重複出現、數字變成
+    狀態層的分項——封面必須先**按國彙總**再取前三。"""
+
+    DATA = {
+        "reports": {
+            "application_trend": {"rows": [{"application_year": 2024, "patent_count": 55}]},
+            "country_distribution": {"rows": [
+                {"country_code": "CN", "legal_status": "授权", "patent_count": 24},
+                {"country_code": "CN", "legal_status": "到期", "patent_count": 8},
+                {"country_code": "CN", "legal_status": "审查中", "patent_count": 6},
+                {"country_code": "TW", "legal_status": None, "patent_count": 9},
+                {"country_code": "US", "legal_status": "授权", "patent_count": 6},
+                {"country_code": "EP", "legal_status": "授权", "patent_count": 2},
+            ]},
+        },
+        "parameters": {"family_merged_total": 48},
+        "chart_rows": {"cluster_topic_table": [
+            {"topic_code": f"T{i}", "source_field": "wips_independent_claims"} for i in range(5)]},
+    }
+
+    def _cell(self, label):
+        return next(s for s in bp._cover_stats(self.DATA) if s[2].startswith(label))
+
+    def test_country_cell_aggregates_by_country(self):
+        value, unit, _ = self._cell("地域分布")
+        self.assertEqual(unit.split("｜").count("CN"), 1, f"同一國重複出現：{unit}")
+        self.assertEqual(value.split("｜")[0], "38", "CN 應為三個狀態合計 38")
+
+    def test_country_cell_total_matches_patent_total(self):
+        value, _, _ = self._cell("地域分布")
+        self.assertEqual(sum(int(v) for v in value.split("｜")), 55,
+                         "各段件數總和必須等於專利總數（J-4 契約）")
+
+    def test_funnel_uses_merged_family_total(self):
+        """第二層＝同族合併後件數（distinct 家族），不是各國家族數加總。"""
+        value, _, _ = self._cell("原始→同族合併")
+        self.assertEqual(value, "55→48→5")
+
+
+
+class ProductSkillPrincipleTests(unittest.TestCase):
+    """🔴 2026-08-07 使用者：「最重要的是產品 skill 要符合這方向，不然只是自嗨」。
+
+    原則只寫進 .agents/context 不算數——會打包到使用者機器的是
+    skills/patent-report-ppt/。版型備選庫原則必須寫在產品 skill 本體。
+    """
+
+    def test_content_standard_states_optional_layouts(self):
+        from pathlib import Path
+
+        md = (Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt"
+              / "content_standard.md").read_text(encoding="utf-8")
+        self.assertIn("備選版型庫", md)
+        self.assertIn("沒有那個內容就不出那一頁", md)
+        self.assertIn("不得把數字硬做成表格", md)

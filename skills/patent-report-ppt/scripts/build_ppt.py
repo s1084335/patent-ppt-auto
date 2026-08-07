@@ -3490,8 +3490,9 @@ def _cover_funnel(report_data: dict[str, Any]) -> tuple[str, str, str] | None:
     if not trend_rows:
         return None
     total = sum(_as_int(row.get("patent_count")) for row in trend_rows)
-    family_rows = _rows_of(report_data, "family_country_layout")
-    family_total = sum(_as_int(r.get("patent_count")) for r in family_rows)
+    # 第二層＝**同族合併後件數**（distinct 家族）。⚠ 不得用各國家族數加總——
+    # 跨國家族在每個國家各算一次（2026-08-07 真資料：加總 46 ≠ distinct 48）。
+    family_total = _as_int((report_data.get("parameters") or {}).get("family_merged_total"))
     topic_rows = (report_data.get("chart_rows") or {}).get("cluster_topic_table") or []
     tech_groups = len({
         str(r.get("topic_code") or r.get("topic_key") or "")
@@ -3518,8 +3519,14 @@ def _cover_stats(report_data: dict[str, Any]) -> list[tuple[str, str, str]]:
         # 但專利總數 60（US 9、EP 3 被丟）；且 TW／US 同 9 件時挑誰是任意的。
         # 改為 ≤4 局全列、>4 局取前 3 ＋「其他」合計：**件數總和恆等於總數**，
         # 排序（件數 desc, 代碼 asc）決定同數順序，不再任意。
-        ordered = sorted(country_rows,
-                         key=lambda r: (-_as_int(r.get(numeric)), str(r.get(label_col, ""))))
+        # 🔴 2026-08-07：country_distribution 改 (國×狀態) 群組後一國多列——
+        # 先按國彙總再排序，否則同一國重複出現、數字變成狀態分項。
+        merged: dict[str, int] = {}
+        for row in country_rows:
+            code = str(row.get(label_col, "-"))
+            merged[code] = merged.get(code, 0) + _as_int(row.get(numeric))
+        ordered = [{label_col: code, numeric: total}
+                   for code, total in sorted(merged.items(), key=lambda kv: (-kv[1], kv[0]))]
         if len(ordered) > 4:
             shown = ordered[:3]
             rest = sum(_as_int(r.get(numeric)) for r in ordered[3:])
