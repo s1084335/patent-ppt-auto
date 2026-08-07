@@ -68,13 +68,16 @@ class NoFillQuotaTests(unittest.TestCase):
         self.assertTrue(any("超限" in w for w in warnings), f"超長沒被抓到：{warnings}")
 
     def test_missing_implication_still_warns(self):
-        """⚠ 內容完整性仍要守：全是「現況」＝只複述數據，不說意義。"""
+        """⚠ 內容完整性仍要守：只複述數據、不解釋成因要被抓到。
+
+        🔴 2026-08-07 契約更新：標籤取消，檢查由「有無意涵標籤」改為
+        頁級因果語彙——防護意圖不變，換了驗法。"""
         points = [
-            {"label": "現況", "text": "本頁共 8 件。"},
-            {"label": "現況", "text": "A63B 佔 5 件。"},
+            {"text": "本頁共 8 件。"},
+            {"text": "A63B 佔 5 件。"},
         ]
         warnings = runner.validate_narrative_contract(_narr(points), self.CAPACITY)
-        self.assertTrue(any("意涵" in w for w in warnings), f"缺意涵沒被抓到：{warnings}")
+        self.assertTrue(any("成因" in w for w in warnings), f"缺成因解釋沒被抓到：{warnings}")
 
 
 if __name__ == "__main__":

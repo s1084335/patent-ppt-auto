@@ -42,12 +42,13 @@ def _entry(headline="布局集中於 A63B", points=None, text=None):
     不是因為要湊字數。
     """
     if points is None:
-        # 🔴 2026-08-04 三層制：固定現況／意涵／後續三段，判讀限制已移除。
+        # 🔴 2026-08-07 無標籤制（推翻 08-04 三層）：自由條列，但頁級仍須
+        # 「至少一條帶數字」＋「至少一條解釋成因」——第二條的「反映」即因果語彙。
         points = [
-            {"label": "現況", "text": "A63B 體育訓練器材 47 件，F03G 僅 2 件，近三年新進者 1 家",
+            {"text": "A63B 體育訓練器材 47 件，F03G 僅 2 件，近三年新進者 1 家",
              "emphasis": True},
-            {"label": "意涵", "text": "分類分布集中於單一大類，同一技術方向反覆布局"},
-            {"label": "後續", "text": "建議進一步檢視 5 階細分類分布，以確認尚未連續布局的細部路線"},
+            {"text": "分類分布集中於單一大類，反映同一技術方向反覆布局"},
+            {"text": "建議進一步檢視 5 階細分類分布，以確認尚未連續布局的細部路線"},
         ]
     if text is None:
         text = (
@@ -70,11 +71,13 @@ class ContractConstantsTests(unittest.TestCase):
         self.assertEqual(runner.NARRATIVE_HEADLINE_MAX, 20)
         self.assertEqual(runner.NARRATIVE_POINT_TEXT_MAX, 55)
         # 🔴 2026-08-04 三層制：固定 3 段（原 4–7 條）。
-        self.assertEqual(runner.NARRATIVE_POINTS_MIN, 3)
+        # 🔴 2026-08-07 契約更新（推翻 08-04 固定三段）：自由條列 2–3 條。
+        self.assertEqual(runner.NARRATIVE_POINTS_MIN, 2)
         self.assertEqual(runner.NARRATIVE_POINTS_MAX, 3)
 
     def test_prompt_version_bumped(self):
-        self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v9")
+        # v10（2026-08-07）：格式徹底不固定＋版本字串注入 prompt。
+        self.assertEqual(runner.PROMPT_VERSION, "report_narrative_v10")
 
 
 class SkillRulesTests(unittest.TestCase):
@@ -135,8 +138,8 @@ class ValidateContractTests(unittest.TestCase):
         self.assertIn("rk", w[0], "warning 要指出是哪張報表")
 
     def test_points_count_out_of_range(self):
-        """v8 起固定 3 段：2 條太少、8 條太多。"""
-        for n in (2, 8):
+        """🔴 2026-08-07 起 2–3 條自由條列：1 條太少、8 條太多（2 條已合法）。"""
+        for n in (1, 8):
             with self.subTest(n=n):
                 pts = [{"label": "l", "text": "t"} for _ in range(n)]
                 w = runner.validate_narrative_contract(_narratives(_entry(points=pts)))
