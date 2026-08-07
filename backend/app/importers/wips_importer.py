@@ -697,6 +697,14 @@ def normalize_record(raw: dict[str, Any]) -> dict[str, Any]:
         if target != FIGURE_COLUMN
     }
     patent.update(transformed_number_fields(patent))
+    # 🔴 兩個狀態欄的優先序**唯一定義處**（2026-08-07 護欄一）：既有來源
+    # `状态[US,JP,KR,CN,EP,CA,AU]` 非空優先，空才取「專利狀態」（全國家欄，
+    # canonicalize 後鍵為簡體「专利状态」）——既有國家行為零改變，
+    # 只有 TW（前者恆空）由後者補值。
+    if not (patent.get("legal_status") or "").strip():
+        alt_status = clean_long_text(canonical_raw.get("专利状态"))
+        if alt_status and alt_status.strip():
+            patent["legal_status"] = alt_status
     patent["publication_date"] = publication_date
     patent["publication_year"] = year_from_date(publication_date)
     patent["application_date"] = application_date
@@ -779,6 +787,8 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
     # 匯入計數；整段在單一 connection／transaction 內，任一步拋錯由 with 區塊 rollback（不 commit）。
     # inserted=新建 patent；matched_existing=識別號命中既有；updated⊆matched_existing（任一欄差異更新）。
     stats = {"inserted": 0, "matched_existing": 0, "updated": 0}
+    # 護欄二（2026-08-07）：被人工登錄擋下的狀態覆蓋，逐筆現形交使用者裁決。
+    legal_status_conflicts: list[dict[str, Any]] = []
     # 匯入列的 (申請人代表碼, 名稱) 供已知 code 變體即時補入；於 commit 後統一註冊（該函式自管連線）
     variant_pairs: list[tuple[str | None, str | None]] = []
     # 代碼 → WIPS 標準化申請人，供未建組時填英文正式名（規格批次 b）。
@@ -813,7 +823,9 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
                 raw_record_id = insert_raw_record(cur, selected_source, raw, file_hash)
                 # 去重只靠專利號查找（upsert_patent→find_existing_patent_id）；不再產生 dedupe_key，
                 # 無專利號列由 find_existing 回 None 而各自新建，靠 raw_record_id 保持獨立與追溯。
-                patent_id = upsert_patent(cur, item["patent"], raw_record_id, stats)
+                patent_id = upsert_patent(
+                    cur, item["patent"], raw_record_id, stats,
+                    legal_status_conflicts=legal_status_conflicts)
                 if patent_id not in seen_patent_ids:
                     seen_patent_ids.add(patent_id)
                     touched_patent_ids.append(int(patent_id))
@@ -893,6 +905,7 @@ def import_wips_file(path: Path, dry_run: bool = False) -> dict[str, Any]:
     summary["updated"] = stats["updated"]
     summary["skipped"] = 0
     summary["status"] = "imported"
+    summary["legal_status_conflicts"] = legal_status_conflicts
     # 本次涉及專利（新建＋命中既有，去重）供 handler 圈進 workspace；空檔亦回空陣列。
     summary["patent_ids"] = touched_patent_ids
     # 代表圖入庫統計與警告（同列多圖、未知/缺值 kind、同鍵重複）；
@@ -962,6 +975,7 @@ def upsert_patent(
     patent: dict[str, Any],
     raw_record_id: int,
     stats: dict[str, int] | None = None,
+    legal_status_conflicts: list[dict[str, Any]] | None = None,
 ) -> int:
     """依識別號 upsert 一筆 patent；命中既有走 update、否則 insert。
 
@@ -977,6 +991,25 @@ def upsert_patent(
             stats["matched_existing"] = stats.get("matched_existing", 0) + 1
             if changed:
                 stats["updated"] = stats.get("updated", 0) + 1
+        # 🔴 護欄二可見性（2026-08-07）：檔案帶了狀態值、但該案有人工登錄
+        # 且值不同＝覆蓋被擋——記進衝突清單交使用者裁決，不得靜默吞掉。
+        if legal_status_conflicts is not None:
+            file_status = (patent_params.get("legal_status") or "").strip()
+            if file_status:
+                cur.execute(
+                    "SELECT legal_status FROM patents "
+                    f"WHERE id = %s AND {_MANUAL_STATUS_HISTORY_EXISTS} "
+                    "AND legal_status IS DISTINCT FROM %s",
+                    (patent_id, file_status),
+                )
+                row = cur.fetchone()
+                if row is not None:
+                    legal_status_conflicts.append({
+                        "patent_id": int(patent_id),
+                        "label": _patent_label(patent, patent_id),
+                        "file_value": file_status,
+                        "current_value": row[0],
+                    })
         return patent_id
 
     # SQL 由 _UPDATE_COLUMN_PARAMS 生成（0046 起 insert／update 共用同一份欄位清單）
@@ -1045,6 +1078,14 @@ def find_existing_patent_id(cur, patent: dict[str, Any]) -> int | None:
 # 同時被要求是 text 又是 date/int 而衝突（DatatypeMismatch / UndefinedFunction）。
 _CHANGE_CMP_SUFFIX = "__cmp"
 
+# 人工登錄判定（2026-08-07 護欄二）：人工線的歷程項目沒有 'source' 鍵、
+# 匯入寫的一律帶 source='import'——任何一筆無 source 項目＝有人工判斷在。
+_MANUAL_STATUS_HISTORY_EXISTS = (
+    "EXISTS (SELECT 1 FROM jsonb_array_elements("
+    "COALESCE(legal_status_history, '[]'::jsonb)) AS h(entry) "
+    "WHERE NOT (h.entry ? 'source'))"
+)
+
 
 def _column_change_condition(column: str, param: str) -> str:
     """單欄「新值非空且與舊值不同」的判定 SQL（差異即更新政策的原子條件）。
@@ -1076,14 +1117,30 @@ def update_patent_changed_fields(cur, patent_id: int, patent_params: dict[str, A
     """
     # THEN 用 COALESCE(%(param)s, 欄) 讓無型別參數由欄位錨定推得型別（沿用舊碼 COALESCE 錨定
     # 手法，date/int/text 皆適用）；THEN 只在新值非空時觸發，此時 COALESCE 必回新值本身。
-    set_clause = ",\n            ".join(
-        f"{column} = CASE WHEN {_column_change_condition(column, param)} "
-        f"THEN COALESCE(%({param})s, {column}) ELSE {column} END"
-        for column, param in _UPDATE_COLUMN_PARAMS
-    )
-    guard = " OR ".join(
-        _column_change_condition(column, param) for column, param in _UPDATE_COLUMN_PARAMS
-    )
+    set_parts = []
+    guard_parts = []
+    for column, param in _UPDATE_COLUMN_PARAMS:
+        cond = _column_change_condition(column, param)
+        if column == "legal_status":
+            # 🔴 護欄二（2026-08-07）：歷程含**人工登錄**（無 'source' 鍵的項目）
+            # 的案，匯入不得靜默覆蓋——被擋下者由 upsert_patent 記進衝突清單。
+            cond = f"({cond} AND NOT {_MANUAL_STATUS_HISTORY_EXISTS})"
+            # 🔴 護欄三：匯入改狀態也 append 歷程（source: import），不斷鏈。
+            set_parts.append(
+                f"legal_status_history = CASE WHEN {cond} "
+                "THEN COALESCE(legal_status_history, '[]'::jsonb) || "
+                "jsonb_build_array(jsonb_build_object("
+                "'from_status', legal_status, 'to_status', %(legal_status)s::text, "
+                "'changed_at', to_jsonb(now()), 'source', 'import')) "
+                "ELSE legal_status_history END"
+            )
+        set_parts.append(
+            f"{column} = CASE WHEN {cond} "
+            f"THEN COALESCE(%({param})s, {column}) ELSE {column} END"
+        )
+        guard_parts.append(cond)
+    set_clause = ",\n            ".join(set_parts)
+    guard = " OR ".join(guard_parts)
     # 每個新值同時綁定原名（寫回）與 <name>__cmp（文字比對），兩者取同一值；缺鍵者當 None。
     params: dict[str, Any] = {"patent_id": patent_id}
     for _, param in _UPDATE_COLUMN_PARAMS:
