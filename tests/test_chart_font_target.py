@@ -80,15 +80,24 @@ class FontReachesTargetTests(unittest.TestCase):
         for name, w, h in self.CANVASES:
             with self.subTest(name):
                 px = cr.chart_font_px(w, h)
-                self.assertAlmostEqual(self._final_pt(w, h, px), cr.CHART_DATA_TARGET_PT,
-                                       places=1, msg=f"{name} 資料文字沒落在 14pt")
+                # 🔴 2026-08-07 契約更新：chart_font_px 加 1.005 epsilon（實測 4 欄
+                # 窄畫布縮放後 11.9957pt 跌破下限）。落點由「精確命中」改為
+                # 「**不低於目標**、溢出 ≤1%」——下限才是使用者可感知的硬約束。
+                final = self._final_pt(w, h, px)
+                self.assertGreaterEqual(final, cr.CHART_DATA_TARGET_PT,
+                                        f"{name} 資料文字低於 14pt")
+                self.assertLessEqual(final, cr.CHART_DATA_TARGET_PT * 1.01,
+                                     f"{name} 資料文字溢出逾 1%")
 
     def test_note_text_lands_on_12pt(self):
         for name, w, h in self.CANVASES:
             with self.subTest(name):
                 px = cr.chart_font_px(w, h, target_pt=cr.CHART_NOTE_TARGET_PT)
-                self.assertAlmostEqual(self._final_pt(w, h, px), cr.CHART_NOTE_TARGET_PT,
-                                       places=1, msg=f"{name} 註記沒落在 12pt")
+                final = self._final_pt(w, h, px)
+                self.assertGreaterEqual(final, cr.CHART_NOTE_TARGET_PT,
+                                        f"{name} 註記低於 12pt")
+                self.assertLessEqual(final, cr.CHART_NOTE_TARGET_PT * 1.01,
+                                     f"{name} 註記溢出逾 1%")
 
     def test_note_is_smaller_than_data(self):
         """⚠ 註記要比資料小一級——兩者一樣大時，備註會跟內容搶注意力。"""

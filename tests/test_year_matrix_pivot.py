@@ -89,7 +89,9 @@ class YearMatrixLayoutTests(unittest.TestCase):
     def test_definition_declares_layout(self):
         from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 
-        for name in ("applicant_year_matrix", "owner_year_matrix"):
+        # ⚠ RPT-011（2026-08-06）owner_year_matrix 已刪——本斷言是切片 1 的漏網
+        # （subtest 失敗不印 FAILED 行，藏在「N failed」計數裡兩輪才現形）。
+        for name in ("applicant_year_matrix",):
             with self.subTest(report=name):
                 self.assertEqual(getattr(REPORT_DEFINITIONS[name], "layout", None),
                                  "stacked", f"{name} 應宣告上下排列")

@@ -41,6 +41,9 @@ EXPANDED_REPORTS = frozenset({
     "applicant_ranking",
     "applicant_country_distribution",
     "applicant_year_matrix",
+    # lifecycle（專利狀態分析）2026-08-07 起走展開口徑（前十大申請人×狀態桶，
+    # 含共同申請；過計數註記由 population.OVER_COUNTING_REPORTS 承接）。
+    "lifecycle",
 })
 
 
