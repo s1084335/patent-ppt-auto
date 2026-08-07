@@ -530,9 +530,36 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 /* ── 響應式：窄螢幕收合右欄與左欄 ── */
 @media (max-width: 960px) { #ai-panel { flex-basis: 240px; } #nav-panel { flex-basis: 160px; } }
 @media (max-width: 720px) {
+  body { height: auto; min-height: 100vh; overflow: auto; }
+  #topbar { flex-wrap: wrap; gap: 0.55rem; align-items: flex-start; }
+  #topbar .brand { flex: 0 0 100%; }
+  #topbar .spacer { display: none; }
+  #workspace-select { min-width: 0; flex: 1 1 14rem; max-width: 100%; }
   #layout { flex-direction: column; overflow-y: auto; }
-  #nav-panel, #ai-panel { flex-basis: auto; border: none; border-bottom: 1px solid var(--border); }
+  #nav-panel, #ai-panel { flex: 0 0 auto; border: none; border-bottom: 1px solid var(--border); width: 100%; }
   #nav-panel { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+  #nav-panel .nav-section-label { flex: 0 0 100%; }
+  #nav-panel .nav-item { width: auto; flex: 1 1 8rem; }
+  #main-panel { overflow: visible; padding: 1rem; }
+  #ai-panel { max-height: none; overflow: visible; }
+  #tw-legal-status-body .table-wrap { overflow: visible; max-height: none !important; }
+  #tw-legal-status-body table.data { border: none; }
+  #tw-legal-status-body table.data thead { display: none; }
+  #tw-legal-status-body table.data tr {
+    display: block; border: 1px solid var(--border); border-radius: 0.4rem;
+    margin: 0.55rem 0; background: var(--panel);
+  }
+  #tw-legal-status-body table.data td {
+    display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 0.5rem;
+    border-right: none; max-width: none; min-width: 0; align-items: center;
+  }
+  #tw-legal-status-body table.data td:nth-child(1)::before { content: "Patent"; font-weight: 600; }
+  #tw-legal-status-body table.data td:nth-child(2)::before { content: "Title"; font-weight: 600; }
+  #tw-legal-status-body table.data td:nth-child(3)::before { content: "Applicant"; font-weight: 600; }
+  #tw-legal-status-body table.data td:nth-child(4)::before { content: "Status"; font-weight: 600; }
+  #tw-legal-status-body table.data td:nth-child(5)::before { content: "Action"; font-weight: 600; }
+  #tw-legal-status-body select.text-input { width: 100%; min-width: 0; }
+  #tw-legal-status-body .btn { justify-content: center; width: 100%; }
 }
 </style>
 </head>
@@ -895,12 +922,122 @@ async function renderPatents() {
     + '<input class="text-input" id="patent-kw" placeholder="搜尋 專利號／名稱／申請人" style="min-width:260px">'
     + '<button class="btn btn-outline" onclick="onPatentSearch()">搜尋</button>'
     + '</div>'
+    + '<details class="maint-details" id="tw-legal-status-panel" ontoggle="onTwLegalStatusToggle()">'
+    + '<summary>TW 專利狀態管理</summary>'
+    + '<div class="maint-card">'
+    + '<div id="tw-legal-status-body" class="hint">展開後載入</div>'
+    + '</div>'
+    + '</details>'
     + '<div id="patents-body"><div class="hint">載入中…</div></div>';
   const kwInput = el('patent-kw');
   if (kwInput) kwInput.addEventListener('keydown', e => { if (e.key === 'Enter') onPatentSearch(); });
   await loadAllPatents();
 }
 function onPatentSearch() { state.patentsOffset = 0; loadAllPatents(); }
+
+function twLegalStatusWorkspaceQuery(params) {
+  if (state.workspaceId) params.set('workspace_id', state.workspaceId);
+  return params;
+}
+
+async function onTwLegalStatusToggle() {
+  const panel = el('tw-legal-status-panel');
+  if (!panel || !panel.open) return;
+  await loadTwLegalStatusPending();
+}
+
+async function loadTwLegalStatusPending() {
+  const body = el('tw-legal-status-body');
+  if (!body) return;
+  body.innerHTML = '<div class="hint" style="padding:.4rem 0">Loading...</div>';
+  const params = twLegalStatusWorkspaceQuery(new URLSearchParams({ limit: '50', offset: '0' }));
+  try {
+    const data = await getJson(API + '/patents/tw-legal-status/pending?' + params.toString());
+    renderTwLegalStatusPending(data);
+  } catch (e) {
+    body.innerHTML = '<div class="task-detail-error">Load failed: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+function renderTwLegalStatusPending(data) {
+  const body = el('tw-legal-status-body');
+  if (!body) return;
+  const items = data.items || [];
+  const statuses = data.allowed_statuses || [];
+  if (!items.length) {
+    body.innerHTML = '<div class="hint" style="padding:.4rem 0">No TW patents are waiting for status registration.</div>';
+    return;
+  }
+  const options = statuses.map(s => '<option value="' + escHtml(s) + '">' + escHtml(s) + '</option>').join('');
+  body.innerHTML = '<div class="hint" id="tw-legal-status-summary" style="padding:0 0 .5rem">'
+    + 'Pending TW patents: ' + escHtml(data.total || items.length) + '</div>'
+    + '<div id="tw-legal-status-refresh-message" class="hint" style="padding:0 0 .4rem"></div>'
+    + '<div class="table-wrap" style="max-height:22rem">'
+    + '<table class="data"><thead><tr>'
+    + '<th>Patent</th><th>Title</th><th>Applicant</th><th>Status</th><th class="cell-nowrap">Action</th>'
+    + '</tr></thead><tbody id="tw-legal-status-rows">'
+    + items.map(it => {
+      const id = it.patent_id;
+      const label = it.patent_number || it.publication_number || it.application_number || id;
+      return '<tr id="tw-legal-status-row-' + escHtml(id) + '">'
+        + '<td>' + escHtml(label) + '</td>'
+        + '<td>' + escHtml(it.title || '') + '</td>'
+        + '<td>' + escHtml(it.applicant_display_name || '') + '</td>'
+        + '<td><select class="text-input" id="tw-status-select-' + escHtml(id) + '">' + options + '</select></td>'
+        + '<td class="cell-nowrap"><button class="btn btn-primary" id="tw-status-save-' + escHtml(id)
+        + '" onclick="saveTwLegalStatus(' + escHtml(id) + ')">Save</button></td>'
+        + '</tr>';
+    }).join('')
+    + '</tbody></table></div>';
+}
+
+async function saveTwLegalStatus(patentId) {
+  const select = el('tw-status-select-' + patentId);
+  const button = el('tw-status-save-' + patentId);
+  const message = el('tw-legal-status-refresh-message');
+  if (!select) return;
+  if (button) button.disabled = true;
+  try {
+    const payload = { legal_status: select.value };
+    if (state.workspaceId) payload.workspace_id = state.workspaceId;
+    const result = await getJson(API + '/patents/' + encodeURIComponent(patentId) + '/tw-legal-status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const row = el('tw-legal-status-row-' + patentId);
+    if (row) row.remove();
+    if (message) {
+      message.innerHTML = result.refresh_status === 'enqueue_failed'
+        ? 'Saved. Report refresh did not start. <button class="btn btn-outline" onclick="retryTwLegalStatusRefresh()">Retry refresh</button>'
+        : 'Saved. Report refresh is running in the background.';
+    }
+    const rows = el('tw-legal-status-rows');
+    if (!rows || !rows.children.length) await loadTwLegalStatusPending();
+    fetchTasks();
+  } catch (e) {
+    if (message) message.innerHTML = '<span class="task-detail-error">Save failed: ' + escHtml(e.message) + '</span>';
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function retryTwLegalStatusRefresh() {
+  const message = el('tw-legal-status-refresh-message');
+  try {
+    const payload = {};
+    if (state.workspaceId) payload.workspace_id = state.workspaceId;
+    await getJson(API + '/patents/tw-legal-status/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (message) message.textContent = 'Report refresh is running in the background.';
+    fetchTasks();
+  } catch (e) {
+    if (message) message.innerHTML = '<span class="task-detail-error">Refresh failed: ' + escHtml(e.message) + '</span>';
+  }
+}
 
 // ══════════ 瀏覽專利（跟隨頂列選定的 workspace；#C 2026-07-26） ══════════
 // 純看專利表格：選全庫→全庫專利（跨 workspace，帶所屬 Workspace 欄）；選一般 ws→該 ws 專利。

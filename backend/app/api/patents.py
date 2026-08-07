@@ -15,11 +15,24 @@ import hashlib
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Path, Query, Response
+from pydantic import BaseModel, Field
 
 from backend.app.app_layer import patent_queries
 
-
 router = APIRouter(tags=["patents"])
+
+
+class TwLegalStatusRequest(BaseModel):
+    """TW 專利狀態單筆登錄請求。"""
+
+    legal_status: str = Field(..., min_length=1, max_length=20)
+    workspace_id: int | None = Field(default=None, ge=1)
+
+
+class TwLegalStatusRefreshRequest(BaseModel):
+    """TW 專利狀態分析刷新請求。"""
+
+    workspace_id: int | None = Field(default=None, ge=1)
 
 
 @router.get("/patents/search")
@@ -51,6 +64,50 @@ def list_patents(
 
 
 # 內嵌圖 magic number → MIME；WIPS 匯出實測為 JPEG，但不寫死單一格式（PNG/GIF 亦可能出現）。
+@router.get("/patents/tw-legal-status/pending")
+def list_pending_tw_legal_status_patents(
+    workspace_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """列出尚未登錄狀態的 TW 專利，並回傳後端唯一值域。"""
+    return patent_queries.list_pending_tw_legal_status_patents(
+        workspace_id=workspace_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/patents/tw-legal-status/refresh")
+def retry_tw_legal_status_refresh(
+    request: TwLegalStatusRefreshRequest,
+) -> dict[str, Any]:
+    """Retry only the lifecycle status-analysis refresh."""
+    return patent_queries.enqueue_tw_legal_status_refresh(workspace_id=request.workspace_id)
+
+
+@router.post("/patents/{patent_id}/tw-legal-status")
+def register_tw_legal_status(
+    request: TwLegalStatusRequest,
+    patent_id: int = Path(..., ge=1),
+) -> dict[str, Any]:
+    """首次登錄單筆 TW 專利狀態。"""
+    try:
+        return patent_queries.register_tw_legal_status(
+            patent_id=patent_id,
+            legal_status=request.legal_status,
+            workspace_id=request.workspace_id,
+        )
+    except ValueError as exc:
+        if isinstance(exc, patent_queries.TwLegalStatusNotFoundError):
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if isinstance(exc, patent_queries.TwLegalStatusCountryError):
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if isinstance(exc, patent_queries.TwLegalStatusConflictError):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 _IMAGE_SIGNATURES: tuple[tuple[bytes, str], ...] = (
     (b"\xff\xd8\xff", "image/jpeg"),
     (b"\x89PNG\r\n\x1a\n", "image/png"),

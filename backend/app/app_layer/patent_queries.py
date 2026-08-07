@@ -19,13 +19,17 @@ from typing import Any
 from psycopg.rows import dict_row
 
 from backend.app.clustering.sources import source_fields
+from backend.app.db import job_repository
 from backend.app.db.connection import get_pool
-from backend.app.transforms.patent_numbers import display_number_sql
+from backend.app.mappings.legal_status import (
+    TW_LEGAL_STATUS_ALLOWED,
+    validate_tw_legal_status,
+)
 from backend.app.repositories.topic_state_repository import (
     PostgresTopicStateRepository,
     TopicStateNotFoundError,
 )
-
+from backend.app.transforms.patent_numbers import display_number_sql
 
 # ── 顯示欄位單一事實來源 ──────────────────────────────────────────────
 # 2026-07-23 定案的專利顯示欄位：回應 key → 取值 SQL 運算式。清單與詳情共用同一組欄位
@@ -239,6 +243,78 @@ ORDER BY (m.pid)::bigint, w.workspace_id
 
 
 # 單筆代表圖取回：只取 "主附圖" 一欄（不 SELECT *，避免把主表其他大欄一併拖回）。
+_PENDING_TW_STATUS_WHERE = """
+WHERE p.country_code = 'TW'
+  AND NULLIF(BTRIM(p.legal_status), '') IS NULL
+  AND (
+      %(workspace_id)s::bigint IS NULL
+      OR EXISTS (
+          SELECT 1
+          FROM app_layer.workspaces w
+          JOIN LATERAL jsonb_array_elements(w.patent_ids_json) AS m(pid) ON TRUE
+          WHERE w.workspace_id = %(workspace_id)s::bigint
+            AND (m.pid)::bigint = p.id
+      )
+  )
+"""
+
+_PENDING_TW_STATUS_ITEMS_SQL = f"""
+SELECT
+    p.id AS patent_id,
+    {display_number_sql("p")} AS patent_number,
+    p.title,
+    p.country_code,
+    rpb.applicant_display_name,
+    NULLIF(BTRIM(p.legal_status), '') AS legal_status
+FROM core_layer.patents p
+LEFT JOIN derived_layer.report_patent_base rpb ON rpb.patent_id = p.id
+{_PENDING_TW_STATUS_WHERE}
+ORDER BY p.id
+LIMIT %(limit)s OFFSET %(offset)s
+"""
+
+_PENDING_TW_STATUS_COUNT_SQL = f"""
+SELECT count(*) AS total
+FROM core_layer.patents p
+{_PENDING_TW_STATUS_WHERE}
+"""
+
+_REGISTER_TW_STATUS_SQL = """
+WITH target AS (
+    SELECT id, legal_status
+    FROM core_layer.patents
+    WHERE id = %(patent_id)s AND country_code = 'TW'
+    FOR UPDATE
+), updated AS (
+    UPDATE core_layer.patents p
+    SET legal_status = %(status)s::text,
+        legal_status_history = COALESCE(p.legal_status_history, '[]'::jsonb)
+            || jsonb_build_array(jsonb_build_object(
+                'from_status', target.legal_status,
+                'to_status', %(status)s::text,
+                'changed_at', to_jsonb(now())
+            ))
+    FROM target
+    WHERE p.id = target.id
+      AND NULLIF(BTRIM(p.legal_status), '') IS NULL
+    RETURNING p.id AS patent_id, target.legal_status AS from_status, p.legal_status AS to_status
+)
+SELECT patent_id, from_status, to_status FROM updated
+"""
+
+
+class TwLegalStatusNotFoundError(ValueError):
+    """找不到指定專利。"""
+
+
+class TwLegalStatusCountryError(ValueError):
+    """指定專利不是 TW 專利。"""
+
+
+class TwLegalStatusConflictError(ValueError):
+    """指定 TW 專利已經登錄 legal_status。"""
+
+
 _PATENT_FIGURE_SQL = 'SELECT "主附圖" AS figure FROM core_layer.patents WHERE id = %(pid)s'
 
 
@@ -287,13 +363,101 @@ def _topic_labels_by_patent(workspace_id: int | None) -> dict[str, dict[int, str
 
 def get_patent_figure(patent_id: int) -> bytes | None:
     """取單筆專利的代表圖位元組；查無專利或該筆無圖皆回 None（由 API 層轉 404）。"""
-    with get_pool().connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(_PATENT_FIGURE_SQL, {"pid": patent_id})
-            row = cur.fetchone()
+    with get_pool().connection() as conn, conn.cursor() as cur:
+        cur.execute(_PATENT_FIGURE_SQL, {"pid": patent_id})
+        row = cur.fetchone()
     if not row or row[0] is None:
         return None
     return bytes(row[0])
+
+
+def allowed_tw_legal_statuses() -> list[str]:
+    """回傳 TW 人工登錄狀態清單，供前端產生下拉選單。"""
+    return list(TW_LEGAL_STATUS_ALLOWED)
+
+
+def list_pending_tw_legal_status_patents(
+    *,
+    workspace_id: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """列出尚未人工登錄狀態的 TW 專利。"""
+    params = {"workspace_id": workspace_id, "limit": limit, "offset": offset}
+    with get_pool().connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_PENDING_TW_STATUS_COUNT_SQL, params)
+        total = int(cur.fetchone()["total"])
+        cur.execute(_PENDING_TW_STATUS_ITEMS_SQL, params)
+        items = cur.fetchall()
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "allowed_statuses": allowed_tw_legal_statuses(),
+    }
+
+
+def _classify_tw_status_failure(patent_id: int) -> None:
+    """把條件式更新未命中的狀態轉成明確錯誤。"""
+    with get_pool().connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT country_code, legal_status FROM core_layer.patents WHERE id = %s",
+            (patent_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        raise TwLegalStatusNotFoundError(f"patent {patent_id} not found")
+    if row["country_code"] != "TW":
+        raise TwLegalStatusCountryError(f"patent {patent_id} is not a TW patent")
+    raise TwLegalStatusConflictError(f"patent {patent_id} already has legal_status")
+
+
+def enqueue_tw_legal_status_refresh(*, workspace_id: int | None = None) -> dict[str, Any]:
+    """只排入 lifecycle 狀態分析刷新，不重寫狀態或 history。"""
+    payload: dict[str, Any] = {"report_names": ["lifecycle"]}
+    if workspace_id is not None:
+        payload["workspace_id"] = workspace_id
+    job = job_repository.create_job(
+        "report_generate",
+        payload,
+        workspace_id=workspace_id,
+    )
+    return {"refresh_status": "queued", "refresh_job_id": job.job_id}
+
+
+def register_tw_legal_status(
+    *,
+    patent_id: int,
+    legal_status: str,
+    workspace_id: int | None = None,
+) -> dict[str, Any]:
+    """首次登錄 TW 專利狀態，並在提交後背景刷新 lifecycle 報表。"""
+    status = validate_tw_legal_status(legal_status)
+    with get_pool().connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(_REGISTER_TW_STATUS_SQL, {"patent_id": patent_id, "status": status})
+            row = cur.fetchone()
+            if row is None:
+                conn.rollback()
+                _classify_tw_status_failure(patent_id)
+            cur.execute(
+                "UPDATE derived_layer.report_patent_base "
+                "SET legal_status = %s WHERE patent_id = %s",
+                (status, patent_id),
+            )
+        conn.commit()
+
+    try:
+        refresh = enqueue_tw_legal_status_refresh(workspace_id=workspace_id)
+    except Exception as exc:  # noqa: BLE001 - 狀態已提交，刷新失敗不可 rollback
+        refresh = {"refresh_status": "enqueue_failed", "refresh_error": str(exc)}
+    return {
+        "saved": True,
+        "patent_id": int(row["patent_id"]),
+        "legal_status": str(row["to_status"]),
+        **refresh,
+    }
 
 
 def search_patents(*, q: str, limit: int = 20) -> dict[str, Any]:
@@ -309,10 +473,9 @@ def search_patents(*, q: str, limit: int = 20) -> dict[str, Any]:
         return {"items": []}
     pattern = f"%{cleaned}%"
     params = {"q": pattern, "limit": limit}
-    with get_pool().connection() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(_PATENT_SEARCH_SQL, params)
-            items = cur.fetchall()
+    with get_pool().connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_PATENT_SEARCH_SQL, params)
+        items = cur.fetchall()
     return {"items": items}
 
 
@@ -346,17 +509,16 @@ def list_patents(
     cleaned = keyword.strip() if keyword else None
     kw = f"%{cleaned}%" if cleaned else None
     params = {"kw": kw, "limit": limit, "offset": offset}
-    with get_pool().connection() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(_PATENT_LIST_COUNT_SQL, {"kw": kw})
-            total = int(cur.fetchone()["total"])
-            cur.execute(_PATENT_LIST_ITEMS_SQL, params)
-            items = cur.fetchall()
-            # 本頁 patent_id 一次批次反查歸屬；空頁時仍發同一條查詢（帶空陣列），
-            # 讓查詢次數與筆數無關（N+1 防護測試以次數相同為契約）。
-            pids = [it["patent_id"] for it in items]
-            cur.execute(_PATENT_WORKSPACES_SQL, {"pids": pids})
-            membership_rows = cur.fetchall()
+    with get_pool().connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_PATENT_LIST_COUNT_SQL, {"kw": kw})
+        total = int(cur.fetchone()["total"])
+        cur.execute(_PATENT_LIST_ITEMS_SQL, params)
+        items = cur.fetchall()
+        # 本頁 patent_id 一次批次反查歸屬；空頁時仍發同一條查詢（帶空陣列），
+        # 讓查詢次數與筆數無關（N+1 防護測試以次數相同為契約）。
+        pids = [it["patent_id"] for it in items]
+        cur.execute(_PATENT_WORKSPACES_SQL, {"pids": pids})
+        membership_rows = cur.fetchall()
     membership: dict[int, list[dict[str, Any]]] = {}
     for row in membership_rows:
         membership.setdefault(row["patent_id"], []).append(
