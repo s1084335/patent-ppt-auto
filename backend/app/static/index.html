@@ -698,8 +698,7 @@ const state = {
   // 全庫（下拉第一項）：選它時 isGlobalWs=true、workspaceId 落到全庫真實 id。
   isGlobalWs: false,
   globalWorkspaceId: null,   // 後端全庫 workspace 真實 id（loadWorkspaces 取得）
-  nav: 'patents',
-  patentsOffset: 0,
+  nav: 'browse',
   // 分類區專利清單的分頁位移（2026-07-27 使用者定：與總覽一致都要分頁）。
   // 切換主題／通道／workspace 時歸零，否則會停在上一個主題的頁碼而顯示空白。
   topicPatentsOffset: 0,
@@ -798,7 +797,7 @@ function toggleTheme() {
 
 // ══════════ Workspace 切換 ══════════
 // 全庫哨兵：Workspace 下拉第一項固定為「全庫（所有專利）」，value 為此哨兵字串。
-// 選它＝原專利總覽視角（renderPatents 全庫，跨 workspace）。全庫恆為可選第一項，
+// 選它＝瀏覽專利的全庫視角（跨 workspace；原專利總覽已刪）。全庫恆為可選第一項，
 // 不再有「尚無 workspace」空狀態（2026-07-24 定案，一併解掉 HTTP 500 空狀態）。
 const GLOBAL_WS_VALUE = '__global__';
 // 目前是否選在全庫：下拉選到哨兵時 state.isGlobalWs 為 true。
@@ -844,7 +843,7 @@ async function loadWorkspaces() {
     sel.value = GLOBAL_WS_VALUE;
     selectGlobalWorkspace();
   }
-  state.nav = 'patents';
+  state.nav = 'browse';
   renderMain();
 }
 // 選全庫：旗標打開、workspaceId 落到全庫真實 id（尚未建立全庫時為 null）。
@@ -861,13 +860,12 @@ function onWorkspaceChange() {
   try { localStorage.setItem('workspaceSel', v); } catch (_) {}
   if (v === GLOBAL_WS_VALUE) {
     selectGlobalWorkspace();
-    state.nav = 'patents';  // 選全庫＝原總覽視角：導向專利總覽（跨 workspace 全庫清單）。
+    state.nav = 'browse';  // 選全庫→瀏覽專利（跨 workspace 全庫清單；總覽已刪）。
   } else {
     state.isGlobalWs = false;
     state.workspaceId = v ? parseInt(v, 10) : null;
   }
-  state.patentsOffset = 0;
-  state.topicPatentsOffset = 0;   // 換 workspace 兩份清單的頁碼都歸零
+  state.topicPatentsOffset = 0;   // 換 workspace 清單頁碼歸零
   state.topicFilterKey = null;
   renderMain();
 }
@@ -890,7 +888,7 @@ function renderMain() {
   // 其餘區（分類區／報表／匯出）仍依選定的 workspace（含全庫）運作。全庫恆為可選第一項，
   // 不再有「尚無 workspace」空狀態；僅在全庫尚未於後端建立（無任何專利）時，分類／報表等
   // workspace 內功能暫無對象，顯示可讀提示（非 500）。
-  const WS_FREE_NAVS = ['patents', 'status', 'comparison'];
+  const WS_FREE_NAVS = ['browse', 'status', 'comparison'];
   if (!state.workspaceId && WS_FREE_NAVS.indexOf(state.nav) === -1) {
     m.innerHTML = isGlobalSelected()
       ? '<div class="hint">全庫尚未建立（尚無匯入專利）；匯入專利後即可使用分類／報表／匯出。</div>'
@@ -898,7 +896,6 @@ function renderMain() {
     return;
   }
   switch (state.nav) {
-    case 'patents': return renderPatents();
     case 'browse': return renderBrowse();
     case 'topics': return renderTopics();
     case 'reports': return renderReports();
@@ -909,31 +906,10 @@ function renderMain() {
   }
 }
 
-// ══════════ 專利總覽（GET /patents：全庫、跨所有 workspace，一頁 100 筆） ══════════
-// 2026-07-23 定案：總覽顯示全庫專利（不分 workspace），每筆標示屬於哪些 workspace；
-// 分類區／報表／匯出仍依頂列選定的 workspace 運作，故 workspace 切換保留。
-async function renderPatents() {
-  const m = el('main-panel');
-  m.innerHTML = '<h2 class="panel-title">專利總覽</h2>'
-    + '<p class="hint" style="padding:0 0 0.6rem">顯示全庫專利（不分 workspace）；'
-    + '「所屬 Workspace」欄標示每筆專利被哪些 workspace 收錄。'
-    + '<strong>點任一列可展開該件的完整欄位</strong>。</p>'
-    + '<div class="toolbar">'
-    + '<input class="text-input" id="patent-kw" placeholder="搜尋 專利號／名稱／申請人" style="min-width:260px">'
-    + '<button class="btn btn-outline" onclick="onPatentSearch()">搜尋</button>'
-    + '</div>'
-    + '<details class="maint-details" id="tw-legal-status-panel" ontoggle="onTwLegalStatusToggle()">'
-    + '<summary>TW 專利狀態管理</summary>'
-    + '<div class="maint-card">'
-    + '<div id="tw-legal-status-body" class="hint">展開後載入</div>'
-    + '</div>'
-    + '</details>'
-    + '<div id="patents-body"><div class="hint">載入中…</div></div>';
-  const kwInput = el('patent-kw');
-  if (kwInput) kwInput.addEventListener('keydown', e => { if (e.key === 'Enter') onPatentSearch(); });
-  await loadAllPatents();
-}
-function onPatentSearch() { state.patentsOffset = 0; loadAllPatents(); }
+// ══════════ 專利總覽已刪（2026-08-07 使用者定案） ══════════
+// 「專利總覽」與瀏覽專利選全庫功能重複（同一份全庫清單、同一個 'overview'
+// 欄位組含所屬 Workspace 欄）——同一概念不得兩處落點，總覽整頁刪除，
+// 選全庫直接進瀏覽專利；TW 專利狀態管理面板隨遷至瀏覽專利（與資料維護並存）。
 
 function twLegalStatusWorkspaceQuery(params) {
   if (state.workspaceId) params.set('workspace_id', state.workspaceId);
@@ -1085,6 +1061,14 @@ async function renderBrowse() {
     + '<strong>② 直接填公司中文名稱與變體</strong>。'
     + '成果顯示在下方專利表的申請人／專利權人／受讓人欄與相關報表。</p>'
     + '<div id="company-code-registry"></div>'
+    + '</div>'
+    + '</details>'
+    // ── TW 專利狀態管理（2026-08-07 使用者定案：與資料維護一起出現，
+    //    不分全庫或特定 workspace；原掛在專利總覽，總覽刪除後隨遷至此）──
+    + '<details class="maint-details" id="tw-legal-status-panel" ontoggle="onTwLegalStatusToggle()">'
+    + '<summary>TW 專利狀態管理</summary>'
+    + '<div class="maint-card">'
+    + '<div id="tw-legal-status-body" class="hint">展開後載入</div>'
     + '</div>'
     + '</details>'
     + '<div id="browse-body"><div class="hint">載入中…</div></div>';
@@ -1775,20 +1759,6 @@ function browsePatentsTableHtml(data, scope) {
     + '</div>';
 }
 // 全庫專利：走 GET /patents（跨 workspace），一律分頁（PATENTS_PAGE_SIZE），不一次撈全部。
-async function loadAllPatents() {
-  const body = el('patents-body');
-  if (!body) return;
-  const kw = (el('patent-kw') && el('patent-kw').value.trim()) || '';
-  const qs = 'limit=' + PATENTS_PAGE_SIZE + '&offset=' + state.patentsOffset
-    + (kw ? '&keyword=' + encodeURIComponent(kw) : '');
-  try {
-    const data = await getJson(API + '/patents?' + qs);
-    body.innerHTML = allPatentsTableHtml(data);
-  } catch (e) {
-    body.innerHTML = '<div class="card">載入專利失敗（'
-      + escHtml((e && e.message) || '未知錯誤') + '）。</div>';
-  }
-}
 // ── 專利顯示欄位：單一事實來源（2026-07-23 定案，2026-07-24 分類拆兩欄） ──
 // 表頭與資料列、列表與詳情**全部**由這一份定義驅動；新增／移除欄位只改這裡，
 // 不在別處重寫欄名或順序（使用者紅線：欄位清單不得散落多處硬編、不寫死欄位總數）。
@@ -1931,22 +1901,6 @@ function patentTableHtml(data, scope) {
     + '</tr></thead>'
     + '<tbody>' + rows + '</tbody></table></div>';
 }
-// 全庫專利表（專利總覽）：共用 patentTableHtml，另加跨 workspace 的分頁器。
-function allPatentsTableHtml(data) {
-  const items = data.items || [];
-  if (items.length === 0) return '<div class="hint">查無符合的專利。</div>';
-  const total = data.total ?? items.length;
-  const from = (data.offset ?? 0) + 1;
-  const to = (data.offset ?? 0) + items.length;
-  const canPrev = (data.offset ?? 0) > 0;
-  const canNext = to < total;
-  return patentTableHtml(data, 'overview')
-    + '<div class="pager">'
-    + '<button class="btn btn-outline" ' + (canPrev ? '' : 'disabled') + ' onclick="pagePatents(-1)">上一頁</button>'
-    + '<span>' + from + '–' + to + ' / 共 ' + total + ' 件</span>'
-    + '<button class="btn btn-outline" ' + (canNext ? '' : 'disabled') + ' onclick="pagePatents(1)">下一頁</button>'
-    + '</div>';
-}
 // 詳情分節（2026-07-26 定案，比照專利公報版面）：長文（摘要／文獻備註）先獨立成節，
 // 其餘欄位收在「書目資料」。分節只影響排列順序與節標題，欄位定義仍是 PATENT_COLUMNS
 // 那一份唯一來源——此處只依 key 分組，不另立第二份欄位清單。
@@ -2073,13 +2027,6 @@ async function markIrrelevant(patentId) {
   } catch (e) {
     alert('連線錯誤：' + e.message);
   }
-}
-// 總覽分頁：全庫專利以 PATENTS_PAGE_SIZE 為一頁往前後翻，不一次撈全部。
-function pagePatents(dir) {
-  const next = state.patentsOffset + dir * PATENTS_PAGE_SIZE;
-  if (next < 0) return;
-  state.patentsOffset = next;
-  loadAllPatents();
 }
 
 // ══════════ 分類區（點主題→列該主題「指派」到的專利，非 label 文字比對） ══════════
@@ -3127,7 +3074,7 @@ function onTopicTag(key) {
   state.topicPatentsOffset = 0;      // 換主題一律回第一頁，不沿用上一個主題的頁碼
   renderTopicTags(topicListCache);   // 只更新標籤選取態；其內會續接概覽與清單
 }
-// 分類區專利清單翻頁（與總覽 pagePatents 同模式）。
+// 分類區專利清單翻頁（與瀏覽專利 pageBrowse 同模式）。
 function pageTopicPatents(dir) {
   // 「不相干」桶一次全列（自成表格、量小），沒有翻頁鈕也不該被翻頁影響。
   if (state.topicFilterKey === IRRELEVANT_KEY) return;
@@ -5777,9 +5724,8 @@ function gotoImportedWorkspace(workspaceId) {
   if (sel) sel.value = String(workspaceId);
   state.workspaceId = workspaceId;
   state.isGlobalWs = false;   // 切到匯入的一般 workspace：清全庫旗標。
-  state.patentsOffset = 0;
   state.topicFilterKey = null;
-  navTo('patents');
+  navTo('browse');
 }
 
 // ══════════ 初始化 ══════════
