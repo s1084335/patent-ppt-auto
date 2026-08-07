@@ -14,12 +14,15 @@ from backend.app.mappings import legal_status as m
 
 
 class AllowedListTests(unittest.TestCase):
-    def test_granted_term_matches_wips_column(self):
-        """🔴 值域＝WIPS「專利狀態」欄實測聯集（2026-08-07 同日二修定版）：
-        granted 該欄標「已核准」×180——「授權」是另一欄用詞，曾誤改已回退。
-        使用者原則：值要跟 WIPS 的值一樣，不然等於自加。"""
-        self.assertIn("已核准", m.TW_LEGAL_STATUS_ALLOWED)
-        self.assertNotIn("授權", m.TW_LEGAL_STATUS_ALLOWED)
+    def test_vocabulary_is_status_column_full_set(self):
+        """🔴 2026-08-07 第三修＝最終定版：唯一真實來源＝`状态[...]` 欄實測
+        全集（「專利狀態」欄是人工草稿、使用者明示不作依據）。11 項本體轉繁，
+        貼原值不自加不省略；granted＝授權、到期在列、草稿詞彙全數退場。"""
+        self.assertEqual(m.TW_LEGAL_STATUS_ALLOWED, (
+            "申請", "公開", "審查中", "即將授權", "授權",
+            "放棄", "撤回", "拒絕", "刪除", "無效", "到期"))
+        for draft in ("已核准", "屆滿失效", "核駁", "已失效", "已申請", "已公開"):
+            self.assertNotIn(draft, m.TW_LEGAL_STATUS_ALLOWED)
 
     def test_legacy_value_still_normalizes(self):
         """已登錄過的「已核准」仍收斂到 alive——容忍不刪，報表不因遷移空窗出錯。"""
@@ -57,6 +60,14 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(m.display_legal_status("沒見過的值"), "沒見過的值")
         self.assertIsNone(m.display_legal_status(None))
 
+    def test_draft_terms_fold_into_unified_vocabulary(self):
+        """草稿詞彙（第三修前殘值）顯示一律折回統一 11 項——統計只有一套說法。"""
+        cases = {"已核准": "授權", "已公開": "公開", "核駁": "拒絕",
+                 "已失效": "無效", "屆滿失效": "到期"}
+        for raw, disp in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(m.display_legal_status(raw), disp)
+
 
 class ReviseAndClearContractTests(unittest.TestCase):
     def test_register_sql_allows_overwrite(self):
@@ -72,9 +83,10 @@ class ReviseAndClearContractTests(unittest.TestCase):
         from backend.app.app_layer import patent_queries as q
 
         self.assertIsNone(q.normalize_tw_status_input(None))
-        self.assertEqual(q.normalize_tw_status_input("已核准"), "已核准")
+        self.assertEqual(q.normalize_tw_status_input("授權"), "授權")
+        # 草稿詞彙（已核准等）已退場，不再是合法輸入。
         with self.assertRaises(ValueError):
-            q.normalize_tw_status_input("授權")
+            q.normalize_tw_status_input("已核准")
 
     def test_panel_lists_all_tw_not_only_pending(self):
         """面板要列**全部** TW 案（含已登錄者才有東西可反悔），items 帶現值。"""

@@ -12,15 +12,17 @@ from backend.app.mappings import legal_status
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # 2026-08-07 定版：值域＝WIPS「專利狀態」欄實測聯集，granted＝「已核准」（曾誤改「授權」已回退）。
 CURATED_TW_STATUSES = (
-    "\u5df2\u7533\u8acb",
-    "\u5df2\u516c\u958b",
+    "\u7533\u8acb",
+    "\u516c\u958b",
     "\u5be9\u67e5\u4e2d",
-    "\u5df2\u6838\u51c6",
+    "\u5373\u5c07\u6388\u6b0a",
+    "\u6388\u6b0a",
     "\u653e\u68c4",
-    "\u6838\u99c1",
     "\u64a4\u56de",
-    "\u5df2\u5931\u6548",
-    "\u5c46\u6eff\u5931\u6548",
+    "\u62d2\u7d55",
+    "\u522a\u9664",
+    "\u7121\u6548",
+    "\u5230\u671f",
 )
 
 
@@ -30,15 +32,17 @@ class TwLegalStatusMappingContractTests(unittest.TestCase):
 
     def test_status_analysis_mapping_uses_four_buckets(self) -> None:
         expected = {
-            "\u5df2\u7533\u8acb": "pending",
-            "\u5df2\u516c\u958b": "pending",
+            "\u7533\u8acb": "pending",
+            "\u516c\u958b": "pending",
             "\u5be9\u67e5\u4e2d": "pending",
-            "\u5df2\u6838\u51c6": "alive",
+            "\u5373\u5c07\u6388\u6b0a": "pending",
+            "\u6388\u6b0a": "alive",
             "\u653e\u68c4": "dead",
-            "\u6838\u99c1": "dead",
             "\u64a4\u56de": "dead",
-            "\u5df2\u5931\u6548": "dead",
-            "\u5c46\u6eff\u5931\u6548": "dead",
+            "\u62d2\u7d55": "dead",
+            "\u522a\u9664": "dead",
+            "\u7121\u6548": "dead",
+            "\u5230\u671f": "dead",
         }
         self.assertEqual(legal_status.TW_LEGAL_STATUS_ANALYSIS_MAP, expected)
         self.assertEqual(legal_status.normalize_tw_legal_status_for_analysis(None), "unknown")
