@@ -1802,6 +1802,8 @@ const PATENT_COLUMNS = [
   { label: '主附圖', key: 'has_figure', listOnly: true, render: patentFigureCell, nowrap: true },
   { label: '申請國家', key: 'country_code', listOnly: true, nowrap: true },
   { label: '專利類型', key: 'patent_type', nowrap: true },
+  // 專利種類（五之三定案）：發明/新型/設計/未標示——設計案的分類空白由此欄解釋。
+  { label: '專利種類', key: 'patent_kind_display', nowrap: true },
   // 來源實測 0% 有值，欄位仍一律呈現（重匯有值即自動顯示，不需改前端）。
   // 2026-08-07：顯示繁體字面（後端 mappings 唯一定義處產生，前端只消費）。
   { label: '專利狀態', key: 'legal_status_display', wrap: true },

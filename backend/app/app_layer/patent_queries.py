@@ -21,6 +21,7 @@ from psycopg.rows import dict_row
 from backend.app.clustering.sources import source_fields
 from backend.app.db import job_repository
 from backend.app.db.connection import get_pool
+from backend.app.transforms.patent_kind import patent_kind
 from backend.app.mappings.legal_status import (
     TW_LEGAL_STATUS_ALLOWED,
     display_legal_status,
@@ -48,6 +49,8 @@ from backend.app.transforms.patent_numbers import display_number_sql
 _PATENT_FIELDS: dict[str, str] = {
     "country_code": "NULLIF(BTRIM({p}.country_code), '')",
     "patent_type": "NULLIF(BTRIM({p}.patent_type), '')",
+    # 專利種類推導（五之三）：patent_kind 需要兩欄組合，document_kind 一併帶出。
+    "document_kind": "NULLIF(BTRIM({p}.document_kind), '')",
     "legal_status": "NULLIF(BTRIM({p}.legal_status), '')",
     "title": "NULLIF(BTRIM({p}.title), '')",
     "title_original": "NULLIF(BTRIM({p}.title_original), '')",
@@ -548,6 +551,8 @@ def list_patents(
         it["workspaces"] = membership.get(it["patent_id"], [])
         # 顯示字面（2026-08-07）：簡→繁只在 mappings 定義一次，前端只消費此欄。
         it["legal_status_display"] = display_legal_status(it.get("legal_status"))
+        # 專利種類（五之三定案）：唯一定義處 transforms/patent_kind 推導。
+        it["patent_kind_display"] = patent_kind(it)
         for source_field, by_patent in topic_labels.items():
             it[topic_label_key(source_field)] = by_patent.get(it["patent_id"])
     return {"items": items, "total": total, "limit": limit, "offset": offset}
