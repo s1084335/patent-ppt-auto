@@ -17,13 +17,7 @@
 
 ### Requirement: CLU-014 AI 建議屬敘述型輔助，不得直接成為正式指派
 
-補分 AI 產出（建議主題＋一句理由）SHALL 落 `analysis_outputs`（帶 `output_type`、`ai_model`、`prompt_version`），MUST NOT 直接寫入 `topic_assignments`。機制 SHALL 為兩通道通用；補分輸入**逐通道定義、不共用**：技術通道＝文獻備註三級 fallback 文本（`PATENT_NOTE_SOURCE_COLUMNS`）；功效通道＝`解决课题 摘要`，MUST NOT 回落 `摘要`／`特征 摘要`／`解决手段 摘要`／`AI摘要`。功效候選的補分輸入為空時 SHALL 以「無可補分輸入」現形，MUST NOT 靜默消失或改餵他欄。建議主題 SHALL 限定為該通道現有主題清單中的 key；AI 回傳清單外主題時該筆 SHALL 標記為無效建議並現形，不得靜默丟棄或自創主題。
-
-#### Scenario: 功效候選缺輸入現形
-- **GIVEN** 一件非設計案在功效通道無 embeddings 且 `解决课题 摘要` 亦為空
-- **WHEN** 產出功效通道補分建議
-- **THEN** 該件 SHALL 在核准清單以「無可補分輸入」呈現（不可核准）
-- **AND** 系統 MUST NOT 改用其他欄位餵入 AI
+補分 AI 產出（建議主題＋一句理由）SHALL 落 `analysis_outputs`（帶 `output_type`、`ai_model`、`prompt_version`），MUST NOT 直接寫入 `topic_assignments`。機制 SHALL 為通道通用設計；本 change 僅接技術通道，AI 輸入 SHALL 為文獻備註三級 fallback 文本（`PATENT_NOTE_SOURCE_COLUMNS`），MUST NOT 回落其他欄位。（功效通道接線於功效通道改版輪實作：輸入＝`解决课题 摘要`、不得回落他欄、輸入為空以「無可補分輸入」現形——定案記於 proposal，屆時引用。）建議主題 SHALL 限定為該通道現有主題清單中的 key；AI 回傳清單外主題時該筆 SHALL 標記為無效建議並現形，不得靜默丟棄或自創主題。
 
 #### Scenario: 建議產出落敘述型通道
 - **GIVEN** 技術通道有 9 件補分候選且已有主題清單

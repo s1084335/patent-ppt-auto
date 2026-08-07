@@ -16,7 +16,7 @@
 - [ ] 3.1 Red：prompt 組裝測試——輸入含文獻備註 fallback 文本＋現有主題清單；輸出契約（patent_id／suggested_topic_key／reason）；清單外主題標 invalid 現形。
 - [ ] 3.2 Green：worker 新增 ai:topic_backfill 任務（沿用佇列→Companion→CLI→MCP 回存架構），建議落 analysis_outputs（output_type='topic_backfill_suggestion'）。
 - [ ] 3.3 Red/Green：重跑語意——同通道重跑取最新建議、已指派者不列候選。
-- [ ] 3.4 Red/Green：功效通道輸入契約——讀解决课题 摘要、不得回落他欄；輸入為空＝「無可補分輸入」現形；現有資料 0 候選。
+- [ ] 3.4（移出本輪）功效通道接線＝功效通道改版同輪實作（2026-08-07 使用者定案）；輸入契約定案已記 proposal。
 
 ## 4. Slice C：批次核准與正式指派（CLU-015、CLU-016）
 
@@ -28,5 +28,5 @@
 ## 5. 組合驗收
 
 - [ ] 5.1 OpenSpec strict validation、目標測試、範圍回歸、verify_module。
-- [ ] 5.2 真資料端到端：滑雪機 workspace 技術通道產 9 件建議（全 TW、無設計案）、功效通道顯示無候選；批次核准後 topic_assignments 9 筆帶標記；技術通道母體 35→44；前端實物截圖。
+- [ ] 5.2 真資料端到端：滑雪機 workspace 技術通道產 9 件建議（全 TW、無設計案）；批次核准後 topic_assignments 9 筆帶標記；技術通道母體 35→44；前端實物截圖。
 - [ ] 5.3 未適用與未執行項分開揭露；使用者確認後才 archive。
