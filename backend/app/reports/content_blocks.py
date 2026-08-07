@@ -23,11 +23,19 @@ TRAJECTORY_MIN_YEARS = 3
 KEY_PLAYER_LIMIT = 10
 
 
-def key_player_profiles(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """前十大申請人的 profile：件數、申請年、軌跡、共同/獨立拆分。
+def key_player_profiles(
+    rows: list[dict[str, Any]],
+    ranking: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """前十大競爭者的 profile：件數、申請年、軌跡、共同/獨立拆分、四面向。
+
+    🔴 **名單以排名頁為準**（2026-08-07 使用者定案）：`ranking`＝申請人排名頁
+    的順序名單（前十），本函式**不在此另用件數切一次**——排名頁若換口徑或
+    經人工調整，兩邊必須是同一份名單，否則就是同一份知識兩個落點。
+    ⚠ 排名頁有、本批資料查無的名字一律略過，不捏造空 profile。
+    ranking 未給（例如尚未產排名頁）才退回件數降冪＋名稱排序並取前十。
 
     rows 每列需含 applicant_display_name、patent_id、application_year（可缺年）。
-    回傳依件數降冪（同件數以名稱排序，確定性）。
     """
     by_applicant: dict[str, set[int]] = defaultdict(set)
     years: dict[str, set[int]] = defaultdict(set)
@@ -64,8 +72,12 @@ def key_player_profiles(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "joint_with": [{"applicant": p, "count": c}
                            for p, c in sorted(partners.items(), key=lambda kv: (-kv[1], kv[0]))],
         })
-    profiles.sort(key=lambda p: (-p["patent_count"], p["applicant"]))
-    profiles = profiles[:KEY_PLAYER_LIMIT]
+    if ranking:
+        by_name = {p["applicant"]: p for p in profiles}
+        profiles = [by_name[name] for name in ranking if name in by_name]
+    else:
+        profiles.sort(key=lambda p: (-p["patent_count"], p["applicant"]))
+        profiles = profiles[:KEY_PLAYER_LIMIT]
     # 四面向掛在 Key Player 上（2026-08-07 使用者定案：用在 10 個競爭者那裡，
     # **申請人排名頁不動**）——同一份計算，不在兩處各算一次。
     strength = {p["applicant"]: p for p in rights_strength_profiles(rows)}
@@ -79,13 +91,16 @@ def key_player_profiles(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return profiles
 
 
-def key_player_groups(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+def key_player_groups(
+    rows: list[dict[str, Any]],
+    ranking: list[str] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     """依**有無軌跡**分兩組（分頁依據，不是件數排名）。
 
     ⚠ 取捨已知且刻意：件數較高但無軌跡者會排在技術內容組——規則按軌跡分，
     版面就按軌跡分，不得讓版面反過來覆蓋規則（2026-08-05 定案）。
     """
-    profiles = key_player_profiles(rows)
+    profiles = key_player_profiles(rows, ranking=ranking)
     return {
         "trajectory": [p for p in profiles if p["has_trajectory"]],
         "technical": [p for p in profiles if not p["has_trajectory"]],

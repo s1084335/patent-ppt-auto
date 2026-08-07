@@ -203,3 +203,41 @@ class TechBreadthTests(unittest.TestCase):
         self.assertEqual(deem["granted_count"], 3)
         self.assertEqual(deem["kind_counts"], {"發明": 2, "新型": 1})
 
+
+class RankingDrivenSelectionTests(unittest.TestCase):
+    """🔴 2026-08-07 使用者定案：Key Player 的前 10 大**根據排名頁去取**，
+    不得在此另用件數切一次——否則排名頁換口徑或人工調整時兩邊分岔
+    （同一份知識兩個落點）。"""
+
+    ROWS = [
+        {"applicant_display_name": "A", "patent_id": 1, "application_year": 2020},
+        {"applicant_display_name": "A", "patent_id": 2, "application_year": 2022},
+        {"applicant_display_name": "A", "patent_id": 3, "application_year": 2024},
+        {"applicant_display_name": "B", "patent_id": 4, "application_year": 2021},
+        {"applicant_display_name": "C", "patent_id": 5, "application_year": 2021},
+    ]
+
+    def test_follows_ranking_order_and_membership(self):
+        """名單與順序都以排名頁為準——B 件數少於 A 仍排前面。"""
+        profiles = cb.key_player_profiles(self.ROWS, ranking=["B", "A"])
+        self.assertEqual([p["applicant"] for p in profiles], ["B", "A"])
+
+    def test_names_outside_ranking_excluded(self):
+        profiles = cb.key_player_profiles(self.ROWS, ranking=["A"])
+        self.assertEqual([p["applicant"] for p in profiles], ["A"])
+
+    def test_ranking_name_without_rows_skipped_not_fabricated(self):
+        """排名頁有、本批資料沒有的名字：略過，不得捏造空 profile。"""
+        profiles = cb.key_player_profiles(self.ROWS, ranking=["A", "不存在公司"])
+        self.assertEqual([p["applicant"] for p in profiles], ["A"])
+
+    def test_no_ranking_falls_back_to_count(self):
+        """沒給名單（例如尚未產排名頁）才退回件數排序，並仍守前 10。"""
+        profiles = cb.key_player_profiles(self.ROWS)
+        self.assertEqual(profiles[0]["applicant"], "A")
+
+    def test_groups_accept_ranking(self):
+        groups = cb.key_player_groups(self.ROWS, ranking=["B", "A"])
+        self.assertEqual([p["applicant"] for p in groups["trajectory"]], ["A"])
+        self.assertEqual([p["applicant"] for p in groups["technical"]], ["B"])
+
