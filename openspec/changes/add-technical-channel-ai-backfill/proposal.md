@@ -11,7 +11,7 @@
 ## What Changes
 
 - **補分候選判定**（唯一定義處）：該通道無 embeddings 且 `document_kind != 'S'`（設計案兩通道皆排除皆不補，2026-08-05 定案；判定不可用 `patent_type`）。
-- **AI 建議產出**：輸入＝文獻備註三級 fallback 文本（`PATENT_NOTE_SOURCE_COLUMNS`，60/60 覆蓋）＋現有主題清單（label＋summary）；輸出＝每件「建議主題 key＋一句理由」，落 `analysis_outputs`（敘述型通道，既有 `output_type`＋`ai_model`／`prompt_version` 欄，無需 migration）。AI 任務走既有佇列→Companion→headless CLI→MCP 回存架構。
+- **AI 建議產出**：輸入＝文獻備註三級 fallback 文本（`PATENT_NOTE_SOURCE_COLUMNS`，60/60 覆蓋）＋現有主題清單（label＋summary）；輸出＝每件「建議主題 key＋一句理由」，隨 job result 落 `app_layer.workflow_outputs`（⚠ 2026-08-07 實測回寫：analysis_outputs 為 legacy 空表非現行落點）。AI 任務走既有佇列→Companion→headless CLI→MCP 回存架構。
 - **批次核准 UI**（分類區）：一頁清單列出全部建議（專利號／標題／建議主題／理由／下拉可改），「全部核准」一鍵寫入，可逐筆改主題後再核准；核准前建議不進任何統計。
 - **正式指派寫入**：核准後由確定性程式寫入 `topic_assignments`，帶來源標記（人工核准之 AI 建議），符合結構型 domain 欄＋guard 的 AI 落點規則；寫入後報表母體自動反映（35→44），不觸發重新分群。
 ## Scope
@@ -25,7 +25,7 @@
 
 - 不改分群來源欄（維持獨立項／效果摘要純淨定案；乙案「改讀主權項」需另行實測定案）。
 - 設計案不補（`document_kind='S'` 排除）。
-- 不在 `topic_assignments` 加「待定」狀態（建議留在 analysis_outputs，核准才寫入；`topic_key NOT NULL` 不動）。⚠ 會加一欄 `assigned_source`（來源標記，見 design），這是唯一的 schema 變更。
+- 不在 `topic_assignments` 加「待定」狀態（建議留在 job result，核准才寫入；`topic_key NOT NULL` 不動）。⚠ 會加一欄 `assigned_source`（來源標記，見 design），這是唯一的 schema 變更。
 - AI 不直接寫入正式指派（紅線不動）。
 
 ## 已確認決策

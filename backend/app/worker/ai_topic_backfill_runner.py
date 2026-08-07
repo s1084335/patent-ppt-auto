@@ -3,8 +3,10 @@
 規格唯一來源：openspec change `add-technical-channel-ai-backfill`。
 
 三段式的第二段：對補分候選（該通道無 embeddings、非設計案、未指派）產
-「建議主題＋一句理由」。建議是**敘述型輔助**——落 `app_layer.analysis_outputs`
-（output_type='topic_backfill_suggestion'），不碰 `topic_assignments`；
+「建議主題＋一句理由」。建議是**敘述型輔助**——隨 job result 落 `app_layer.workflow_outputs`
+（output_type='job_result:ai:topic_backfill'，job 框架 complete_job 自動存；
+⚠ 2026-08-07 現實回寫：analysis_outputs 是 legacy_0021 空表，非現行落點），
+不碰 `topic_assignments`；
 正式指派由第三段（使用者批次核准）的確定性程式寫入。
 
 守則：
@@ -79,7 +81,7 @@ def run_topic_backfill(
     candidate_fetcher: Callable[[], list[dict[str, Any]]],
     topics_fetcher: Callable[[], list[dict[str, Any]]],
     cli_runner: Callable[..., str],
-    persister: Callable[[dict[str, Any]], dict[str, Any]],
+    persister: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ai_model: str | None = None,
     timeout_seconds: float = DEFAULT_CLI_TIMEOUT_SECONDS,
     progress: Callable[[str, int], None] | None = None,
@@ -92,7 +94,8 @@ def run_topic_backfill(
     _tick("取補分候選", 20)
     candidates = candidate_fetcher()
     if not candidates:
-        return {"candidates": 0, "suggested": 0, "invalid": 0, "persisted": False}
+        return {"candidates": 0, "suggested": 0, "invalid": 0, "workspace_id": workspace_id,
+                "source_field": source_field, "suggestions": []}
 
     topics = topics_fetcher()
     if not topics:
@@ -139,19 +142,19 @@ def run_topic_backfill(
 
     invalid = sum(1 for s in suggestions if not s["valid"])
     _tick("回存建議", 90)
-    persisted = persister({
-        "workspace_id": workspace_id,
-        "source_field": source_field,
-        "output_type": "topic_backfill_suggestion",
-        "prompt_version": PROMPT_VERSION,
-        "ai_model": ai_model,
-        "result": {"suggestions": suggestions, "workspace_id": workspace_id,
-                   "source_field": source_field},
-    })
-    return {
+    result = {
         "candidates": len(candidates),
         "suggested": len(suggestions) - invalid,
         "invalid": invalid,
-        "persisted": True,
-        **(persisted or {}),
+        "workspace_id": workspace_id,
+        "source_field": source_field,
+        "prompt_version": PROMPT_VERSION,
+        "ai_model": ai_model,
+        # 建議本體隨 job result 進 workflow_outputs（complete_job 自動存）。
+        "suggestions": suggestions,
     }
+    if persister is not None:
+        extra = persister(result)
+        if extra:
+            result.update(extra)
+    return result

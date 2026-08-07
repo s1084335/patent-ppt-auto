@@ -3,7 +3,8 @@
 - 輸入＝候選文獻備註文本＋現有主題清單；prompt 必須限定「只能從現有主題選」。
 - 輸出契約：[{patent_id, suggested_topic_key, reason}]；清單外主題標 invalid
   現形（不靜默丟棄、不自創主題）；未知 patent_id fail loud。
-- 建議落 analysis_outputs（敘述型），不碰 topic_assignments。
+- 建議隨 job result 落 workflow_outputs（complete_job 自動存；2026-08-07 現實
+  回寫：analysis_outputs 是 legacy_0021 空表非現行落點），不碰 topic_assignments。
 - 無候選＝不呼叫 CLI、不落任何 output（誠實回 0）。
 """
 from __future__ import annotations
@@ -83,9 +84,9 @@ class OutputContractTests(unittest.TestCase):
         self.assertEqual(result["suggested"], 2)
         self.assertEqual(result["invalid"], 0)
         payload = saved[0]
-        self.assertEqual(payload["output_type"], "topic_backfill_suggestion")
         self.assertEqual(payload["prompt_version"], runner.PROMPT_VERSION)
-        keys = [s["suggested_topic_key"] for s in payload["result"]["suggestions"]]
+        self.assertEqual(payload["source_field"], "wips_independent_claims")
+        keys = [s["suggested_topic_key"] for s in payload["suggestions"]]
         self.assertEqual(keys, ["T01", "T02"])
 
     def test_unknown_topic_key_marked_invalid_not_dropped(self):
@@ -94,7 +95,7 @@ class OutputContractTests(unittest.TestCase):
             {"patent_id": 102, "suggested_topic_key": "T02", "reason": "ok"},
         ])
         self.assertEqual(result["invalid"], 1)
-        rows = saved[0]["result"]["suggestions"]
+        rows = saved[0]["suggestions"]
         bad = next(r for r in rows if r["patent_id"] == 101)
         self.assertFalse(bad["valid"])
         self.assertIn("T99", bad["invalid_reason"])
@@ -106,7 +107,7 @@ class OutputContractTests(unittest.TestCase):
     def test_missing_patent_gets_placeholder_not_silent(self):
         """CLI 少回一件＝該件以 valid=False 現形，不得整批當成功。"""
         result, _, saved = _run([{"patent_id": 101, "suggested_topic_key": "T01", "reason": "r"}])
-        rows = saved[0]["result"]["suggestions"]
+        rows = saved[0]["suggestions"]
         missing = next(r for r in rows if r["patent_id"] == 102)
         self.assertFalse(missing["valid"])
         self.assertEqual(result["invalid"], 1)

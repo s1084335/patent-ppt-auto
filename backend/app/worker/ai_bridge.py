@@ -575,7 +575,6 @@ def _run_ai_topic_backfill_job(payload: dict[str, Any], context: JobContext) -> 
         candidate_fetcher=lambda: topic_backfill.fetch_candidates(int(workspace_id), source_field),
         topics_fetcher=lambda: topic_backfill.fetch_topics(int(workspace_id), source_field),
         cli_runner=cli,
-        persister=topic_backfill.persist_suggestions,
         ai_model=model or cli_kind,
         timeout_seconds=timeout,
         progress=lambda stage, pct: context.heartbeat(stage, pct),

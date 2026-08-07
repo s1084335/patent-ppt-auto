@@ -1,6 +1,8 @@
 """補分三段式的 DB 面（openspec change add-technical-channel-ai-backfill）。
 
-第一段候選查詢、第二段建議回存／讀取、第三段批次核准寫入。
+第一段候選查詢、第二段建議讀取（建議本體隨 job result 落 workflow_outputs，
+complete_job 自動存；⚠ analysis_outputs 是 legacy_0021 空表非現行落點）、
+第三段批次核准寫入。
 候選規則唯一定義處＝clustering/backfill.backfill_candidates，本檔只餵資料。
 """
 from __future__ import annotations
@@ -79,70 +81,36 @@ def fetch_topics(workspace_id: int, source_field: str) -> list[dict[str, Any]]:
     ]
 
 
-def persist_suggestions(payload: dict[str, Any]) -> dict[str, Any]:
-    """建議落 analysis_outputs（敘述型）：一批一個 analysis_run。"""
-    pids = [s["patent_id"] for s in payload["result"]["suggestions"]]
-    with get_pool().connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(
-            """
-            INSERT INTO app_layer.analysis_runs
-                (analysis_name, analysis_type, status, filter_json,
-                 parameters_json, selected_patent_ids_json)
-            VALUES (%s, 'topic_backfill', 'succeeded', %s, %s, %s)
-            RETURNING analysis_id
-            """,
-            (
-                f"topic_backfill {payload['source_field']}",
-                Jsonb({}),
-                Jsonb({"workspace_id": payload["workspace_id"],
-                       "source_field": payload["source_field"]}),
-                Jsonb(pids),
-            ),
-        )
-        analysis_id = int(cur.fetchone()["analysis_id"])
-        cur.execute(
-            """
-            INSERT INTO app_layer.analysis_outputs
-                (analysis_id, output_type, output_name, result_json, ai_model, prompt_version)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            RETURNING output_id
-            """,
-            (analysis_id, payload["output_type"], payload["source_field"],
-             Jsonb(payload["result"]), payload.get("ai_model"), payload["prompt_version"]),
-        )
-        output_id = int(cur.fetchone()["output_id"])
-        conn.commit()
-    return {"analysis_id": analysis_id, "output_id": output_id}
-
-
 def latest_suggestions(workspace_id: int, source_field: str) -> dict[str, Any]:
     """最新一批建議＋主題選單；已核准（已指派）者自動出清單。"""
     with get_pool().connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
-            SELECT o.result_json, o.ai_model, o.prompt_version, o.created_at
-            FROM app_layer.analysis_outputs o
-            JOIN app_layer.analysis_runs r ON r.analysis_id = o.analysis_id
-            WHERE o.output_type = %(t)s AND o.output_name = %(sf)s
-              AND (r.parameters_json ->> 'workspace_id')::bigint = %(workspace_id)s
-            ORDER BY o.created_at DESC
+            SELECT wo.data_json, wo.exported_at
+            FROM app_layer.workflow_outputs wo
+            JOIN app_layer.workflow_runs wr ON wr.run_id = wo.run_id
+            WHERE wo.output_type = 'job_result:ai:topic_backfill'
+              AND wr.workspace_id = %(workspace_id)s
+              AND wo.data_json ->> 'source_field' = %(sf)s
+            ORDER BY wo.exported_at DESC
             LIMIT 1
             """,
-            {"t": OUTPUT_TYPE, "sf": source_field, "workspace_id": workspace_id},
+            {"sf": source_field, "workspace_id": workspace_id},
         )
         row = cur.fetchone()
         assigned = _fetch_assigned_ids(cur, workspace_id, source_field)
     if row is None:
         return {"suggestions": [], "topics": _safe_topics(workspace_id, source_field),
                 "generated_at": None}
-    pending = [s for s in row["result_json"].get("suggestions", [])
+    data = row["data_json"] or {}
+    pending = [s for s in data.get("suggestions", [])
                if int(s["patent_id"]) not in assigned]
     return {
         "suggestions": pending,
         "topics": _safe_topics(workspace_id, source_field),
-        "ai_model": row["ai_model"],
-        "prompt_version": row["prompt_version"],
-        "generated_at": row["created_at"].isoformat(),
+        "ai_model": data.get("ai_model"),
+        "prompt_version": data.get("prompt_version"),
+        "generated_at": row["exported_at"].isoformat(),
     }
 
 

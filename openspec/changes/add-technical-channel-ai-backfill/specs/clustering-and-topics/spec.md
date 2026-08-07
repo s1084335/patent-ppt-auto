@@ -17,12 +17,12 @@
 
 ### Requirement: CLU-014 AI 建議屬敘述型輔助，不得直接成為正式指派
 
-補分 AI 產出（建議主題＋一句理由）SHALL 落 `analysis_outputs`（帶 `output_type`、`ai_model`、`prompt_version`），MUST NOT 直接寫入 `topic_assignments`。機制 SHALL 為通道通用設計；本 change 僅接技術通道，AI 輸入 SHALL 為文獻備註三級 fallback 文本（`PATENT_NOTE_SOURCE_COLUMNS`），MUST NOT 回落其他欄位。（功效通道接線於功效通道改版輪實作：輸入＝`解决课题 摘要`、不得回落他欄、輸入為空以「無可補分輸入」現形——定案記於 proposal，屆時引用。）建議主題 SHALL 限定為該通道現有主題清單中的 key；AI 回傳清單外主題時該筆 SHALL 標記為無效建議並現形，不得靜默丟棄或自創主題。
+補分 AI 產出（建議主題＋一句理由）SHALL 隨 job result 落 `app_layer.workflow_outputs`（output_type='job_result:ai:topic_backfill'，含 prompt_version／ai_model），MUST NOT 直接寫入 `topic_assignments`。（⚠ 2026-08-07 實測回寫：原規格寫 analysis_outputs，該表實為 legacy_0021 空表、從未使用——現行通用回存＝workflow_outputs job result 通道。）機制 SHALL 為通道通用設計；本 change 僅接技術通道，AI 輸入 SHALL 為文獻備註三級 fallback 文本（`PATENT_NOTE_SOURCE_COLUMNS`），MUST NOT 回落其他欄位。（功效通道接線於功效通道改版輪實作：輸入＝`解决课题 摘要`、不得回落他欄、輸入為空以「無可補分輸入」現形——定案記於 proposal，屆時引用。）建議主題 SHALL 限定為該通道現有主題清單中的 key；AI 回傳清單外主題時該筆 SHALL 標記為無效建議並現形，不得靜默丟棄或自創主題。
 
 #### Scenario: 建議產出落敘述型通道
 - **GIVEN** 技術通道有 9 件補分候選且已有主題清單
 - **WHEN** 補分 AI 任務完成
-- **THEN** `analysis_outputs` SHALL 有 9 筆建議（主題 key＋理由）
+- **THEN** 最新 job result（workflow_outputs）SHALL 含 9 筆建議（主題 key＋理由）
 - **AND** `topic_assignments` SHALL 無任何新增
 
 #### Scenario: 清單外主題現形
