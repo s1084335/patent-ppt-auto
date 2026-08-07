@@ -10,11 +10,12 @@ from unittest import mock
 from backend.app.mappings import legal_status
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# \ud83d\udd34 2026-08-07 \u4f7f\u7528\u8005\u5b9a\u6848\uff1a\u300c\u5df2\u6838\u51c6\u300d\u2192\u300c\u6388\u6b0a\u300d\uff08WIPS \u6388\u6b0a\u516c\u544a\u6a19\u300c\u6388\u6b0a\u300d\uff09\u3002
 CURATED_TW_STATUSES = (
     "\u5df2\u7533\u8acb",
     "\u5df2\u516c\u958b",
     "\u5be9\u67e5\u4e2d",
-    "\u5df2\u6838\u51c6",
+    "\u6388\u6b0a",
     "\u653e\u68c4",
     "\u6838\u99c1",
     "\u64a4\u56de",
@@ -32,7 +33,7 @@ class TwLegalStatusMappingContractTests(unittest.TestCase):
             "\u5df2\u7533\u8acb": "pending",
             "\u5df2\u516c\u958b": "pending",
             "\u5be9\u67e5\u4e2d": "pending",
-            "\u5df2\u6838\u51c6": "alive",
+            "\u6388\u6b0a": "alive",
             "\u653e\u68c4": "dead",
             "\u6838\u99c1": "dead",
             "\u64a4\u56de": "dead",
@@ -147,7 +148,7 @@ class TwLegalStatusRuntimeContractTests(unittest.TestCase):
         cases = [
             (patent_queries.TwLegalStatusNotFoundError("missing"), 404),
             (patent_queries.TwLegalStatusCountryError("not tw"), 422),
-            (patent_queries.TwLegalStatusConflictError("exists"), 409),
+            # 🔴 2026-08-07 反悔機制：已有值可改可清，409 conflict 已拆。
             (ValueError("bad"), 422),
         ]
         for exc, status in cases:
@@ -190,7 +191,7 @@ class TwLegalStatusRuntimeContractTests(unittest.TestCase):
     def test_repository_pending_query_returns_allowed_statuses(self) -> None:
         from backend.app.app_layer import patent_queries
 
-        cursor = _FakeCursor(fetchone_rows=[{"total": 1}], fetchall_rows=[[{"patent_id": 7}]])
+        cursor = _FakeCursor(fetchone_rows=[{"total": 1, "pending_total": 1}], fetchall_rows=[[{"patent_id": 7}]])
         with mock.patch.object(
             patent_queries,
             "get_pool",
@@ -202,6 +203,7 @@ class TwLegalStatusRuntimeContractTests(unittest.TestCase):
                 offset=5,
             )
         self.assertEqual(result["total"], 1)
+        self.assertEqual(result["pending_total"], 1)
         self.assertEqual(result["items"], [{"patent_id": 7}])
         self.assertEqual(tuple(result["allowed_statuses"]), CURATED_TW_STATUSES)
         self.assertEqual(cursor.executed[0][1], {"workspace_id": 3, "limit": 10, "offset": 5})
@@ -312,10 +314,11 @@ class TwLegalStatusRuntimeContractTests(unittest.TestCase):
     def test_repository_failure_classifier_distinguishes_causes(self) -> None:
         from backend.app.app_layer import patent_queries
 
+        # 🔴 2026-08-07 反悔機制：「已有狀態」不再是錯誤——TW 案一律可改可清，
+        # classifier 只剩查無專利與非 TW 兩種未命中原因。
         cases = [
             (None, patent_queries.TwLegalStatusNotFoundError),
-            ({"country_code": "US", "legal_status": None}, patent_queries.TwLegalStatusCountryError),
-            ({"country_code": "TW", "legal_status": CURATED_TW_STATUSES[0]}, patent_queries.TwLegalStatusConflictError),
+            ({"country_code": "US"}, patent_queries.TwLegalStatusCountryError),
         ]
         for row, error_type in cases:
             with self.subTest(error_type=error_type):

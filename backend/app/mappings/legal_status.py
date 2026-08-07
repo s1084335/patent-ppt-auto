@@ -30,6 +30,10 @@ LEGAL_STATUS_NORMALIZATION: dict[str, str] = {
     "审查中": STATUS_PENDING,
     "申请": STATUS_PENDING,
     "公开": STATUS_PENDING,
+    # 2026-08-07 全原始檔掃描補：授權公告尚未發生、權利未存續 → pending。
+    # （主狀態欄 13 種 distinct 中唯一未收斂者，×7 件，見 decisions 同日紀錄。）
+    "即将授权": STATUS_PENDING,
+    "即將授權": STATUS_PENDING,
     "到期": STATUS_DEAD,
     "放弃": STATUS_DEAD,
     "撤回": STATUS_DEAD,
@@ -93,11 +97,14 @@ def normalize_legal_status(raw: str | None) -> str:
 
 
 # TW 人工登錄值域：後端是唯一來源，前端只能透過 API 讀取 allowed_statuses。
+# 🔴 2026-08-07 使用者定案：「已核准」→「授權」——WIPS 授權公告標「授權」，
+# 用詞對齊；舊值「已核准」在 LEGAL_STATUS_NORMALIZATION 保留容忍（歷史資料
+# 與 TW 匯出檔「專利狀態」欄都用它），只是不再是人工登錄選項。
 TW_LEGAL_STATUS_ALLOWED: tuple[str, ...] = (
     "已申請",
     "已公開",
     "審查中",
-    "已核准",
+    "授權",
     "放棄",
     "核駁",
     "撤回",
@@ -126,3 +133,29 @@ def normalize_tw_legal_status_for_analysis(raw: str | None) -> str:
     if cleaned not in TW_LEGAL_STATUS_ALLOWED:
         return STATUS_UNKNOWN
     return normalize_legal_status(cleaned)
+
+
+# ── 顯示字面（2026-08-07 使用者定案：前端不得出現簡體）────────────────────
+# WIPS 原值是簡體；顯示層轉繁體**只在這裡定義一次**，API 帶 display 欄、
+# 前端只消費（一方產生、一方消費——前端自建對照就是第二份會漂移的知識）。
+# ⚠ 只轉「本體詞」：到期的括號說明（英文）原樣保留；沒見過的值原樣回傳，
+# 不得靜默改寫——顯示層不做語意判斷，語意收斂歸 normalize_legal_status。
+_DISPLAY_TRADITIONAL: dict[str, str] = {
+    "授权": "授權",
+    "审查中": "審查中",
+    "申请": "申請",
+    "公开": "公開",
+    "放弃": "放棄",
+    "无效": "無效",
+    "拒绝": "拒絕",
+    "删除": "刪除",
+    "即将授权": "即將授權",
+}
+
+
+def display_legal_status(raw: str | None) -> str | None:
+    """回傳 legal_status 的繁體顯示字面；None 原樣回傳（前端顯示空白）。"""
+    if raw is None:
+        return None
+    text = raw.strip()
+    return _DISPLAY_TRADITIONAL.get(text, raw)
