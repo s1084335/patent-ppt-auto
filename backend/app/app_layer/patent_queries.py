@@ -23,6 +23,7 @@ from backend.app.db import job_repository
 from backend.app.db.connection import get_pool
 from backend.app.mappings.legal_status import (
     TW_LEGAL_STATUS_ALLOWED,
+    display_legal_status,
     validate_tw_legal_status,
 )
 from backend.app.repositories.topic_state_repository import (
@@ -243,9 +244,10 @@ ORDER BY (m.pid)::bigint, w.workspace_id
 
 
 # 單筆代表圖取回：只取 "主附圖" 一欄（不 SELECT *，避免把主表其他大欄一併拖回）。
+# 🔴 2026-08-07 反悔機制：面板改列**全部** TW 案（含已登錄者才有東西可反悔），
+# 未登錄與已登錄由 items 的 legal_status 欄區分；pending 數另計。
 _PENDING_TW_STATUS_WHERE = """
 WHERE p.country_code = 'TW'
-  AND NULLIF(BTRIM(p.legal_status), '') IS NULL
   AND (
       %(workspace_id)s::bigint IS NULL
       OR EXISTS (
@@ -274,7 +276,8 @@ LIMIT %(limit)s OFFSET %(offset)s
 """
 
 _PENDING_TW_STATUS_COUNT_SQL = f"""
-SELECT count(*) AS total
+SELECT count(*) AS total,
+       count(*) FILTER (WHERE NULLIF(BTRIM(p.legal_status), '') IS NULL) AS pending_total
 FROM core_layer.patents p
 {_PENDING_TW_STATUS_WHERE}
 """
@@ -296,7 +299,6 @@ WITH target AS (
             ))
     FROM target
     WHERE p.id = target.id
-      AND NULLIF(BTRIM(p.legal_status), '') IS NULL
     RETURNING p.id AS patent_id, target.legal_status AS from_status, p.legal_status AS to_status
 )
 SELECT patent_id, from_status, to_status FROM updated
@@ -386,31 +388,41 @@ def list_pending_tw_legal_status_patents(
     params = {"workspace_id": workspace_id, "limit": limit, "offset": offset}
     with get_pool().connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         cur.execute(_PENDING_TW_STATUS_COUNT_SQL, params)
-        total = int(cur.fetchone()["total"])
+        counts = cur.fetchone()
         cur.execute(_PENDING_TW_STATUS_ITEMS_SQL, params)
         items = cur.fetchall()
     return {
         "items": items,
-        "total": total,
+        "total": int(counts["total"]),
+        # 未登錄件數另計：面板列全部 TW（反悔機制），標題仍要能講「還缺幾件」。
+        "pending_total": int(counts["pending_total"]),
         "limit": limit,
         "offset": offset,
         "allowed_statuses": allowed_tw_legal_statuses(),
     }
 
 
+def normalize_tw_status_input(value: str | None) -> str | None:
+    """反悔機制的輸入正規化：None＝清回空值（未知桶）；字串走值域檢查。"""
+    if value is None:
+        return None
+    return validate_tw_legal_status(value)
+
+
 def _classify_tw_status_failure(patent_id: int) -> None:
-    """把條件式更新未命中的狀態轉成明確錯誤。"""
+    """把條件式更新未命中的狀態轉成明確錯誤。
+
+    🔴 2026-08-07 反悔機制：已有值可改可清，「已有狀態」不再是錯誤——
+    未命中只剩查無專利與非 TW 兩種。"""
     with get_pool().connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            "SELECT country_code, legal_status FROM core_layer.patents WHERE id = %s",
+            "SELECT country_code FROM core_layer.patents WHERE id = %s",
             (patent_id,),
         )
         row = cur.fetchone()
     if row is None:
         raise TwLegalStatusNotFoundError(f"patent {patent_id} not found")
-    if row["country_code"] != "TW":
-        raise TwLegalStatusCountryError(f"patent {patent_id} is not a TW patent")
-    raise TwLegalStatusConflictError(f"patent {patent_id} already has legal_status")
+    raise TwLegalStatusCountryError(f"patent {patent_id} is not a TW patent")
 
 
 def enqueue_tw_legal_status_refresh(*, workspace_id: int | None = None) -> dict[str, Any]:
@@ -429,11 +441,14 @@ def enqueue_tw_legal_status_refresh(*, workspace_id: int | None = None) -> dict[
 def register_tw_legal_status(
     *,
     patent_id: int,
-    legal_status: str,
+    legal_status: str | None,
     workspace_id: int | None = None,
 ) -> dict[str, Any]:
-    """首次登錄 TW 專利狀態，並在提交後背景刷新 lifecycle 報表。"""
-    status = validate_tw_legal_status(legal_status)
+    """登錄／修改／清除 TW 專利狀態，並在提交後背景刷新 lifecycle 報表。
+
+    🔴 2026-08-07 反悔機制：已有值可改成別的值、可清回 None（未知桶）；
+    每次異動 append `legal_status_history`。只限 TW 案。"""
+    status = normalize_tw_status_input(legal_status)
     with get_pool().connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(_REGISTER_TW_STATUS_SQL, {"patent_id": patent_id, "status": status})
@@ -455,7 +470,8 @@ def register_tw_legal_status(
     return {
         "saved": True,
         "patent_id": int(row["patent_id"]),
-        "legal_status": str(row["to_status"]),
+        # 清除時為 None——不得 str() 硬轉成 'None' 字串。
+        "legal_status": row["to_status"],
         **refresh,
     }
 
@@ -530,6 +546,8 @@ def list_patents(
     topic_labels = _topic_labels_by_patent(resolved_ws)
     for it in items:
         it["workspaces"] = membership.get(it["patent_id"], [])
+        # 顯示字面（2026-08-07）：簡→繁只在 mappings 定義一次，前端只消費此欄。
+        it["legal_status_display"] = display_legal_status(it.get("legal_status"))
         for source_field, by_patent in topic_labels.items():
             it[topic_label_key(source_field)] = by_patent.get(it["patent_id"])
     return {"items": items, "total": total, "limit": limit, "offset": offset}

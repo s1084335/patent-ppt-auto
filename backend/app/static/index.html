@@ -941,30 +941,46 @@ function renderTwLegalStatusPending(data) {
   const items = data.items || [];
   const statuses = data.allowed_statuses || [];
   if (!items.length) {
-    body.innerHTML = '<div class="hint" style="padding:.4rem 0">No TW patents are waiting for status registration.</div>';
+    body.innerHTML = '<div class="hint" style="padding:.4rem 0">目前沒有 TW 專利。</div>';
     return;
   }
-  const options = statuses.map(s => '<option value="' + escHtml(s) + '">' + escHtml(s) + '</option>').join('');
+  // 🔴 2026-08-07 反悔機制：列全部 TW 案（含已登錄），現值預選；「清除」清回
+  // 空值（未知桶）。值域與現值都來自 API（allowed_statuses／legal_status），
+  // 前端不自建清單。
   body.innerHTML = '<div class="hint" id="tw-legal-status-summary" style="padding:0 0 .5rem">'
-    + 'Pending TW patents: ' + escHtml(data.total || items.length) + '</div>'
+    + 'TW 專利 ' + escHtml(data.total || items.length) + ' 件，未登錄 '
+    + escHtml(data.pending_total != null ? data.pending_total : '?') + ' 件</div>'
     + '<div id="tw-legal-status-refresh-message" class="hint" style="padding:0 0 .4rem"></div>'
     + '<div class="table-wrap" style="max-height:22rem">'
     + '<table class="data"><thead><tr>'
-    + '<th>Patent</th><th>Title</th><th>Applicant</th><th>Status</th><th class="cell-nowrap">Action</th>'
+    + '<th>專利號</th><th>名稱</th><th>申請人</th><th>狀態</th><th class="cell-nowrap">操作</th>'
     + '</tr></thead><tbody id="tw-legal-status-rows">'
     + items.map(it => {
       const id = it.patent_id;
       const label = it.patent_number || it.publication_number || it.application_number || id;
+      const current = it.legal_status || '';
+      const options = '<option value=""' + (current ? '' : ' selected') + '>（未登錄）</option>'
+        + statuses.map(s => '<option value="' + escHtml(s) + '"'
+            + (s === current ? ' selected' : '') + '>' + escHtml(s) + '</option>').join('');
       return '<tr id="tw-legal-status-row-' + escHtml(id) + '">'
         + '<td>' + escHtml(label) + '</td>'
         + '<td>' + escHtml(it.title || '') + '</td>'
         + '<td>' + escHtml(it.applicant_display_name || '') + '</td>'
         + '<td><select class="text-input" id="tw-status-select-' + escHtml(id) + '">' + options + '</select></td>'
         + '<td class="cell-nowrap"><button class="btn btn-primary" id="tw-status-save-' + escHtml(id)
-        + '" onclick="saveTwLegalStatus(' + escHtml(id) + ')">Save</button></td>'
+        + '" onclick="saveTwLegalStatus(' + escHtml(id) + ')">儲存</button> '
+        + '<button class="btn btn-outline" id="tw-status-clear-' + escHtml(id)
+        + '" onclick="clearTwLegalStatus(' + escHtml(id) + ')">清除</button></td>'
         + '</tr>';
     }).join('')
     + '</tbody></table></div>';
+}
+
+// 清除＝送 legal_status: null（清回空值→未知桶），歷程照記、狀態分析照刷新。
+async function clearTwLegalStatus(patentId) {
+  const select = el('tw-status-select-' + patentId);
+  if (select) select.value = '';
+  await saveTwLegalStatus(patentId);
 }
 
 async function saveTwLegalStatus(patentId) {
@@ -974,7 +990,8 @@ async function saveTwLegalStatus(patentId) {
   if (!select) return;
   if (button) button.disabled = true;
   try {
-    const payload = { legal_status: select.value };
+    // 空字串＝清除→送 null（後端清回空值、未知桶）。
+    const payload = { legal_status: select.value || null };
     if (state.workspaceId) payload.workspace_id = state.workspaceId;
     const result = await getJson(API + '/patents/' + encodeURIComponent(patentId) + '/tw-legal-status', {
       method: 'POST',
@@ -1786,7 +1803,8 @@ const PATENT_COLUMNS = [
   { label: '申請國家', key: 'country_code', listOnly: true, nowrap: true },
   { label: '專利類型', key: 'patent_type', nowrap: true },
   // 來源實測 0% 有值，欄位仍一律呈現（重匯有值即自動顯示，不需改前端）。
-  { label: '專利狀態', key: 'legal_status', wrap: true },
+  // 2026-08-07：顯示繁體字面（後端 mappings 唯一定義處產生，前端只消費）。
+  { label: '專利狀態', key: 'legal_status_display', wrap: true },
   // 分類標籤拆技術／功效兩欄（2026-07-24 定案）：欄名由 SOURCE_FIELDS 推導，不寫死兩個 key。
   { label: '技術分類', key: topicLabelKey(SOURCE_FIELDS[0][0]), listOnly: true },
   { label: '功效分類', key: topicLabelKey(SOURCE_FIELDS[1][0]), listOnly: true },

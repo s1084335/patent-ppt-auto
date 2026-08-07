@@ -23,9 +23,11 @@ router = APIRouter(tags=["patents"])
 
 
 class TwLegalStatusRequest(BaseModel):
-    """TW 專利狀態單筆登錄請求。"""
+    """TW 專利狀態單筆登錄／修改／清除請求。
 
-    legal_status: str = Field(..., min_length=1, max_length=20)
+    🔴 2026-08-07 反悔機制：legal_status 傳 null＝清回空值（未知桶）。"""
+
+    legal_status: str | None = Field(default=None, min_length=1, max_length=20)
     workspace_id: int | None = Field(default=None, ge=1)
 
 
@@ -91,7 +93,7 @@ def register_tw_legal_status(
     request: TwLegalStatusRequest,
     patent_id: int = Path(..., ge=1),
 ) -> dict[str, Any]:
-    """首次登錄單筆 TW 專利狀態。"""
+    """登錄／修改／清除單筆 TW 專利狀態（2026-08-07 反悔機制：可改可清）。"""
     try:
         return patent_queries.register_tw_legal_status(
             patent_id=patent_id,
@@ -103,8 +105,6 @@ def register_tw_legal_status(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         if isinstance(exc, patent_queries.TwLegalStatusCountryError):
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        if isinstance(exc, patent_queries.TwLegalStatusConflictError):
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
