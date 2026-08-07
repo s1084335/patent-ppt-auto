@@ -120,7 +120,11 @@ PAGE_LAYOUT: tuple[PageSpec, ...] = (
              report_keys=("application_trend", "country_distribution")),
     PageSpec(page=2, kind="chart_hero", title="申請趨勢", topic="申請趨勢",
              report_keys=("application_trend", "publication_trend")),
-    PageSpec(page=3, kind="percentage_bars", title="保護地域分布", topic="保護地域分布",
+    # 🔴 2026-08-07 使用者定案：本頁改用引擎的成對長條 SVG（每國兩條相鄰
+    # ——申請件數 vs 現存有效，同尺＋圖例）。原 percentage_bars 版型由組版端
+    # 拿報表原始列重畫，country_distribution 改 (國×狀態) 群組後一列一條，
+    # 同一國被拆成多條、兩條 bar 分家——實機驗收抓到的錯，不得回退。
+    PageSpec(page=3, kind="chart_hero", title="保護地域分布", topic="保護地域分布",
              report_keys=("country_distribution",)),
     # IPC＋CPC 同頁對照（2026-07-31）：原本只掛 ipc，cpc 落到動態插頁、與 ipc 隔開
     # 好幾頁——註解寫著「IPC/CPC 維持同頁比較」但實作沒做到，這裡補齊。
