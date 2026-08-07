@@ -27,7 +27,7 @@
 
 - 不改分群來源欄（維持獨立項／效果摘要純淨定案；乙案「改讀主權項」需另行實測定案）。
 - 設計案不補（`document_kind='S'` 排除）。
-- 不改 `topic_assignments` schema（不加「待定」狀態——建議留在 analysis_outputs，核准才寫入）。
+- 不在 `topic_assignments` 加「待定」狀態（建議留在 analysis_outputs，核准才寫入；`topic_key NOT NULL` 不動）。⚠ 會加一欄 `assigned_source`（來源標記，見 design），這是唯一的 schema 變更。
 - AI 不直接寫入正式指派（紅線不動）。
 
 ## 已確認決策
