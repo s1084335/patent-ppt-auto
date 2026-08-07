@@ -115,6 +115,20 @@ class BuilderIntegrationTests(unittest.TestCase):
         self.assertIn("country_map", specs)
         self.assertIn("family_country_layout", REPORT_DEFINITIONS)
 
+    def test_family_layout_excluded_from_ppt_dynamic_pages(self):
+        """🔴 實物抓漏（2026-08-07 首次組版 p12 殘留）：合併頁註記要用 family
+        報表資料，引擎會把它寫進 report_data——動態插頁不擋就會再出一頁
+        stat_callout。EVIDENCE_ORDER 拿掉不夠，必須進 EXCLUDED_FROM_PPT。"""
+        import sys
+        from pathlib import Path
+
+        skill = Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt" / "scripts"
+        sys.path.insert(0, str(skill))
+        import build_ppt as bp
+
+        self.assertIn("family_country_layout", bp.EXCLUDED_FROM_PPT)
+        self.assertNotIn("family_country_layout", bp.EVIDENCE_ORDER)
+
 
 if __name__ == "__main__":
     unittest.main()

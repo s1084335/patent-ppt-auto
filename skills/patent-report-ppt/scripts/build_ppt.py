@@ -172,7 +172,9 @@ EVIDENCE_ORDER: tuple[str, ...] = (
 # 不進 PPT 的報表。⚠ RPT-011（2026-08-06）後 family_quality_detail 連報表都刪了
 # （家族完整性併入國家佈局頁註記），本集合仍保留該鍵：**舊報表版本**的 report_data
 # 還帶著它，缺了這行會被當成動態插頁撿回簡報。
-EXCLUDED_FROM_PPT = frozenset({"family_quality_detail"})
+# family_country_layout（2026-08-07）：獨立頁已刪、併入受理局合併頁——引擎仍會把
+# 該報表資料寫進 report_data（合併頁註記要用），動態插頁不得再為它出獨立頁。
+EXCLUDED_FROM_PPT = frozenset({"family_quality_detail", "family_country_layout"})
 
 # 截斷時優先切在這些標點之後（見 `_truncate_to_width`）：斷在標點像「話沒說完」，
 # 斷在字中間像「字被砍掉」，後者會讓讀者以為產檔壞了。
