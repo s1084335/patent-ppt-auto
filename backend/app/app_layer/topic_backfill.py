@@ -110,7 +110,8 @@ def latest_suggestions(workspace_id: int, source_field: str) -> dict[str, Any]:
         "topics": _safe_topics(workspace_id, source_field),
         "ai_model": data.get("ai_model"),
         "prompt_version": data.get("prompt_version"),
-        "generated_at": row["exported_at"].isoformat(),
+        # complete_job 寫入的列 exported_at 可能為 NULL（匯出時才蓋章）。
+        "generated_at": row["exported_at"].isoformat() if row["exported_at"] else None,
     }
 
 

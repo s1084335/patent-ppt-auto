@@ -2141,7 +2141,7 @@ async function renderTopics() {
     + '<div id="topic-candidates"></div>'
     // AI 補分（三段式）：建議清單＋批次核准；建議只在核准後才進正式指派與統計。
     + '<details class="maint-details" id="topic-backfill-panel" ontoggle="onTopicBackfillToggle()">'
-    + '<summary>AI 補分建議（無獨立項專利）</summary>'
+    + '<summary>AI 補分建議</summary>'
     + '<div class="maint-card"><div id="topic-backfill-body" class="hint">展開後載入</div></div>'
     + '</details>'
     // 版式：標籤 → 概覽 → 進階操作（收合）→ 專利清單
@@ -5762,6 +5762,11 @@ async function loadTopicBackfill() {
   const body = el('topic-backfill-body');
   if (!body || !state.workspaceId) return;
   const sf = state.topicSourceField || 'wips_independent_claims';
+  // 功效通道補分＝功效通道改版輪實作（2026-08-07 使用者定案），本輪只接技術。
+  if (sf !== 'wips_independent_claims') {
+    body.innerHTML = '<div class="hint">功效通道的補分排在功效通道改版那一輪一起做；本輪僅技術通道（無獨立項專利）。</div>';
+    return;
+  }
   body.innerHTML = '<div class="hint">載入中…</div>';
   try {
     const data = await getJson(API + '/workspaces/' + state.workspaceId
