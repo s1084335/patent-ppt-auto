@@ -134,7 +134,9 @@ def approve_batch(
     """第三段：批次核准→確定性寫入 topic_assignments（單一交易，部分失敗全回滾）。
 
     guard：topic_key 必須在現有主題清單；已指派者拒絕（不得重複寫）；
-    寫入帶 assigned_source（CLU-015），run_id 掛該通道最新 run。
+    寫入帶 assigned_source（CLU-015），run_id 掛該通道最新 run——
+    ⚠ 本表實際欄位只有 (run_id, patent_id, topic_key, distance, assigned_source)，
+    workspace 與 source_field 一律由 topic_runs→workflow_runs join 取得，不進本表。
     不觸發任何 clustering／embedding 工作。
     """
     if not approvals:
@@ -155,12 +157,11 @@ def approve_batch(
             cur.execute(
                 """
                 INSERT INTO derived_layer.topic_assignments
-                    (run_id, workspace_id, patent_id, source_field, topic_key,
-                     distance_to_centroid, assigned_source)
-                VALUES (%s, %s, %s, %s, %s, NULL, %s)
+                    (run_id, patent_id, topic_key, distance_to_centroid, assigned_source)
+                VALUES (%s, %s, %s, NULL, %s)
                 """,
-                (run_id, workspace_id, int(item["patent_id"]),
-                 source_field, str(item["topic_key"]), ASSIGNED_SOURCE_BACKFILL),
+                (run_id, int(item["patent_id"]),
+                 str(item["topic_key"]), ASSIGNED_SOURCE_BACKFILL),
             )
         conn.commit()
     return {"approved": len(approvals), "run_id": run_id}

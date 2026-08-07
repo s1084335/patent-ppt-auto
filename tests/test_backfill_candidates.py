@@ -81,3 +81,17 @@ class AssignedSourceMigrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApproveInsertSchemaContractTests(unittest.TestCase):
+    """🔴 2026-08-07 實機 500：INSERT 寫了不存在的欄（workspace_id/source_field
+    在 topic_assignments 不存在，靠 topic_runs join）。釘住實查欄位清單。"""
+
+    def test_insert_matches_real_columns(self):
+        import inspect
+
+        from backend.app.app_layer import topic_backfill
+
+        src = inspect.getsource(topic_backfill.approve_batch)
+        self.assertIn("(run_id, patent_id, topic_key, distance_to_centroid, assigned_source)", src)
+        self.assertNotIn("workspace_id, patent_id, source_field", src)
