@@ -555,11 +555,19 @@ def _run_ai_topic_backfill_job(payload: dict[str, Any], context: JobContext) -> 
 
     cli = payload.get("_cli_runner")
     if cli is None:
-        from .ai_narrative_runner import _subprocess_cli_runner, build_cli_command
+        from .ai_narrative_runner import (
+            _subprocess_cli_runner,
+            build_cli_command,
+            parse_cli_result,
+        )
 
         def cli(prompt: str, *, timeout_seconds: float) -> str:  # noqa: ANN001
             argv = build_cli_command(cli_kind, prompt, model=model)
-            return _subprocess_cli_runner(argv, timeout_seconds).stdout
+            # ⚠ --output-format json 的 stdout 是 envelope（type/result/…），
+            # AI 內文在 "result" 欄——直接回 stdout 會讓 runner 解析到外殼
+            # 而非建議 JSON（2026-08-07 真資料首跑即踩）。
+            parsed = parse_cli_result(_subprocess_cli_runner(argv, timeout_seconds))
+            return str(parsed.get("result") or "")
 
     result = ai_topic_backfill_runner.run_topic_backfill(
         workspace_id=int(workspace_id),
