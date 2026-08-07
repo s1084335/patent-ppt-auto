@@ -203,6 +203,10 @@ _VECTOR_INDEX = 0
 # ⚠ 主題分布不走「多圖拆頁」（它根本沒圖）——是**依列值**拆成兩張表格頁。
 # 通道 → 解讀變體鍵（2026-07-31）：主題統計表拆成技術／功效兩頁後，各取各的解讀。
 # ⚠ 上游 `chart_runner` 必須宣告同名 variant，否則這裡對不到、兩頁又會共用同一段。
+# 技術通道 source_field（封面漏斗的群數只算它；功效不上封面）——
+# 與 CHANNEL_SPLIT_REPORTS 同一份字面來源，改欄名時一起改。
+TECHNICAL_SOURCE_FIELD = "wips_independent_claims"
+
 CHANNEL_NARRATIVE_VARIANTS: dict[str, str] = {
     "wips_independent_claims": "topic_table_tech",
     "effect_summary": "topic_table_effect",
@@ -3474,6 +3478,31 @@ def _cover_title(report_data: dict[str, Any], slots: dict[str, str]) -> str:
     return "專利情報整合分析"
 
 
+def _cover_funnel(report_data: dict[str, Any]) -> tuple[str, str, str] | None:
+    """三層漏斗併 1 格（Q3，2026-08-05 使用者定案）：原始→同族合併→技術主題。
+
+    ⚠ 單位與標籤走 unit／label 欄，**不得併進 value**——四張卡取同一級、
+    級數由最長值決定，把「件」「群」寫進 value 會讓整排字縮小（規格明列風險）。
+    ⚠ 技術群數只算**技術通道**（功效通道不上封面，也不得加總）。
+    缺同族或分群資料時回 None：少一格，不硬湊也不寫 0。
+    """
+    trend_rows = _rows_of(report_data, "application_trend")
+    if not trend_rows:
+        return None
+    total = sum(_as_int(row.get("patent_count")) for row in trend_rows)
+    family_rows = _rows_of(report_data, "family_country_layout")
+    family_total = sum(_as_int(r.get("patent_count")) for r in family_rows)
+    topic_rows = (report_data.get("chart_rows") or {}).get("cluster_topic_table") or []
+    tech_groups = len({
+        str(r.get("topic_code") or r.get("topic_key") or "")
+        for r in topic_rows
+        if str(r.get("source_field") or "") == TECHNICAL_SOURCE_FIELD
+    } - {""})
+    if not (total and family_total and tech_groups):
+        return None
+    return (f"{total}→{family_total}→{tech_groups}", "件→件→群", "原始→同族合併→技術主題")
+
+
 def _cover_stats(report_data: dict[str, Any]) -> list[tuple[str, str, str]]:
     """封面統計卡；資料不足就少一格，不硬湊低價值指標。"""
     stats: list[tuple[str, str, str]] = []
@@ -3506,6 +3535,9 @@ def _cover_stats(report_data: dict[str, Any]) -> list[tuple[str, str, str]]:
     period = _statistics_period(report_data)
     if period:
         stats.append((period, "年", "年份區間"))
+    funnel = _cover_funnel(report_data)
+    if funnel:
+        stats.append(funnel)
     # 第 4 格由資料現有欄位組成；都沒有就只出 3 格。
     for report_key, unit, label in (
         ("applicant_ranking", "家", "申請人家數"),
