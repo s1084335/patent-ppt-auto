@@ -48,9 +48,13 @@ class M1StampTests(unittest.TestCase):
         """skill 契約範例不得寫死舊版號——要嘛佔位說明、要嘛與現行版本一致。"""
         skill = (Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt"
                  / "report-narrative-flow.md").read_text(encoding="utf-8")
+        import re
+
         stale = [f"report_narrative_v{i}" for i in range(1, 20)
                  if f"report_narrative_v{i}" != PROMPT_VERSION]
-        hits = [s for s in stale if s in skill]
+        # ⚠ 2026-08-07：改字串邊界比對——v10 內含子字串 "…_v1"，
+        # 純 `in` 會在版本進位到兩位數時誤報舊版殘留。
+        hits = [s for s in stale if re.search(re.escape(s) + r"(?!\d)", skill)]
         self.assertEqual(hits, [], f"skill 範例殘留舊版號 {hits}——CLI 會照抄")
 
 
