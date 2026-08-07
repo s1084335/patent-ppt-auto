@@ -91,3 +91,115 @@ class ReaderGuideTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RightsStrengthTests(unittest.TestCase):
+    """Q10 權利強度四面向（2026-08-05 定案）：並列不合成分數。
+
+    面向＝布局量（件／族／國）、法律穩定性（授權／失效）、專利種類三分。
+    🔴 合成分數已否決：權重是主觀選擇，「權利強度 82 分」會被當成客觀指標，
+    且會壓掉「4 件 1 家族卻布局 4 國」這種形狀資訊。
+    ⚠ 不做請求項數（範例刻意不放，易被誤讀為專利品質）。
+    """
+
+    ROWS = [
+        {"applicant_display_name": "帝瑪斯", "patent_id": 1, "country_code": "CN",
+         "family_id": "F1", "legal_status": "授权", "patent_type": "P", "document_kind": "A"},
+        {"applicant_display_name": "帝瑪斯", "patent_id": 2, "country_code": "TW",
+         "family_id": "F1", "legal_status": "已核准", "patent_type": "U", "document_kind": "U"},
+        {"applicant_display_name": "帝瑪斯", "patent_id": 3, "country_code": "US",
+         "family_id": "F2", "legal_status": "到期(Expiration of the term)",
+         "patent_type": "P", "document_kind": "S"},
+        {"applicant_display_name": "扭矩", "patent_id": 4, "country_code": "US",
+         "family_id": "F3", "legal_status": "审查中", "patent_type": "P", "document_kind": "A"},
+        {"applicant_display_name": "扭矩", "patent_id": 5, "country_code": "EP",
+         "family_id": "F3", "legal_status": "审查中", "patent_type": "P", "document_kind": "A"},
+    ]
+
+    def _by_name(self):
+        return {p["applicant"]: p for p in cb.rights_strength_profiles(self.ROWS)}
+
+    def test_layout_dimensions(self):
+        """件／族／國三個數要分開——族少國多正是「地域防禦廣」的形狀。"""
+        by = self._by_name()
+        self.assertEqual((by["帝瑪斯"]["patent_count"], by["帝瑪斯"]["family_count"],
+                          by["帝瑪斯"]["country_count"]), (3, 2, 3))
+        self.assertEqual((by["扭矩"]["patent_count"], by["扭矩"]["family_count"],
+                          by["扭矩"]["country_count"]), (2, 1, 2))
+
+    def test_legal_dimension_uses_status_buckets(self):
+        """授權／失效走狀態桶唯一定義處，不自行比對字面。"""
+        by = self._by_name()
+        self.assertEqual(by["帝瑪斯"]["granted_count"], 2)
+        self.assertEqual(by["帝瑪斯"]["dead_count"], 1)
+        self.assertEqual(by["扭矩"]["granted_count"], 0)
+        self.assertEqual(by["扭矩"]["pending_count"], 2)
+
+    def test_kind_dimension_three_way(self):
+        by = self._by_name()
+        self.assertEqual(by["帝瑪斯"]["kind_counts"], {"發明": 1, "新型": 1, "設計": 1})
+
+    def test_no_composite_score(self):
+        """🔴 合成分數已否決——profile 不得出現任何總分欄。"""
+        for profile in cb.rights_strength_profiles(self.ROWS):
+            for banned in ("score", "strength_score", "total_score", "rank_score"):
+                self.assertNotIn(banned, profile)
+
+    def test_empty_rows_no_crash(self):
+        self.assertEqual(cb.rights_strength_profiles([]), [])
+
+
+class TechBreadthTests(unittest.TestCase):
+    """技術廣度（問題 10 原始需求四項之一，2026-08-07 補做）。
+
+    ⚠ 原始需求寫的是「布局強度＋技術廣度＋法律穩定性＋權利範圍」，
+    先前實作漏了技術廣度（權利範圍另於 08-05 定案否決）。
+    廣度＝該申請人涉入幾個技術主題／幾個 IPC subclass——件數再多都集中
+    在一個主題，壁壘與跨三個主題完全不同。
+    """
+
+    ROWS = [
+        {"applicant_display_name": "帝瑪斯", "patent_id": 1, "country_code": "CN",
+         "family_id": "F1", "legal_status": "授权", "patent_type": "P",
+         "document_kind": "A", "topic_key": "T001", "ipc_subclass": "A63B"},
+        {"applicant_display_name": "帝瑪斯", "patent_id": 2, "country_code": "TW",
+         "family_id": "F1", "legal_status": "授权", "patent_type": "U",
+         "document_kind": "U", "topic_key": "T002", "ipc_subclass": "A63B"},
+        {"applicant_display_name": "帝瑪斯", "patent_id": 3, "country_code": "US",
+         "family_id": "F2", "legal_status": "授权", "patent_type": "P",
+         "document_kind": "A", "topic_key": "T002", "ipc_subclass": "F03G"},
+        {"applicant_display_name": "祺驊", "patent_id": 4, "country_code": "TW",
+         "family_id": "F3", "legal_status": "审查中", "patent_type": "P",
+         "document_kind": "A", "topic_key": "T001", "ipc_subclass": "A63B"},
+        {"applicant_display_name": "祺驊", "patent_id": 5, "country_code": "TW",
+         "family_id": "F4", "legal_status": "审查中", "patent_type": "P",
+         "document_kind": "A", "topic_key": "T001", "ipc_subclass": "A63B"},
+    ]
+
+    def _by_name(self):
+        return {p["applicant"]: p for p in cb.rights_strength_profiles(self.ROWS)}
+
+    def test_topic_and_ipc_breadth(self):
+        by = self._by_name()
+        self.assertEqual(by["帝瑪斯"]["topic_count"], 2)
+        self.assertEqual(by["帝瑪斯"]["ipc_subclass_count"], 2)
+        # 5 件集中單一主題單一類＝廣度 1，與件數多寡無關。
+        self.assertEqual(by["祺驊"]["topic_count"], 1)
+        self.assertEqual(by["祺驊"]["ipc_subclass_count"], 1)
+
+    def test_missing_topic_or_ipc_counts_zero_not_crash(self):
+        rows = [{"applicant_display_name": "X", "patent_id": 9}]
+        p = cb.rights_strength_profiles(rows)[0]
+        self.assertEqual((p["topic_count"], p["ipc_subclass_count"]), (0, 0))
+
+    def test_key_player_profiles_carry_strength(self):
+        """四面向要掛在 Key Player 上（使用者定案：用在 10 個競爭者那裡；
+        申請人排名頁不動）。"""
+        profiles = cb.key_player_profiles(self.ROWS)
+        deem = next(p for p in profiles if p["applicant"] == "帝瑪斯")
+        self.assertEqual(deem["family_count"], 2)
+        self.assertEqual(deem["country_count"], 3)
+        self.assertEqual(deem["topic_count"], 2)
+        self.assertEqual(deem["granted_count"], 3)
+        self.assertEqual(deem["kind_counts"], {"發明": 2, "新型": 1})
+

@@ -65,7 +65,18 @@ def key_player_profiles(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                            for p, c in sorted(partners.items(), key=lambda kv: (-kv[1], kv[0]))],
         })
     profiles.sort(key=lambda p: (-p["patent_count"], p["applicant"]))
-    return profiles[:KEY_PLAYER_LIMIT]
+    profiles = profiles[:KEY_PLAYER_LIMIT]
+    # 四面向掛在 Key Player 上（2026-08-07 使用者定案：用在 10 個競爭者那裡，
+    # **申請人排名頁不動**）——同一份計算，不在兩處各算一次。
+    strength = {p["applicant"]: p for p in rights_strength_profiles(rows)}
+    for profile in profiles:
+        extra = strength.get(profile["applicant"], {})
+        for key in ("family_count", "country_count", "granted_count", "pending_count",
+                    "dead_count", "unknown_count", "kind_counts",
+                    "topic_count", "ipc_subclass_count"):
+            if key in extra:
+                profile[key] = extra[key]
+    return profiles
 
 
 def key_player_groups(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -110,3 +121,89 @@ def reader_guide_blocks() -> list[dict[str, str]]:
                     "屬正確呈現；各頁母體與排除原因均標在頁尾。",
         },
     ]
+
+
+def rights_strength_profiles(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """權利強度四面向（Q10，2026-08-05 定案）：**並列，不合成分數**。
+
+    面向與用途——回答「這家公司的專利實力是什麼形狀」，而不是「幾分」：
+    - **布局量**：件／族／國三個數分開看。件多族少＝同一發明多國申請；
+      族少國多＝地域防禦廣（實測美商扭矩 4 件 1 族 4 國即此形狀）。
+    - **法律穩定性**：授權／審查中／失效件數（走 transforms/legal_status
+      四桶唯一定義處，不自行比對字面）。實測孟喬 5 件 0 授權 2 失效＝
+      「僅具前案價值」，敘述可直接這樣寫。
+    - **技術廣度**：涉入幾個技術主題／幾個 IPC subclass。⚠ 2026-08-07 補做——
+      原始需求（問題 10）四項是「布局強度＋技術廣度＋法律穩定性＋權利範圍」，
+      先前實作漏了廣度。件數集中單一主題與跨三個主題，壁壘完全不同。
+    - **專利種類**：發明／新型／設計三分（走 transforms/patent_kind）。
+
+    🔴 **合成分數已否決**（同日定案）：權重是主觀選擇，簡報上出現「權利強度
+    82 分」會被當成客觀指標；且合成會壓掉上述形狀資訊。本函式刻意不回任何總分。
+    ⚠ 不做請求項數／權利範圍維度（範例刻意不放，易被誤讀成專利品質）。
+
+    rows 走展開口徑（共同申請各自計數），需含 applicant_display_name、
+    patent_id、country_code、family_id、legal_status、patent_type、document_kind。
+    """
+    from backend.app.transforms.legal_status import (
+        BUCKET_DEAD,
+        BUCKET_GRANTED,
+        BUCKET_PENDING,
+        BUCKET_UNKNOWN,
+        status_bucket,
+    )
+    from backend.app.transforms.patent_kind import patent_kind
+
+    bucket_field = {BUCKET_GRANTED: "granted_count", BUCKET_PENDING: "pending_count",
+                    BUCKET_DEAD: "dead_count", BUCKET_UNKNOWN: "unknown_count"}
+    acc: dict[str, dict[str, Any]] = {}
+    seen: dict[str, set[int]] = defaultdict(set)
+    for row in rows:
+        name = str(row.get("applicant_display_name") or "").strip()
+        if not name:
+            continue
+        pid = int(row.get("patent_id") or 0)
+        if pid in seen[name]:
+            continue          # 同申請人同專利多列（多國別名等）只算一次
+        seen[name].add(pid)
+        entry = acc.setdefault(name, {
+            "applicant": name, "patent_count": 0,
+            "families": set(), "countries": set(),
+            "granted_count": 0, "pending_count": 0,
+            "dead_count": 0, "unknown_count": 0,
+            "kind_counts": defaultdict(int),
+            "topics": set(), "ipc_subclasses": set(),
+        })
+        entry["patent_count"] += 1
+        family = str(row.get("family_id") or "").strip() or f"__pid{pid}"
+        entry["families"].add(family)
+        country = str(row.get("country_code") or "").strip()
+        if country:
+            entry["countries"].add(country)
+        entry[bucket_field[status_bucket(row.get("legal_status"))]] += 1
+        entry["kind_counts"][patent_kind(row)] += 1
+        # 技術廣度（問題 10 原始需求四項之一）：涉入幾個主題／幾個 IPC subclass。
+        # ⚠ 件數再多都集中一個主題，壁壘與跨三個主題完全不同——件數看不出這件事。
+        topic = str(row.get("topic_key") or row.get("topic_code") or "").strip()
+        if topic:
+            entry["topics"].add(topic)
+        ipc = str(row.get("ipc_subclass") or row.get("Orig. IPC(Main)") or "").strip()
+        if ipc:
+            entry["ipc_subclasses"].add(ipc[:4])
+
+    profiles: list[dict[str, Any]] = []
+    for entry in acc.values():
+        profiles.append({
+            "applicant": entry["applicant"],
+            "patent_count": entry["patent_count"],
+            "family_count": len(entry["families"]),
+            "country_count": len(entry["countries"]),
+            "granted_count": entry["granted_count"],
+            "pending_count": entry["pending_count"],
+            "dead_count": entry["dead_count"],
+            "unknown_count": entry["unknown_count"],
+            "kind_counts": dict(entry["kind_counts"]),
+            "topic_count": len(entry["topics"]),
+            "ipc_subclass_count": len(entry["ipc_subclasses"]),
+        })
+    profiles.sort(key=lambda p: (-p["patent_count"], p["applicant"]))
+    return profiles[:KEY_PLAYER_LIMIT]
