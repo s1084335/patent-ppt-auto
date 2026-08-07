@@ -49,4 +49,4 @@
 - [x] 7.3 以 Playwright 實機檢查桌面與行動 viewport：區塊預設收合、展開清單、九項選單、成功移除、失敗保留、背景進度、刷新失敗重試、畫面不跳轉且無重疊。
 - [x] 7.4 產出一輪真實狀態分析 artifact，核對資料列、分類合計、SVG/HTML 畫面與目前 workspace；證明其他報表 artifact 未被刷新。
 - [x] 7.5 比較狀態更新前後 cluster assignments、相關 workflow job types 與 clustering input identity，保存「未受影響」證據。
-- [ ] 7.6 執行 `openspec validate add-tw-legal-status-curation --strict`、檢查 change task 完成證據、確認工作樹只含本 change 影響檔，再推遠端分支並經 required checks／人工驗收後才允許合併主線與 archive。
+- [ ] 7.6 執行 `openspec validate add-tw-legal-status-curation --strict`、檢查 change task 完成證據、確認工作樹只含本 change 影響檔，再推遠端分支並建立 PR。遠端 required checks 可用時須全綠；若 GitHub Actions／PR run 因免費帳號額度、權限或平台限制不可用，須記錄原因並改以本機組合驗收證據＋使用者允許作為合併主線與 archive 閘門。
