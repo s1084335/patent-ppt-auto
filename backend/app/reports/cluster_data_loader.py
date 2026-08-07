@@ -148,6 +148,27 @@ def load_cluster_workspace_data(
 
     top_applicants_ws: list[str] = [r["applicant_display_name"] for r in top_rows]
 
+    # CLU-016（補分 change）：標記人工核准之 AI 補分件，供報表母體註記分計。
+    # 0048 之前的 DB 無 assigned_source 欄——查詢失敗視為全幾何（count 0 不出註記）。
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT DISTINCT ta.patent_id "
+            "FROM derived_layer.topic_assignments ta "
+            "JOIN derived_layer.topic_runs tr ON tr.run_id = ta.run_id "
+            "JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id "
+            "WHERE wr.workspace_id = %s AND tr.source_field = %s "
+            "  AND ta.assigned_source = 'ai_backfill_approved'",
+            (workspace_id, source_field),
+        )
+        backfill_ids = {int(r["patent_id"]) for r in cur.fetchall()}
+    except Exception:  # noqa: BLE001
+        backfill_ids = set()
+    for a in assignments_out:
+        a["assigned_source"] = (
+            "ai_backfill_approved" if a["patent_id"] in backfill_ids else "geometric"
+        )
+
     return {
         "topics": topics_out,
         "assignments": assignments_out,

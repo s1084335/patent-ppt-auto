@@ -3597,6 +3597,14 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
         "機會板採板狀佈局（chip 流式排列，結構上不重疊）、每個來源各一組——"
         "2×2 格依該段專利件數與申請人家數中位數分高低，chip 色＝主要申請人涉入三級。"
     )
+    # CLU-016（補分 change）：母體註記分計 AI 建議、人工核准件數——assignments
+    # 每列帶 assigned_source（0048 起），缺欄（舊資料）視為幾何指派、count 0 不出註記。
+    backfill_n = sum(
+        1 for a in (data.get("assignments") or [])
+        if (a.get("assigned_source") if isinstance(a, dict) else None) == "ai_backfill_approved"
+    )
+    if backfill_n:
+        note += f" 其中 {backfill_n} 件為 AI 建議、人工核准之補分指派。"
     # 顯示規格（2026-07-21 二次修正）：板狀佈局完成，象限圖回歸 index——
     # cluster 卡片＝主題統計表＋各來源機會矩陣 tabs。
     ctx.sections.append({

@@ -2139,6 +2139,11 @@ async function renderTopics() {
     + '</div>'
     // 分群候選挑選區：尚未採用分類時顯示候選卡；已採用時由上方的重新挑選鈕進入。
     + '<div id="topic-candidates"></div>'
+    // AI 補分（三段式）：建議清單＋批次核准；建議只在核准後才進正式指派與統計。
+    + '<details class="maint-details" id="topic-backfill-panel" ontoggle="onTopicBackfillToggle()">'
+    + '<summary>AI 補分建議</summary>'
+    + '<div class="maint-card"><div id="topic-backfill-body" class="hint">展開後載入</div></div>'
+    + '</details>'
     // 版式：標籤 → 概覽 → 進階操作（收合）→ 專利清單
     + '<div id="topic-tags"><div class="hint">載入主題中…</div></div>'
     // AI 待複核區：有 pending 判讀時才出現（無則整區不佔版面）。
@@ -5744,6 +5749,94 @@ function gotoImportedWorkspace(workspaceId) {
   state.isGlobalWs = false;   // 切到匯入的一般 workspace：清全庫旗標。
   state.topicFilterKey = null;
   navTo('browse');
+}
+
+
+// ══════════ AI 補分（分類區面板，openspec add-technical-channel-ai-backfill） ══════════
+async function onTopicBackfillToggle() {
+  const panel = el('topic-backfill-panel');
+  if (!panel || !panel.open) return;
+  await loadTopicBackfill();
+}
+async function loadTopicBackfill() {
+  const body = el('topic-backfill-body');
+  if (!body || !state.workspaceId) return;
+  const sf = state.topicSourceField || 'wips_independent_claims';
+  // 功效通道補分＝功效通道改版輪實作（2026-08-07 使用者定案），本輪只接技術。
+  if (sf !== 'wips_independent_claims') {
+    body.innerHTML = '<div class="hint">功效通道的補分排在功效通道改版那一輪一起做；本輪僅技術通道（無獨立項專利）。</div>';
+    return;
+  }
+  body.innerHTML = '<div class="hint">載入中…</div>';
+  try {
+    const data = await getJson(API + '/workspaces/' + state.workspaceId
+      + '/topic-backfill/suggestions?source_field=' + encodeURIComponent(sf));
+    renderTopicBackfill(data, sf);
+  } catch (e) {
+    body.innerHTML = '<div class="card">載入失敗（' + escHtml((e && e.message) || '未知錯誤') + '）。</div>';
+  }
+}
+function renderTopicBackfill(data, sf) {
+  const body = el('topic-backfill-body');
+  const items = data.suggestions || [];
+  const topics = data.topics || [];
+  const runBtn = '<button class="btn btn-outline" onclick="runTopicBackfill()">產生補分建議</button>';
+  if (!items.length) {
+    body.innerHTML = '<div class="hint" style="padding:0 0 .4rem">目前沒有待核准的補分建議。</div>' + runBtn;
+    return;
+  }
+  const options = k => topics.map(t => '<option value="' + escHtml(t.topic_key) + '"'
+    + (t.topic_key === k ? ' selected' : '') + '>' + escHtml(t.topic_key + ' ' + (t.label || '')) + '</option>').join('');
+  body.innerHTML = '<div class="hint" style="padding:0 0 .4rem">建議 ' + items.length
+    + ' 件（核准後才寫入正式指派與統計）</div>'
+    + '<div id="topic-backfill-msg" class="hint" style="padding:0 0 .4rem"></div>'
+    + '<div class="table-wrap" style="max-height:22rem"><table class="data"><thead><tr>'
+    + '<th>專利號</th><th>名稱</th><th>建議主題</th><th>理由</th></tr></thead><tbody>'
+    + items.map(it => '<tr>'
+      + '<td>' + escHtml(it.patent_number || it.patent_id) + '</td>'
+      + '<td>' + escHtml(it.title || '') + '</td>'
+      + '<td>' + (it.valid === false
+          ? '<span class="hint">無效：' + escHtml(it.invalid_reason || '') + '</span>'
+          : '<select class="text-input" id="backfill-topic-' + escHtml(it.patent_id) + '">'
+            + options(it.suggested_topic_key) + '</select>')
+      + '</td>'
+      + '<td>' + escHtml(it.reason || '') + '</td>'
+      + '</tr>').join('')
+    + '</tbody></table></div>'
+    + '<div class="toolbar" style="margin:.5rem 0 0">'
+    + '<button class="btn btn-primary" onclick="approveTopicBackfill()">全部核准</button> '
+    + runBtn + '</div>';
+  state.backfillItems = items.filter(it => it.valid !== false).map(it => it.patent_id);
+}
+async function runTopicBackfill() {
+  const sf = state.topicSourceField || 'wips_independent_claims';
+  const body = el('topic-backfill-body');
+  try {
+    await getJson(API + '/workspaces/' + state.workspaceId + '/topic-backfill/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_field: sf }) });
+    if (body) body.innerHTML = '<div class="hint">建議產生任務已排入（AI 執行需數分鐘），完成後重新展開本區。</div>';
+  } catch (e) {
+    if (body) body.innerHTML = '<div class="card">排程失敗（' + escHtml((e && e.message) || '') + '）。</div>';
+  }
+}
+async function approveTopicBackfill() {
+  const sf = state.topicSourceField || 'wips_independent_claims';
+  const msg = el('topic-backfill-msg');
+  const approvals = (state.backfillItems || []).map(pid => {
+    const sel = el('backfill-topic-' + pid);
+    return sel ? { patent_id: pid, topic_key: sel.value } : null;
+  }).filter(Boolean);
+  if (!approvals.length) return;
+  try {
+    const r = await getJson(API + '/workspaces/' + state.workspaceId + '/topic-backfill/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_field: sf, approvals: approvals }) });
+    if (msg) msg.textContent = '已核准 ' + (r.approved || 0) + ' 件，統計將於下次報表產出反映。';
+    await loadTopicBackfill();
+  } catch (e) {
+    if (msg) msg.textContent = '核准失敗：' + ((e && e.message) || '未知錯誤');
+  }
 }
 
 // ══════════ 初始化 ══════════

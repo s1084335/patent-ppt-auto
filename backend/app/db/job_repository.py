@@ -47,6 +47,9 @@ AI_JOB_TYPES: frozenset[str] = frozenset(
         # 主題標籤／摘要：把 c-TF-IDF 關鍵詞拼接的主題名換成人看得懂的中文名。
         # CLI 只讀每主題前 5 筆代表性專利的文檔內容，不給 keywords（使用者定案）。
         "ai:topic_label",
+        # 技術通道 AI 補分建議（openspec add-technical-channel-ai-backfill）：
+        # 無獨立項且非設計案者產「建議主題＋理由」，批核走 API，不碰正式指派。
+        "ai:topic_backfill",
         # 文獻備註：AI 讀專利獨立項（patents."主權項"）摘要成備註，寫回
         # patent_attributes."文獻備註"。批次按字數切（獨立項最長逾萬字），不按件數。
         "ai:patent_note",
