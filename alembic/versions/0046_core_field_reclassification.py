@@ -4,7 +4,7 @@ Revision ID: 0046_core_field_reclassification
 Revises: 0045_expanded_view_columns
 Create Date: 2026-08-06
 
-規格：`docs/patent_core_field_reclassification_spec.md`
+規格：`openspec/changes/archive/complete-core-field-reclassification/`（已驗收 archive；現行契約見 `openspec/specs/patent-data-model/` DAT-006）
 Preflight 證據：`D:\\力山\\.agents\\context\\patent-db-claude-plan.md`
 
 ## 目標

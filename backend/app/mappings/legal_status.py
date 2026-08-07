@@ -38,13 +38,19 @@ LEGAL_STATUS_NORMALIZATION: dict[str, str] = {
     "无效": STATUS_DEAD,
     # 繁體別名
     "授權": STATUS_ALIVE,
+    "已核准": STATUS_ALIVE,
     "審查中": STATUS_PENDING,
     "申請": STATUS_PENDING,
+    "已申請": STATUS_PENDING,
     "公開": STATUS_PENDING,
+    "已公開": STATUS_PENDING,
     "放棄": STATUS_DEAD,
+    "核駁": STATUS_DEAD,
     "拒絕": STATUS_DEAD,
     "刪除": STATUS_DEAD,
     "無效": STATUS_DEAD,
+    "已失效": STATUS_DEAD,
+    "屆滿失效": STATUS_DEAD,
     # 英文別名（備援）
     "registered": STATUS_ALIVE,
     "granted": STATUS_ALIVE,
@@ -84,3 +90,39 @@ def normalize_legal_status(raw: str | None) -> str:
     stripped = _TRAILING_PAREN_RE.sub("", text).strip()
     key = stripped.casefold()
     return LEGAL_STATUS_NORMALIZATION.get(key, STATUS_UNKNOWN)
+
+
+# TW 人工登錄值域：後端是唯一來源，前端只能透過 API 讀取 allowed_statuses。
+TW_LEGAL_STATUS_ALLOWED: tuple[str, ...] = (
+    "已申請",
+    "已公開",
+    "審查中",
+    "已核准",
+    "放棄",
+    "核駁",
+    "撤回",
+    "已失效",
+    "屆滿失效",
+)
+
+TW_LEGAL_STATUS_ANALYSIS_MAP: dict[str, str] = {
+    status: normalize_legal_status(status) for status in TW_LEGAL_STATUS_ALLOWED
+}
+
+
+def validate_tw_legal_status(status: str) -> str:
+    """檢查 TW 人工登錄狀態並回傳去除前後空白的合法值。"""
+    cleaned = (status or "").strip()
+    if cleaned not in TW_LEGAL_STATUS_ALLOWED:
+        raise ValueError(f"unsupported TW legal_status: {status}")
+    return cleaned
+
+
+def normalize_tw_legal_status_for_analysis(raw: str | None) -> str:
+    """將 TW 人工狀態映射到狀態分析四分類；未知或空白一律 unknown。"""
+    cleaned = (raw or "").strip()
+    if not cleaned:
+        return STATUS_UNKNOWN
+    if cleaned not in TW_LEGAL_STATUS_ALLOWED:
+        return STATUS_UNKNOWN
+    return normalize_legal_status(cleaned)

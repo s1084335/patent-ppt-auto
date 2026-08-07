@@ -1,5 +1,7 @@
 # Patent Core Field Reclassification Spec
 
+> Legacy source：本檔只保留 A1-A4 與 A5 驗收的詳細原始需求。該變更已驗收並 archive（`openspec/changes/archive/complete-core-field-reclassification/`）；現行契約見 `openspec/specs/`（DAT-006／RPT-008／EXP-007），兩者衝突時以 OpenSpec 為準。
+
 目標讀者：Claude / coding agent
 
 本規格只描述要做什麼與驗收標準。開始實作前，請先讀專案根目錄的 `AGENTS.md`、全域規則，以及目前 migration head、schema、mapping、importer、derived/report/query 程式碼。不得只依本文件推測現況。
@@ -173,7 +175,7 @@ backend/app/derived/refresh_report_patent_base.py
 backend/app/reports/*
 tests/*
 docs/import_rules.md
-docs/database_schema_v1.md 或其他 schema 文件
+openspec/specs/patent-data-model/ 或其他現行 schema 文件
 ```
 
 如果 repo 內有新 migration 尚未合併或尚未上線，先確認 active head，再決定新的 migration revision 要接在哪一個 revision 後面。

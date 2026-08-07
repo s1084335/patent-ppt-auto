@@ -39,4 +39,4 @@ operations:
       - openspec validate、適用測試與實物驗收全部完成後，才可請使用者裁決。
       - 只有使用者明確確認驗收通過，才可 archive 並合併到 main specs。
       - archive 前確認舊規格已記入 migration-ledger，且沒有第二份仍在維護的規格正文。
-      - archive 後須在同一工作分支提交並推送；PR required checks 全綠且使用者允許後才可合併 main/master，不得直接推送主線。
+      - archive 後須在同一工作分支提交並推送，並以 PR 作為合併紀錄；遠端 required checks 可用時須全綠，若 GitHub Actions／PR run 因免費帳號額度、權限或平台限制不可用，須記錄原因並改以本機組合驗收證據與使用者允許作為合併 main/master 的閘門；不得直接推送主線。

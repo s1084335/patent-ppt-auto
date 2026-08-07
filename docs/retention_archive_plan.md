@@ -1,5 +1,7 @@
 # Retention And Archive Plan
 
+> Legacy source：本檔只保留 volume、NAS、還原與資料類別的細部規劃。權威變更規格、設計與任務位於 `openspec/changes/implement-retention-archive/`；兩者衝突時以 OpenSpec 為準。
+
 ## Summary Card
 
 - 更新：2026-07-30
