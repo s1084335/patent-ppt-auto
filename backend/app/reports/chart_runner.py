@@ -296,7 +296,6 @@ def patent_snapshot_metadata(patent_ids: list[int] | None) -> dict[str, Any]:
 CHART_FILE_REPORTS: dict[str, list[str]] = {
     "annual_trend.svg": ["application_trend", "publication_trend"],
     "jurisdiction_distribution.svg": ["country_distribution"],
-    "family_country_distribution.svg": ["family_country_layout"],
     "ipc_main_distribution_L4.svg": ["ipc_main_distribution"],
     "ipc_main_distribution_L5.svg": ["ipc_main_distribution"],
     "cpc_main_distribution_L4.svg": ["cpc_main_distribution"],
@@ -533,6 +532,76 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
         svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{label}</text>')
         svg.append(f'<rect x="{left}" y="{y + 5}" width="{bar_w:.1f}" height="18" rx="2" fill="{color}"/>')
         svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value}</text>')
+    svg.append("</svg>")
+    path.write_text("\n".join(svg), encoding="utf-8")
+
+
+def render_paired_bar_chart(
+    path: Path,
+    title: str,
+    rows: list[dict[str, Any]],
+    label_key: str,
+    series: tuple[tuple[str, str], ...],
+    limit: int = 20,
+) -> None:
+    """每列兩條 bar 的分組長條圖（2026-08-07 受理局「申請 vs 現存有效」合併頁）。
+
+    series＝((圖例名, 取值欄), ...) 固定兩條：同一把尺（共用 max）才能直接比較，
+    值一律標「N 件」——口徑是件 vs 件（使用者定案），不得混入家族數。
+    """
+    data = rows[:limit]
+    width = CHART_CANVAS_WIDTH
+    top = 68
+    right = 150
+    bottom = 34
+    # 兩條 bar 一組：列高照單條版加倍再留組距，沿用字級迭代解算。
+    bar_h = 16
+    gap = 4
+
+    def _row_h(font_px: float) -> int:
+        base = int(round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX)) * 2
+        rh = _fill_row_height(len(data), top=top, bottom=bottom, base=base)
+        cap = int((CHART_CANVAS_MAX_HEIGHT - top - bottom) / max(1, len(data)))
+        return max(bar_h * 2 + gap * 3, min(rh, cap))
+
+    def _canvas_height(font_px: float) -> float:
+        return top + bottom + max(1, len(data)) * _row_h(font_px)
+
+    label_px, _ = solve_chart_font(width, _canvas_height)
+    row_h = _row_h(label_px)
+    left = label_gutter([str(row.get(label_key) or "") for row in data], font_px=label_px)
+    height = round(_canvas_height(label_px))
+    plot_w = width - left - right
+    max_value = max(
+        [int(row.get(key) or 0) for row in data for _, key in series] + [1])
+    colors = (COLOR_BAR, COLOR_SEGMENT)
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
+        '<rect width="100%" height="100%" fill="white"/>',
+        f'<text data-role="chart-title" x="28" y="36" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+    ]
+    # 圖例：右上一組色塊＋圖例名，兩條 bar 的定義由此對照。
+    legend_x = width - right - 260
+    for i, (name, _key) in enumerate(series):
+        lx = legend_x + i * 140
+        svg.append(f'<rect x="{lx}" y="{top - 26}" width="14" height="14" rx="2" fill="{colors[i]}"/>')
+        svg.append(f'<text x="{lx + 20}" y="{top - 14}" font-size="{label_px * 0.85:.1f}" fill="{COLOR_TEXT}">{xml_text(name)}</text>')
+    note = truncation_note(len(data), len(rows))
+    if note:
+        svg.append(f'<text x="{width - 40}" y="36" text-anchor="end" font-size="{label_px:.1f}" '
+                   f'fill="{COLOR_TEXT_SOFT}">{xml_text(note)}</text>')
+    for index, row in enumerate(data):
+        y = top + index * row_h
+        label = xml_text(str(row.get(label_key) or ""))
+        svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + row_h / 2 + label_px / 3:.1f}" '
+                   f'font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{label}</text>')
+        for i, (_name, key) in enumerate(series):
+            value = int(row.get(key) or 0)
+            bar_w = scale(value, 0, max_value, 0, plot_w)
+            by = y + gap + i * (bar_h + gap)
+            svg.append(f'<rect x="{left}" y="{by}" width="{bar_w:.1f}" height="{bar_h}" rx="2" fill="{colors[i]}"/>')
+            svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{by + bar_h - 3}" '
+                       f'font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value} 件</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -2019,8 +2088,9 @@ def _section_report_name(section: dict[str, Any]) -> str:
 CHART_ENCODING_NOTES: dict[str, str] = {
     "application_trend": "折線＝當年件數｜橫軸＝年份｜兩線分別為申請與授權公告",
     "publication_trend": "折線＝當年公告件數｜橫軸＝公告年",
-    "country_distribution": "條長＝佔全體比例（軌道＝100%）｜數值＝件數與佔比",
-    "jurisdiction_distribution": "條長＝件數｜排序＝件數由高至低",
+    # 2026-08-07 合併頁：兩條 bar 同尺（申請件數 vs 現存有效＝已授權桶）。
+    "country_distribution": "條長＝件數（兩條同尺）｜上＝申請件數、下＝現存有效（已授權）",
+    "jurisdiction_distribution": "條長＝件數（兩條同尺）｜上＝申請件數、下＝現存有效（已授權）",
     # ⚠ 拆頁後每頁只有一個階層，說明不得再提「左右」（階層寫在圖表標題裡）。
     "ipc_main_distribution": "條長＝件數｜縱軸＝分類代碼｜本頁為單一階層",
     "cpc_main_distribution": "條長＝件數｜縱軸＝分類代碼｜本頁為單一階層",
@@ -2030,7 +2100,6 @@ CHART_ENCODING_NOTES: dict[str, str] = {
     "applicant_country_distribution": "格值＝件數｜列＝申請人、欄＝受理國",
     "applicant_year_matrix": "泡泡大小與顏色＝件數｜列＝申請人、欄＝申請年",
     "lifecycle": "格值＝件數｜列＝申請人（前十大，含共同申請）、欄＝狀態桶",
-    "family_country_layout": "條長＝存活家族數｜分組＝受理國",
 }
 
 
@@ -2523,21 +2592,47 @@ def _build_trend_section(ctx: ChartContext) -> None:
 
 
 def _build_country_map_section(ctx: ChartContext) -> None:
-    """專利受理局分布：第一版改用長條圖，口徑仍走 country_code。"""
+    """受理局「申請 vs 現存有效」合併頁（2026-08-07 使用者定案）。
+
+    原 p04（受理局分布，件）與 p06（國家佈局現有保護，存活家族數）合成一張：
+    每國兩條 bar、口徑「件 vs 件」——申請件數（全部匯入案件含死案）對
+    現存有效件數（狀態桶「已授權」）。家族數（同族合併）降為頁尾註記一行。
+    """
+    from backend.app.transforms.legal_status import BUCKET_UNKNOWN
+
     report = ctx.report("country_distribution")
-    render_bar_chart(
+    pivot = country_status_pivot(report["rows"])
+    render_paired_bar_chart(
         ctx.run_dir / "jurisdiction_distribution.svg",
         report["label_zh"],
-        report["rows"],
-        "country_code",
+        pivot,
+        label_key="country_code",
+        series=(("申請件數", "申請件數"), ("現存有效", "已授權")),
     )
-    ctx.chart_rows["jurisdiction_distribution"] = report["rows"]
+    ctx.chart_rows["jurisdiction_distribution"] = pivot
+    unknown_total = sum(int(r.get(BUCKET_UNKNOWN) or 0) for r in pivot)
+    # 🔴 備註要寫清楚定義（使用者原話）：兩條 bar 的口徑、有效的判定、
+    # 未知件數點名（誠實呈現，不虛增授權率）。
+    notes = [
+        "申請件數＝全部匯入案件（含死案）；現存有效＝法律狀態桶「已授權」。",
+        "審查中／已失效／未知不計入現存有效；狀態桶定義見專利狀態分析頁。",
+    ]
+    if unknown_total:
+        notes.append(f"其中 {unknown_total} 件狀態未知（未登錄），不計入有效——待補登錄後件數會變。")
+    # 家族視角降為一行註記：原「國家佈局（現有保護）」頁已併入本頁（刪 > 改版）。
+    family_report = ctx.report("family_country_layout")
+    family_total = sum(int(r.get("patent_count") or 0) for r in family_report["rows"])
+    if family_total:
+        notes.append(f"同族合併後存活家族共 {family_total} 個（家族口徑細節不另出頁）。")
+    quality_note = family_quality_note(_fetch_family_quality_rows())
+    if quality_note:
+        notes.append(quality_note)
     # 檔名 jurisdiction_distribution ≠ 報表鍵 country_distribution，須顯式宣告查找鍵。
     ctx.sections.append({
         "title": report["label_zh"],
         "report_key": "country_distribution",
         "variants": [{"label": "Bar", "file": "jurisdiction_distribution.svg", "variant_key": "default"}],
-        "note": "專利受理局分布以 country_code group by，與全庫或 workspace patent_ids 快照共用同一報表定義。",
+        "note": " ".join(notes),
     })
 
 
@@ -2595,37 +2690,10 @@ def family_quality_note(quality_rows: list[dict[str, Any]]) -> str:
     )
 
 
-def _build_family_layout_section(ctx: ChartContext) -> None:
-    """國家佈局（現有保護口徑）：家族×國家報表，第一版用長條圖。
-
-    filters/快照經引擎轉譯成「選中專利所屬家族」的家族集合，佈局計入家族
-    全體成員；不帶篩選＝全庫。
-    """
-    family_report = ctx.report("family_country_layout")
-    # 🔴 RPT-011：family_quality_detail 報表已刪（品質稽核不給決策者看），但定案
-    # 「家族完整性**併入國家佈局頁註記**」——資料改直查 derived view，不走 registry。
-    quality_rows = _fetch_family_quality_rows()
-    family_notes = [
-        "計數單位是「同族（發明）」：group by 同族ID，做到申請國（受理局）層級；EP 以區域標示呈現，暫不展開生效國。",
-        family_quality_note(quality_rows),
-    ]
-    if ctx.analysis_id is not None or ctx.filters:
-        family_notes.append("家族集合依篩選／快照圈定；佈局計入家族全體成員，可能含篩選外的國家。")
-    render_bar_chart(
-        ctx.run_dir / "family_country_distribution.svg",
-        family_report["label_zh"],
-        family_report["rows"],
-        "country_code",
-    )
-    ctx.chart_rows["family_country_distribution"] = family_report["rows"]
-    # 檔名 family_country_distribution ≠ 報表鍵 family_country_layout，須顯式宣告查找鍵。
-    # 數據表取家族×國家佈局（本卡主體）；家族品質明細另以 links 的 JSON 提供。
-    ctx.sections.append({
-        "title": family_report["label_zh"],
-        "report_key": "family_country_layout",
-        "variants": [{"label": "Bar", "file": "family_country_distribution.svg", "variant_key": "default"}],
-        "note": " ".join(family_notes),
-    })
+# 🔴 2026-08-07 刪頁（刪 > 改版）：原 `_build_family_layout_section`（國家佈局
+# 現有保護）已併入 `_build_country_map_section` 合併頁——「各國還剩多少保護」
+# 改由「申請 vs 現存有效」兩條 bar 回答（件 vs 件），存活家族數與家族品質
+# 提醒（RPT-011 定案）降為該頁註記。report 定義保留給 Web 報表種類。
 
 # IPC/CPC 出頁門檻：4 階（subclass）distinct 種類數低於此值＝該報表不進簡報。
 CLASSIFICATION_MIN_DISTINCT_L4 = 3
@@ -2818,6 +2886,31 @@ def lifecycle_status_pivot(rows: list[dict[str, Any]], limit: int = CHART_ROW_LI
     ranked = sorted(by_applicant.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))[:limit]
     return [{"applicant_display_name": name, **buckets, "patent_count": sum(buckets.values())}
             for name, buckets in ranked]
+
+
+def country_status_pivot(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """(受理局, 原始狀態, 件數) 長格式 → 每國一列：申請件數＋四狀態桶。
+
+    2026-08-07 合併頁定案（件 vs 件）：申請件數＝各桶加總（全部匯入案件含死案），
+    「現存有效」＝已授權桶。桶收斂一律走唯一定義處 `transforms.legal_status`。
+    欄序固定 country_code、申請件數、STATUS_BUCKET_ORDER——數據表與圖共用。
+    """
+    from backend.app.transforms.legal_status import STATUS_BUCKET_ORDER, status_bucket
+
+    by_country: dict[str, dict[str, int]] = {}
+    for row in rows:
+        country = str(row.get("country_code") or "").strip()
+        if not country:
+            continue
+        bucket = status_bucket(row.get("legal_status"))
+        entry = by_country.setdefault(country, {b: 0 for b in STATUS_BUCKET_ORDER})
+        entry[bucket] += int(row.get("patent_count") or 0)
+    ranked = sorted(by_country.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))
+    return [
+        {"country_code": country, "申請件數": sum(buckets.values()),
+         **{b: buckets[b] for b in STATUS_BUCKET_ORDER}}
+        for country, buckets in ranked
+    ]
 
 
 def _build_lifecycle_section(ctx: ChartContext) -> None:
@@ -3497,8 +3590,9 @@ class SectionSpec:
 # 必須掛進某個 spec（tests/test_chart_sections.py 會驗 registry 覆蓋所有報表定義）。
 SECTION_SPECS: tuple[SectionSpec, ...] = (
     SectionSpec("annual_trend", ("application_trend", "publication_trend"), _build_trend_section),
-    SectionSpec("country_map", ("country_distribution",), _build_country_map_section),
-    SectionSpec("family_layout", ("family_country_layout",), _build_family_layout_section),
+    # 合併頁：country_map 同時吃 family_country_layout（家族數降為註記），
+    # 兩鍵任一被選都渲染本卡；family_layout 獨立卡已刪（2026-08-07）。
+    SectionSpec("country_map", ("country_distribution", "family_country_layout"), _build_country_map_section),
     SectionSpec("ipc", ("ipc_main_distribution",), _build_ipc_section),
     SectionSpec("cpc", ("cpc_main_distribution",), _build_cpc_section),
     SectionSpec("applicant_ranking", ("applicant_ranking",), _build_applicant_ranking_section),

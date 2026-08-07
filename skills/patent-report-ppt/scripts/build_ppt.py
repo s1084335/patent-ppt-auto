@@ -159,7 +159,8 @@ PAGE_LAYOUT: tuple[PageSpec, ...] = (
 EVIDENCE_ORDER: tuple[str, ...] = (
     "application_trend", "publication_trend", "lifecycle",              # 時間
     "country_distribution", "applicant_country_distribution",           # 空間
-    "family_country_layout",
+    # ⚠ family_country_layout 頁已刪（2026-08-07 併入受理局合併頁）；舊報表版本
+    # 帶此鍵的資料也不撿——刪除是刻意的，不是漏排。
     "ipc_main_distribution", "cpc_main_distribution", "cluster_topic_table",  # 技術
     # ⚠ owner_ranking／owner_year_matrix 已刪（RPT-011）；舊報表版本仍可能帶
     # 這兩鍵的資料，但不在此序＝動態插頁也不會撿——刪除是刻意的，不是漏排。
@@ -286,7 +287,7 @@ CHART_VARIANT_LABELS = {
 ENCODING_NOTES = {
     "application_trend": "條長＝當年申請件數｜橫軸＝申請年",
     "publication_trend": "條長＝當年公告件數｜橫軸＝公告年",
-    "country_distribution": "條長＝件數佔比｜數值＝實際件數",
+    "country_distribution": "條長＝件數（兩條同尺）｜上＝申請件數、下＝現存有效（已授權）",
     "ipc_main_distribution": "條長＝件數｜左右為不同階層，非同圖合成",
     "cpc_main_distribution": "條長＝件數｜左右為不同階層，非同圖合成",
     "opportunity_quadrant": "橫軸＝申請人家數｜縱軸＝專利件數｜點＝技術主題",
@@ -295,7 +296,6 @@ ENCODING_NOTES = {
     "applicant_country_distribution": "格值＝件數｜列＝申請人、欄＝受理國",
     "applicant_year_matrix": "格值＝件數｜列＝申請人、欄＝申請年",
     "lifecycle": "面積／條長＝當年件數｜橫軸＝申請年",
-    "family_country_layout": "條長＝家族成員件數｜分組＝受理國",
 }
 DEFAULT_ENCODING_NOTE = "條長＝件數｜數值取自報表引擎"
 

@@ -107,7 +107,8 @@ class FamilyQualitySurfacedTests(unittest.TestCase):
         import inspect
         from backend.app.reports import chart_runner
 
-        src = inspect.getsource(chart_runner._build_family_layout_section)
+        # 🔴 2026-08-07：family 獨立卡已刪，品質摘要改掛受理局合併頁（RPT-011 定案不變）。
+        src = inspect.getsource(chart_runner._build_country_map_section)
         self.assertIn("family_quality_note", src,
                       "算了摘要卻沒掛上卡片——等於仍然沒人看得到")
 
