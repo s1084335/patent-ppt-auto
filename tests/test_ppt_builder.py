@@ -223,10 +223,12 @@ def test_unselected_or_empty_reports_do_not_create_their_pages(tmp_path, partial
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
 
     # P1-6：研發方向（結論）壓軸、附錄之前；P1-1：單圖內容頁預設 chart_hero。
+    # 🔴 2026-08-07：保護地域分布改 chart_hero（成對長條 SVG）——percentage_bars
+    # 會把 (國×狀態) 群組列一列一條重畫，同一國拆成多條（實機驗收抓到）。
     assert [p["kind"] for p in manifest["pages"]] == [
         "cover",
         "chart_hero",
-        "percentage_bars",
+        "chart_hero",
         "direction",
     ]
     assert all("cluster_topic_table" not in p["report_keys"] for p in manifest["pages"])

@@ -125,14 +125,18 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
             "current_assignee_display_name",
         ),
     ),
+    # 🔴 2026-08-07 使用者定案：受理局分布與「國家佈局（現有保護）」合成一頁，
+    # 每國兩條 bar、口徑「件 vs 件」（申請件數 vs 狀態桶「已授權」件數）。
+    # SQL 只回 (country, 原值, 件數)——桶收斂唯一定義處在 transforms/legal_status，
+    # 同 lifecycle 模式；legal_status 空值不 exclude（未知桶要現形）。
     "country_distribution": ReportDefinition(
         name="country_distribution",
         report_type="aggregate",
         label="Patent Jurisdiction Distribution",
         label_zh="專利受理局分布",
         source_table=REPORT_SOURCE_TABLE,
-        columns=("country_code",),
-        group_by=("country_code",),
+        columns=("country_code", "legal_status"),
+        group_by=("country_code", "legal_status"),
         default_order=(("patent_count", "desc"), ("country_code", "asc")),
         exclude_blank_columns=("country_code",),
     ),

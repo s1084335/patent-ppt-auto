@@ -118,10 +118,11 @@ class SectionRegistryTests(unittest.TestCase):
             chart_runner.resolve_sections(["recent_assignee_ranking"])
 
     def test_resolve_family_layout_alone(self):
-        """RPT-011：family_quality_detail 已刪，家族 section 只剩佈局報表；
-        品質資訊降級為國家佈局頁的註記（builder 直查 view，不經 registry）。"""
+        """🔴 2026-08-07 契約更新：family_layout 獨立卡已刪（併入受理局合併頁），
+        選 family_country_layout 改渲染 country_map 合併卡；family_quality_detail
+        仍不存在（RPT-011）。"""
         keys = [spec.key for spec in chart_runner.resolve_sections(["family_country_layout"])]
-        self.assertEqual(keys, ["family_layout"])
+        self.assertEqual(keys, ["country_map"])
         with self.assertRaises(ValueError):
             chart_runner.resolve_sections(["family_quality_detail"])
 
@@ -1225,10 +1226,10 @@ class SectionReportKeyTests(unittest.TestCase):
 
     def test_four_cards_declare_matching_report_key(self):
         """四張卡的 report_key 必須是報表引擎的鍵，不得退回檔名 fallback。"""
+        # 🔴 2026-08-07：國家佈局（現有保護）獨立卡已刪——併入受理局合併頁。
         expected = {
             "專利申請趨勢與專利授權公告趨勢": "annual_trend",
             "專利受理局分布": "country_distribution",
-            "國家佈局（現有保護）": "family_country_layout",
             "公司×國家交叉表": "applicant_country_distribution",
         }
         rd, _ = self._render(list(self._ROWS))
@@ -1268,8 +1269,9 @@ class SectionReportKeyTests(unittest.TestCase):
         for block in blocks:
             title = re.search(r"<h2>(.*?)</h2>", block).group(1)
             by_title[title] = block
+        # 🔴 2026-08-07：國家佈局卡已刪（併入受理局合併頁），不再驗其獨立卡。
         for title in ("專利申請趨勢與專利授權公告趨勢", "專利受理局分布",
-                      "國家佈局（現有保護）", "公司×國家交叉表"):
+                      "公司×國家交叉表"):
             self.assertIn(title, by_title, f"缺少卡片 {title}")
             self.assertNotIn(
                 "data-empty", by_title[title],

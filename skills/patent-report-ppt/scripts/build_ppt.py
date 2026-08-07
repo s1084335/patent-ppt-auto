@@ -120,7 +120,11 @@ PAGE_LAYOUT: tuple[PageSpec, ...] = (
              report_keys=("application_trend", "country_distribution")),
     PageSpec(page=2, kind="chart_hero", title="申請趨勢", topic="申請趨勢",
              report_keys=("application_trend", "publication_trend")),
-    PageSpec(page=3, kind="percentage_bars", title="保護地域分布", topic="保護地域分布",
+    # 🔴 2026-08-07 使用者定案：本頁改用引擎的成對長條 SVG（每國兩條相鄰
+    # ——申請件數 vs 現存有效，同尺＋圖例）。原 percentage_bars 版型由組版端
+    # 拿報表原始列重畫，country_distribution 改 (國×狀態) 群組後一列一條，
+    # 同一國被拆成多條、兩條 bar 分家——實機驗收抓到的錯，不得回退。
+    PageSpec(page=3, kind="chart_hero", title="保護地域分布", topic="保護地域分布",
              report_keys=("country_distribution",)),
     # IPC＋CPC 同頁對照（2026-07-31）：原本只掛 ipc，cpc 落到動態插頁、與 ipc 隔開
     # 好幾頁——註解寫著「IPC/CPC 維持同頁比較」但實作沒做到，這裡補齊。
@@ -159,7 +163,8 @@ PAGE_LAYOUT: tuple[PageSpec, ...] = (
 EVIDENCE_ORDER: tuple[str, ...] = (
     "application_trend", "publication_trend", "lifecycle",              # 時間
     "country_distribution", "applicant_country_distribution",           # 空間
-    "family_country_layout",
+    # ⚠ family_country_layout 頁已刪（2026-08-07 併入受理局合併頁）；舊報表版本
+    # 帶此鍵的資料也不撿——刪除是刻意的，不是漏排。
     "ipc_main_distribution", "cpc_main_distribution", "cluster_topic_table",  # 技術
     # ⚠ owner_ranking／owner_year_matrix 已刪（RPT-011）；舊報表版本仍可能帶
     # 這兩鍵的資料，但不在此序＝動態插頁也不會撿——刪除是刻意的，不是漏排。
@@ -171,7 +176,9 @@ EVIDENCE_ORDER: tuple[str, ...] = (
 # 不進 PPT 的報表。⚠ RPT-011（2026-08-06）後 family_quality_detail 連報表都刪了
 # （家族完整性併入國家佈局頁註記），本集合仍保留該鍵：**舊報表版本**的 report_data
 # 還帶著它，缺了這行會被當成動態插頁撿回簡報。
-EXCLUDED_FROM_PPT = frozenset({"family_quality_detail"})
+# family_country_layout（2026-08-07）：獨立頁已刪、併入受理局合併頁——引擎仍會把
+# 該報表資料寫進 report_data（合併頁註記要用），動態插頁不得再為它出獨立頁。
+EXCLUDED_FROM_PPT = frozenset({"family_quality_detail", "family_country_layout"})
 
 # 截斷時優先切在這些標點之後（見 `_truncate_to_width`）：斷在標點像「話沒說完」，
 # 斷在字中間像「字被砍掉」，後者會讓讀者以為產檔壞了。
@@ -286,7 +293,7 @@ CHART_VARIANT_LABELS = {
 ENCODING_NOTES = {
     "application_trend": "條長＝當年申請件數｜橫軸＝申請年",
     "publication_trend": "條長＝當年公告件數｜橫軸＝公告年",
-    "country_distribution": "條長＝件數佔比｜數值＝實際件數",
+    "country_distribution": "條長＝件數（兩條同尺）｜上＝申請件數、下＝現存有效（已授權）",
     "ipc_main_distribution": "條長＝件數｜左右為不同階層，非同圖合成",
     "cpc_main_distribution": "條長＝件數｜左右為不同階層，非同圖合成",
     "opportunity_quadrant": "橫軸＝申請人家數｜縱軸＝專利件數｜點＝技術主題",
@@ -295,7 +302,6 @@ ENCODING_NOTES = {
     "applicant_country_distribution": "格值＝件數｜列＝申請人、欄＝受理國",
     "applicant_year_matrix": "格值＝件數｜列＝申請人、欄＝申請年",
     "lifecycle": "面積／條長＝當年件數｜橫軸＝申請年",
-    "family_country_layout": "條長＝家族成員件數｜分組＝受理國",
 }
 DEFAULT_ENCODING_NOTE = "條長＝件數｜數值取自報表引擎"
 
