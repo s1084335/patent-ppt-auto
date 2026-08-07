@@ -148,6 +148,7 @@ NARRATIVE_CONTRAST_WITH = {"cpc_main_distribution": "IPC"}
 def validate_narrative_contract(
     narratives: dict[str, Any],
     capacity: dict[str, dict[str, int]] | None = None,
+    subjects: dict[str, list[str]] | None = None,
 ) -> list[str]:
     """驗三件套契約，回傳警告清單（合規＝空）。
 
@@ -161,6 +162,8 @@ def validate_narrative_contract(
     contract_warnings，前端任務進度看得到——違規不得靜默。
     """
     capacity = capacity or {}
+    # subjects＝各變體可具名對象（Q14／RPT-012）：判讀要指名，不得只講泛稱。
+    subjects = subjects or {}
     warnings: list[str] = []
     for report_key, report in (narratives.get("reports") or {}).items():
         base_limits = capacity.get(report_key) or {}
@@ -252,6 +255,13 @@ def validate_narrative_contract(
                 warnings.append(
                     f"{where} 沒有任何一條解釋成因——只描述現象，"
                     "要說出為什麼會這樣（背後的驅動、結構或機制）")
+            # 鎖七·具名（Q14／RPT-012）：整頁至少點到一個具名對象。
+            page_subjects = [n for n in (subjects.get(where) or []) if n]
+            if points and page_subjects and not any(
+                    any(name in t for name in page_subjects) for t in all_texts):
+                warnings.append(
+                    f"{where} 整頁沒有點到任何具名對象——判讀要指名"
+                    f"（{'、'.join(page_subjects[:3])} 等），不能只說「主要申請人」")
             # 鎖六·該對照的要對照著講（CPC vs IPC）。
             counterpart = NARRATIVE_CONTRAST_WITH.get(report_key)
             if counterpart:
@@ -393,6 +403,35 @@ def resolve_run_dir(based_on_version: str | None, *, root: Path | None = None) -
     )
 
 
+def load_narrative_subjects(run_dir: Path | None = None) -> dict[str, list[str]]:
+    """各變體「可具名對象」清單（Q14／RPT-012 具名鎖的比對集）。
+
+    來源＝report_data.json 的 chart_rows：取每列的申請人／主題／專利號等
+    名稱型欄位。⚠ 只給**已在該頁資料裡**的名字，AI 提到別頁的公司不算命中——
+    具名要具體且該頁查得到。取不到就回空（該頁跳過鎖，不誤報）。
+    """
+    if run_dir is None:
+        return {}
+    try:
+        data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    name_keys = ("applicant_display_name", "label", "topic_label",
+                 "current_assignee_display_name", "patent_number")
+    out: dict[str, list[str]] = {}
+    for section in data.get("sections") or []:
+        report_key = str(section.get("report_key") or "")
+        rows = (data.get("chart_rows") or {}).get(report_key) or []
+        names = [str(r[k]).strip() for r in rows if isinstance(r, dict)
+                 for k in name_keys if r.get(k) and str(r[k]).strip()]
+        if not names:
+            continue
+        seen = list(dict.fromkeys(names))
+        for variant in section.get("variants") or [{}]:
+            out[f"{report_key}:{variant.get('variant_key', 'default')}"] = seen
+    return out
+
+
 def load_narrative_capacity(run_dir: Path | None = None) -> dict[str, dict[str, int]]:
     """各報表要點區的實際版面容量；取不到回空 dict。
 
@@ -507,6 +546,8 @@ def build_prompt(
         "   ⚠ **依此順序逐欄寫，不要跳著寫**——順序就是撰寫程序：\n"
         f"   points＝**{NARRATIVE_POINTS_MIN}–{NARRATIVE_POINTS_MAX} 條自由要點**"
         "（2026-08-07 起**不再加「現況／意涵／後續」標籤**，不要輸出 label 欄）。\n"
+        "   🔴 **要具名**（Q14／RPT-012）：判讀要點名具體對象（申請人全名、\n"
+        "   主題名、專利號），不得整頁只說「主要申請人」「部分廠商」這類泛稱。\n"
         "   🔴 **格式完全不固定（2026-08-07 使用者定案）**：條數、句式、順序、每條講\n"
         "   什麼，都由**這一頁的內容**決定，不要每頁套同一個模子（一條數字、一條解釋、\n"
         "   一條建議的公式化寫法＝失格）。固定的只有兩個**內容**要求：\n"
@@ -727,7 +768,9 @@ def run_narrative(
 
     # 三件套契約驗證（v4）：只警告不 raise——舊格式要能過渡、超限交 PPT 端 fallback；
     # 警告進 summary 讓前端任務進度看得到，違規不得靜默。
-    contract_warnings = validate_narrative_contract(narratives, load_narrative_capacity(run_dir))
+    contract_warnings = validate_narrative_contract(
+        narratives, load_narrative_capacity(run_dir),
+        subjects=load_narrative_subjects(run_dir))
 
     # 確定性程式重渲染 index（嵌入解讀）；CLI 不碰 index.html。
     refresh = refresh_index(run_dir)
