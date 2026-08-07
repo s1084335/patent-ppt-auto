@@ -569,15 +569,19 @@ def _paired_rows_svg(
 ) -> list[str]:
     """合併頁資料列：每列標籤＋兩條同尺 bar，值一律標「N 件」（口徑＝件 vs 件）。"""
     parts: list[str] = []
+    # 🔴 成對區塊在列內**垂直置中**（2026-08-07 實機驗收：bar 靠列頂、標籤在
+    # 列中，列高被撐開時兩者對不上）——標籤中線＝兩條 bar 的組中線。
+    pair_block = 2 * bar_h + gap
     for index, row in enumerate(data):
         y = top + index * row_h
+        pair_top = y + (row_h - pair_block) / 2
         label = xml_text(str(row.get(label_key) or ""))
         parts.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + row_h / 2 + label_px / 3:.1f}" '
                      f'font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{label}</text>')
         for i, (_name, key) in enumerate(series):
             value = int(row.get(key) or 0)
             bar_w = scale(value, 0, max_value, 0, plot_w)
-            by = y + gap + i * (bar_h + gap)
+            by = pair_top + i * (bar_h + gap)
             parts.append(f'<rect x="{left}" y="{by}" width="{bar_w:.1f}" height="{bar_h}" rx="2" fill="{colors[i]}"/>')
             parts.append(f'<text x="{left + bar_w + 8:.1f}" y="{by + bar_h - 3}" '
                          f'font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value} 件</text>')
