@@ -47,8 +47,17 @@ def build_prompt(brief: dict[str, Any]) -> str:
     presets = "、".join(sorted(APPROVED_LAYOUT_PRESETS))
     return (
         "任務：依最大目標規劃一份專利分析簡報（系統派工、非互動、一次性）。\n\n"
-        f"## 最大目標\n{brief['north_star_goal']}\n\n"
-        f"## 受眾\n{brief.get('audience') or '未指定'}\n\n"
+        f"## 最大目標\n{brief['north_star_goal']}\n"
+        + ("（使用者未指定目標，以下為系統預設策略；品質標準不因此降低）\n\n"
+           if brief.get("used_default_goal") else "\n")
+        + f"## 受眾\n{brief.get('audience') or '未指定'}\n\n"
+        + "## 編排方向（方向不是模板；版型是備選庫，出哪幾頁由內容決定）\n"
+        + "".join(f"- {d}\n" for d in (brief.get("directions") or [])) + "\n"
+        + "## 品質標準（兩份參考範例的共同 DNA）\n"
+          "- 結論先行：開頭就要有可行動的判斷，不是把結論留到最後\n"
+          "- 每頁要有**具名發現**與依據（誰、哪個主題、幾件），不是泛稱\n"
+          "- Key Player 要有定位（全領域／單一技術深布局／利基／前案），不只排名\n"
+          "- 收尾要有判讀說明：母體口徑、可觀測性偏差、資料限制\n\n"
         f"## 頁數上限\n{brief['page_budget']} 頁（超過即不合格）\n\n"
         "## 使用者選定的圖表（**全部都要用到，且不得加入未選的圖**）\n"
         + "\n\n".join(chart_blocks) + "\n\n"

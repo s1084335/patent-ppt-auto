@@ -3704,22 +3704,15 @@ function renderExport() {
     + '<button class="btn btn-outline" id="btn-export-html" onclick="reviewExportOutput()">單頁 HTML 預覽</button>'
     + '<button class="btn btn-primary" id="btn-export-ppt" onclick="requestExportPpt()">產生 PPT</button>'
     + '</div>'
-    // 目標驅動規劃（P2）：填最大目標＋選圖 → CLI 依目標安排論證與版型。
-    // ⚠ 收合預設：既有「產生 PPT」固定頁序流程不受影響（沒 plan 就走舊路徑）。
-    + '<details class="maint-details" id="goal-plan-panel">'
-    + '<summary>目標驅動規劃（AI 依你的目標安排簡報）</summary>'
-    + '<div class="maint-card">'
-    + '<div class="hint" style="padding:0 0 .4rem">填最大目標並勾選要用的圖表，'
-    + 'CLI 會依目標決定論證順序、版型與敘述，並且**只用你選的圖**。</div>'
-    + '<input class="text-input" id="goal-north-star" placeholder="最大目標（例：找出可切入的技術空白）" style="width:100%;margin-bottom:.4rem">'
-    + '<div class="toolbar" style="margin:0 0 .4rem">'
-    + '<input class="text-input" id="goal-audience" placeholder="受眾（例：研發主管）" style="min-width:200px">'
-    + '<input class="text-input" id="goal-page-budget" type="number" min="1" max="30" value="12" style="width:110px" title="頁數上限">'
-    + '<button class="btn btn-primary" onclick="submitGoalPlan()">開始規劃</button>'
+    // 🔴 EXP-018（2026-08-09 使用者定案）：PPT **只有一個入口**，目標選填。
+    // 有填→以需求為重心；沒填→系統用預設策略規劃，品質仍須達範例水準
+    // （不是退回固定頁序——那只在規劃失敗時保底）。
+    + '<div class="toolbar" style="margin:.2rem 0 .6rem">'
+    + '<input class="text-input" id="ppt-goal-input" style="flex:1;min-width:280px" '
+    + 'placeholder="這份簡報的最大目標（選填，例：找出可切入的技術空白）">'
+    + '<span class="hint" style="padding:0;font-size:.8rem">留白＝系統依預設策略編排</span>'
     + '</div>'
-    + '<div id="goal-chart-picker" class="hint">載入可選圖表…</div>'
-    + '<div id="goal-plan-status" class="hint" style="padding:.4rem 0 0"></div>'
-    + '</div></details>'
+    + '<div id="ppt-chart-picker" class="hint" style="padding:0 0 .4rem"></div>'
     + '<div id="export-job"></div>'
     + '<div id="export-ppt-result"></div>'
     + '<div id="export-preview"><div class="hint">載入報告內容中…</div></div>';
@@ -5862,44 +5855,29 @@ async function approveTopicBackfill() {
   }
 }
 
-// ══════════ 目標驅動規劃（P2：ReportBrief 送出與進度） ══════════
-async function loadGoalChartPicker() {
-  const box = el('goal-chart-picker');
+// ══════════ PPT 單一入口（EXP-018）：目標選填，一顆按鈕走完 ══════════
+// ⚠ 不做「固定架構／依目標規劃」兩顆按鈕——那是把系統的不確定推給使用者選。
+async function loadPptChartPicker() {
+  const box = el('ppt-chart-picker');
   if (!box || !exportPreview || !exportPreview.data) return;
   const sections = (exportPreview.data.sections || []);
-  if (!sections.length) { box.textContent = '尚無報表版本可選圖，請先產製報表資料。'; return; }
-  box.innerHTML = '<div style="max-height:14rem;overflow:auto">'
+  if (!sections.length) { box.textContent = ''; return; }
+  box.innerHTML = '<details><summary>選擇要用的圖表（預設全選，共 '
+    + sections.length + ' 張）</summary><div style="max-height:12rem;overflow:auto;padding:.3rem 0">'
     + sections.map(sec => (sec.variants || []).map(v => {
         const id = escHtml(sec.report_key + ':' + (v.variant_key || 'default'));
-        return '<label class="checkbox-row"><input type="checkbox" class="goal-chart-cb" value="'
+        return '<label class="checkbox-row"><input type="checkbox" class="ppt-chart-cb" value="'
           + id + '" checked> ' + escHtml(sec.title || sec.report_key)
           + (v.label ? '（' + escHtml(v.label) + '）' : '') + '</label>';
       }).join('')).join('')
-    + '</div>';
+    + '</div></details>';
 }
-async function submitGoalPlan() {
-  const status = el('goal-plan-status');
-  const goal = (el('goal-north-star') || {}).value || '';
-  if (!goal.trim()) { if (status) status.textContent = '請先填最大目標。'; return; }
-  const charts = Array.from(document.querySelectorAll('.goal-chart-cb'))
+function collectPptPlanBrief() {
+  const goal = ((el('ppt-goal-input') || {}).value || '').trim();
+  const charts = Array.from(document.querySelectorAll('.ppt-chart-cb'))
     .filter(cb => cb.checked).map(cb => cb.value);
-  if (!charts.length) { if (status) status.textContent = '請至少選一張圖表。'; return; }
-  try {
-    const body = {
-      north_star_goal: goal,
-      audience: (el('goal-audience') || {}).value || '',
-      page_budget: parseInt((el('goal-page-budget') || {}).value || '12', 10),
-      snapshot_id: exportPreview.version,
-      selected_charts: charts,
-    };
-    const r = await getJson(API + '/workspaces/' + state.workspaceId + '/report-plan', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body) });
-    if (status) status.textContent = '規劃任務已排入（job ' + (r.job_id || '?') + '），'
-      + 'AI 依目標安排中；完成後可在此重新載入預覽。';
-  } catch (e) {
-    if (status) status.textContent = '排程失敗：' + ((e && e.message) || '未知錯誤');
-  }
+  return { north_star_goal: goal, selected_charts: charts,
+           snapshot_id: exportPreview.version };
 }
 
 // ══════════ 初始化 ══════════

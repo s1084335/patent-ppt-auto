@@ -60,7 +60,14 @@ def build_selected_bundles(
 
     回傳的每一項都符合 `planning_contracts` 的 SelectedChartBundle 契約。
     """
-    report_data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
+    data_path = run_dir / "report_data.json"
+    if not data_path.exists():
+        # ⚠ 明確錯誤而非裸 FileNotFoundError：snapshot_id 只有目錄名，
+        # 父目錄由呼叫端決定——訊息要說清楚找的是哪裡（2026-08-09 驗收踩到）。
+        raise ChartBundleError(
+            f"報表版本目錄缺 report_data.json：{data_path}"
+            "（snapshot_id 是否屬於這個輸出根目錄？）")
+    report_data = json.loads(data_path.read_text(encoding="utf-8"))
     index = _index_report_data(report_data)
     population = report_data.get("population") or {}
     version = run_dir.name
