@@ -604,14 +604,17 @@ def _run_ai_report_plan_job(payload: dict[str, Any], context: JobContext) -> dic
     bundles = build_selected_bundles(
         run_dir, list(payload.get("selected_charts") or []), work_dir)
 
-    brief = {
-        "north_star_goal": payload.get("north_star_goal") or "",
-        "audience": payload.get("audience") or "",
-        "page_budget": int(payload.get("page_budget") or 12),
-        "workspace_id": payload.get("workspace_id"),
-        "snapshot_id": snapshot_id,
-        "selected_charts": bundles,
-    }
+    # 單一入口（EXP-018）：目標選填——沒填就用預設策略，品質標準不降低。
+    from backend.app.reports.planning_defaults import build_brief
+
+    brief = build_brief(
+        snapshot_id=snapshot_id,
+        workspace_id=int(payload.get("workspace_id") or 0),
+        selected_charts=bundles,
+        north_star_goal=str(payload.get("north_star_goal") or ""),
+        audience=str(payload.get("audience") or ""),
+        page_budget=payload.get("page_budget"),
+    )
 
     cli = payload.get("_cli_runner")
     if cli is None:
@@ -632,7 +635,25 @@ def _run_ai_report_plan_job(payload: dict[str, Any], context: JobContext) -> dic
     result = rp.run_report_planning(
         brief=brief, cli_runner=cli,
         progress=lambda stage, pct: context.heartbeat(stage, pct))
-    context.heartbeat("規劃完成", 100)
+
+    # 🔴 串接（EXP-015／018）：把通過驗證的 plan 落進該版本的 report_data.json，
+    # deterministic builder 才讀得到（resolve_layout 有 slide_plan 就依它出頁，
+    # 沒有才退回固定頁序保底）。⚠ 只寫 slide_plan 這個鍵，不動報表數據本身。
+    import json as _json
+
+    data_path = run_dir / "report_data.json"
+    report_data = _json.loads(data_path.read_text(encoding="utf-8"))
+    report_data["slide_plan"] = {
+        "plan_id": result["plan_id"],
+        "slides": result["slides"],
+        "strategy": result.get("strategy") or {},
+        "evidence": result.get("evidence") or {},
+        "used_default_goal": brief.get("used_default_goal", False),
+        "north_star_goal": brief["north_star_goal"],
+    }
+    data_path.write_text(_json.dumps(report_data, ensure_ascii=False), encoding="utf-8")
+
+    context.heartbeat("規劃完成（已寫入報表版本）", 100)
     return result
 
 

@@ -3128,6 +3128,30 @@ def _render_kp_cards(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -
     _render_table_with_points(slide, theme, spec, ctx)
 
 
+def _render_exec_summary(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """結論先行頁（範例 p2）：把三個可行動判斷放最前面。
+
+    內容來自 SlidePlan 的 narrative（CLI 已把結論寫成具名發現）——
+    沿用要點版型的排版邏輯，不另立一套座標。
+    """
+    _render_table_with_points(slide, theme, spec, ctx) if spec.report_keys         else _render_direction(slide, theme, spec, ctx)
+
+
+def _render_walls_gaps(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """要迴避的牆 vs 可切入的空白（範例 p3／割草機 p2）：收斂成可行動清單。"""
+    _render_direction(slide, theme, spec, ctx)
+
+
+def _render_reading_guide(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """判讀說明（範例 p11）：母體口徑、可觀測性偏差、資料限制。"""
+    _render_direction(slide, theme, spec, ctx)
+
+
+def _render_kp_compare(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """兩個 Key Player 左右對照（範例 p9）：核心技術架構與布局並列。"""
+    _render_comparison(slide, theme, spec, ctx)
+
+
 RENDERERS = {
     "cover": _render_cover,
     "section_divider": _render_section_divider,
@@ -3144,6 +3168,11 @@ RENDERERS = {
     "kp_quadrant": _render_kp_quadrant,
     "kp_deepdive": _render_kp_deepdive,
     "kp_cards": _render_kp_cards,
+    "kp_compare": _render_kp_compare,
+    # 敘事鏈版型（範例骨架）：結論先行、可行動清單、判讀說明。
+    "exec_summary": _render_exec_summary,
+    "walls_gaps": _render_walls_gaps,
+    "reading_guide": _render_reading_guide,
 }
 
 # 需要圖才成立的版型：解析不到圖就降級 stat_callout，不留佔位文字。
@@ -3437,8 +3466,14 @@ class SlidePlanError(RuntimeError):
     """SlidePlan 無法轉成版面（未知版型等）。"""
 
 
-def page_specs_from_plan(plan: dict[str, Any]) -> list[PageSpec]:
-    """把通過驗證的 SlidePlan 轉成 PageSpec 序列（頁碼依 slides 順序連號）。"""
+def page_specs_from_plan(plan: dict[str, Any],
+                        charts: "ChartIndex | None" = None) -> list[PageSpec]:
+    """把通過驗證的 SlidePlan 轉成 PageSpec 序列（頁碼依 slides 順序連號）。
+
+    ⚠ `charts` 要給：chart_identity 只是 `report_key:variant`，實際檔名不同名
+    （country_distribution 的圖叫 jurisdiction_distribution.svg）——不反查就會
+    每頁都因「找不到圖」降級成 stat_callout（2026-08-09 首次串接實測）。
+    """
     specs: list[PageSpec] = []
     for index, slide in enumerate(plan.get("slides") or [], start=1):
         preset = str(slide.get("layout_preset") or "")
@@ -3446,13 +3481,17 @@ def page_specs_from_plan(plan: dict[str, Any]) -> list[PageSpec]:
             raise SlidePlanError(
                 f"slide {slide.get('slide_id', '?')} 的版型 {preset!r} 不在組版端支援清單")
         identities = [str(i) for i in slide.get("chart_identities") or []]
+        report_keys = tuple(i.split(":", 1)[0] for i in identities)
+        # ⚠ files_for 收的是 tuple；傳單一字串會被當序列逐字元迭代而全部落空。
+        files = list(charts.files_for(report_keys)) if charts is not None else []
         specs.append(PageSpec(
             page=index,
             kind=preset,
             title=str(slide.get("title") or slide.get("purpose") or ""),
             topic=str(slide.get("purpose") or ""),
             # chart_identity 形如 `report_key:variant_key`——取前段當 report_key。
-            report_keys=tuple(i.split(":", 1)[0] for i in identities),
+            report_keys=report_keys,
+            charts=tuple(dict.fromkeys(files)),
         ))
     return specs
 
@@ -3494,7 +3533,7 @@ def resolve_layout(report_data: dict[str, Any], charts: ChartIndex,
     # ⚠ 舊路徑保留（不是換掉）——既有報告仍要能重產，且出問題有回頭路。
     plan = (report_data.get("slide_plan") or {}) if isinstance(report_data, dict) else {}
     if plan.get("slides"):
-        layout = page_specs_from_plan(plan)
+        layout = page_specs_from_plan(plan, charts)
     else:
         layout = _expand_page_layout(report_data, charts, theme)
     layout = _apply_layout_overrides(layout, overrides, charts)
@@ -3915,6 +3954,15 @@ def build_ppt(
 
     # 逐頁備妥 narrative（判讀式標題＋要點），fallback 一律寫 warning，不靜默。
     narratives_by_page: dict[int, tuple[str, list[dict[str, Any]], bool]] = {}
+    # plan 的 narrative（頁碼→要點）；沒有 plan 時為空 dict，行為與既有一致。
+    plan_narratives: dict[int, list[dict[str, Any]]] = {}
+    for index, slide in enumerate((report_data.get("slide_plan") or {}).get("slides") or [],
+                                  start=1):
+        points = [{"text": str(n.get("text") or ""), "label": "",
+                   "emphasis": bool(n.get("emphasis"))}
+                  for n in (slide.get("narrative") or []) if n.get("text")]
+        if points:
+            plan_narratives[index] = points
     titled: list[PageSpec] = []
     for spec in layout:
         if spec.kind in {"cover", "direction", "section_divider"} or spec.is_appendix:
@@ -3924,6 +3972,13 @@ def build_ppt(
         if spec.kind == "table":
             # 純表格頁（明細類，如家族完整性明細）本來就不配解讀——查了也是空，
             # 誤報 narrative_missing 會讓人白跑一趟「補解讀」（P1-4，實機 P17）。
+            titled.append(spec)
+            continue
+        # 🔴 SlidePlan 自帶 narrative 時以它為準（規劃與敘述同一份產出，
+        # 不必再去 narratives.json 找——那是固定頁序時代的來源）。
+        plan_points = plan_narratives.get(spec.page)
+        if plan_points is not None:
+            narratives_by_page[spec.page] = (spec.title, plan_points, False)
             titled.append(spec)
             continue
         matched, variant = _narrative_entry(narratives, _narrative_candidates(spec))

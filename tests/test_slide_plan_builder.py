@@ -96,3 +96,22 @@ class CoverageManifestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PresetImplementationParityTests(unittest.TestCase):
+    """🔴 2026-08-09 真跑抓到：`exec_summary` 進了核准白名單卻沒有 renderer，
+    CLI 一選就 SlidePlanError。白名單與實作是同一份知識的兩個落點——釘住相等。
+    """
+
+    def test_every_approved_preset_has_renderer(self):
+        from backend.app.reports.planning_contracts import APPROVED_LAYOUT_PRESETS
+
+        missing = sorted(APPROVED_LAYOUT_PRESETS - set(bp.RENDERERS))
+        self.assertEqual(missing, [], f"核准版型缺 renderer：{missing}")
+
+    def test_no_renderer_outside_approved_list(self):
+        """反向也要守：組版端有、白名單沒有＝CLI 永遠選不到（等於死碼）。"""
+        from backend.app.reports.planning_contracts import APPROVED_LAYOUT_PRESETS
+
+        extra = sorted(set(bp.RENDERERS) - APPROVED_LAYOUT_PRESETS)
+        self.assertEqual(extra, [], f"renderer 不在核准清單：{extra}")

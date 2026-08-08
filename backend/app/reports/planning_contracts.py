@@ -22,7 +22,7 @@ from typing import Any
 # 每次出哪幾種由內容決定。新增版型＝先在 builder 實作再進本清單。
 APPROVED_LAYOUT_PRESETS: frozenset[str] = frozenset({
     "cover", "exec_summary", "walls_gaps",
-    "chart_hero", "chart_with_points", "comparison", "percentage_bars",
+    "chart_hero", "chart_with_points", "chart_wide", "comparison", "percentage_bars",
     "table", "table_with_points", "stat_callout", "section_divider",
     "kp_quadrant", "kp_deepdive", "kp_compare", "kp_cards",
     "reading_guide", "direction",
