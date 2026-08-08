@@ -39,6 +39,7 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402（dotenv／logging 先設�
 
 from backend.app.db.connection import get_connection_kwargs  # noqa: E402
 from backend.app.mcp_server import (  # noqa: E402
+    report_research,
     tools_ai,
     tools_clustering,
     tools_reporting,
@@ -57,6 +58,15 @@ mcp.tool()(tools_reporting.generate_report_ppt)
 # ── AI 任務工具（取數口＋敘述型回存）────────────────────────────
 mcp.tool()(tools_ai.get_report_payload)
 mcp.tool()(tools_ai.save_analysis_narrative)
+
+
+
+# ══ report-research 唯讀 profile（P2，獨立 server 實例）════════════════
+# 🔴 刻意**不掛進上面的混合 server**（design.md 第 2 點）：同一 registry 日後
+# 新增工具容易無聲擴權。規劃 CLI 連的是這一個，看不到任何寫入工具。
+research_mcp = FastMCP("patent-report-research")
+for _tool_name in report_research.TOOL_NAMES:
+    research_mcp.tool()(getattr(report_research, _tool_name))
 
 # 🔴 2026-08-04：市場線整個移除（使用者定案，含資料表）。
 
