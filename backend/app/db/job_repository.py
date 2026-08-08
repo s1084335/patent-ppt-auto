@@ -50,6 +50,8 @@ AI_JOB_TYPES: frozenset[str] = frozenset(
         # 技術通道 AI 補分建議（openspec add-technical-channel-ai-backfill）：
         # 無獨立項且非設計案者產「建議主題＋理由」，批核走 API，不碰正式指派。
         "ai:topic_backfill",
+        # 目標驅動報告規劃（P2）：CLI 依最大目標安排論證與版型，只產候選 plan。
+        "ai:report_plan",
         # 文獻備註：AI 讀專利獨立項（patents."主權項"）摘要成備註，寫回
         # patent_attributes."文獻備註"。批次按字數切（獨立項最長逾萬字），不按件數。
         "ai:patent_note",

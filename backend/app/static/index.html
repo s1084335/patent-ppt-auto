@@ -3263,6 +3263,8 @@ const REPORT_TYPES = [
   // family_quality_detail（品質稽核不給決策者看，家族完整性併入國家佈局頁註記）。
   // ⚠ 後端 registry 已同步刪除——任一張留在這裡都會讓「全選」整批 400。
   ['applicant_year_matrix', '申請人年度分布矩陣'],
+  // 四面向（KP 象限的引擎端資料；簡報上呈現為象限座標與數字卡，不是表格）。
+  ['applicant_strength_profile', '申請人四面向'],
   ['lifecycle', '專利狀態分析'],
   ['family_country_layout', '國家佈局（現有保護）'],
   ['cluster_topic_table', '主題分類統計表'],
@@ -3702,6 +3704,22 @@ function renderExport() {
     + '<button class="btn btn-outline" id="btn-export-html" onclick="reviewExportOutput()">單頁 HTML 預覽</button>'
     + '<button class="btn btn-primary" id="btn-export-ppt" onclick="requestExportPpt()">產生 PPT</button>'
     + '</div>'
+    // 目標驅動規劃（P2）：填最大目標＋選圖 → CLI 依目標安排論證與版型。
+    // ⚠ 收合預設：既有「產生 PPT」固定頁序流程不受影響（沒 plan 就走舊路徑）。
+    + '<details class="maint-details" id="goal-plan-panel">'
+    + '<summary>目標驅動規劃（AI 依你的目標安排簡報）</summary>'
+    + '<div class="maint-card">'
+    + '<div class="hint" style="padding:0 0 .4rem">填最大目標並勾選要用的圖表，'
+    + 'CLI 會依目標決定論證順序、版型與敘述，並且**只用你選的圖**。</div>'
+    + '<input class="text-input" id="goal-north-star" placeholder="最大目標（例：找出可切入的技術空白）" style="width:100%;margin-bottom:.4rem">'
+    + '<div class="toolbar" style="margin:0 0 .4rem">'
+    + '<input class="text-input" id="goal-audience" placeholder="受眾（例：研發主管）" style="min-width:200px">'
+    + '<input class="text-input" id="goal-page-budget" type="number" min="1" max="30" value="12" style="width:110px" title="頁數上限">'
+    + '<button class="btn btn-primary" onclick="submitGoalPlan()">開始規劃</button>'
+    + '</div>'
+    + '<div id="goal-chart-picker" class="hint">載入可選圖表…</div>'
+    + '<div id="goal-plan-status" class="hint" style="padding:.4rem 0 0"></div>'
+    + '</div></details>'
     + '<div id="export-job"></div>'
     + '<div id="export-ppt-result"></div>'
     + '<div id="export-preview"><div class="hint">載入報告內容中…</div></div>';
@@ -5841,6 +5859,46 @@ async function approveTopicBackfill() {
     await loadTopicBackfill();
   } catch (e) {
     if (msg) msg.textContent = '核准失敗：' + ((e && e.message) || '未知錯誤');
+  }
+}
+
+// ══════════ 目標驅動規劃（P2：ReportBrief 送出與進度） ══════════
+async function loadGoalChartPicker() {
+  const box = el('goal-chart-picker');
+  if (!box || !exportPreview || !exportPreview.data) return;
+  const sections = (exportPreview.data.sections || []);
+  if (!sections.length) { box.textContent = '尚無報表版本可選圖，請先產製報表資料。'; return; }
+  box.innerHTML = '<div style="max-height:14rem;overflow:auto">'
+    + sections.map(sec => (sec.variants || []).map(v => {
+        const id = escHtml(sec.report_key + ':' + (v.variant_key || 'default'));
+        return '<label class="checkbox-row"><input type="checkbox" class="goal-chart-cb" value="'
+          + id + '" checked> ' + escHtml(sec.title || sec.report_key)
+          + (v.label ? '（' + escHtml(v.label) + '）' : '') + '</label>';
+      }).join('')).join('')
+    + '</div>';
+}
+async function submitGoalPlan() {
+  const status = el('goal-plan-status');
+  const goal = (el('goal-north-star') || {}).value || '';
+  if (!goal.trim()) { if (status) status.textContent = '請先填最大目標。'; return; }
+  const charts = Array.from(document.querySelectorAll('.goal-chart-cb'))
+    .filter(cb => cb.checked).map(cb => cb.value);
+  if (!charts.length) { if (status) status.textContent = '請至少選一張圖表。'; return; }
+  try {
+    const body = {
+      north_star_goal: goal,
+      audience: (el('goal-audience') || {}).value || '',
+      page_budget: parseInt((el('goal-page-budget') || {}).value || '12', 10),
+      snapshot_id: exportPreview.version,
+      selected_charts: charts,
+    };
+    const r = await getJson(API + '/workspaces/' + state.workspaceId + '/report-plan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body) });
+    if (status) status.textContent = '規劃任務已排入（job ' + (r.job_id || '?') + '），'
+      + 'AI 依目標安排中；完成後可在此重新載入預覽。';
+  } catch (e) {
+    if (status) status.textContent = '排程失敗：' + ((e && e.message) || '未知錯誤');
   }
 }
 
