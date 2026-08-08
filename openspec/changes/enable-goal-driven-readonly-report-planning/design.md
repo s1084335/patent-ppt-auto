@@ -40,10 +40,35 @@ UI ReportBrief + selected charts
   -> ReportStrategy + SlidePlan + EvidenceManifest
   -> runner validation
   -> deterministic builder
+  -> post-build quality validation
+  -> regeneration decision
   -> platform persists candidate artifacts
 ```
 
 CLI response 不含任意 geometry，只含 slide purpose、title、chart identities、approved layout intent、narrative blocks、evidence refs 與 recommendation。runner 驗證全部選圖至少使用一次、沒有未選圖、evidence snapshot 一致、數字存在、版型可承載；失敗不組版。
+
+### 4.1 產後品質 gate 由 runner 決定，不交給 CLI 自評
+
+每次 build 後 runner MUST 彙整三類證據：
+
+- `pptx_manifest.json`：builder 輸出的 slide identity、report keys、chart identities、missing slots、missing reports、warnings、degraded state 與 checksum。
+- `rendered_png_manifest.json`：PowerPoint COM 轉圖結果、頁數、每頁 PNG path/checksum、render 成功或失敗。
+- `ppt_quality_report.json`：由 runner 將 manifest warnings、PNG render、選圖覆蓋、evidence coverage、必要 slot 與版面警告合併後產生的 pass/fail 報告。
+
+`PptQualityReport` 的 `decision` 只能是 `pass`、`regenerate_partial`、`regenerate_report_version` 或 `blocked_defect`。CLI 不能覆寫此 decision，也不能把失敗的 PPT 標成可交付。
+
+Warning 對應規則：
+
+- `narrative_missing`：`regenerate_partial`，target 為指定 `report_key` / variant 的 narrative。
+- `narrative_fallback`：`regenerate_partial`，target 為指定 narrative，要求符合目前 narrative schema。
+- `chart_missing_degraded`：`regenerate_partial` 或 `regenerate_report_version`，由 artifact identity 決定是單圖修復或整份報表版本重產。
+- `artifact_manifest_missing`：`regenerate_report_version`。
+- `missing_slots` 含必要 slot：`regenerate_partial`，target 為指定 slot。
+- `text_overflow_estimated`：先以 `regenerate_partial` 要求縮短對應 slide narrative；同 target 重試仍失敗時轉為 `blocked_defect`。
+- `text_overlap`、`out_of_bounds`、`margin_violation`：`blocked_defect`，視為 builder/theme/layout 缺陷，不交給 CLI 自由改版。
+- 選圖未全部出現在 PPT、PPT 出現未選圖、evidence 缺來源、PNG render 失敗或頁數不符：fail，依可定位範圍產生局部重產或阻止交付。
+
+`RegenerationPlan` MUST 明列 `targets` 與 `locked`。CLI 只可回傳被標記 target 的替換內容；未列入 target 的 narratives、slide purpose、chart identities 與 evidence refs 必須保持不變。runner 驗證輸出 scope 後才可再次組版。每個 target 預設最多兩輪局部重產；超過後標為 `blocked_content_defect` 或 `blocked_layout_defect`，停止自動重寫並回到人工／開發處理。
 
 ### 5. 動態 plan 使用穩定 slide identity
 
@@ -65,9 +90,10 @@ CLI stdout 回傳候選；Companion runner 驗證後才透過既有 artifact sto
 ## Output And Test Evidence
 
 - 契約產物：`report_brief.json`、`selected_chart_manifest.json`、`report_strategy.json`、`slide_plan.json`、`evidence_manifest.json`、tool audit、PPTX manifest。
+- 產後驗證產物：`rendered_png_manifest.json`、`ppt_quality_report.json`、`regeneration_plan.json`、局部重產 scope audit。
 - 單元／契約：全部選圖覆蓋、未選圖拒絕、snapshot/checksum、數字 evidence、provider capability、tool registry 白名單、DB grants。
 - 整合：真 reader role 的 SELECT 成功與所有寫入失敗；timeout/row limit；CLI 圖片＋JSON＋迭代查詢。
-- 實物：固定 snapshot 產完整 PPTX，全頁轉圖，逐頁核對最大目標、選圖、敘述證據與版面。
+- 實物：固定 snapshot 產完整 PPTX，全頁轉圖，逐頁核對最大目標、選圖、敘述證據與版面；若 quality gate 觸發局部重產，需證明未標記內容未被改動，重產後重新 build、轉圖並產生新的 quality report。
 
 ## Risks / Trade-offs
 

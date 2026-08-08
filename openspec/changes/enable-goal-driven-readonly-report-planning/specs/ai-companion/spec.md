@@ -28,3 +28,19 @@ Companion SHALL 驗證 CLI response 的 strategy、slides、chart coverage、evi
 - **WHEN** CLI capability check 顯示無法套用唯讀工具白名單
 - **THEN** 系統 SHALL 不啟動報告規劃工作
 - **AND** 回報可選的相容 provider 或能力缺口
+
+### Requirement: AIC-012 Companion 保存產後驗證與重產決策 audit
+
+Companion runner SHALL 保存每次 build 的 `PptQualityReport`、rendered PNG manifest、regeneration decision、scope lock、CLI replacement response 與接受／拒絕原因；CLI 不得自行宣告 quality gate 通過，也不得直接保存局部重產結果。
+
+#### Scenario: CLI 回傳超出 regeneration scope
+
+- **WHEN** CLI replacement response 修改未列入 `RegenerationPlan.targets` 的內容
+- **THEN** Companion SHALL 拒絕該 response
+- **AND** audit SHALL 記錄被拒絕的 target、locked item 與遮罩後原因
+
+#### Scenario: Quality gate 通過
+
+- **WHEN** `PptQualityReport.decision` 為 `pass`
+- **THEN** Companion MAY 保存候選 PPT artifact
+- **AND** audit SHALL 連結 PPTX manifest、PNG manifest、evidence manifest 與 quality report
