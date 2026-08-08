@@ -284,6 +284,14 @@ def _filter_report_charts(report_keys: tuple[str, ...], files: tuple[str, ...]) 
 # 成對圖的左右順序偏好：L4 在 L5 前、技術面在功效面前；其餘照檔名排序保持 deterministic。
 CHART_ORDER_HINTS = ("_L4", "_L5", "_tech", "_effect", "_more")
 
+# ── 空白頁偵測（產檔後掃描用；與版型無關，換任何一批資料都適用）──
+# 正文帶＝標題與註腳之間的縱向區間（比例，不寫死英吋，換版面尺寸仍成立）。
+BODY_BAND_TOP_RATIO = 0.15
+BODY_BAND_BOTTOM_RATIO = 0.88
+# 正文帶內少於這個字數就視為空頁。⚠ 門檻取在「只有面板標題」與「有實質敘述」
+# 之間：實測空框頁只有 12 字（兩個面板標題），最短的有效內容頁遠超過 60 字。
+EMPTY_BODY_MIN_CHARS = 40
+
 # 成對圖的子標，讓使用者一眼知道左右差在哪（禁止合成一張圖的配套說明）。
 CHART_VARIANT_LABELS = {
     "_L4": "4 階細分類（L4）",
@@ -3802,6 +3810,11 @@ def audit_layout(prs: Presentation, theme: Theme) -> list[dict[str, Any]]:
 
     for page, slide in enumerate(prs.slides, start=1):
         boxes: list[tuple[str, float, float, float, float]] = []
+        # 🔴 空白頁偵測（2026-08-09）：一頁若只有標題與註腳、正文區完全沒東西，
+        # 那是「版型有 renderer 但沒畫出內容」——實機出過三張一模一樣的空框。
+        # ⚠ 放在這個後置掃描而不是各 renderer 內部：這裡對**所有版型**一體適用，
+        # 在 renderer 裡各記各的只保護當下改到的那幾種，換一種版型又會靜默。
+        body_chars = 0
         for shape in slide.shapes:
             if shape.left is None or shape.top is None:
                 continue
@@ -3835,6 +3848,13 @@ def audit_layout(prs: Presentation, theme: Theme) -> list[dict[str, Any]]:
                     "margin_in": round(min(left, top, slide_w - right, slide_h - bottom), 3),
                 })
 
+            # 正文帶＝標題與註腳之間；圖片視為足量內容（圖表頁的正文就是圖）。
+            if BODY_BAND_TOP_RATIO * slide_h < top < BODY_BAND_BOTTOM_RATIO * slide_h:
+                if shape.shape_type == MSO_SHAPE_TYPE.PICTURE or shape.has_table:
+                    body_chars += EMPTY_BODY_MIN_CHARS
+                else:
+                    body_chars += len(text)
+
             if not text:
                 continue
             boxes.append((name, left, top, right, bottom))
@@ -3850,6 +3870,13 @@ def audit_layout(prs: Presentation, theme: Theme) -> list[dict[str, Any]]:
                         "type": "text_overflow_estimated", "page": page, "shape": name,
                         "lines_needed": needed, "lines_available": lines,
                     })
+
+        if body_chars < EMPTY_BODY_MIN_CHARS:
+            warnings.append({
+                "type": "empty_body", "page": page, "body_chars": body_chars,
+                "detail": "正文區幾乎沒有內容——版型有 renderer 但沒畫出東西，"
+                          "或規劃未提供本頁的敘述",
+            })
 
         for i in range(len(boxes)):
             for j in range(i + 1, len(boxes)):
