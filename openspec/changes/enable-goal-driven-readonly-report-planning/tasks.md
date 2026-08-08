@@ -17,8 +17,8 @@
 - [ ] 3.2 Green：建立獨立 read-only MCP profile 與 typed catalog/evidence query broker，沿用 `REPORT_DEFINITIONS` 與 snapshot scope，不接受 SQL 字串
 - [ ] 3.3 Red：新增欄位/filter/snapshot/row-limit/timeout、跨 workspace、stale evidence 與 query audit 測試
 - [ ] 3.4 Green：完成 preview/query/company/topic/patent evidence 工具與分頁／截斷 metadata
-- [ ] 3.5 Red：先建立 migration/grant 契約與真 DB negative tests，證明 SELECT 可用且 INSERT/UPDATE/DELETE/DDL/副作用函式全數失敗
-- [ ] 3.6 Green：建立 reader role/grants、獨立 credential 設定與預設 read-only transaction；rollback 撤銷 grants/profile，不搬資料
+- [ ] 3.5（移出範圍）DB reader role：2026-08-07 使用者裁決不做——正式部署為公司內網自管伺服器、CLI 依架構不持有 credential，維運成本大於邊際效益。改以「CLI 不得持有 DB credential」契約測試守（見 PRT-012 回寫）。
+- [ ] 3.6 Green：MCP config 與 payload 不含 credential；工具層 allowlist contract test。
 
 ## 4. TDD：CLI 規劃與證據驗證
 
