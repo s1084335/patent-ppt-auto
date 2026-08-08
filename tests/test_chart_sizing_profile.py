@@ -63,8 +63,19 @@ class WebProfileMirrorsPptTests(unittest.TestCase):
     並把這條斷言改成兩份 profile 各自的契約——屆時本測試「應該」紅。
     """
 
-    def test_web_equals_ppt_for_now(self) -> None:
-        self.assertEqual(chart_sizing.WEB, chart_sizing.PPT)
+    def test_web_has_own_sizing_since_p3(self) -> None:
+        """🔴 2026-08-07 契約更新（P3 separate-web-and-ppt-chart-profiles）：
+        WEB 不再與 PPT 同值——網頁滿寬可捲、只縮一次，畫布更寬、字級目標較低。
+        ⚠ 只有**尺寸與字級**分開；排序、配色、註記內容、版面邏輯仍共用
+        （Non-goals 明列不建第二套 engine）。"""
+        self.assertNotEqual(chart_sizing.WEB, chart_sizing.PPT)
+        self.assertGreater(chart_sizing.WEB.canvas_width, chart_sizing.PPT.canvas_width)
+        self.assertLess(chart_sizing.WEB.data_target_pt, chart_sizing.PPT.data_target_pt)
+        # 版面邏輯共用的證據：非尺寸字級欄位必須相同。
+        for field in ("year_window", "wide_aspect_min", "hero_frame_in", "wide_frame_in"):
+            with self.subTest(field=field):
+                self.assertEqual(getattr(chart_sizing.WEB, field),
+                                 getattr(chart_sizing.PPT, field))
 
 
 if __name__ == "__main__":

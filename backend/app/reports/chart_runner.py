@@ -156,6 +156,21 @@ COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
 # 版面邏輯共用）。修 PPT 的尺寸改 chart_sizing.PPT；本檔常數只是綁定，不自帶數值。
 from backend.app.reports.chart_sizing import PPT as _SIZING
 
+# 🔴 P3（2026-08-07）：畫布與字級目標改**依作用中的 profile** 取值——
+# 同一支 renderer 服務 web 與 ppt，只有尺寸／字級不同（版面邏輯共用）。
+# ⚠ 保留模組層常數名不變：既有呼叫端一處不用改（介面不變的深化寫法）。
+def _sizing_value(attr: str) -> float:
+    """取作用中 profile 的尺寸值（唯一定義處＝chart_sizing）。
+
+    ⚠ 畫布尺寸維持 **int**：轉成 float 會讓 SVG 屬性變成 `width="949.0"`，
+    下游以 `width="(\d+)"` 解析的地方就對不上（2026-08-07 實測一支測試紅）。
+    """
+    from backend.app.reports.chart_profiles import active_sizing
+
+    value = getattr(active_sizing(), attr)
+    return int(value) if isinstance(value, int) else float(value)
+
+
 CHART_CANVAS_WIDTH = _SIZING.canvas_width
 CHART_CANVAS_MAX_HEIGHT = _SIZING.canvas_max_height
 CHART_LABEL_PX = 18          # （已停用）舊的寫死字級；改由 chart_font_px() 反推
@@ -220,7 +235,7 @@ def solve_chart_font(width_px: float, height_for_font, *,
 
 
 def chart_font_px(width_px: float, height_px: float, *,
-                  target_pt: float = CHART_DATA_TARGET_PT) -> float:
+                  target_pt: float | None = None) -> float:
     """要讓文字在 PPT 上顯示成 `target_pt`，這張畫布的 SVG 字級要開多大。
 
     **唯一定義處**——圖表字級一律問這裡，不再寫死數字。
@@ -231,6 +246,8 @@ def chart_font_px(width_px: float, height_px: float, *,
     差 0.004pt 跌破 12pt 下限。同「文字容量估算加 epsilon」教訓：
     邊界值必須留餘裕，不能指望浮點剛好站在線上。
     """
+    if target_pt is None:
+        target_pt = _sizing_value("data_target_pt")   # 依 profile（P3）
     return target_pt * 1.005 / PT_PER_PX / chart_scale(width_px, height_px)
 CHART_ROW_HEIGHT = _SIZING.row_height
 #: 年度矩陣泡泡的最小「大泡泡」半徑——格內兩位數（18px 字）放得下的下限。
@@ -413,7 +430,7 @@ def render_line_chart(
     }
     years = sorted(set(app) | set(pub))
     max_count = max([*app.values(), *pub.values(), 1])
-    width, height = CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT
+    width, height = _sizing_value("canvas_width"), _sizing_value("canvas_max_height")
     # 字級由縮放反推（資料 14pt／註記 12pt）；畫布固定，不需迭代。
     label_px = chart_font_px(width, height)
     note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
@@ -467,7 +484,7 @@ def render_line_chart(
 
 def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_key: str, value_key: str = "patent_count", limit: int = 20) -> None:
     data = rows[:limit]
-    width = CHART_CANVAS_WIDTH
+    width = _sizing_value("canvas_width")
     top = 68
     # 🔴 G-7：列少時把列高撐開，否則圖只有一小條、框空掉一半
     # （實機 p9 CPC L4 只有 1 列，圖高 130px 放進 3.2in 的框，空 48%）。
@@ -603,7 +620,7 @@ def render_paired_bar_chart(
     值一律標「N 件」——口徑是件 vs 件（使用者定案），不得混入家族數。
     """
     data = rows[:limit]
-    width = CHART_CANVAS_WIDTH
+    width = _sizing_value("canvas_width")
     top = 68
     right = 150
     bottom = 34
@@ -758,7 +775,7 @@ def render_segmented_bar_chart(
     """
     total_rows = len(rows)
     data = rows[:limit]
-    width = CHART_CANVAS_WIDTH
+    width = _sizing_value("canvas_width")
     # 🔴 P-2：row_h 由 50 壓到 28——原本每列固定 50px 讓 12 列的畫布高達 7.54in，
     # 塞進 4.32in 圖框被壓到 0.573 倍，字只剩 5.6pt（下限 12pt）。
     #
@@ -1039,7 +1056,7 @@ def render_kp_quadrant_chart(
 
     沿用泡泡圖骨架，另加**中位數象限線**與分類圖例——不重造第二支散點圖。
     """
-    width, height = CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT
+    width, height = _sizing_value("canvas_width"), _sizing_value("canvas_max_height")
     label_px = chart_font_px(width, height)
     note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
     left, right, top, bottom = 90, 210, 72, 84
@@ -1160,7 +1177,7 @@ def render_bubble_chart(
     label_key: str,
 ) -> None:
     """氣泡圖：X/Y 線性軸、泡泡面積正比 size_key（企業研發能量用）。"""
-    width, height = CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT
+    width, height = _sizing_value("canvas_width"), _sizing_value("canvas_max_height")
     # 字級由縮放反推（資料 14pt／註記 12pt）；畫布固定，不需迭代。
     label_px = chart_font_px(width, height)
     note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)

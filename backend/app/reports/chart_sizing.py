@@ -58,6 +58,17 @@ PPT = ChartSizing(
     wide_aspect_min=3.5,
 )
 
-#: WEB profile——目前與 PPT 同值（兩端共用同一張 SVG）。
-#: 日後網頁要自己的尺寸時改這裡並在渲染端分流，不必動 PPT。
-WEB = replace(PPT)
+#: WEB profile（P3，2026-08-07 起有自己的值）——網頁滿寬可捲、不經 PPT 圖框縮放。
+#: 🔴 只改**尺寸與字級**：排序、配色、註記內容、版面邏輯一律與 PPT 共用
+#: （separate-web-and-ppt-chart-profiles 的 Non-goals 明列不建第二套 engine）。
+#: - 畫布更寬：網頁沒有 4.32in 圖框限制，同樣列數更不擠
+#: - 目標字級略低：網頁只縮一次（PPT 縮兩次），12pt 在螢幕上已清楚
+#: - 列高略增：滑鼠瞄準與可讀性優先，不必為頁高妥協
+WEB = replace(
+    PPT,
+    canvas_width=1180,
+    canvas_max_height=560,
+    data_target_pt=12.0,
+    note_target_pt=10.5,
+    row_height=32,
+)
