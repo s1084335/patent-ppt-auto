@@ -3100,6 +3100,34 @@ def _style_cell(
     _set_cell_borders(cell, theme)
 
 
+# ── KP 版型（P2；範例＝滑雪機 V2 p7–p10）──────────────────────────
+# ⚠ 三個都是**備選版型**：沒有那個內容就不出那一頁（2026-08-07 定案），
+# 由規劃端（SlidePlan）決定出不出，組版端只負責畫得對。
+
+
+def _render_kp_quadrant(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """KP 競爭定位象限：整頁一張泡泡圖（軸義與圖例都畫在 SVG 內）。
+
+    沿用 chart_hero 的幾何與圖框邏輯——象限圖與一般大圖的版面需求相同，
+    另立一套座標只會讓 theme 多一份會漂移的定義。
+    """
+    _render_chart_hero(slide, theme, spec, ctx)
+
+
+def _render_kp_deepdive(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """單一 KP 深入：演進時間軸＋三數字卡（家族件數／技術群／布局地區）。
+
+    ⚠ 沒有軌跡（不同申請年 <3）的公司**不該出這一頁**——規劃端把關；
+    組版端若真收到無軌跡資料，仍照畫數字卡，不自行降級成別的版型。
+    """
+    _render_chart_with_points(slide, theme, spec, ctx)
+
+
+def _render_kp_cards(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """利基／新興玩家小卡矩陣（名稱＋一句定位＋件數）。"""
+    _render_table_with_points(slide, theme, spec, ctx)
+
+
 RENDERERS = {
     "cover": _render_cover,
     "section_divider": _render_section_divider,
@@ -3112,10 +3140,15 @@ RENDERERS = {
     "table_with_points": _render_table_with_points,
     "chart_wide": _render_chart_wide,
     "direction": _render_direction,
+    # KP 版型（P2）：備選版型庫的一部分，出不出由規劃端依內容決定。
+    "kp_quadrant": _render_kp_quadrant,
+    "kp_deepdive": _render_kp_deepdive,
+    "kp_cards": _render_kp_cards,
 }
 
 # 需要圖才成立的版型：解析不到圖就降級 stat_callout，不留佔位文字。
-CHART_DEPENDENT_KINDS = frozenset({"chart_hero", "chart_with_points", "comparison"})
+CHART_DEPENDENT_KINDS = frozenset({"chart_hero", "chart_with_points", "comparison",
+                                  "kp_quadrant", "kp_deepdive"})
 # 單圖版型：被指定給多圖頁面時要拆成多頁（成對報表的「分頁」呈現）。
 SINGLE_CHART_KINDS = frozenset({"chart_hero", "chart_with_points", "stat_callout"})
 

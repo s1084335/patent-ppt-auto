@@ -7,6 +7,7 @@ import hashlib
 import html
 import json
 import math
+import statistics
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -993,6 +994,160 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
     svg.append(f'<text x="50" y="505" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{xml_text(footnote)}</text>')
     svg.append("</svg>")
     path.write_text("\n".join(svg), encoding="utf-8")
+
+
+# ── KP 競爭定位象限（P2 版型；範例＝滑雪機 V2 p7）────────────────────
+# 定位分類**由資料推導**，不吃 AI 給的字串——分類是統計事實不是敘述。
+KP_CLASS_FULL_DOMAIN = "全領域布局"
+KP_CLASS_SINGLE_TECH = "單一技術深布局"
+KP_CLASS_NICHE = "利基／探索"
+KP_CLASS_PRIOR_ART = "前案（多失效）"
+
+_KP_CLASS_COLORS = {
+    KP_CLASS_FULL_DOMAIN: "#D97706",   # 橘：範例右上大泡
+    KP_CLASS_SINGLE_TECH: "#0D9488",   # 青綠：右下
+    KP_CLASS_NICHE: "#60A5FA",         # 淺藍：左側
+    KP_CLASS_PRIOR_ART: "#6B7280",     # 灰：僅具前案價值
+}
+
+
+def kp_position_class(row: dict[str, Any], x_median: float, y_median: float) -> str:
+    """依四面向數字判定競爭定位（順序即優先序）。
+
+    ⚠ 前案優先於其他分類：0 授權且有失效者無論布局多廣，都不構成現實障礙
+    ——範例 p7 的「孟喬／億軒件數雖多，但相關案件多已失效，僅具前案價值」。
+    """
+    granted = int(row.get("granted_count") or 0)
+    dead = int(row.get("dead_count") or 0)
+    if granted == 0 and dead > 0:
+        return KP_CLASS_PRIOR_ART
+    wide = float(row.get("country_count") or 0) >= x_median
+    broad = float(row.get("topic_count") or 0) >= y_median
+    if wide and broad:
+        return KP_CLASS_FULL_DOMAIN
+    if wide and not broad:
+        return KP_CLASS_SINGLE_TECH
+    return KP_CLASS_NICHE
+
+
+def render_kp_quadrant_chart(
+    path: Path,
+    title: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    """KP 競爭定位象限：X＝國數、Y＝主題數、泡泡＝家族件數、色＝定位分類。
+
+    沿用泡泡圖骨架，另加**中位數象限線**與分類圖例——不重造第二支散點圖。
+    """
+    width, height = CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT
+    label_px = chart_font_px(width, height)
+    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
+    left, right, top, bottom = 90, 210, 72, 84
+    plot_w, plot_h = width - left - right, height - top - bottom
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
+        '<rect width="100%" height="100%" fill="white"/>',
+        f'<text data-role="chart-title" x="28" y="34" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text x="28" y="56" font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">'
+        f'橫軸＝跨國布局深度（國數）｜縱軸＝技術廣度（主題數）｜泡泡大小＝家族件數</text>',
+    ]
+    if not rows:
+        svg.append(f'<text x="{width / 2:.0f}" y="{height / 2:.0f}" text-anchor="middle" '
+                   f'font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">本批無競爭者資料</text>')
+        svg.append("</svg>")
+        path.write_text("\n".join(svg), encoding="utf-8")
+        return
+
+    xs = [float(r.get("country_count") or 0) for r in rows]
+    ys = [float(r.get("topic_count") or 0) for r in rows]
+    sizes = [float(r.get("family_count") or 0) or 1.0 for r in rows]
+    x_max = max(xs + [1.0]) * 1.25
+    y_max = max(ys + [1.0]) * 1.25
+    s_max = max(sizes)
+    x_median = statistics.median(xs) if xs else 0.0
+    y_median = statistics.median(ys) if ys else 0.0
+
+    for tick in nice_ticks(y_max):
+        y = scale(tick, 0, y_max, top + plot_h, top)
+        svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
+        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 4:.1f}" text-anchor="end" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{tick}</text>')
+    for tick in nice_ticks(x_max):
+        x = scale(tick, 0, x_max, left, left + plot_w)
+        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{tick}</text>')
+    # 中位數象限線（虛線）：四格界線要看得見。
+    mx = scale(x_median, 0, x_max, left, left + plot_w)
+    my = scale(y_median, 0, y_max, top + plot_h, top)
+    svg.append(f'<line x1="{mx:.1f}" y1="{top}" x2="{mx:.1f}" y2="{top + plot_h}" stroke="{COLOR_TEXT_SOFT}" stroke-width="1" stroke-dasharray="6 4"/>')
+    svg.append(f'<line x1="{left}" y1="{my:.1f}" x2="{left + plot_w}" y2="{my:.1f}" stroke="{COLOR_TEXT_SOFT}" stroke-width="1" stroke-dasharray="6 4"/>')
+    svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
+    svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
+    svg.append(f'<text x="{left + plot_w / 2:.0f}" y="{height - 20}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">跨國布局深度（國數）→</text>')
+
+    ordered = sorted(rows, key=lambda r: -float(r.get("family_count") or 0))
+    # ⚠ 同座標抖開：國數／主題數是小整數，多家常落在同一點（實測左下四家全疊）。
+    # 抖動量由該座標的第幾家決定（deterministic，兩次產出相同）。
+    seen_at: dict[tuple[float, float], int] = {}
+    points: list[tuple[float, float, float, str]] = []
+    for row in ordered:
+        cx = float(row.get("country_count") or 0)
+        cy = float(row.get("topic_count") or 0)
+        n = seen_at.get((cx, cy), 0)
+        seen_at[(cx, cy)] = n + 1
+        angle = 0.9 * n
+        offset = 13.0 * n
+        x = scale(cx, 0, x_max, left, left + plot_w) + offset * math.cos(angle)
+        y = scale(cy, 0, y_max, top + plot_h, top) - offset * math.sin(angle)
+        radius = 8 + 26 * math.sqrt((float(row.get("family_count") or 0) or 1.0) / s_max)
+        color = _KP_CLASS_COLORS[kp_position_class(row, x_median, y_median)]
+        svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" fill="{color}" fill-opacity="0.75" stroke="{color}" stroke-width="1.5"/>')
+        points.append((x, y, radius, str(row.get("applicant_display_name") or "")))
+    # 標籤避讓走共用函式（不重寫一套）。
+    svg.extend(place_bubble_labels(points, label_px))
+
+    legend_x = left + plot_w + 24
+    svg.append(f'<text x="{legend_x}" y="{top + 4}" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">定位分類</text>')
+    for i, (name, color) in enumerate(_KP_CLASS_COLORS.items()):
+        y = top + 30 + i * 26
+        svg.append(f'<circle cx="{legend_x + 8}" cy="{y - 4}" r="7" fill="{color}" fill-opacity="0.8"/>')
+        svg.append(f'<text x="{legend_x + 24}" y="{y}" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(name)}</text>')
+    svg.append("</svg>")
+    path.write_text("\n".join(svg), encoding="utf-8")
+
+
+def place_bubble_labels(
+    points: list[tuple[float, float, float, str]],
+    label_px: float,
+) -> list[str]:
+    """泡泡標籤避讓（**唯一定義處**）：交錯外推找空位，被推開就畫引線。
+
+    points＝[(x, y, radius, label)]，須**已按泡泡由大到小排序**（大泡先佔位）。
+    ⚠ 2026-08-07：KP 象限初版複製了泡泡圖骨架卻漏掉這段，真資料一畫就四家
+    標籤疊成一團——避讓抽成共用函式，兩張圖吃同一份邏輯。
+    """
+    out: list[str] = []
+    placed: list[tuple[float, float, float]] = []  # (x_center, y_baseline, half_width)
+    for x, y, radius, label in points:
+        half_w = len(label) * (label_px * 0.32)
+        default_y = y - radius - 5
+        candidate_ys = [default_y]
+        for i in range(1, 12):
+            step = 13 * ((i + 1) // 2)
+            candidate_ys.append(y + radius + 12 + step if i % 2 else default_y - step)
+        label_y = candidate_ys[-1]
+        for cy in candidate_ys:
+            if all(abs(cy - py) > 12 or abs(x - px) > (half_w + pw) for px, py, pw in placed):
+                label_y = cy
+                break
+        placed.append((x, label_y, half_w))
+        if abs(label_y - default_y) > 6:
+            if label_y < y:
+                line_y1, line_y2 = label_y + 3, y - radius
+            else:
+                line_y1, line_y2 = label_y - 10, y + radius
+            out.append(f'<line x1="{x:.1f}" y1="{line_y1:.1f}" x2="{x:.1f}" y2="{line_y2:.1f}" stroke="#94A3B8" stroke-width="1"/>')
+        out.append(f'<text x="{x:.1f}" y="{label_y:.1f}" text-anchor="middle" '
+                   f'font-size="{label_px:.1f}" font-weight="600" fill="{COLOR_TEXT}">{xml_text(label)}</text>')
+    return out
 
 
 def render_bubble_chart(
