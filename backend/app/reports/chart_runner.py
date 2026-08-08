@@ -3453,6 +3453,42 @@ def render_opportunity_quadrant_svg(
 # 留著的程式每次改字級、用詞、版面都多一份要同步、又永遠驗不到。
 
 
+def applicant_strength_rows(
+    rows: list[dict[str, Any]],
+    ranking: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """申請人四面向報表列（KP 象限的兩軸＋泡泡＋定位所需欄位）。
+
+    計算**不在此重寫**——一律呼叫 `content_blocks.key_player_profiles`
+    （唯一定義處，同時服務 PPT 與日後 SlidePlan）；本函式只把 profile 攤平成
+    報表列（dict 值換成可顯示字串，表格欄放不了巢狀 dict）。
+
+    ⚠ 這是資料層。簡報上的形狀是象限座標（橫軸國數／縱軸主題數／泡泡家族數）
+    與數字卡，**不是屬性表**——見 skills/patent-report-ppt/content_standard.md。
+    """
+    from backend.app.reports.content_blocks import key_player_profiles
+
+    out: list[dict[str, Any]] = []
+    for profile in key_player_profiles(rows, ranking=ranking):
+        kinds = profile.get("kind_counts") or {}
+        out.append({
+            "applicant_display_name": profile["applicant"],
+            "patent_count": profile["patent_count"],
+            "family_count": profile.get("family_count", 0),
+            "country_count": profile.get("country_count", 0),
+            "topic_count": profile.get("topic_count", 0),
+            "ipc_subclass_count": profile.get("ipc_subclass_count", 0),
+            "granted_count": profile.get("granted_count", 0),
+            "pending_count": profile.get("pending_count", 0),
+            "dead_count": profile.get("dead_count", 0),
+            # 種類三分攤成一欄可讀字串（表格欄不吃 dict）。
+            "kind_summary": "／".join(f"{k}{v}" for k, v in sorted(kinds.items())),
+            "has_trajectory": profile.get("has_trajectory", False),
+            "joint_count": profile.get("joint_count", 0),
+        })
+    return out
+
+
 def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     """分群分析：主題／功效統計表、機會矩陣、痛點矩陣。
 
@@ -3597,6 +3633,15 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
         "機會板採板狀佈局（chip 流式排列，結構上不重疊）、每個來源各一組——"
         "2×2 格依該段專利件數與申請人家數中位數分高低，chip 色＝主要申請人涉入三級。"
     )
+    # 申請人四面向（KP 象限引擎端配套）：進 chart_rows 讓 report_data 帶得出去，
+    # CLI（P2 規劃）與畫圖端才拿得到兩軸資料。名單以排名頁為準。
+    ranking_rows = ctx.chart_rows.get("applicant_ranking") or []
+    ranking_names = [str(r.get("applicant_display_name") or "") for r in ranking_rows]
+    strength_source = data.get("strength_rows") or []
+    if strength_source:
+        ctx.chart_rows["applicant_strength_profile"] = applicant_strength_rows(
+            strength_source, ranking=ranking_names or None)
+
     # CLU-016（補分 change）：母體註記分計 AI 建議、人工核准件數——assignments
     # 每列帶 assigned_source（0048 起），缺欄（舊資料）視為幾何指派、count 0 不出註記。
     backfill_n = sum(
@@ -3651,7 +3696,9 @@ SECTION_SPECS: tuple[SectionSpec, ...] = (
     # 保留 "cluster_analytics" 虛擬別名，相容既有「無對應報表的特殊 section」契約與呼叫端。
     SectionSpec(
         "cluster_analytics",
-        ("cluster_analytics", "cluster_topic_table", "opportunity_quadrant"),
+        ("cluster_analytics", "cluster_topic_table", "opportunity_quadrant",
+         # 申請人四面向：同吃 cluster_data（要主題數），與分群卡同 section。
+         "applicant_strength_profile"),
         _build_cluster_analytics_section,
     ),
 )
