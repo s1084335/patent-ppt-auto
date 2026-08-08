@@ -284,6 +284,11 @@ def _filter_report_charts(report_keys: tuple[str, ...], files: tuple[str, ...]) 
 # 成對圖的左右順序偏好：L4 在 L5 前、技術面在功效面前；其餘照檔名排序保持 deterministic。
 CHART_ORDER_HINTS = ("_L4", "_L5", "_tech", "_effect", "_more")
 
+# 封面 eyebrow（小字）與主標的最後 fallback。
+# ⚠ 兩者原本各自寫死「專利情報整合分析」，workspace 名稱缺失時同一句印兩次。
+COVER_EYEBROW = "專利情報整合分析"
+COVER_TITLE_FALLBACK = "專利布局與競爭分析"
+
 # ── 空白頁偵測（產檔後掃描用；與版型無關，換任何一批資料都適用）──
 # 正文帶＝標題與註腳之間的縱向區間（比例，不寫死英吋，換版面尺寸仍成立）。
 BODY_BAND_TOP_RATIO = 0.15
@@ -2037,7 +2042,7 @@ def _render_cover(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> N
         stripe.rotation = g["stripe_rotation_deg"]
         stripe.text_frame.text = ""
 
-    _add_text(slide, theme, "專利情報整合分析",
+    _add_text(slide, theme, COVER_EYEBROW,
               left=g["eyebrow_left_in"], top=g["eyebrow_top_in"],
               width=g["eyebrow_width_in"], height=g["eyebrow_height_in"],
               size=theme.size("cover_subtitle_pt"), color="accent", bold=True)
@@ -3651,6 +3656,16 @@ def _cover_title(report_data: dict[str, Any], slots: dict[str, str]) -> str:
     manual = str(slots.get("cover.title") or "").strip()
     if manual:
         return manual
+    # 🔴 2026-08-09：goal-driven 規劃時，CLI 會在 s1 的第一條 narrative 寫出
+    # 針對這批資料的主標。⚠ 順位排在 workspace 名稱**之後**（不推翻 07-31
+    # 定案），但要排在通用 fallback 之前——否則 workspace 名稱缺失時主標會
+    # 退回寫死的「專利情報整合分析」，與封面 eyebrow 一字不差印兩次（實測）。
+    plan_title = ""
+    for slide in ((report_data.get("slide_plan") or {}).get("slides") or [])[:1]:
+        for point in slide.get("narrative") or []:
+            plan_title = str(point.get("text") or "").strip()
+            if plan_title:
+                break
     params = report_data.get("parameters") or {}
     for key in ("workspace_name", "workspace_display_name", "workspace"):
         value = str(params.get(key) or "").strip()
@@ -3658,7 +3673,7 @@ def _cover_title(report_data: dict[str, Any], slots: dict[str, str]) -> str:
             # 2026-07-31 使用者定案：「封面頁主題要顯示成 workspace 名稱配上專利分析」
             # ——單獨一個「滑雪機」不像簡報標題，補上主題詞才成句。
             return value if value.endswith("專利分析") else f"{value}專利分析"
-    return "專利情報整合分析"
+    return plan_title or COVER_TITLE_FALLBACK
 
 
 def _cover_funnel(report_data: dict[str, Any]) -> tuple[str, str, str] | None:

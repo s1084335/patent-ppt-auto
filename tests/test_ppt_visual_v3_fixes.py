@@ -717,9 +717,29 @@ class CoverWorkspaceTests(unittest.TestCase):
         self.assertEqual(bp._cover_title(data, {}), "拉繩訓練機專利分析")
 
     def test_cover_title_fallback(self):
+        """workspace 名稱缺失時的 fallback **不得與封面 eyebrow 相同**。
+
+        ⚠ 2026-08-09 契約變更：原本兩處各自寫死「專利情報整合分析」，
+        實機封面因此把同一句印了兩次（大標與小字）。斷言改成守「不撞名」
+        這個意圖，而不是寫死某個字串——換字串時測試不該無謂地紅。
+        """
         data = _minimal_report_data()
         data["parameters"].pop("workspace_name")
-        self.assertEqual(bp._cover_title(data, {}), "專利情報整合分析")
+        self.assertEqual(bp._cover_title(data, {}), bp.COVER_TITLE_FALLBACK)
+        self.assertNotEqual(bp.COVER_TITLE_FALLBACK, bp.COVER_EYEBROW)
+
+    def test_cover_title_prefers_plan_headline_over_generic_fallback(self):
+        """有規劃給的主標時用它，不要退回通用字串（換一批資料都成立）。"""
+        data = _minimal_report_data()
+        data["parameters"].pop("workspace_name")
+        data["slide_plan"] = {"slides": [{"narrative": [{"text": "某某裝置專利布局分析"}]}]}
+        self.assertEqual(bp._cover_title(data, {}), "某某裝置專利布局分析")
+
+    def test_workspace_name_still_wins_over_plan(self):
+        """不推翻 2026-07-31 定案：workspace 名稱優先於規劃主標。"""
+        data = _minimal_report_data()
+        data["slide_plan"] = {"slides": [{"narrative": [{"text": "規劃給的標題"}]}]}
+        self.assertNotEqual(bp._cover_title(data, {}), "規劃給的標題")
 
 
 class FootnoteTests(unittest.TestCase):
