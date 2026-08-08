@@ -28,3 +28,42 @@
 - **WHEN** 範例順序與本次最大目標或選圖證據鏈衝突
 - **THEN** CLI SHALL 採用可說明的本次 plan
 - **AND** 不得為仿製範例加入無證據頁面
+
+### Requirement: EXP-018 產後品質驗證決定 PPT 是否可交付
+
+系統 SHALL 在每次 PPT build 後產生 `PptQualityReport`，以 builder manifest、PowerPoint COM 全頁 PNG render 結果、選圖覆蓋、evidence coverage、必要 slot 與版面 warnings 判定 `pass`、`regenerate_partial`、`regenerate_report_version` 或 `blocked_defect`；未通過時不得提供正式交付版本。
+
+#### Scenario: manifest 顯示缺 narrative
+
+- **WHEN** PPT manifest 含 `narrative_missing`
+- **THEN** quality report SHALL 標示 fail
+- **AND** regeneration plan SHALL 只要求重產對應 `report_key` / variant 的 narrative
+
+#### Scenario: 版面自檢發現重疊
+
+- **WHEN** PPT manifest 含 `text_overlap`、`out_of_bounds` 或 `margin_violation`
+- **THEN** quality report SHALL 標示 `blocked_defect`
+- **AND** 系統 SHALL 不要求 CLI 自由調整 PowerPoint 幾何
+
+#### Scenario: PowerPoint COM 轉圖失敗
+
+- **WHEN** rendered PNG 頁數與 PPT manifest 頁數不符，或任一頁 render 失敗
+- **THEN** quality report SHALL fail
+- **AND** 該 PPT 不得進入使用者可接受的正式候選
+
+### Requirement: EXP-019 局部重產必須受 scope lock 約束
+
+系統 SHALL 以 `RegenerationPlan` 明列可重產 targets 與 locked items；CLI 回傳的替換內容 MUST 只涵蓋被標記的 narrative、slide narrative、slot 或 evidence target，不得改動未標記 slide purpose、chart identity、選圖集合或已通過的敘述。
+
+#### Scenario: CLI 擴大修改未標記 slide
+
+- **GIVEN** regeneration plan 只允許重產 `slide-07` 的 narrative
+- **WHEN** CLI response 同時改動 `slide-03` 或替換 chart identity
+- **THEN** runner SHALL 拒絕該 response
+- **AND** 不得保存新的 candidate artifact
+
+#### Scenario: 同一 target 重試仍不合格
+
+- **WHEN** 同一 regeneration target 已完成兩輪局部重產但 quality report 仍 fail
+- **THEN** 系統 SHALL 停止自動重產
+- **AND** 標示 `blocked_content_defect` 或 `blocked_layout_defect` 供人工或開發處理

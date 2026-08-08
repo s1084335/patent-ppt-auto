@@ -2,7 +2,8 @@
 
 - [ ] 1.1 固定代表性 workspace、analysis snapshot、使用者選圖集合、兩份參考範例、現行 `report_data/narratives/PPTX` 與全頁 PNG 基準
 - [ ] 1.2 定義 `ReportBrief`、`SelectedChartBundle`、`ReportStrategy`、`SlidePlan`、`EvidenceManifest`、tool audit 與 manifest JSON schema，包含版本、checksum、容量與錯誤契約
-- [ ] 1.3 建立與 `improve-report-professionalism`、`complete-export-report-editing`、`harden-runtime-security-and-configuration` 的實作順序表，確認固定頁序／固定 slots 不會先被實作後再拆除
+- [ ] 1.3 定義 `PptQualityReport`、`RenderedPngManifest`、`RegenerationPlan` 與 scope lock JSON schema，包含 warning 對應、decision enum、retry 上限與 blocked defect 分類
+- [ ] 1.4 建立與 `improve-report-professionalism`、`complete-export-report-editing`、`harden-runtime-security-and-configuration` 的實作順序表，確認固定頁序／固定 slots 不會先被實作後再拆除
 
 ## 2. TDD：選圖資料包與最大目標
 
@@ -35,10 +36,20 @@
 - [ ] 5.3 Red：新增前端最大目標、章節方向、選圖提交、規劃進度、缺圖建議、失敗訊息與 preview readback 測試
 - [ ] 5.4 Green：完成 ReportBrief UI/API 與既有報告 runner fallback/feature flag；不讓使用者未選圖自動進 PPT
 
-## 6. 整合、實物與安全驗收
+## 6. TDD：產後品質 gate 與局部重產
 
-- [ ] 6.1 執行 MCP/report/AI runner/PPT builder/frontend 目標測試、受影響回歸與 `scripts/verify_module.py`，保存 Red/Green/Refactor 證據
-- [ ] 6.2 在隔離 DB 及正式部署等價設定驗證 reader role 權限矩陣、secret redaction、statement timeout、row limit、跨 workspace/snapshot 拒絕與 rollback
-- [ ] 6.3 以真 CLI 讀取全部選圖圖片／數據並迭代補證據，核對 tool audit、EvidenceManifest、數字與具名主張；不得只用 fake CLI 宣告完成
-- [ ] 6.4 產生完整 PPTX、report strategy、slide plan、evidence manifest、artifact manifest 與全頁 PNG，程式化掃描全部頁後逐頁人工檢查目標論證、選圖完整、截字、重疊與空白圖
-- [ ] 6.5 與現行固定 runner shadow compare，揭露未驗項目與 rollback；使用者接受內容、視覺與唯讀證據後才啟用預設路徑或 archive
+- [ ] 6.1 Red：新增 manifest warnings 到 quality decision 的契約測試，涵蓋 `narrative_missing`、`narrative_fallback`、`chart_missing_degraded`、`artifact_manifest_missing`、`missing_slots`、`text_overflow_estimated`、`text_overlap`、`out_of_bounds`、PNG render 失敗與頁數不符
+- [ ] 6.2 Green：完成 `PptQualityReport` 產生器，彙整 PPTX manifest、RenderedPngManifest、選圖覆蓋、evidence coverage、必要 slot 與版面 warnings
+- [ ] 6.3 Red：新增 `RegenerationPlan` scope lock 測試，確認 CLI 只可回傳指定 targets，改動 locked slide、chart identity、未標記 narrative 或未選圖表時必須拒收
+- [ ] 6.4 Green：完成局部重產 runner 接線，保留未標記 narratives/slides，保存 replacement audit，並在重產後重新 build、轉 PNG、跑 quality report
+- [ ] 6.5 Red：新增同一 target 超過兩輪仍 fail 的測試，確認停止自動重產並標示 `blocked_content_defect` 或 `blocked_layout_defect`
+- [ ] 6.6 Refactor：共用既有 PPT manifest warning 與 narrative 單報表重產規則，避免在 runner 與 skill 文件複製兩份不一致 mapping
+
+## 7. 整合、實物與安全驗收
+
+- [ ] 7.1 執行 MCP/report/AI runner/PPT builder/frontend 目標測試、受影響回歸與 `scripts/verify_module.py`，保存 Red/Green/Refactor 證據
+- [ ] 7.2 在隔離 DB 及正式部署等價設定驗證 reader role 權限矩陣、secret redaction、statement timeout、row limit、跨 workspace/snapshot 拒絕與 rollback
+- [ ] 7.3 以真 CLI 讀取全部選圖圖片／數據並迭代補證據，核對 tool audit、EvidenceManifest、數字與具名主張；不得只用 fake CLI 宣告完成
+- [ ] 7.4 產生完整 PPTX、report strategy、slide plan、evidence manifest、artifact manifest、PptQualityReport、RegenerationPlan（若觸發）與全頁 PNG，程式化掃描全部頁後逐頁人工檢查目標論證、選圖完整、截字、重疊與空白圖
+- [ ] 7.5 以刻意缺 narrative、缺圖、文字溢位與 locked slide 被 CLI 改動的案例驗證局部重產 gate，證明未標記內容未改、重產後重新驗收，且超過重試上限會 blocked
+- [ ] 7.6 與現行固定 runner shadow compare，揭露未驗項目與 rollback；使用者接受內容、視覺、quality gate 與唯讀證據後才啟用預設路徑或 archive
