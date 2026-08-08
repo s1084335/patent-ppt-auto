@@ -3427,6 +3427,53 @@ def _split_multi_chart_page(spec: PageSpec, charts: ChartIndex | None = None) ->
     return pages
 
 
+# ══ SlidePlan 消費（P2 第 5 節）══════════════════════════════════════
+# 🔴 分工紅線：CLI 決定「哪一頁講什麼、用哪張圖、用哪種版型」；
+# builder 決定「那種版型長什麼樣」（座標／字級／顏色一律由 theme 解析）。
+# CLI 若硬塞幾何欄位，這裡**一律忽略**——不是報錯後照用，是根本不讀。
+
+
+class SlidePlanError(RuntimeError):
+    """SlidePlan 無法轉成版面（未知版型等）。"""
+
+
+def page_specs_from_plan(plan: dict[str, Any]) -> list[PageSpec]:
+    """把通過驗證的 SlidePlan 轉成 PageSpec 序列（頁碼依 slides 順序連號）。"""
+    specs: list[PageSpec] = []
+    for index, slide in enumerate(plan.get("slides") or [], start=1):
+        preset = str(slide.get("layout_preset") or "")
+        if preset not in RENDERERS:
+            raise SlidePlanError(
+                f"slide {slide.get('slide_id', '?')} 的版型 {preset!r} 不在組版端支援清單")
+        identities = [str(i) for i in slide.get("chart_identities") or []]
+        specs.append(PageSpec(
+            page=index,
+            kind=preset,
+            title=str(slide.get("title") or slide.get("purpose") or ""),
+            topic=str(slide.get("purpose") or ""),
+            # chart_identity 形如 `report_key:variant_key`——取前段當 report_key。
+            report_keys=tuple(i.split(":", 1)[0] for i in identities),
+        ))
+    return specs
+
+
+def plan_coverage_manifest(
+    plan: dict[str, Any],
+    selected_identities: set[str],
+) -> dict[str, Any]:
+    """選圖覆蓋清單：使用者選了卻沒進 PPT 的圖必須現形。"""
+    used: set[str] = set()
+    for slide in plan.get("slides") or []:
+        used.update(str(i) for i in slide.get("chart_identities") or [])
+    return {
+        "plan_id": plan.get("plan_id", ""),
+        "slide_count": len(plan.get("slides") or []),
+        "used_charts": sorted(used),
+        "missing_selected": sorted(selected_identities - used),
+        "unselected_used": sorted(used - selected_identities),
+    }
+
+
 def resolve_layout(report_data: dict[str, Any], charts: ChartIndex,
                    theme: Theme | None, overrides: dict[str, str]) -> list[PageSpec]:
     """從報表資料算出最終版面：展開 → 套版型覆寫（含拆頁）→ 圖檔降級 → **重算標題**。
@@ -3443,7 +3490,13 @@ def resolve_layout(report_data: dict[str, Any], charts: ChartIndex,
     ⚠ 收成單一入口是為了讓測試驗得到**完整結果**：三個步驟散在呼叫端時，
     測試只驗得到中間狀態，正是這個 bug 混過去的原因。
     """
-    layout = _expand_page_layout(report_data, charts, theme)
+    # P2：有通過驗證的 SlidePlan 就照它出頁；沒有就走既有固定 PAGE_LAYOUT 展開
+    # ⚠ 舊路徑保留（不是換掉）——既有報告仍要能重產，且出問題有回頭路。
+    plan = (report_data.get("slide_plan") or {}) if isinstance(report_data, dict) else {}
+    if plan.get("slides"):
+        layout = page_specs_from_plan(plan)
+    else:
+        layout = _expand_page_layout(report_data, charts, theme)
     layout = _apply_layout_overrides(layout, overrides, charts)
     layout = _apply_chart_degradation(layout, charts)
     return [_spec_with(spec, topic=_chart_page_topic(spec, report_data)) for spec in layout]
