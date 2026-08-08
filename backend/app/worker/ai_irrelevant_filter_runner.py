@@ -38,6 +38,10 @@ import psycopg
 from backend.app.clustering.exclusions import store_ai_verdicts
 from backend.app.db.connection import get_connection_kwargs
 
+import functools
+
+from .cli_gateway import NO_TOOLS
+from .cli_gateway import build_cli_command as _gw_build_cli_command
 from .ai_narrative_runner import (
     DEFAULT_CLI_TIMEOUT_SECONDS,
     CliRunner,
@@ -52,7 +56,6 @@ from .ai_payload_file import extract_json_payload
 PROMPT_VERSION = "irrelevant_filter_v1"
 
 # 🔴 最小權限：備註已內嵌 prompt，CLI 不需讀檔/寫檔/上網——白名單為空。
-_FILTER_TAIL_ARGS = ["--output-format", "json", "--allowedTools", ""]
 
 # 批次筆數（規格第 118 行）：50 筆 × 約 100 字 ≈ 5,000 字/批，context 安全。
 DEFAULT_BATCH_SIZE = 50
@@ -66,25 +69,10 @@ class IrrelevantFilterRunnerError(RuntimeError):
     """不相干篩選流程失敗（CLI 產出不合契約等）。"""
 
 
-def build_cli_command(cli_kind: str, prompt: str, *, model: str | None = None) -> list[str]:
-    """組 headless argv；沿 ai_narrative_runner 的 CLI 對照表，但覆寫 tail_args 為空白名單。
-
-    覆寫理由：文獻備註已內嵌 prompt，CLI **不需要任何工具**（不讀檔、不連網），白名單為空。
-    opencode 等未提供工具白名單旗標的 CLI 沿用其原 tail_args。
-    """
-    spec = _CLI_SPECS.get(cli_kind)
-    if spec is None:
-        raise IrrelevantFilterRunnerError(
-            f"未知 cli_kind：{cli_kind!r}（可用：{sorted(_CLI_SPECS)}）")
-    model_args: list[str] = []
-    if model:
-        model_flag = spec.get("model_flag")
-        if not model_flag:
-            raise IrrelevantFilterRunnerError(f"{cli_kind!r} 不支援指定 model")
-        model_args = [model_flag, model]
-    tail = _FILTER_TAIL_ARGS if cli_kind == "claude" else list(spec["tail_args"])
-    return [spec["binary"], spec["prompt_flag"], prompt, *model_args, *tail]
-
+# 🔴 最小權限（2026-08-09 收斂到 cli_gateway）：本任務資料內嵌 prompt，
+# 不讀檔、不寫檔、不上網、不查 DB——白名單為空。
+# ⚠ 併入共用入口的是 argv 骨架，**不是權限**；把它改成取證等級即為擴權。
+build_cli_command = functools.partial(_gw_build_cli_command, tools=NO_TOOLS)
 
 def build_prompt(candidates: Sequence[tuple[int, str]], topic_label: str | None = None) -> str:
     """把一批 (patent_id, 文獻備註) 組成 headless CLI 提示。

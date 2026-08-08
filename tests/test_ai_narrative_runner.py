@@ -163,19 +163,26 @@ class BuildCliCommandTests(unittest.TestCase):
         self.assertIn("--output-format", argv)
         self.assertIn("json", argv)
 
-    def test_claude_allows_scoped_bash_for_evidence_queries(self):
-        """🔴 v5 自主取證：白名單須含 scoped Bash，否則查詢工具形同虛設。
+    def test_claude_uses_mcp_tools_for_evidence_queries(self):
+        """🔴 自主取證的通道：MCP 唯讀工具（2026-08-09 使用者定案取代 scoped Bash）。
 
-        2026-08-06 定案：解讀 CLI 依判斷自行查 DB 取證（使用者：「自主判斷的目標是
-        讓 CLI 可以自己根據圖表和數據判斷需要哪些資訊拿來寫」）。查詢走 skill 的
-        `query_patents.py`（連線層強制唯讀），CLI 端須能執行 `uv run ...`。
-        ⚠ 用 `Bash(uv run:*)` 前綴限定，不開全域 Bash——CLI 只需要跑 uv 工具鏈。
+        2026-08-06 定案的目標不變——「讓 CLI 可以自己根據圖表和數據判斷需要哪些
+        資訊拿來寫」；變的是**通道**：原本放行 `Bash(uv run:*)` 去跑
+        `query_patents.py`，2026-08-09 改為 MCP 唯讀工具。
+
+        ⚠ 契約為何改：Bash 前綴放行等於把「該查哪張表、能不能查」交給提示詞約束；
+        MCP 是 typed 參數，工具清單即能力清單，護欄在介面本身。唯讀性仍由
+        `validate_sql` 與連線層 `default_transaction_read_only` 雙重把關。
+
+        ⚠ 放行 `mcp__*` 卻沒帶 `--mcp-config` 是**靜默**失效（CLI 只當作沒有那些
+        工具，照樣產出看似合理的內容），所以兩者一起驗。
         """
         argv = runner.build_cli_command("claude", "PROMPT")
         allowed = argv[argv.index("--allowedTools") + 1:]
-        self.assertIn("Bash(uv run:*)", allowed,
-                      "缺 scoped Bash——自主取證的查詢工具跑不起來")
-        self.assertNotIn("Bash", allowed, "不得開無範圍限制的全域 Bash")
+        self.assertTrue([t for t in allowed if t.startswith("mcp__")],
+                        "缺 MCP 取證工具——CLI 查不到資料庫")
+        self.assertIn("--mcp-config", argv, "放行 mcp__ 工具卻沒掛 config＝靜默失效")
+        self.assertNotIn("Bash", " ".join(allowed), "取證改走 MCP 後不應再放行 Bash")
 
     def test_opencode_command_switchable(self):
         """cli_kind 可換成 opencode，二進位隨對照表切換，不寫死 claude。"""

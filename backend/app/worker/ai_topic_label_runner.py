@@ -31,6 +31,10 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
+import functools
+
+from .cli_gateway import READ_ONLY_TOOLS
+from .cli_gateway import build_cli_command as _gw_build_cli_command
 from .ai_narrative_runner import (
     DEFAULT_CLI_TIMEOUT_SECONDS,
     CliResult,
@@ -65,12 +69,10 @@ class TopicLabelRunnerError(RuntimeError):
     """主題標籤流程失敗（CLI 產出不合契約、topic_code 不存在或無任何標籤）。"""
 
 
-def build_cli_command(cli_kind: str, prompt: str, *, model: str | None = None) -> list[str]:
-    """組 headless argv；直接沿用 ai_narrative_runner 的雙 CLI 對照表，不另立一套。
-
-    換 CLI（claude／opencode）只需改 ai_narrative_runner._CLI_SPECS，兩種 AI 任務同步生效。
-    """
-    return _build_cli_command(cli_kind, prompt, model=model)
+# ⚠ 等級由「沿用敘述線 tail_args」收斂為唯讀檔（2026-08-09）：主路徑早已走
+# 資料檔（build_cli_command_with_payload，READ_ONLY），這支 legacy 包裝繼承
+# 敘述線等級只是歷史殘留——敘述線加上 MCP 取證後再沿用即為擴權。
+build_cli_command = functools.partial(_gw_build_cli_command, tools=READ_ONLY_TOOLS)
 
 
 def _strip_cli_visible_fields(node: Any) -> Any:

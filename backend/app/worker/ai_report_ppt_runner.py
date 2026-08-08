@@ -42,6 +42,10 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
+import functools
+
+from .cli_gateway import NO_TOOLS
+from .cli_gateway import build_cli_command as _gw_build_cli_command
 from .ai_narrative_runner import (
     DEFAULT_CLI_TIMEOUT_SECONDS,
     PROJECT_ROOT,
@@ -61,7 +65,6 @@ PROMPT_VERSION = "report_ppt_v2"
 # 🔴 最小權限（**舊路徑專用**）：報表數據內嵌 prompt 時 CLI 不需任何工具。
 # 主路徑自 2026-07-28 起改走資料檔，白名單由共用核心給 Read（見模組頂部說明）；
 # 本常數只服務保留下來的 build_cli_command／build_prompt（離線除錯與既有測試）。
-_PPT_TAIL_ARGS = ["--output-format", "json", "--allowedTools", ""]
 
 
 class ReportPptRunnerError(RuntimeError):
@@ -123,25 +126,10 @@ def report_slot_keys() -> list[str]:
         ) from exc
 
 
-def build_cli_command(cli_kind: str, prompt: str, *, model: str | None = None) -> list[str]:
-    """組 headless argv；沿用 ai_narrative_runner 的 CLI 對照表，覆寫 tail_args 為空白名單。
-
-    覆寫理由：報表數據自帶在 prompt 內，CLI **不需要任何工具**（不讀檔、不連網）。
-    opencode 等未提供工具白名單旗標的 CLI 沿用其原 tail_args。
-    """
-    spec = _CLI_SPECS.get(cli_kind)
-    if spec is None:
-        raise ReportPptRunnerError(
-            f"未知 cli_kind：{cli_kind!r}（可用：{sorted(_CLI_SPECS)}）")
-    model_args: list[str] = []
-    if model:
-        model_flag = spec.get("model_flag")
-        if not model_flag:
-            raise ReportPptRunnerError(f"{cli_kind!r} 不支援指定 model")
-        model_args = [model_flag, model]
-    tail = _PPT_TAIL_ARGS if cli_kind == "claude" else list(spec["tail_args"])
-    return [spec["binary"], spec["prompt_flag"], prompt, *model_args, *tail]
-
+# 🔴 最小權限（2026-08-09 收斂到 cli_gateway）：本任務資料內嵌 prompt，
+# 不讀檔、不寫檔、不上網、不查 DB——白名單為空。
+# ⚠ 併入共用入口的是 argv 骨架，**不是權限**；把它改成取證等級即為擴權。
+build_cli_command = functools.partial(_gw_build_cli_command, tools=NO_TOOLS)
 
 def build_prompt(report_data_text: str, slot_keys: list[str]) -> str:
     """組報告 PPT 文案任務提示：報表數據內嵌，AI 只產文案 slots。

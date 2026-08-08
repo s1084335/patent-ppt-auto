@@ -45,6 +45,10 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Iterable, Sequence
 
+import functools
+
+from .cli_gateway import NO_TOOLS
+from .cli_gateway import build_cli_command as _gw_build_cli_command
 from .ai_narrative_runner import (
     DEFAULT_CLI_TIMEOUT_SECONDS,
     CliResult,
@@ -98,32 +102,16 @@ NOTE_MAX_CHARS = 100
 
 # 🔴 最小權限：本任務只需模型讀 prompt 內文並回 JSON，不讀檔、不寫檔、不上網。
 # 明確不加 WebSearch／WebFetch／Read／Write，避免 CLI 白名單擴權。
-_NOTE_TAIL_ARGS = ["--output-format", "json", "--allowedTools", ""]
 
 
 class PatentNoteRunnerError(RuntimeError):
     """文獻備註流程失敗（CLI 產出不合契約、回吐未知 patent_id 等）。"""
 
 
-def build_cli_command(cli_kind: str, prompt: str, *, model: str | None = None) -> list[str]:
-    """組 headless argv；沿用 ai_narrative_runner 的 CLI 對照表，但覆寫 tail_args。
-
-    覆寫理由：解讀任務需要 Read／Write（要落 narratives.json），本任務**不需要任何工具**——
-    prompt 自帶全部輸入、輸出走 stdout。維持最小權限白名單，不讓這條線取得檔案或網路能力。
-    opencode 等未提供工具白名單旗標的 CLI 沿用其原 tail_args。
-    """
-    spec = _CLI_SPECS.get(cli_kind)
-    if spec is None:
-        raise PatentNoteRunnerError(f"未知 cli_kind：{cli_kind!r}（可用：{sorted(_CLI_SPECS)}）")
-    model_args: list[str] = []
-    if model:
-        model_flag = spec.get("model_flag")
-        if not model_flag:
-            raise PatentNoteRunnerError(f"{cli_kind!r} 不支援指定 model")
-        model_args = [model_flag, model]
-    tail = _NOTE_TAIL_ARGS if cli_kind == "claude" else list(spec["tail_args"])
-    return [spec["binary"], spec["prompt_flag"], prompt, *model_args, *tail]
-
+# 🔴 最小權限（2026-08-09 收斂到 cli_gateway）：本任務資料內嵌 prompt，
+# 不讀檔、不寫檔、不上網、不查 DB——白名單為空。
+# ⚠ 併入共用入口的是 argv 骨架，**不是權限**；把它改成取證等級即為擴權。
+build_cli_command = functools.partial(_gw_build_cli_command, tools=NO_TOOLS)
 
 def build_batches(
     items: Iterable[tuple[int, str]],

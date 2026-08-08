@@ -45,6 +45,12 @@ class ToolAllowlistTests(unittest.TestCase):
             "lookup_company_evidence",
             "lookup_topic_evidence",
             "lookup_patent_evidence",
+            # 2026-08-09 新增並經複審：其餘七支讀的是**報表快照**
+            # （report_data.json），只有這支真的連資料庫——不加它，
+            # 「取證統一到 MCP」等於把敘述線原有的 DB 查詢能力砍掉。
+            # 唯讀性由 validate_sql（單句 SELECT/WITH）與連線層
+            # default_transaction_read_only 雙重把關。
+            "query_database",
         ]))
 
     def test_no_write_capable_tool_registered(self):

@@ -11,15 +11,25 @@ CLI 的典型使用序：
    做具名查證（寫「扭矩是全球化布局者」「孟喬僅具前案價值」時要點得出依據）
 4. 每筆回傳都帶 `evidence_ref`，直接放進 SlidePlan 的 narrative
 
-護欄（PRT-012，2026-08-07 回寫版）：
-- 只暴露唯讀工具，**不接受 SQL 字串**（typed 參數）
-- 所有查詢綁 `snapshot_id`，跨版本的證據不得混用
+⚠ 前七支讀的是**報表快照**（`report_data.json`），不是資料庫。要回答快照裡
+沒有的問題（個別案件、完整同族、任意交叉統計）用 `query_database`——它是唯一
+真的連 DB 的工具（2026-08-09 補上；在那之前「CLI 去資料庫找證據」並不成立，
+因為工具全都在讀引擎已彙總的 chart_rows）。
+
+護欄（PRT-012，2026-08-09 回寫版）：
+- 只暴露唯讀工具；快照型工具用 typed 參數，`query_database` 收 SQL 但限單句
+  SELECT／WITH，且連線層強制 `default_transaction_read_only` 與逾時
+- 快照型查詢綁 `snapshot_id`，跨版本的證據不得混用
 - 列數上限並**明說截斷**（不得靜默給一半讓 CLI 以為是全部）
 - CLI 的 MCP config 不含任何 DB credential
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import re
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable  # noqa: F401
 
@@ -34,6 +44,7 @@ TOOL_NAMES: tuple[str, ...] = (
     "lookup_company_evidence",
     "lookup_topic_evidence",
     "lookup_patent_evidence",
+    "query_database",
 )
 
 # 單次查詢列數上限：CLI 要的是證據不是資料傾印；超過就截斷並明說。
@@ -226,6 +237,86 @@ def lookup_patent_evidence(
                if int(p.get("patent_id", -1)) in wanted]
     return {"snapshot_id": snapshot_id, "patents": patents,
             "evidence_ref": f"{snapshot_id}:patents:{sorted(wanted)}"}
+
+
+# 寫入類關鍵字（word boundary，`created_at` 不會誤中 CREATE）。
+# ⚠ 這只是**提前報錯讓訊息好懂**；真正的防線是連線層 default_transaction_read_only。
+_FORBIDDEN_SQL = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|COPY|VACUUM|CALL|DO)\b",
+    re.IGNORECASE,
+)
+
+# 查詢逾時（毫秒）：取證查詢再複雜也不該跑滿分鐘級，逾時比拖垮 DB 好。
+_SQL_TIMEOUT_MS = 30000
+
+
+def _jsonable(value: Any) -> Any:
+    """DB 值轉可序列化：日期轉 ISO、Decimal 轉 float、bytes 只回長度。
+
+    ⚠ bytes（主附圖 bytea）不進輸出——圖片對取證毫無用處，卻能單筆撐爆 context。
+    """
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (bytes, memoryview)):
+        return f"<bytes:{len(value)}>"
+    return value
+
+
+def validate_sql(sql: str) -> str:
+    """單句、唯讀語法的提前檢查；回傳去除尾端分號的 SQL。"""
+    text = str(sql or "").strip()
+    if not text:
+        raise ReportResearchError("SQL 是空的")
+    text = text.rstrip(";").strip()
+    if ";" in text:
+        raise ReportResearchError("只接受單一語句（偵測到分號串接）")
+    if not re.match(r"^(SELECT|WITH)\b", text, re.IGNORECASE):
+        raise ReportResearchError("只接受 SELECT／WITH 開頭的唯讀查詢")
+    hit = _FORBIDDEN_SQL.search(text)
+    if hit:
+        raise ReportResearchError(
+            f"查詢含寫入類關鍵字 {hit.group(0)!r}——本工具唯讀；"
+            "若只是字串字面值撞名，請改寫避開")
+    return text
+
+
+def query_database(sql: str, limit: int = 100) -> dict[str, Any]:
+    """唯讀 SQL 取證：查專利、申請人、法律狀態等原始資料。
+
+    ⚠ 其餘工具讀的是**報表快照**（引擎已彙總的 chart_rows）；只有這一支真的
+    連資料庫。要回答「快照裡沒有的問題」（例如某公司在特定年份的個別案件、
+    某件專利的完整同族）就用它。
+
+    只接受單句 SELECT／WITH。連線由 server 端強制 read-only 交易與逾時，
+    CLI 端拿不到任何 DB credential。回傳含 `truncated`，截斷會明說。
+    """
+    if limit > MAX_EVIDENCE_ROWS:
+        raise ReportResearchError(f"limit 超過上限 {MAX_EVIDENCE_ROWS}")
+    text = validate_sql(sql)
+
+    import psycopg
+
+    from backend.app.db.connection import get_database_url
+
+    with psycopg.connect(
+        get_database_url(),
+        autocommit=True,
+        options=f"-c default_transaction_read_only=on -c statement_timeout={_SQL_TIMEOUT_MS}",
+    ) as conn, conn.cursor() as cur:
+        cur.execute(text)
+        columns = [d.name for d in cur.description] if cur.description else []
+        rows = cur.fetchmany(limit + 1)
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+    return {
+        "columns": columns,
+        "rows": [[_jsonable(v) for v in row] for row in rows],
+        "row_count": len(rows),
+        "truncated": truncated,
+        "evidence_ref": f"sql:{hashlib.sha256(text.encode()).hexdigest()[:12]}",
+    }
 
 
 def build_cli_mcp_config(server_url: str, auth_token: str) -> dict[str, Any]:

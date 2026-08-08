@@ -18,9 +18,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
-import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -285,34 +282,29 @@ DEFAULT_CLI_TIMEOUT_SECONDS = 1800.0
 
 # 雙 CLI 指令對照（headless 非互動、只讀寫 narratives.json）。換 CLI 只改此表。
 # 各值為「除提示字串外」的固定 argv 尾段；提示由 build_cli_command 插在二進位之後。
-_CLI_SPECS: dict[str, dict[str, Any]] = {
-    "claude": {
-        "binary": "claude",
-        # -p 進 headless、json 輸出、限制工具僅讀寫（對齊 run_narrative_task.ps1）。
-        "prompt_flag": "-p",
-        # 指定模型的旗標名（模型值由任務 payload 帶，不寫死；None＝該 CLI 不支援指定）。
-        "model_flag": "--model",
-        "tail_args": [
-            "--output-format", "json",
-            # v5 自主取證（2026-08-06 定案）：解讀 CLI 依判斷自行查 DB。
-            # ⚠ Bash 用 `uv run:*` 前綴限定——只放行 uv 工具鏈（查詢閘道
-            # query_patents.py 靠它跑），不開全域 Bash；寫入防護在閘道的
-            # 連線層（default_transaction_read_only），不是靠這裡。
-            "--allowedTools", "Read", "Glob", "Grep", "Write", "Bash(uv run:*)",
-        ],
-    },
-    "opencode": {
-        # OpenCode 對接介面（Companion 雙 CLI 定案）；binary 與旗標到位時由此替換。
-        "binary": "opencode",
-        "prompt_flag": "run",
-        "model_flag": "--model",
-        "tail_args": ["--format", "json"],
-    },
-}
+# 🔴 2026-08-09：`_CLI_SPECS`／`build_cli_command`／`CliResult`／`parse_cli_result`
+# 已收斂到 `cli_gateway`（使用者定案「能整合的都要整合」）。七個 runner 各存一份
+# 時，加 MCP 取證白名單要改七處——漏一處那條線就查不到資料庫，而且不會報錯。
+#
+# ⚠ 取證通道同時由 `Bash(uv run:*)`＋query_patents.py 改為 MCP 唯讀工具
+# （RESEARCH_TOOLS）：工具清單即能力清單，不必靠提示詞約束「該查哪張表」。
+import functools
 
+from .cli_gateway import (  # 模組中段 re-export，維持既有 import 路徑
+    _CLI_SPECS,  # noqa: F401  （re-export：既有呼叫端仍由本模組取用）
+    RESEARCH_TOOLS,
+    CliGatewayError,
+    CliResult,
+    parse_cli_result,
+)
+from .cli_gateway import build_cli_command as _gw_build_cli_command
+from .cli_gateway import run_cli as _subprocess_cli_runner
 
-class NarrativeRunnerError(RuntimeError):
-    """headless 解讀流程失敗（CLI 不存在、非零退出、產物缺失或版本不符）。"""
+# headless 解讀流程失敗（CLI 不存在、非零退出、產物缺失或版本不符）。
+# ⚠ 2026-08-09 起是 CliGatewayError 的**別名**而非獨立類別：CLI 呼叫收斂到
+# cli_gateway 後，「起不來／非零退出／輸出非 JSON」由它拋——別名讓既有
+# `except NarrativeRunnerError` 仍然攔得到，不必逐處改捕捉型別。
+NarrativeRunnerError = CliGatewayError
 
 
 def _narrative_report_keys(narratives_path: Path) -> set[str]:
@@ -329,15 +321,6 @@ def _narrative_report_keys(narratives_path: Path) -> set[str]:
         return set()
     reports = data.get("reports")
     return set(reports) if isinstance(reports, dict) else set()
-
-
-@dataclass
-class CliResult:
-    """headless CLI 一次執行的結果（供解析與回報）。"""
-
-    exit_code: int
-    stdout: str
-    stderr: str
 
 
 # cli_runner 介面：收 (argv, timeout) 回 CliResult；預設 subprocess 實作，測試可注入 fake。
@@ -595,84 +578,8 @@ def build_prompt(
     )
 
 
-def build_cli_command(cli_kind: str, prompt: str, *, model: str | None = None) -> list[str]:
-    """依 cli_kind 組 headless argv（提示插在二進位之後，其餘旗標取自對照表）。
-
-    cli_kind 不在對照表時 raise（不默默 fallback 到 claude）；換 CLI 只改 _CLI_SPECS。
-    model 給定時插入該 CLI 的 model 旗標（值由任務 payload 帶下來，不寫死於此）；
-    未給則省略、用 CLI 預設模型。
-    """
-    spec = _CLI_SPECS.get(cli_kind)
-    if spec is None:
-        raise NarrativeRunnerError(
-            f"未知 cli_kind：{cli_kind!r}（可用：{sorted(_CLI_SPECS)}）"
-        )
-    model_args: list[str] = []
-    if model:
-        model_flag = spec.get("model_flag")
-        if not model_flag:
-            raise NarrativeRunnerError(f"{cli_kind!r} 不支援指定 model")
-        model_args = [model_flag, model]
-    return [spec["binary"], spec["prompt_flag"], prompt, *model_args, *spec["tail_args"]]
-
-
-def parse_cli_result(result: CliResult) -> dict[str, Any]:
-    """解析 headless CLI 的 --output-format json 輸出。
-
-    退出碼非 0 直接 raise（附 stderr）；stdout 應為單一 JSON 物件，解析失敗亦 raise
-    並保留原始輸出，避免無聲吞錯。
-    """
-    # 🔴 stdout／stderr 可能是 None（2026-07-30 實機 job #132 failed）：
-    # 子程序輸出未被捕捉時 subprocess 會給 None，直接 `.strip()` 會拋
-    # `AttributeError: 'NoneType' object has no attribute 'strip'`——
-    # ⚠ 那個例外**逃出 NarrativeRunnerError**，畫面只顯示裸的 AttributeError，
-    # 完全看不出是哪個環節、哪個變數，比明確的錯誤更難查。
-    # ⚠ `_default_build_ppt` 已於 6f50611 加過同樣防護，但這裡漏了——
-    # 同一個坑在相鄰模組各補各的，故兩處都要有。
-    stdout = result.stdout or ""
-    stderr = result.stderr or ""
-    if result.exit_code != 0:
-        detail = stderr.strip() or stdout.strip() or "stdout/stderr 皆為空"
-        raise NarrativeRunnerError(
-            f"headless CLI 失敗（exit={result.exit_code}）：{detail}"
-        )
-    text = stdout.strip()
-    if not text:
-        raise NarrativeRunnerError("headless CLI 正常結束但無 JSON 輸出")
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise NarrativeRunnerError(f"headless CLI 輸出非合法 JSON：{exc}；原始輸出：{text[:500]}") from exc
-    if not isinstance(parsed, dict):
-        raise NarrativeRunnerError(f"headless CLI 輸出 JSON 非物件：{type(parsed).__name__}")
-    return parsed
-
-
-def _subprocess_cli_runner(argv: Sequence[str], timeout: float) -> CliResult:
-    """預設 CLI 執行：subprocess 呼叫真實二進位（測試環境不會走到，由 handler 注入 fake）。"""
-    binary = argv[0]
-    if shutil.which(binary) is None:
-        raise NarrativeRunnerError(
-            f"找不到 CLI 二進位 {binary!r}（headless 解讀需已安裝並登入該 CLI）"
-        )
-    try:
-        # ⚠ env 強制 UTF-8＋errors="replace"：不設的話 CLI 輸出走系統 codepage，
-        #   父行程 UTF-8 解碼失敗會讓 stdout 回 None（2026-07-30 實機 job #132／
-        #   #135／#137 的共同根因，表徵是 splitlines AttributeError／「stdout 為空」）。
-        completed = subprocess.run(  # noqa: S603 argv 由固定對照表組成，非使用者字串
-            list(argv),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-            timeout=timeout,
-        )
-    except OSError as exc:
-        raise NarrativeRunnerError(
-            f"無法啟動 CLI 二進位 {binary!r}：{type(exc).__name__}: {exc}"
-        ) from exc
-    return CliResult(exit_code=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
+# 敘述線＝取證等級：要讀報表檔、寫 narratives.json，並經 MCP 唯讀工具查資料庫。
+build_cli_command = functools.partial(_gw_build_cli_command, tools=RESEARCH_TOOLS)
 
 
 def stamp_narrative_metadata(narratives: dict) -> None:

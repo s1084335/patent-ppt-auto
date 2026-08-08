@@ -35,6 +35,10 @@ from typing import Any, Callable, Sequence
 
 from backend.app.transforms.text import clean_text
 
+import functools
+
+from .cli_gateway import NO_TOOLS
+from .cli_gateway import build_cli_command as _gw_build_cli_command
 from .ai_narrative_runner import (
     DEFAULT_CLI_TIMEOUT_SECONDS,
     CliResult,
@@ -61,32 +65,16 @@ VERDICT_KEEP_ORIGINAL = "keep_original"
 _VALID_VERDICTS = frozenset({VERDICT_TRANSLATED, VERDICT_KEEP_ORIGINAL})
 
 # 🔴 最小權限：本任務只需模型讀 prompt 內文並回 JSON，不讀檔、不寫檔、不上網。
-_ZH_TAIL_ARGS = ["--output-format", "json", "--allowedTools", ""]
 
 
 class CompanyZhNameRunnerError(RuntimeError):
     """中文名草稿流程失敗（CLI 產出不合契約、回吐未知代碼／verdict 等）。"""
 
 
-def build_cli_command(cli_kind: str, prompt: str, *, model: str | None = None) -> list[str]:
-    """組 headless argv；沿用 ai_narrative_runner 對照表，但覆寫最小權限 tail_args。
-
-    本任務不需任何工具：prompt 自帶全部輸入、輸出走 stdout，故 claude 走空白名單。
-    opencode 等未提供工具白名單旗標的 CLI 沿用其原 tail_args。
-    """
-    spec = _CLI_SPECS.get(cli_kind)
-    if spec is None:
-        raise CompanyZhNameRunnerError(
-            f"未知 cli_kind：{cli_kind!r}（可用：{sorted(_CLI_SPECS)}）")
-    model_args: list[str] = []
-    if model:
-        model_flag = spec.get("model_flag")
-        if not model_flag:
-            raise CompanyZhNameRunnerError(f"{cli_kind!r} 不支援指定 model")
-        model_args = [model_flag, model]
-    tail = _ZH_TAIL_ARGS if cli_kind == "claude" else list(spec["tail_args"])
-    return [spec["binary"], spec["prompt_flag"], prompt, *model_args, *tail]
-
+# 🔴 最小權限（2026-08-09 收斂到 cli_gateway）：本任務資料內嵌 prompt，
+# 不讀檔、不寫檔、不上網、不查 DB——白名單為空。
+# ⚠ 併入共用入口的是 argv 骨架，**不是權限**；把它改成取證等級即為擴權。
+build_cli_command = functools.partial(_gw_build_cli_command, tools=NO_TOOLS)
 
 # 判定規則與輸出契約（2026-07-28 由命令列 prompt 搬進資料檔）。
 # 內容與原 build_prompt 逐條等價，只是改成結構化欄位由 CLI 讀檔取得。
