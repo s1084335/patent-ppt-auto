@@ -50,6 +50,13 @@ TOOL_NAMES: tuple[str, ...] = (
 # 單次查詢列數上限：CLI 要的是證據不是資料傾印；超過就截斷並明說。
 MAX_EVIDENCE_ROWS = 200
 
+# SQL 取證的列數上限與預設值。
+# ⚠ 刻意**對齊原查詢閘道**（query_patents.py 預設 500／最高 2000）：取證通道
+# 從 Bash 閘道換成 MCP 是換路，不是縮權——沿用 200 會讓需要逐案清單的查詢
+# （例如列出某公司全部案件）被靜默截斷，那是換通道造成的能力退步。
+SQL_MAX_ROWS = 2000
+SQL_DEFAULT_ROWS = 500
+
 # ⚠ snapshot_loader 註記為 object 而非 Callable：FastMCP 以 pydantic 產 JSON schema，
 # Callable 無法序列化會讓整個 server 註冊失敗（2026-08-07 實測）。它是測試注入點，
 # 正式路徑一律走 _default_snapshot_loader。
@@ -282,7 +289,7 @@ def validate_sql(sql: str) -> str:
     return text
 
 
-def query_database(sql: str, limit: int = 100) -> dict[str, Any]:
+def query_database(sql: str, limit: int = SQL_DEFAULT_ROWS) -> dict[str, Any]:
     """唯讀 SQL 取證：查專利、申請人、法律狀態等原始資料。
 
     ⚠ 其餘工具讀的是**報表快照**（引擎已彙總的 chart_rows）；只有這一支真的
@@ -292,8 +299,8 @@ def query_database(sql: str, limit: int = 100) -> dict[str, Any]:
     只接受單句 SELECT／WITH。連線由 server 端強制 read-only 交易與逾時，
     CLI 端拿不到任何 DB credential。回傳含 `truncated`，截斷會明說。
     """
-    if limit > MAX_EVIDENCE_ROWS:
-        raise ReportResearchError(f"limit 超過上限 {MAX_EVIDENCE_ROWS}")
+    if limit > SQL_MAX_ROWS:
+        raise ReportResearchError(f"limit 超過上限 {SQL_MAX_ROWS}")
     text = validate_sql(sql)
 
     import psycopg

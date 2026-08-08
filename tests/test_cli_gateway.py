@@ -130,10 +130,17 @@ class DatabaseEvidenceToolTests(unittest.TestCase):
                 rr.query_database(sql)
 
     def test_limit_capped(self):
+        """上限對齊原查詢閘道（500 預設／2000 上限），不因換通道縮權。
+
+        ⚠ 用快照工具的 MAX_EVIDENCE_ROWS（200）會讓逐案清單被靜默截斷——
+        那是換通道造成的能力退步，不是安全收緊。
+        """
         from backend.app.mcp_server import report_research as rr
 
+        self.assertEqual(rr.SQL_DEFAULT_ROWS, 500)
+        self.assertEqual(rr.SQL_MAX_ROWS, 2000)
         with self.assertRaises(rr.ReportResearchError):
-            rr.query_database("SELECT 1", limit=rr.MAX_EVIDENCE_ROWS + 1)
+            rr.query_database("SELECT 1", limit=rr.SQL_MAX_ROWS + 1)
 
 
 if __name__ == "__main__":
