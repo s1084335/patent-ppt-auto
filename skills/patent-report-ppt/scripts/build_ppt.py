@@ -3128,23 +3128,73 @@ def _render_kp_cards(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -
     _render_table_with_points(slide, theme, spec, ctx)
 
 
+# 無圖要點頁的面板標題（依版型語意，不重複頁標題）。
+POINTS_PAGE_PANEL_TITLES = {
+    "exec_summary": "關鍵結論",
+    "walls_gaps": "要迴避的牆與可切入的空白",
+    "reading_guide": "判讀說明",
+}
+
+
+def _render_points_page(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """無圖的純要點頁：整頁一個面板，內容＝本頁 narrative。
+
+    🔴 2026-08-09：這三種版型原本轉呼叫 `_render_direction`，但那支的內容來自
+    固定 slot `direction.body`（研發方向頁專用），**讀不到 SlidePlan 的
+    narrative**——實機轉圖出來是三張一模一樣的空框（p2／p5／p9）。
+    ⚠ 版型名稱對、renderer 存在、雙向一致性測試也綠，成品仍是空的：
+    那種測試驗得到「有沒有 renderer」，驗不到「renderer 畫了什麼」。
+
+    座標沿用 direction 的 body 框並延伸到 basis 框右緣（不另立一套幾何）。
+    """
+    _render_header(slide, theme, spec, ctx)
+    g = theme.geometry["direction"]
+    left = g["body_left_in"]
+    width = (g["basis_left_in"] + g["basis_width_in"]) - left
+    _add_band(slide, theme, left, g["body_top_in"], width, g["body_height_in"],
+              "panel", rounded=True)
+    # ⚠ 面板標題不能用 spec.topic——那就是頁標題，會一頁印兩次（首版實測）。
+    _add_text(slide, theme, POINTS_PAGE_PANEL_TITLES.get(spec.kind, "重點"),
+              left=left + g["body_header_inset_left_in"],
+              top=g["body_top_in"] + g["body_header_top_offset_in"],
+              width=width - g["body_text_inset_right_in"],
+              height=g["body_header_height_in"],
+              size=theme.size("panel_header_pt"), color="accent", bold=True)
+    text_width = width - g["body_text_inset_right_in"]
+    text_height = (g["body_height_in"] - g["body_text_top_offset_in"]
+                   - g["body_text_bottom_pad_in"])
+    size = theme.size("body_pt")
+    blocks = _points_for(spec, ctx)
+    if not blocks:
+        blocks = [(label, text, "ink", False) for label, text in _row_highlights(spec, ctx)]
+    _add_number_bold_text(
+        slide, theme,
+        _trim_blocks(theme, blocks, width_in=text_width, height_in=text_height, size_pt=size),
+        left=left + g["body_text_inset_left_in"],
+        top=g["body_top_in"] + g["body_text_top_offset_in"],
+        width=text_width, height=text_height, size=size)
+    _render_footnote(slide, theme, spec, ctx)
+
+
 def _render_exec_summary(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
     """結論先行頁（範例 p2）：把三個可行動判斷放最前面。
 
-    內容來自 SlidePlan 的 narrative（CLI 已把結論寫成具名發現）——
-    沿用要點版型的排版邏輯，不另立一套座標。
+    內容來自 SlidePlan 的 narrative（CLI 已把結論寫成具名發現）。
     """
-    _render_table_with_points(slide, theme, spec, ctx) if spec.report_keys         else _render_direction(slide, theme, spec, ctx)
+    if spec.report_keys and spec.charts:
+        _render_table_with_points(slide, theme, spec, ctx)
+    else:
+        _render_points_page(slide, theme, spec, ctx)
 
 
 def _render_walls_gaps(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
     """要迴避的牆 vs 可切入的空白（範例 p3／割草機 p2）：收斂成可行動清單。"""
-    _render_direction(slide, theme, spec, ctx)
+    _render_points_page(slide, theme, spec, ctx)
 
 
 def _render_reading_guide(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
     """判讀說明（範例 p11）：母體口徑、可觀測性偏差、資料限制。"""
-    _render_direction(slide, theme, spec, ctx)
+    _render_points_page(slide, theme, spec, ctx)
 
 
 def _render_kp_compare(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
