@@ -528,8 +528,32 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 }
 
 /* ── 響應式：窄螢幕收合右欄與左欄 ── */
-@media (max-width: 960px) { #ai-panel { flex-basis: 240px; } #nav-panel { flex-basis: 160px; } }
-@media (max-width: 720px) {
+/* 🔴 2026-08-09 實測補的斷點：原本只有 960（縮欄）與 720（改直列），
+   **768–960 這一段是缺口**——三欄硬擠在一起，主內容只剩約 360px，
+   報表圖被壓到 233px 寬，圖裡的文字完全看不清。
+   ⚠ 版面沒有破（無捲動、無溢出），所以純幾何的檢查驗不出來；
+   要量的是「主內容還剩多寬」，不是「有沒有溢出」。
+   ⇒ 1024 以下就把 AI 助手移到主內容下方，把寬度還給報表。 */
+@media (max-width: 1024px) {
+  #layout { flex-wrap: wrap; }
+  /* ⚠ 基礎樣式是 `flex: 1 1 auto`——basis 跟著內容走，內容一寬就擠不進同一行，
+     於是**整個主內容換行**、側邊欄右邊留下一大片空白（實測 768 下約 600×250px）。
+     改 basis 為 0，讓它與側邊欄同行並吃掉剩餘寬度。 */
+  #main-panel { flex: 1 1 0; min-width: 0; }
+  #ai-panel {
+    flex: 1 1 100%;
+    width: 100%;
+    max-height: 22rem;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}
+@media (max-width: 960px) { #nav-panel { flex-basis: 160px; } }
+/* 🔴 2026-08-09：由 720 提高到 900。原本 768（平板縱向）落在 720–1024 之間，
+   側邊欄仍佔 200px，主內容只剩 473px、圖表被擠到看不清。
+   ⚠ 「AI 助手移下方」與「側邊欄橫列」是兩個不同的斷點需求：
+   1024 以下讓 AI 助手讓位就夠，900 以下連側邊欄也要讓。 */
+@media (max-width: 900px) {
   body { height: auto; min-height: 100vh; overflow: auto; }
   #topbar { flex-wrap: wrap; gap: 0.55rem; align-items: flex-start; }
   #topbar .brand { flex: 0 0 100%; }
@@ -559,6 +583,10 @@ table.data td.cell-wrap, table.data th.cell-wrap {
   #tw-legal-status-body table.data td:nth-child(4)::before { content: "Status"; font-weight: 600; }
   #tw-legal-status-body table.data td:nth-child(5)::before { content: "Action"; font-weight: 600; }
   #tw-legal-status-body select.text-input { width: 100%; min-width: 0; }
+  /* ⚠ 2026-08-09 實測（390px 瀏覽專利頁）：有個 select 寫死 max-width:26rem
+     （416px），在窄視窗直接溢出到 480px。TW 狀態表格的 select 早有處理，
+     其他的漏了——改為通用規則，避免下一個寫死寬度的欄位再犯。 */
+  select.text-input, input.text-input, .text-input { max-width: 100%; min-width: 0; }
   #tw-legal-status-body .btn { justify-content: center; width: 100%; }
 }
 </style>
