@@ -653,6 +653,17 @@ def _run_ai_report_plan_job(payload: dict[str, Any], context: JobContext) -> dic
     }
     data_path.write_text(_json.dumps(report_data, ensure_ascii=False), encoding="utf-8")
 
+    # 🔴 回存 DB（2026-08-10 實測斷鏈）：只寫本機檔案時，下游 `ai:report_ppt` 走
+    # `resolve_run_dir` 從 `report_artifacts` materialize，拿到的是**沒有 slide_plan
+    # 的舊 report_data.json**，`resolve_layout` 找不到 plan 就靜默退回固定頁序
+    # ——實測 11 頁的規劃變成 14 頁固定頁序，Key Player 象限圖整個沒進 PPT，
+    # 且沒有任何錯誤訊息（保底行為與「使用者沒規劃」在下游長得一模一樣）。
+    # 跨容器成因同 2026-07-23 定案；沿用唯一寫入入口，不另開存取層。
+    from backend.app.db import report_artifact_store
+
+    context.heartbeat("保存規劃結果", 95)
+    result["artifacts_uploaded"] = report_artifact_store.upload_run_dir(run_dir)
+
     context.heartbeat("規劃完成（已寫入報表版本）", 100)
     return result
 
