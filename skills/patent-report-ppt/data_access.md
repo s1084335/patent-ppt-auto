@@ -63,6 +63,20 @@ SELECT patent_ids_json FROM app_layer.workspaces WHERE workspace_id = <id>
 | `"主權項"`／`"獨立項[KR,JP,US,CN,EP,IN]"`／`"所有權利要求[JP,KR,CN]"` | 請求項全文——**機構層技術描述的原料** |
 | `"效果 摘要[US,EP,PCT,JP,KR,CN,TW]"`／`"解決課題 摘要[US,EP,PCT,JP,KR,CN,TW]"` | 功效／課題摘要 |
 | `"文獻備註"` | 平台 AI 為每件寫的 2–3 句技術摘要——**快速掃讀整批專利的首選** |
+
+### Key Player 深入：從 `patent_ids` 直接查
+
+`report_data.json` 的 `applicant_strength_profile` 每列都帶 `patent_ids`
+（該申請人**全部**專利 id）。要寫出機構層的技術描述，就從這裡下去：
+
+```sql
+SELECT id, "公開公告號", "發明名稱", "文獻備註"
+FROM core_layer.patents
+WHERE id IN (101, 205, 337)
+```
+
+⚠ 先讀 `文獻備註` 掃全貌，鎖定幾件之後再撈 `請求項`／`獨立項` 看細節——
+反過來先撈長文字欄會撐爆 context（見下方守則 4）。
 | `application_year`／`application_date` | 申請年／日 |
 | `"授權公告日"`／`"未審查的公開日"` | 授權／公開日期（文字格式） |
 | `legal_status` | 法律狀態 ⚠ 可能是簡體字面（如「审查中」），寫進報告前轉繁 |
