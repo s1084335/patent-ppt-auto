@@ -330,7 +330,15 @@ CHART_FILE_REPORTS: dict[str, list[str]] = {
 
 
 def report_names_for_artifact(filename: str) -> list[str]:
-    """推回單一 artifact 對應的 report key。"""
+    """推回單一 artifact 對應的 report key。
+
+    🔴 web profile 的圖一律回空（2026-08-09）：這張對照表的消費者是
+    artifact_manifest → build_ppt 的 ChartIndex，登記進去等於讓**網頁尺寸的圖
+    有機會被放進簡報**。⚠ 尤其 `opportunity_quadrant_*` 那條前綴規則對
+    `.web.svg` 一樣命中，不擋就會靜默混用。
+    """
+    if filename.endswith(".web.svg"):
+        return []
     # .csv 分支保留：歷史 report_trial manifest 可能還含 .csv 路徑，
     # 若移除會使這些 manifest 的 artifact 無法對應回正確 report key；
     # 新版不再輸出 CSV，但保留此分支不影響行為且避免舊 manifest 讀取異常。
@@ -591,7 +599,7 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
                               base=int(round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX)))
         # ⚠ 列多時字級縮放會把總高撐過畫布上限（P-2：畫布過高整張圖被縮小）——
         # 上限內裝不下就壓回平均列高，字仍讀得到（row ≥ font×1.25 由 20 列上限保證）。
-        cap = int((CHART_CANVAS_MAX_HEIGHT - top - bottom) / max(1, len(data)))
+        cap = int((_sizing_value("canvas_max_height") - top - bottom) / max(1, len(data)))
         return max(1, min(rh, cap))
 
     def _canvas_height(font_px: float) -> float:
@@ -724,7 +732,7 @@ def render_paired_bar_chart(
     def _row_h(font_px: float) -> int:
         base = round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX) * 2
         rh = _fill_row_height(len(data), top=top, bottom=bottom, base=base)
-        cap = int((CHART_CANVAS_MAX_HEIGHT - top - bottom) / max(1, len(data)))
+        cap = int((_sizing_value("canvas_max_height") - top - bottom) / max(1, len(data)))
         return max(bar_h * 2 + gap * 3, min(rh, cap))
 
     def _canvas_height(font_px: float) -> float:
@@ -894,7 +902,7 @@ def render_segmented_bar_chart(
         total = top + bottom
         for note in _notes_preview:
             step = row_px * (2 if note else 1)
-            if total > top + bottom and total + step > CHART_CANVAS_MAX_HEIGHT:
+            if total > top + bottom and total + step > _sizing_value("canvas_max_height"):
                 break
             total += step
         return total
@@ -1390,10 +1398,10 @@ def render_matrix_chart(
     # 🔴 2026-08-04：字級由縮放反推（資料 14pt／註記 12pt）。
     # ⚠ 先用畫布上限求初值排版面（格高、標籤區都跟著字級走），
     # 畫布尺寸算完後再定最終字級——高度受 max_visible_rows 限制，接近上限。
-    _f0 = chart_font_px(CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT)
+    _f0 = chart_font_px(_sizing_value("canvas_width"), _sizing_value("canvas_max_height"))
     cell_h = max(30, int(round(_f0 * 30 / CHART_LABEL_PX)))
     label_width, cell_w, top_margin = 300, 66, 96
-    usable = CHART_CANVAS_MAX_HEIGHT - top_margin - 28
+    usable = _sizing_value("canvas_max_height") - top_margin - 28
     # 🔴 前十一致（2026-08-07 使用者裁決「排名就是取前十個」）：高度上限**不得**
     # 把列數砍進 row_limit 以內——同一個「前十大」在排名/年度矩陣/狀態矩陣三頁
     # 曾是 7/10/9 三種數。列數優先於高度：畫布長高由字級解算補償（字仍 14pt，
@@ -1402,7 +1410,7 @@ def render_matrix_chart(
     rows_total_count = len(top_rows)
     top_rows = top_rows[:max_visible_rows]
     # 欄寬吃滿畫布：欄少時把剩餘寬度分給列標籤與格子，避免圖過窄而字被縮小。
-    grid_w = CHART_CANVAS_WIDTH - label_width - 24
+    grid_w = _sizing_value("canvas_width") - label_width - 24
     cell_w = max(cell_w, grid_w // max(len(cols), 1))
     width = label_width + cell_w * max(len(cols), 1) + 24
     height = top_margin + cell_h * max(len(top_rows), 1) + 28
@@ -1579,17 +1587,17 @@ def render_year_bubble_matrix_chart(
     # ⚠ 本圖的畫布高度幾乎固定（row_h 會自適應填滿 CHART_CANVAS_MAX_HEIGHT），
     # 故先用畫布上限求初值排版面，最後再用**實際**畫布尺寸定字級——
     # 標籤區用初值多留 5% 餘裕，避免字放大後撞到左緣。
-    _f0 = chart_font_px(CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT)
+    _f0 = chart_font_px(_sizing_value("canvas_width"), _sizing_value("canvas_max_height"))
     left = label_gutter([str(name) for name in row_names], font_px=_f0 * 1.05)
     top = 132
-    usable = CHART_CANVAS_MAX_HEIGHT - top - 34
+    usable = _sizing_value("canvas_max_height") - top - 34
     row_h = max(26, usable // max(1, len(row_names)))
     if row_h * len(row_names) > usable:          # 列太多時砍列，不是縮字
         row_names = row_names[:max(1, usable // 26)]
         row_h = 26
     # ⚠ 欄寬有下限（泡泡要放得下），年份多到撐破畫布時**砍年份**而不是繼續縮——
     # 縮到看不清楚等於資訊沒了。砍掉的是最舊的年份，圖上仍是連續區間。
-    grid_w = CHART_CANVAS_WIDTH - left - 34
+    grid_w = _sizing_value("canvas_width") - left - 34
     years_total = len(years)
     # 固定顯示最新 CHART_YEAR_WINDOW 年（使用者定案）。少了的年份必須在圖上標明——
     # 靜默切掉才是不能接受的。
@@ -2015,7 +2023,7 @@ def _fill_row_height(row_count: int, *, top: int, bottom: int,
     """
     if row_count <= 0:
         return base
-    usable = CHART_CANVAS_MAX_HEIGHT - top - bottom
+    usable = _sizing_value("canvas_max_height") - top - bottom
     # 🔴 H-6（2026-08-03 實機 p9）：CPC 四階只有 1 列，撐到 base×4＝112px 後
     # 那根長條橫貫全寬、粗到變成一整塊色帶，已經不像圖表了。
     # ⚠ 列數極少時**不追求填滿**：填滿是為了避免大片留白，但把單一長條撐成色帶

@@ -154,3 +154,29 @@ class SingleWriteExitTests(unittest.TestCase):
             offenders.append(f"{line_no}: {line.strip()}")
         self.assertEqual(offenders, [],
                          "有 renderer 繞過 _write_svg 直接寫檔——web 輪會覆寫 PPT 檔")
+
+
+class WebAssetsStayOutOfPptIndexTests(unittest.TestCase):
+    """web profile 的圖不得被登記成任何 report_key 的 artifact。
+
+    🔴 動因：artifact_manifest 的 report_key 反查有一條前綴規則
+    （`opportunity_quadrant_*` → `opportunity_quadrant`），`.web.svg` 一樣命中
+    ——PPT 端的 ChartIndex 於是拿得到網頁尺寸的圖，可能直接放進簡報。
+
+    ⚠ profile manifest 不受影響：它先用 `parse_profile_filename` 還原成原檔名
+    再反查，傳進去的本來就不含 `.web`。
+    """
+
+    def test_web_variants_map_to_no_report(self):
+        for name in ("annual_trend.web.svg", "lifecycle.web.svg",
+                     "opportunity_quadrant_tech.web.svg",
+                     "cluster_topic_table_effect.web.svg"):
+            with self.subTest(name=name):
+                self.assertEqual(cr.report_names_for_artifact(name), [],
+                                 f"{name} 不該被登記成 PPT 可用的圖")
+
+    def test_ppt_variants_still_map(self):
+        """⚠ 對照組：原檔名的對應不得因此被改壞。"""
+        self.assertEqual(cr.report_names_for_artifact("opportunity_quadrant_tech.svg"),
+                         ["opportunity_quadrant"])
+        self.assertEqual(cr.report_names_for_artifact("lifecycle.svg"), ["lifecycle"])
