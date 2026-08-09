@@ -87,6 +87,18 @@ class StateRoundTripTests(unittest.TestCase):
         json.dumps(payload)   # 不可序列化就會在這裡炸
 
 
+class StateErrorTests(unittest.TestCase):
+    """⚠ 壞掉的狀態要當場說，不得回半套資料。"""
+
+    def test_empty_payload_rejected(self):
+        with self.assertRaises(ValueError):
+            artifacts.deserialize_dpmeans_state({})
+
+    def test_none_payload_rejected(self):
+        with self.assertRaises(ValueError):
+            artifacts.deserialize_dpmeans_state(None)
+
+
 class LegacyArtifactTests(unittest.TestCase):
     """舊 artifact（pickle 時還沒有 algorithm 欄）要能照讀。"""
 

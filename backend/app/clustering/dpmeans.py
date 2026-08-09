@@ -142,7 +142,7 @@ def derive_lambda(sample: list[Vector]) -> LambdaResult:
         for j in range(i + 1, len(points))
     )
     index = min(len(distances) - 1,
-                max(0, int(round(PAIRWISE_QUANTILE * (len(distances) - 1)))))
+                max(0, round(PAIRWISE_QUANTILE * (len(distances) - 1))))
     value = distances[index]
     if value <= 0.0:
         # 全部重複文件時距離會是 0——那不是有效門檻。

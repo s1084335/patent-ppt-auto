@@ -18,11 +18,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 import random
 from typing import Any
 
 from . import artifacts, dpmeans, keywords
 from .artifacts import ALGORITHM_DPMEANS, ALGORITHM_KMEANS
+
+LOGGER = logging.getLogger(__name__)
 
 #: 讀 feature flag 的環境變數名。⚠ 預設不設＝走舊引擎。
 ALGORITHM_ENV = "CLUSTERING_ALGORITHM"
@@ -69,7 +72,8 @@ def predict_incremental(
     *,
     documents: list[str],
     vectors: list[list[float]],
-    requested_algorithm: str | None = None,  # noqa: ARG001 — 見下方說明
+    # ⚠ requested_algorithm 收下但**故意不使用**——見 docstring。
+    requested_algorithm: str | None = None,
 ) -> IncrementalPrediction:
     """對一批新文件做增量分群，依 artifact 記錄的演算法分流。
 
@@ -359,7 +363,7 @@ def _sweep_values(distances: list[float]) -> list[float]:
     n = len(distances)
 
     def at(quantile: float) -> float:
-        return distances[min(n - 1, max(0, int(round(quantile * (n - 1)))))]
+        return distances[min(n - 1, max(0, round(quantile * (n - 1))))]
 
     low, high = at(SWEEP_QUANTILE_LOW), at(SWEEP_QUANTILE_HIGH)
     if high <= low:
@@ -368,50 +372,59 @@ def _sweep_values(distances: list[float]) -> list[float]:
     return [round(low + step * i, 6) for i in range(SWEEP_STEPS)]
 
 
+#: 前三項判準：(名稱, 判定函式)。⚠ 寫成資料而不是一串 if——加判準時只需多
+#: 一列，不會有人漏掉某項的判定。第四項（穩定度）另外處理，因為它要重跑分群，
+#: 只在前三項都過時才值得花那個時間。
+_CRITERIA = (
+    ("median_size", lambda r: r["median_size"] >= MIN_MEDIAN_TOPIC_SIZE),
+    ("singleton_doc_share",
+     lambda r: r["singleton_doc_share"] <= MAX_SINGLETON_DOC_SHARE),
+    ("between_min",
+     lambda r: r["between_min"] is None or r["between_min"] >= MIN_BETWEEN_DISTANCE),
+)
+
+
 def _evaluate(value: float, state: Any, points: list[list[float]],
               documents: list[str]) -> dict[str, Any]:
     """對單一 lambda 逐項判定。⚠ 及格制，不做加總分數。
 
     加總會讓「主題全是單點但分離度很好」這種組合看起來還行。
     """
+    row = _shape_metrics(value, state)
+    row["failed"] = [name for name, check in _CRITERIA if not check(row)]
+    # ⚠ 穩定度與品質指標只對通過前三項的 lambda 才算——每個都算會讓校準慢
+    # 一個數量級，而大部分 lambda 在前三項就被刷掉了。
+    if row["failed"]:
+        return row
+    spread = _stability_spread(points, value)
+    row["stability_spread"] = spread
+    if spread > MAX_STABILITY_SPREAD:
+        row["failed"].append("stability")
+        return row
+    row.update(_quality(state.labels, documents))
+    row.update(_size_metrics(state.labels))
+    return row
+
+
+def _shape_metrics(value: float, state: Any) -> dict[str, Any]:
+    """群數與件數分布的基本量（判準前三項用）。"""
     sizes = sorted(state.counts, reverse=True)
     singletons = sum(1 for size in sizes if size == 1)
-    median_size = sizes[len(sizes) // 2] if sizes else 0
-    doc_share = singletons / len(state.labels) if state.labels else 0.0
     between = _min_center_distance(state.centers)
-
-    failed: list[str] = []
-    if median_size < MIN_MEDIAN_TOPIC_SIZE:
-        failed.append("median_size")
-    if doc_share > MAX_SINGLETON_DOC_SHARE:
-        failed.append("singleton_doc_share")
-    if between is not None and between < MIN_BETWEEN_DISTANCE:
-        failed.append("between_min")
-
-    row: dict[str, Any] = {
+    return {
         "lambda": value,
         "topic_count": len(state.centers),
-        "median_size": median_size,
-        "singleton_doc_share": round(doc_share, 4),
+        "median_size": sizes[len(sizes) // 2] if sizes else 0,
+        # ⚠ 文件佔比而非群數佔比——小資料裡一兩個單件主題是可容許的。
+        "singleton_doc_share": round(
+            singletons / len(state.labels), 4) if state.labels else 0.0,
         "between_min": round(between, 4) if between is not None else None,
         "coherence": None,
         "diversity": None,
         "balance": None,
         "small_topic_ratio": None,
         "score": None,
-        "failed": failed,
     }
-    # ⚠ 穩定度與品質指標只對通過前三項的 lambda 才算——每個都算會讓校準慢
-    # 一個數量級，而大部分 lambda 在前三項就被刷掉了。
-    if not failed:
-        spread = _stability_spread(points, value)
-        row["stability_spread"] = spread
-        if spread > MAX_STABILITY_SPREAD:
-            failed.append("stability")
-        else:
-            row.update(_quality(state.labels, documents))
-            row.update(_size_metrics(state.labels))
-    return row
 
 
 def _size_metrics(labels: list[int]) -> dict[str, float]:
@@ -473,8 +486,11 @@ def _quality(labels: list[int], documents: list[str]) -> dict[str, Any]:
             documents, topics=labels, top_terms=top_terms)
         if per_topic:
             quality["coherence"] = round(sum(per_topic.values()) / len(per_topic), 4)
-    except Exception:  # noqa: BLE001 - 指標算不出來不得讓整個校準失敗
-        pass
+    except Exception:
+        # ⚠ 不 raise：coherence 只是排序依據，算不出來時其餘三項指標仍可用。
+        # 但要留下痕跡，否則「為什麼這次沒有一致性分數」查不出來。
+        LOGGER.warning("topic coherence unavailable; ranking falls back to other metrics",
+                       exc_info=True)
     return quality
 
 

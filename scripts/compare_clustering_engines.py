@@ -39,18 +39,17 @@ from typing import Any
 
 import psycopg
 
-from backend.app.clustering import dpmeans, keywords
+from backend.app.clustering import dpmeans, engine, keywords
 from backend.app.db.connection import get_connection_kwargs
 
-#: 每群取幾個關鍵詞算 coherence／diversity（與既有 finalize 同口徑）。
-TOP_TERMS_PER_TOPIC = 10
-
-# 判準門檻（事前定死）
-MIN_MEDIAN_TOPIC_SIZE = 3
-MAX_SINGLETON_DOC_SHARE = 0.15
-MIN_BETWEEN_DISTANCE = 0.30
-MAX_STABILITY_SPREAD = 1
-STABILITY_ROUNDS = 5
+# ⚠ 判準門檻與判定邏輯**一律取自 engine**，本檔不另定義一份。
+# 這個腳本是拿來驗證正式流程用的——門檻若在兩處各寫一份，驗的就不是正式流程了。
+TOP_TERMS_PER_TOPIC = engine.TOP_TERMS_PER_TOPIC
+MIN_MEDIAN_TOPIC_SIZE = engine.MIN_MEDIAN_TOPIC_SIZE
+MAX_SINGLETON_DOC_SHARE = engine.MAX_SINGLETON_DOC_SHARE
+MIN_BETWEEN_DISTANCE = engine.MIN_BETWEEN_DISTANCE
+MAX_STABILITY_SPREAD = engine.MAX_STABILITY_SPREAD
+STABILITY_ROUNDS = engine.STABILITY_ROUNDS
 
 
 def _load_corpus(workspace_id: int, source_field: str):
@@ -73,18 +72,28 @@ def _centroid(points: list[list[float]]) -> list[float]:
         [sum(p[d] for p in points) / len(points) for d in range(dim)])
 
 
-def _measure(labels: list[int], points: list[list[float]],
-             documents: list[str]) -> dict[str, Any]:
-    """四項判準需要的量，外加主題一致性與多樣性（供合格區間內排序）。"""
+def _group_indexes(labels: list[int]) -> dict[int, list[int]]:
     groups: dict[int, list[int]] = {}
     for index, label in enumerate(labels):
         groups.setdefault(label, []).append(index)
+    return groups
+
+
+def _between_distances(groups: dict[int, list[int]],
+                       points: list[list[float]]) -> list[float]:
+    """群中心兩兩距離。⚠ 用 cosine——與分群同一把尺。"""
+    centers = [_centroid([points[i] for i in members]) for members in groups.values()]
+    return [dpmeans.cosine_distance(centers[a], centers[b])
+            for a in range(len(centers)) for b in range(a + 1, len(centers))]
+
+
+def _measure(labels: list[int], points: list[list[float]],
+             documents: list[str]) -> dict[str, Any]:
+    """四項判準需要的量，外加主題一致性與多樣性（供合格區間內排序）。"""
+    groups = _group_indexes(labels)
     sizes = sorted((len(m) for m in groups.values()), reverse=True)
     singletons = sum(1 for size in sizes if size == 1)
-
-    centers = [_centroid([points[i] for i in members]) for members in groups.values()]
-    between = [dpmeans.cosine_distance(centers[a], centers[b])
-               for a in range(len(centers)) for b in range(a + 1, len(centers))]
+    between = _between_distances(groups, points)
 
     return {
         "topic_count": len(sizes),
@@ -139,22 +148,51 @@ def _stability(points: list[list[float]], *, lambda_: float) -> dict[str, Any]:
     return {"topic_counts": counts, "spread": max(counts) - min(counts)}
 
 
+#: 判準表：(名稱, 取值, 是否通過)。⚠ 寫成資料而不是一串 if——加一項判準時
+#: 只需要多一列，不用改流程，也不會有人漏掉某一項的判定。
+_CRITERIA = (
+    ("median_size", lambda r: r["median_size"] >= MIN_MEDIAN_TOPIC_SIZE),
+    ("singleton_doc_share", lambda r: r["singleton_doc_share"] <= MAX_SINGLETON_DOC_SHARE),
+    ("between_min", lambda r: r["between_min"] is None
+     or r["between_min"] >= MIN_BETWEEN_DISTANCE),
+    ("stability", lambda r: r["stability"]["spread"] <= MAX_STABILITY_SPREAD),
+)
+
+
 def _verdict(row: dict[str, Any]) -> dict[str, Any]:
     """逐項判定並回傳未過的項目名稱——不做加總分數。
 
     ⚠ 加總會讓「主題全是單點但分離度很好」這種組合看起來還行。四項是**及格制**，
     任一不過就是不可採用。
     """
-    failed = []
-    if row["median_size"] < MIN_MEDIAN_TOPIC_SIZE:
-        failed.append("median_size")
-    if row["singleton_doc_share"] > MAX_SINGLETON_DOC_SHARE:
-        failed.append("singleton_doc_share")
-    if row["between_min"] is not None and row["between_min"] < MIN_BETWEEN_DISTANCE:
-        failed.append("between_min")
-    if row["stability"]["spread"] > MAX_STABILITY_SPREAD:
-        failed.append("stability")
+    failed = [name for name, check in _CRITERIA if not check(row)]
     return {"passed": not failed, "failed": failed}
+
+
+def _sweep_values(spec: str) -> list[float]:
+    """把 "start:stop:step" 展開成掃描點。"""
+    start, stop, step = (float(x) for x in spec.split(":"))
+    values, value = [], start
+    while value <= stop + 1e-9:
+        values.append(value)
+        value += step
+    return values
+
+
+def _sweep(vectors: list[list[float]], points: list[list[float]],
+           documents: list[str], spec: str) -> list[dict[str, Any]]:
+    """對每個 lambda 量測並判定。"""
+    rows: list[dict[str, Any]] = []
+    for value in _sweep_values(spec):
+        started = time.perf_counter()
+        state = dpmeans.fit(vectors, lambda_=value)
+        row: dict[str, Any] = {"lambda": round(value, 4)}
+        row.update(_measure(state.labels, points, documents))
+        row["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+        row["stability"] = _stability(points, lambda_=value)
+        row["verdict"] = _verdict(row)
+        rows.append(row)
+    return rows
 
 
 def main() -> None:
@@ -168,20 +206,7 @@ def main() -> None:
     vectors, patent_ids, documents = _load_corpus(args.workspace, args.source_field)
     points = [dpmeans.l2_normalize(v) for v in vectors]
 
-    start, stop, step = (float(x) for x in args.sweep.split(":"))
-    rows: list[dict[str, Any]] = []
-    value = start
-    while value <= stop + 1e-9:
-        started = time.perf_counter()
-        state = dpmeans.fit(vectors, lambda_=value)
-        row = {"lambda": round(value, 4)}
-        row.update(_measure(state.labels, points, documents))
-        row["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-        row["stability"] = _stability(points, lambda_=value)
-        row["verdict"] = _verdict(row)
-        rows.append(row)
-        value += step
-
+    rows = _sweep(vectors, points, documents, args.sweep)
     passed_rows = [r for r in rows if r["verdict"]["passed"]]
     passed = [r["lambda"] for r in passed_rows]
     # 合格區間內用主題一致性排序挑最佳；一致性算不出來時退回多樣性。

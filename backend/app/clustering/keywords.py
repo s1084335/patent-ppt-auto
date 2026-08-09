@@ -50,40 +50,49 @@ def extract_top_terms(
     """
     if not documents or not labels:
         return {}
+    class_counts = _class_term_counts(documents, labels)
+    document_frequency = _class_document_frequency(class_counts)
+    return {
+        label: _top_terms_for_class(counts, document_frequency,
+                                    total_classes=len(class_counts), limit=limit)
+        for label, counts in class_counts.items()
+    }
 
-    grouped: dict[int, list[str]] = {}
-    for document, label in zip(documents, labels):
-        grouped.setdefault(label, []).append(document)
 
-    # 每群的詞頻
+def _class_term_counts(documents: list[str],
+                       labels: list[int]) -> dict[int, dict[str, int]]:
+    """每群的詞頻（把該群所有文件併成一個「類別文件」）。"""
     class_counts: dict[int, dict[str, int]] = {}
-    for label, docs in grouped.items():
-        counts: dict[str, int] = {}
-        for document in docs:
-            for token in _tokenize(document):
-                counts[token] = counts.get(token, 0) + 1
-        class_counts[label] = counts
+    for document, label in zip(documents, labels):
+        counts = class_counts.setdefault(label, {})
+        for token in _tokenize(document):
+            counts[token] = counts.get(token, 0) + 1
+    return class_counts
 
-    # 每個詞出現在幾個群裡（用來折減共通詞）
-    document_frequency: dict[str, int] = {}
+
+def _class_document_frequency(
+    class_counts: dict[int, dict[str, int]],
+) -> dict[str, int]:
+    """每個詞出現在幾個群裡——用來折減共通詞。"""
+    frequency: dict[str, int] = {}
     for counts in class_counts.values():
         for term in counts:
-            document_frequency[term] = document_frequency.get(term, 0) + 1
+            frequency[term] = frequency.get(term, 0) + 1
+    return frequency
 
-    total_classes = len(class_counts)
-    result: dict[int, list[str]] = {}
-    for label, counts in class_counts.items():
-        total = sum(counts.values()) or 1
-        scored = [
-            (term,
-             (count / total) * math.log(1 + total_classes / document_frequency[term]))
-            for term, count in counts.items()
-        ]
-        # ⚠ 次要排序鍵用 term 本身：分數相同時的順序必須固定，否則同樣輸入會
-        # 得到不同關鍵詞，指標就不可重現了。
-        scored.sort(key=lambda item: (-item[1], item[0]))
-        result[label] = [term for term, _ in scored[:limit]]
-    return result
+
+def _top_terms_for_class(counts: dict[str, int], document_frequency: dict[str, int],
+                         *, total_classes: int, limit: int) -> list[str]:
+    """單一群的 class-TF-IDF 排序。"""
+    total = sum(counts.values()) or 1
+    scored = [
+        (term, (count / total) * math.log(1 + total_classes / document_frequency[term]))
+        for term, count in counts.items()
+    ]
+    # ⚠ 次要排序鍵用 term 本身：分數相同時的順序必須固定，否則同樣輸入會得到
+    # 不同關鍵詞，指標就不可重現了。
+    scored.sort(key=lambda item: (-item[1], item[0]))
+    return [term for term, _ in scored[:limit]]
 
 
 def _tokenize(document: str) -> list[str]:

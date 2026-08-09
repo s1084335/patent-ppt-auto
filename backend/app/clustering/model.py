@@ -795,6 +795,16 @@ RANKING_WEIGHTS = {
 RANKING_LOWER_IS_BETTER = frozenset({"small_topic_ratio"})
 
 
+def _normalized_column(metrics: list[dict[str, float | None]], key: str) -> list[float]:
+    """取出單一指標欄並正規化。⚠ None（算不出來）視為該項最差，不是跳過——
+    跳過會讓「指標算不出來的候選」因為少扣分而勝出。"""
+    raw = [m.get(key) for m in metrics]
+    present = [v for v in raw if v is not None]
+    worst = min(present) if present else 0.0
+    filled = [float(v) if v is not None else worst for v in raw]
+    return _normalize_metric(filled, higher_is_better=key not in RANKING_LOWER_IS_BETTER)
+
+
 def rank_candidates(metrics: list[dict[str, float | None]]) -> list[float]:
     """把多組候選的品質指標算成可比較的加權分數（0..1）。
 
@@ -807,14 +817,7 @@ def rank_candidates(metrics: list[dict[str, float | None]]) -> list[float]:
     """
     if not metrics:
         return []
-    normalized: dict[str, list[float]] = {}
-    for key in RANKING_WEIGHTS:
-        raw = [m.get(key) for m in metrics]
-        present = [v for v in raw if v is not None]
-        worst = min(present) if present else 0.0
-        filled = [float(v) if v is not None else worst for v in raw]
-        normalized[key] = _normalize_metric(
-            filled, higher_is_better=key not in RANKING_LOWER_IS_BETTER)
+    normalized = {key: _normalized_column(metrics, key) for key in RANKING_WEIGHTS}
     return [
         sum(RANKING_WEIGHTS[key] * normalized[key][index] for key in RANKING_WEIGHTS)
         for index in range(len(metrics))

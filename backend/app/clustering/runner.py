@@ -1123,7 +1123,10 @@ def _calibrate_with_dpmeans(
         "selected_at": None,
         "llm_explanation": None,
         "candidate_type": profile["candidate_type"],
+        # ⚠ 既有候選的鍵是 candidate_k（finalize 與 API 都讀它）；k 是 KScanResult
+        # 內部欄位。兩個都給，讓 DP-Means 候選與 KMeans 候選在下游完全同形。
         "k": profile["k"],
+        "candidate_k": profile["k"],
         "topic_count": profile["topic_count"],
         "coherence": profile["coherence"],
         "diversity": profile["diversity"],
@@ -1139,11 +1142,13 @@ def _calibrate_with_dpmeans(
         },
     }
     with psycopg.connect(**get_connection_kwargs()) as conn:
+        # ⚠ k_scan 落點是 metrics.k_scan（與 _persist_calibration 同源），
+        # 不是 state 頂層——放錯地方前端讀不到，而且不會報錯。
         _merge_topic_state(conn, run_id, {
-            "k_scan": [scan.to_dict()],
             "candidates": [candidate],
             "status": "needs_review",
             "algorithm": ALGORITHM_DPMEANS,
+            "metrics": {"k_scan": [scan.to_dict()]},
         })
     return [scan], [candidate]
 

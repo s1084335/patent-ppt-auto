@@ -205,6 +205,17 @@ class LambdaDerivationTests(unittest.TestCase):
                            "門檻小於多數點的最近鄰距離時，幾乎每個點都會自成一群")
         self.assertIn("pairwise", result.method)
 
+    def test_all_identical_documents_falls_back(self):
+        """⚠ 全部文件相同時距離全為 0，那不是有效門檻——要回退並說明原因。
+
+        會發生在資料匯入出錯（同一份文件重複匯入）或欄位全空的情況。
+        回 0 會讓每個點都自成一群。
+        """
+        same = [_unit(1.0, 0.0) for _ in range(5)]
+        result = dpmeans.derive_lambda(same)
+        self.assertGreater(result.value, 0.0)
+        self.assertIn("degenerate", result.method)
+
     def test_large_sample_is_subsampled_deterministically(self):
         """⚠ 全體兩兩距離是 O(n²)：一萬份文件＝五千萬對，會讓校準卡住。
 
