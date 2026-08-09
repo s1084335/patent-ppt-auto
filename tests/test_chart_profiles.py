@@ -34,35 +34,98 @@ class ProfileSpecTests(unittest.TestCase):
 
 
 class ArtifactNamingTests(unittest.TestCase):
-    def test_identity_and_profile_in_filename(self):
-        name = cp.profile_filename("applicant_ranking", "default", "ppt")
-        self.assertIn("applicant_ranking", name)
-        self.assertTrue(name.endswith(".ppt.svg"), name)
+    """檔名規則（2026-08-09 契約回寫）。
+
+    原契約是 `report_key__variant.profile.svg`（identity 寫在檔名裡），被現實
+    推翻兩點：
+
+    1. `annual_trend.svg` **同時**是 `application_trend` 與 `publication_trend`
+       兩個 report_key 的圖——一檔一 identity 的模型表達不了。
+    2. 既有檔名與 report_key 本來就不同名（`country_distribution` 的圖叫
+       `jurisdiction_distribution.svg`），改名會波及 artifact_manifest、
+       ChartIndex、build_ppt 與所有既有報表版本。
+
+    ⇒ 改為「**PPT profile 沿用既有檔名，web profile 加 `.web` 中綴**」。
+    identity 仍是 `report_key:variant`（chart_bundle 選圖用的就是它），
+    但由 manifest 維護 identity→path 的對應，不寫進檔名。
+    """
+
+    def test_ppt_profile_keeps_existing_filename(self):
+        """⚠ PPT 檔名不得改變：既有報表版本與 build_ppt 的 ChartIndex 都靠它。"""
+        self.assertEqual(cp.profile_filename("jurisdiction_distribution.svg", "ppt"),
+                         "jurisdiction_distribution.svg")
+
+    def test_web_profile_adds_infix(self):
+        self.assertEqual(cp.profile_filename("jurisdiction_distribution.svg", "web"),
+                         "jurisdiction_distribution.web.svg")
 
     def test_web_and_ppt_names_differ(self):
-        self.assertNotEqual(cp.profile_filename("lifecycle", "default", "web"),
-                            cp.profile_filename("lifecycle", "default", "ppt"))
+        self.assertNotEqual(cp.profile_filename("lifecycle.svg", "web"),
+                            cp.profile_filename("lifecycle.svg", "ppt"))
 
     def test_parse_roundtrip(self):
-        name = cp.profile_filename("cpc_main_distribution", "L4", "ppt")
-        self.assertEqual(cp.parse_profile_filename(name),
-                         ("cpc_main_distribution", "L4", "ppt"))
+        for profile in ("web", "ppt"):
+            with self.subTest(profile=profile):
+                name = cp.profile_filename("cpc_main_distribution_L4.svg", profile)
+                self.assertEqual(cp.parse_profile_filename(name),
+                                 ("cpc_main_distribution_L4.svg", profile))
+
+    def test_unknown_profile_fails_loud(self):
+        with self.assertRaises(cp.ChartProfileError):
+            cp.profile_filename("lifecycle.svg", "print")
 
 
 class ManifestTests(unittest.TestCase):
+    """identity → 各 profile 的對應。
+
+    ⚠ manifest 建在 `chart_runner`：identity 要靠「檔名 → report_names」對照表
+    （`ARTIFACT_REPORT_NAMES`）反查，那張表是 chart_runner 的；放這裡會反向
+    相依而循環 import。
+    """
+
     def test_manifest_binds_identity_profile_and_checksum(self):
+        from backend.app.reports.chart_runner import build_profile_manifest
+
         with TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
             for profile in ("web", "ppt"):
-                (run_dir / cp.profile_filename("lifecycle", "default", profile)).write_text(
+                (run_dir / cp.profile_filename("lifecycle.svg", profile)).write_text(
                     f"<svg>{profile}</svg>", encoding="utf-8")
-            manifest = cp.build_profile_manifest(run_dir, version="v1")
+            manifest = build_profile_manifest(run_dir, version="v1")
             entry = manifest["charts"]["lifecycle:default"]
             self.assertEqual(sorted(entry["profiles"]), ["ppt", "web"])
             self.assertEqual(entry["version"], "v1")
+            self.assertEqual(entry["profiles"]["ppt"]["path"], "lifecycle.svg")
+            self.assertEqual(entry["profiles"]["web"]["path"], "lifecycle.web.svg")
             self.assertTrue(entry["profiles"]["ppt"]["checksum"])
             self.assertNotEqual(entry["profiles"]["ppt"]["checksum"],
                                 entry["profiles"]["web"]["checksum"])
+
+    def test_one_file_serving_two_report_keys_appears_under_both(self):
+        """⚠ `annual_trend.svg` 同時是申請趨勢與公告趨勢的圖——兩個 identity
+        都要指得到它。這正是原「一檔一 identity」命名契約表達不了的情形。"""
+        from backend.app.reports.chart_runner import build_profile_manifest
+
+        with TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            for profile in ("web", "ppt"):
+                (run_dir / cp.profile_filename("annual_trend.svg", profile)).write_text(
+                    f"<svg>{profile}</svg>", encoding="utf-8")
+            charts = build_profile_manifest(run_dir, version="v1")["charts"]
+            for identity in ("application_trend:default", "publication_trend:default"):
+                with self.subTest(identity=identity):
+                    self.assertEqual(charts[identity]["profiles"]["ppt"]["path"],
+                                     "annual_trend.svg")
+
+    def test_variant_suffix_becomes_variant_key(self):
+        """`ipc_main_distribution_L4.svg` → identity `ipc_main_distribution:L4`。"""
+        from backend.app.reports.chart_runner import build_profile_manifest
+
+        with TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "ipc_main_distribution_L4.svg").write_text("<svg/>", encoding="utf-8")
+            charts = build_profile_manifest(run_dir, version="v1")["charts"]
+            self.assertIn("ipc_main_distribution:L4", charts)
 
 
 class ResolutionTests(unittest.TestCase):
@@ -103,10 +166,13 @@ class SemanticParityTests(unittest.TestCase):
     def _render(self, profile: str, tmp: Path) -> str:
         from backend.app.reports.chart_runner import render_bar_chart
 
-        path = tmp / cp.profile_filename("applicant_ranking", "default", profile)
+        # ⚠ 一律傳**原路徑**：profile 分流由 chart_runner 的寫檔出口負責，
+        # 呼叫端再自己套一次 profile_filename 會寫成 `.web.web.svg`。
         with cp.profile_context(profile):
-            render_bar_chart(path, "主要申請人排名", self.ROWS, "applicant_display_name")
-        return path.read_text(encoding="utf-8")
+            render_bar_chart(tmp / "applicant_ranking.svg", "主要申請人排名",
+                             self.ROWS, "applicant_display_name")
+        return (tmp / cp.profile_filename("applicant_ranking.svg", profile)).read_text(
+            encoding="utf-8")
 
     def test_same_data_and_order_in_both_profiles(self):
         with TemporaryDirectory() as tmp:

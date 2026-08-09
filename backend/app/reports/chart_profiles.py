@@ -11,11 +11,10 @@ renderer 依 profile 調整**呈現參數**，資料、排序、配色一律共�
 """
 from __future__ import annotations
 
-import hashlib
 import re
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from backend.app.reports.chart_sizing import PPT as _PPT
 from backend.app.reports.chart_sizing import WEB as _WEB
@@ -42,8 +41,9 @@ PROFILES: dict[str, dict[str, Any]] = {
 # （2026-08-07 實測 13 支測試紅）。不拆舊路徑的同一條原則。
 DEFAULT_PROFILE = "ppt"
 
-# 檔名格式：`{report_key}__{variant_key}.{profile}.svg`
-_FILENAME_RE = re.compile(r"^(?P<report>.+?)__(?P<variant>.+?)\.(?P<profile>web|ppt)\.svg$")
+# web profile 的檔名＝既有檔名加 `.web` 中綴；PPT profile 沿用既有檔名。
+_WEB_INFIX = ".web"
+_WEB_NAME_RE = re.compile(r"^(?P<stem>.+)\.web\.svg$")
 
 # 目前作用中的 profile（renderer 依它取呈現參數）。
 _active_profile = DEFAULT_PROFILE
@@ -81,41 +81,59 @@ def profile_context(profile: str):
         _active_profile = previous
 
 
-def profile_filename(report_key: str, variant_key: str, profile: str) -> str:
-    """chart identity ＋ profile → 檔名（identity 與 profile 都寫在名字裡）。"""
+def profile_filename(base_name: str, profile: str) -> str:
+    """既有圖檔名 ＋ profile → 該 profile 的檔名。
+
+    🔴 2026-08-09 契約回寫（原為 `report_key__variant.profile.svg`）：
+
+    1. `annual_trend.svg` **同時**是 `application_trend` 與 `publication_trend`
+       兩個 report_key 的圖——「一檔一 identity」的命名模型表達不了。
+    2. 既有檔名與 report_key 本來就不同名（`country_distribution` 的圖叫
+       `jurisdiction_distribution.svg`），改名會波及 artifact_manifest、
+       ChartIndex、build_ppt 與所有既有報表版本。
+
+    ⇒ **PPT profile 沿用既有檔名**（既有一切不動），**web profile 加 `.web`
+    中綴**。identity→path 的對應改由 manifest 維護，不寫進檔名。
+    """
     if profile not in PROFILES:
         raise ChartProfileError(f"未知 profile {profile!r}")
-    return f"{report_key}__{variant_key}.{profile}.svg"
+    name = Path(base_name).name
+    # ⚠ 非 SVG（分群主題表等 HTML 產物）沒有 profile 之分，原樣回傳——
+    # 切字串會產出 `cluster_topic_ta.web.svg` 這種壞檔名。
+    if profile == "ppt" or not name.endswith(".svg"):
+        return name
+    return f"{name[:-len('.svg')]}{_WEB_INFIX}.svg"
 
 
-def parse_profile_filename(name: str) -> tuple[str, str, str]:
-    """檔名 → (report_key, variant_key, profile)；不合格式即 fail loud。"""
-    match = _FILENAME_RE.match(Path(name).name)
-    if match is None:
-        raise ChartProfileError(f"檔名 {name!r} 不是 profile 圖檔格式")
-    return match.group("report"), match.group("variant"), match.group("profile")
+def resolve_web_asset(file_name: str, exists: "Callable[[str], bool]") -> str:
+    """網頁報表要顯示的圖檔名：有 web profile 就用它，沒有就用原檔。
 
+    ⚠ 退回**不是**可有可無的寬容：`.web.svg` 是 2026-08-09 才開始產的，在那
+    之前的每一個報表版本都只有一份 PPT 尺寸的圖。不退回＝舊版本網頁全空。
 
-def build_profile_manifest(run_dir: Path, version: str) -> dict[str, Any]:
-    """掃描版本目錄，建立 identity → 各 profile 的 manifest（含 checksum）。
-
-    checksum 綁檔案內容：兩個 profile 的 checksum 必然不同（尺寸不同），
-    配錯資料或拿到過期檔時對不上。
+    ⚠ 與 `resolve_ppt_asset` 的 fail-loud 態度**刻意不同**：PPT 那邊拿錯圖會
+    讓簡報悄悄用到別版資料（比產不出來更糟），這邊最壞只是網頁看到 PPT 尺寸
+    的圖——都看得到內容，不需要為此讓整頁掛掉。
     """
-    charts: dict[str, dict[str, Any]] = {}
-    for path in sorted(run_dir.glob("*.svg")):
-        try:
-            report_key, variant_key, profile = parse_profile_filename(path.name)
-        except ChartProfileError:
-            continue                      # 非 profile 圖（既有單一版本圖）略過
-        identity = f"{report_key}:{variant_key}"
-        entry = charts.setdefault(identity, {"version": version, "profiles": {}})
-        entry["profiles"][profile] = {
-            "path": path.name,
-            "checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
-        }
-    return {"version": version, "charts": charts}
+    if not file_name.endswith(".svg"):
+        return file_name
+    web_name = profile_filename(file_name, "web")
+    return web_name if exists(web_name) else file_name
 
+
+def parse_profile_filename(name: str) -> tuple[str, str]:
+    """檔名 → (既有圖檔名, profile)。非 `.svg` 一律 fail loud。"""
+    plain = Path(name).name
+    if not plain.endswith(".svg"):
+        raise ChartProfileError(f"檔名 {name!r} 不是 SVG 圖檔")
+    match = _WEB_NAME_RE.match(plain)
+    if match is not None:
+        return f"{match.group('stem')}.svg", "web"
+    return plain, "ppt"
+
+
+# ⚠ `build_profile_manifest` 在 **chart_runner**：identity 要靠「檔名 →
+# report_names」對照表反查，那張表是 chart_runner 的；放這裡會反向相依。
 
 def resolve_ppt_asset(
     identity: str,

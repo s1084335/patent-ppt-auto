@@ -354,6 +354,99 @@ def report_names_for_artifact(filename: str) -> list[str]:
     return []
 
 
+# profile 檔名規則的唯一定義處在 chart_profiles；本模組只消費，不另立一套。
+from backend.app.reports.chart_profiles import (  # noqa: E402  （模組中段：避免頂部循環相依）
+    DEFAULT_PROFILE,
+    PROFILES,
+    ChartProfileError,
+    active_profile_name,
+    parse_profile_filename,
+    profile_context,
+    profile_filename,
+)
+
+
+# profile manifest 的檔名（前端與組版都靠它把 identity 對到實際圖檔）。
+PROFILE_MANIFEST_NAME = "profile_manifest.json"
+
+
+def _write_svg(path: Path, svg: list[str]) -> Path:
+    """SVG 的**唯一寫檔出口**；實際落點依作用中的 profile 決定。
+
+    🔴 呼叫端一律傳「原本的」路徑（`run_dir / "lifecycle.svg"`），不必知道
+    profile 這回事——web profile 會自動改寫成 `lifecycle.web.svg`。
+    ⚠ 反過來做（每個 renderer 多收一個 profile 參數）會讓 8 支 renderer 與
+    它們的每一個測試都跟著改介面，正是 AGENTS.md「入口要精簡」那條的反例。
+    """
+    target = path.with_name(profile_filename(path.name, active_profile_name()))
+    target.write_text("\n".join(svg), encoding="utf-8")
+    return target
+
+
+def render_sections_all_profiles(ctx: "ChartContext",
+                                 specs: "tuple[SectionSpec, ...]") -> None:
+    """為每個 profile 各跑一次 section builders。
+
+    PPT 先跑（既有行為，且它的產出是 report_data.json 與 artifact_manifest 的
+    依據）；web 隨後只補圖。
+
+    ⚠ 第二輪要把 `sections` 還原：builder 同時負責「畫圖」與「append 卡片資料」，
+    不還原的話網頁報表會出現重複卡片。`chart_rows` 是 dict 覆寫，重跑無害。
+    """
+    for spec in specs:
+        spec.build(ctx)
+    first_round_sections = list(ctx.sections)
+    for profile in PROFILES:
+        if profile == DEFAULT_PROFILE:
+            continue
+        with profile_context(profile):
+            for spec in specs:
+                spec.build(ctx)
+        ctx.sections[:] = first_round_sections
+
+
+def _variant_key_of(base_name: str, report_key: str) -> str:
+    """從既有檔名推出 variant：檔名去掉 report_key 前綴後的剩餘，沒有就是 default。
+
+    `ipc_main_distribution_L4.svg` ＋ `ipc_main_distribution` → `L4`；
+    `jurisdiction_distribution.svg` ＋ `country_distribution` → `default`
+    （檔名與 report_key 不同名，本來就沒有變體後綴）。
+    """
+    stem = base_name[:-4] if base_name.endswith(".svg") else base_name
+    if stem.startswith(f"{report_key}_"):
+        return stem[len(report_key) + 1:]
+    return "default"
+
+
+def build_profile_manifest(run_dir: Path, version: str) -> dict[str, Any]:
+    """掃描版本目錄，建立 identity → 各 profile（web／ppt）的對應與 checksum。
+
+    identity＝`report_key:variant`（與 `chart_bundle` 選圖用的一致），path 指向
+    **既有檔名**——PPT profile 沿用原名、web profile 帶 `.web` 中綴。
+
+    ⚠ 一個檔可對應多個 report_key（`annual_trend.svg` 同時是申請與公告趨勢的
+    圖），此時該檔在每個 identity 下都登記。這正是原「一檔一 identity」命名
+    契約表達不了、因而於 2026-08-09 回寫的情形。
+
+    ⚠ checksum 綁檔案內容：兩個 profile 尺寸不同故必然不同，配錯或拿到過期檔
+    時對不上。
+    """
+    charts: dict[str, dict[str, Any]] = {}
+    for path in sorted(run_dir.glob("*.svg")):
+        try:
+            base_name, profile = parse_profile_filename(path.name)
+        except ChartProfileError:
+            continue
+        for report_key in report_names_for_artifact(base_name):
+            identity = f"{report_key}:{_variant_key_of(base_name, report_key)}"
+            entry = charts.setdefault(identity, {"version": version, "profiles": {}})
+            entry["profiles"][profile] = {
+                "path": path.name,
+                "checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+    return {"version": version, "charts": charts}
+
+
 def build_artifact_manifest(
     run_dir: Path,
     files: list[str],
@@ -479,7 +572,7 @@ def render_line_chart(
         svg.append(f'<rect x="{left + 148}" y="{top + 8}" width="12" height="12" fill="{COLOR_PUBLICATION}"/>'
                    f'<text x="{left + 166}" y="{top + 19}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">授權公告年</text>')
     svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
+    _write_svg(path, svg)
 
 
 def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_key: str, value_key: str = "patent_count", limit: int = 20) -> None:
@@ -551,7 +644,7 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
         svg.append(f'<rect x="{left}" y="{y + 5}" width="{bar_w:.1f}" height="18" rx="2" fill="{color}"/>')
         svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value}</text>')
     svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
+    _write_svg(path, svg)
 
 
 def _paired_legend_svg(
@@ -660,7 +753,7 @@ def render_paired_bar_chart(
         bar_h=bar_h, gap=gap, left=left, plot_w=plot_w,
         max_value=max_value, label_px=label_px))
     svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
+    _write_svg(path, svg)
 
 
 def ranking_segments(row: dict[str, Any]) -> dict[str, int]:
@@ -900,7 +993,7 @@ def render_segmented_bar_chart(
             svg.append(f'<text x="{left}" y="{note_y:.1f}" font-size="{note_font}" '
                        f'fill="{COLOR_TEXT_SOFT}">{xml_text(notes[index])}</text>')
     svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
+    _write_svg(path, svg)
 
 
 def classification_level_key(value: Any, level: int) -> str:
@@ -1010,7 +1103,7 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
         footnote += " 無地域代碼：" + "、".join(no_geo_notes)
     svg.append(f'<text x="50" y="505" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{xml_text(footnote)}</text>')
     svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
+    _write_svg(path, svg)
 
 
 # ── KP 競爭定位象限（P2 版型；範例＝滑雪機 V2 p7）────────────────────
@@ -1072,7 +1165,7 @@ def render_kp_quadrant_chart(
         svg.append(f'<text x="{width / 2:.0f}" y="{height / 2:.0f}" text-anchor="middle" '
                    f'font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">本批無競爭者資料</text>')
         svg.append("</svg>")
-        path.write_text("\n".join(svg), encoding="utf-8")
+        _write_svg(path, svg)
         return
 
     xs = [float(r.get("country_count") or 0) for r in rows]
@@ -1128,7 +1221,7 @@ def render_kp_quadrant_chart(
         svg.append(f'<circle cx="{legend_x + 8}" cy="{y - 4}" r="7" fill="{color}" fill-opacity="0.8"/>')
         svg.append(f'<text x="{legend_x + 24}" y="{y}" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(name)}</text>')
     svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
+    _write_svg(path, svg)
 
 
 def place_bubble_labels(
@@ -1245,7 +1338,7 @@ def render_bubble_chart(
             svg.append(f'<line x1="{x:.1f}" y1="{line_y1:.1f}" x2="{x:.1f}" y2="{line_y2:.1f}" stroke="#94A3B8" stroke-width="1"/>')
         svg.append(f'<text x="{x:.1f}" y="{label_y:.1f}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{xml_text(label)}</text>')
     svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
+    _write_svg(path, svg)
 
 
 def render_matrix_chart(
@@ -1369,7 +1462,7 @@ def render_matrix_chart(
                 f'text-anchor="middle" fill="{readable_text_on(fill)}" data-on-fill="{fill}">{value}</text>'
             )
     parts.append("</svg>")
-    path.write_text("\n".join(parts), encoding="utf-8")
+    _write_svg(path, parts)
     return {"rows_drawn": len(top_rows), "rows_total": len(row_totals), "cols": cols}
 
 
@@ -1574,7 +1667,7 @@ def render_year_bubble_matrix_chart(
                 f'text-anchor="middle" fill="{readable_text_on(fill)}" data-on-fill="{fill}" pointer-events="none">{value}</text>'
             )
     parts.append("</svg>")
-    path.write_text("\n".join(parts), encoding="utf-8")
+    _write_svg(path, parts)
 
 
 LABEL_FONT_SIZE = CHART_LABEL_PX  # P-2：縮放後 ≥12pt
@@ -3267,7 +3360,7 @@ def render_cluster_topic_table_html(
             )
         parts.append("</tbody></table>")
     parts.append("</body></html>")
-    path.write_text("\n".join(parts), encoding="utf-8")
+    path.write_text("\n".join(parts), encoding="utf-8")  # HTML 無 profile 之分
 
 
 def _qlabel(px: float, py: float, p_med: float, a_med: float) -> tuple[str, str]:
@@ -3617,7 +3710,7 @@ def render_opportunity_quadrant_svg(
         f'本分析非侵權迴避(FTO)結論｜資料依公開專利資訊整理</text>')
 
     parts.append("</svg>")
-    path.write_text("\n".join(parts), encoding="utf-8")
+    _write_svg(path, parts)
 
 
 # 🔴 2026-08-04：痛點板（pain_point_quadrant）已整個刪除（使用者定案）。
@@ -3970,8 +4063,7 @@ def run_chart_trial(
         analysis_id=analysis_id,
         cluster_data=cluster_data,
     )
-    for spec in specs:
-        spec.build(ctx)
+    render_sections_all_profiles(ctx, specs)
 
     fetched = ctx.fetched_reports()
     generated_at = datetime.now().isoformat(timespec="seconds")
@@ -4089,6 +4181,19 @@ def run_chart_trial(
     )
     write_json(run_dir / "artifact_manifest.json", manifest)
     files.append("artifact_manifest.json")
+    # profile manifest：identity → web／ppt 兩份圖的 path 與 checksum。
+    # ⚠ 必須在圖檔全部產完後才掃描（它是掃目錄產出的，不是累積出來的）。
+    profile_manifest = build_profile_manifest(run_dir, version)
+    write_json(run_dir / PROFILE_MANIFEST_NAME, profile_manifest)
+    # web profile 的圖要進 files——`files` 是各 builder 累積的，而 builder 只
+    # 知道自己傳進去的原路徑，不知道寫檔出口把 web 版寫到哪。以 manifest 為
+    # 單一來源補齊，不另外掃一次目錄。
+    files += sorted({
+        asset["path"]
+        for entry in profile_manifest["charts"].values()
+        for asset in entry["profiles"].values()
+    })
+    files.append(PROFILE_MANIFEST_NAME)
     files = list(dict.fromkeys(files))
     file_metadata = {
         item["file"]: item

@@ -828,14 +828,19 @@ class SelectiveRenderTests(unittest.TestCase):
             self.assertEqual(result["sections_rendered"], ["annual_trend"])
             # 只查趨勢 section 依賴的兩張報表（公告補齊雙線），沒有其他報表被查。
             self.assertEqual(sorted(set(fetched)), ["application_trend", "publication_trend"])
-            # 產出檔只有選中 sections 的圖＋固定兩檔。
+            # 產出檔只有選中 sections 的圖＋固定數檔。
+            # ⚠ 2026-08-09 契約變更（P3 雙 profile）：每張圖多產一份 web profile
+            # （`.web.svg`），並多一個 `profile_manifest.json` 記錄 identity →
+            # 兩個 profile 的 path 與 checksum。
             self.assertEqual(
                 sorted(result["files"]),
                 sorted([
                     "annual_trend.svg",
+                    "annual_trend.web.svg",
                     "report_data.json",
                     "index.html",
                     "artifact_manifest.json",
+                    "profile_manifest.json",
                     "version_meta.json",
                 ]),
             )
