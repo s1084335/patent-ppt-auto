@@ -111,6 +111,40 @@ class LambdaSelectionTests(unittest.TestCase):
         self.assertGreater(result.value, 0.0)
 
 
+class DegenerateSolutionTests(unittest.TestCase):
+    """⚠ 全部併成一群是退化解，不得被選中。
+
+    2026-08-09 發現：判準③（群間最小距離）在只有 1 群時算不出值，回 None，
+    而 None 原本被當成「通過」。四項判準全過，而且 diversity 對單一群回 1.0
+    （沒有重疊是因為沒有第二組可比），反而拿到最高分。
+
+    實測：5 個明顯分開的群、40 篇文件，最後選出的竟是「1 群 40 篇」。
+    ⚠ 這種錯不會報錯——使用者看到的是「這批專利只有一個主題」。
+    """
+
+    def test_single_cluster_is_rejected(self):
+        vectors, documents = _blobs(groups=5, per_group=8)
+        result = engine.select_lambda(vectors, documents=documents)
+        state = dpmeans.fit(vectors, lambda_=result.value)
+        self.assertGreater(len(state.centers), 1,
+                           "全部併成一群等於沒分群，不得被選中")
+
+    def test_single_cluster_row_marked_failed(self):
+        """掃描表要標明它為什麼被刷掉，不是靜默略過。"""
+        vectors, documents = _blobs(groups=5, per_group=8)
+        result = engine.select_lambda(vectors, documents=documents)
+        singles = [r for r in result.sweep if r["topic_count"] == 1]
+        self.assertTrue(singles, "本案例應該掃到至少一個會併成單群的 lambda")
+        for row in singles:
+            self.assertIn("single_cluster", row["failed"])
+
+    def test_recovers_true_structure(self):
+        """修正後應該找回真實的 5 群結構。"""
+        vectors, documents = _blobs(groups=5, per_group=8)
+        result = engine.select_lambda(vectors, documents=documents)
+        self.assertEqual(len(dpmeans.fit(vectors, lambda_=result.value).centers), 5)
+
+
 class SweepReportTests(unittest.TestCase):
     """掃描結果要能留給使用者看——為什麼選這個、其他被什麼判準刷掉。"""
 

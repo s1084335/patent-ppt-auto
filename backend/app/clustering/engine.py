@@ -377,10 +377,17 @@ def _sweep_values(distances: list[float]) -> list[float]:
     return [round(low + step * i, 6) for i in range(SWEEP_STEPS)]
 
 
-#: 前三項判準：(名稱, 判定函式)。⚠ 寫成資料而不是一串 if——加判準時只需多
-#: 一列，不會有人漏掉某項的判定。第四項（穩定度）另外處理，因為它要重跑分群，
-#: 只在前三項都過時才值得花那個時間。
+#: 前幾項判準：(名稱, 判定函式)。⚠ 寫成資料而不是一串 if——加判準時只需多
+#: 一列，不會有人漏掉某項的判定。穩定度另外處理，因為它要重跑分群，只在其餘
+#: 都過時才值得花那個時間。
+#:
+#: ⚠ `single_cluster` 是 2026-08-09 補上的：全部併成一群是**退化解**。原本
+#: 判準③在只有 1 群時算不出群間距離、回 None，而 None 被當成「通過」——實測
+#: 5 個明顯分開的群、40 篇文件，最後選出的竟是「1 群 40 篇」，而且分數最高
+#: （diversity 對單一群回 1.0，因為沒有第二組可比）。
+#: 這種錯不會報錯，使用者看到的是「這批專利只有一個主題」。
 _CRITERIA = (
+    ("single_cluster", lambda r: r["topic_count"] >= 2),
     ("median_size", lambda r: r["median_size"] >= MIN_MEDIAN_TOPIC_SIZE),
     ("singleton_doc_share",
      lambda r: r["singleton_doc_share"] <= MAX_SINGLETON_DOC_SHARE),

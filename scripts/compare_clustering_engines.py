@@ -151,6 +151,8 @@ def _stability(points: list[list[float]], *, lambda_: float) -> dict[str, Any]:
 #: 判準表：(名稱, 取值, 是否通過)。⚠ 寫成資料而不是一串 if——加一項判準時
 #: 只需要多一列，不用改流程，也不會有人漏掉某一項的判定。
 _CRITERIA = (
+    # ⚠ 全部併成一群是退化解——見 engine._CRITERIA 的說明。
+    ("single_cluster", lambda r: r["topic_count"] >= 2),
     ("median_size", lambda r: r["median_size"] >= MIN_MEDIAN_TOPIC_SIZE),
     ("singleton_doc_share", lambda r: r["singleton_doc_share"] <= MAX_SINGLETON_DOC_SHARE),
     ("between_min", lambda r: r["between_min"] is None
