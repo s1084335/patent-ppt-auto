@@ -29,7 +29,13 @@
 - **THEN** CLI SHALL 採用可說明的本次 plan
 - **AND** 不得為仿製範例加入無證據頁面
 
-### Requirement: EXP-018 產後品質驗證決定 PPT 是否可交付
+### Requirement: EXP-021 產後品質驗證決定 PPT 是否可交付
+
+⚠ 2026-08-09 改號（原為 EXP-018）：`separate-web-and-ppt-chart-profiles` 的
+「使用者選圖解析為同 Identity 的 PPT Asset」同樣掛 EXP-018——兩者是不同需求，
+不得共用編號。兩個規格檔在同一個 commit（3057bbb，08-06）同時引入，無先後可循，
+故以**改動成本**決定：本條除自身外沒有任何引用，另一條已被 tasks 與
+`tests/test_bundle_profile_lineage.py` 引用。
 
 系統 SHALL 在每次 PPT build 後產生 `PptQualityReport`，以 builder manifest、PowerPoint COM 全頁 PNG render 結果、選圖覆蓋、evidence coverage、必要 slot 與版面 warnings 判定 `pass`、`regenerate_partial`、`regenerate_report_version` 或 `blocked_defect`；未通過時不得提供正式交付版本。
 
