@@ -84,7 +84,7 @@ def list_pending_tw_legal_status_patents(
 def retry_tw_legal_status_refresh(
     request: TwLegalStatusRefreshRequest,
 ) -> dict[str, Any]:
-    """Retry only the lifecycle status-analysis refresh."""
+    """Retry only the legal-status report refresh."""
     return patent_queries.enqueue_tw_legal_status_refresh(workspace_id=request.workspace_id)
 
 

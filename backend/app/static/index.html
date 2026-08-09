@@ -246,6 +246,8 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .cand-card:hover { border-color: var(--accent); }
 .cand-card.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .cand-card-title { font-weight: 600; margin-bottom: 0.35rem; display: flex; justify-content: space-between; gap: 0.5rem; }
+/* 建議標記：系統依判準挑出的候選，仍由使用者定案。 */
+.cand-rec { margin-left: 0.4rem; font-size: 0.75rem; font-weight: 500; color: var(--accent, #2563eb); white-space: nowrap; }
 .cand-metrics { font-size: 0.8rem; color: var(--text-muted); display: grid; gap: 0.15rem; }
 .cand-metrics .m-name { display: inline-block; min-width: 6.5rem; }
 .cand-explain { margin-top: 0.4rem; font-size: 0.78rem; color: var(--text-muted); white-space: pre-wrap; }
@@ -2288,6 +2290,8 @@ let candidateListCache = [];             // 候選原樣快取（欄位不重組
 // 這些鍵是候選物件的識別／非指標欄，顯示時排除；其餘數值欄一律顯示。
 const CANDIDATE_NON_METRIC_KEYS = new Set([
   'candidate_id', 'candidate_type', 'candidate_k', 'is_selected', 'llm_explanation',
+  // is_recommended 是布林旗標不是指標；它另外渲染成標記（見 candidateCardHtml）。
+  'is_recommended',
 ]);
 // 已知指標的中文名；沒對到的鍵直接顯示原欄名（後端新增指標不必改前端）。
 const CANDIDATE_METRIC_LABELS = {
@@ -2298,6 +2302,7 @@ const CANDIDATE_METRIC_LABELS = {
 };
 // 候選類型中文名；沒對到的直接顯示原值（後端新增類型不必改前端）。
 const CANDIDATE_TYPE_LABELS = {
+  dpmeans: '資料自動分群',
   conservative: '保守（主題較少）',
   balanced: '平衡',
   detailed: '細分（主題較多）',
@@ -2429,8 +2434,10 @@ function candidateCardHtml(c) {
       + '</span>' + formatCandidateMetric(c[k]) + '</div>')
     .join('');
   const sel = state.candidatePickId === c.candidate_id ? ' selected' : '';
+  // 系統依四項判準與四指標加權挑出的候選；仍由使用者定案，只是標出建議。
+  const rec = c.is_recommended ? '<span class="cand-rec">★ 建議</span>' : '';
   return '<div class="cand-card' + sel + '" onclick="pickCandidate(' + escHtml(c.candidate_id) + ')">'
-    + '<div class="cand-card-title"><span>' + escHtml(typeLabel) + '</span>'
+    + '<div class="cand-card-title"><span>' + escHtml(typeLabel) + rec + '</span>'
     + '<span>' + escHtml(c.candidate_k) + ' 個主題</span></div>'
     + '<div class="cand-metrics">' + (metrics || '<div>（此候選未附指標）</div>') + '</div>'
     + (c.llm_explanation ? '<div class="cand-explain">' + escHtml(c.llm_explanation) + '</div>' : '')
@@ -3293,7 +3300,6 @@ const REPORT_TYPES = [
   ['applicant_year_matrix', '申請人年度分布矩陣'],
   // 四面向（KP 象限的引擎端資料；簡報上呈現為象限座標與數字卡，不是表格）。
   ['applicant_strength_profile', '申請人四面向'],
-  ['lifecycle', '專利狀態分析'],
   ['family_country_layout', '國家佈局（現有保護）'],
   ['cluster_topic_table', '主題分類統計表'],
   ['opportunity_quadrant', '機會四象限'],

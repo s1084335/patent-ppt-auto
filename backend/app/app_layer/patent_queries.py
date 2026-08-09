@@ -429,8 +429,10 @@ def _classify_tw_status_failure(patent_id: int) -> None:
 
 
 def enqueue_tw_legal_status_refresh(*, workspace_id: int | None = None) -> dict[str, Any]:
-    """只排入 lifecycle 狀態分析刷新，不重寫狀態或 history。"""
-    payload: dict[str, Any] = {"report_names": ["lifecycle"]}
+    """只排入法律狀態相關報表的刷新，不重寫狀態或 history。"""
+    # ⚠ 2026-08-09：原本刷新 `lifecycle`（已刪）。狀態登錄後要更新的是「法律狀態」
+    # 相關報表，由 `country_distribution`（國別×法律狀態）承接。
+    payload: dict[str, Any] = {"report_names": ["country_distribution"]}
     if workspace_id is not None:
         payload["workspace_id"] = workspace_id
     job = job_repository.create_job(
@@ -447,7 +449,7 @@ def register_tw_legal_status(
     legal_status: str | None,
     workspace_id: int | None = None,
 ) -> dict[str, Any]:
-    """登錄／修改／清除 TW 專利狀態，並在提交後背景刷新 lifecycle 報表。
+    """登錄／修改／清除 TW 專利狀態，並在提交後背景刷新法律狀態報表。
 
     🔴 2026-08-07 反悔機制：已有值可改成別的值、可清回 None（未知桶）；
     每次異動 append `legal_status_history`。只限 TW 案。"""
