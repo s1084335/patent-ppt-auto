@@ -2458,6 +2458,8 @@ def table_display_spec(reports: dict[str, dict[str, Any]]) -> dict[str, Any]:
     `display_rows` 只收**含物件值**的報表：純量報表原樣就能印，多存一份只是讓
     report_data.json 白白膨脹一倍。
     """
+    from backend.app.reports.content_blocks import reader_guide_blocks
+
     display_rows: dict[str, list[dict[str, str]]] = {}
     for name, report in reports.items():
         rows = report.get("rows")
@@ -2485,6 +2487,11 @@ def table_display_spec(reports: dict[str, dict[str, Any]]) -> dict[str, Any]:
         # 編碼說明沿用同一條傳遞通道，不另開新鍵——同一件事（「組版端需要知道
         # 引擎怎麼畫的」）不該有兩個落點。
         "encoding_notes": dict(CHART_ENCODING_NOTES),
+        # 判讀說明頁的口徑文字（2026-08-10）：同上，走同一條通道。
+        # ⚠ 不在此重寫——`content_blocks.reader_guide_blocks` 是唯一定義處。
+        # 沒有這一鍵時 CLI 只能自己編四段口徑，與 population.py 各自演進
+        # （2026-07-31 ENCODING_NOTES 已因同一成因修過一次）。
+        "reader_guide": reader_guide_blocks(),
     }
 
 
