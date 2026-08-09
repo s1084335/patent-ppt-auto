@@ -117,7 +117,13 @@
   |---|---|---|---|
   | 1 | 定位分類的推導規則寫進讀圖須知 | 使用者裁決：顏色標籤沒有依據就是視覺噪音 | ✅ `cd4f70b` |
   | 2 | 修正名實不符（「申請人四面向」→「Key Players 競爭定位」） | 定案原文：四面向是資料維度，圖是競爭定位圖 | ✅ `cd4f70b` |
-  | 3 | **每家的代表專利，且要帶技術內容摘要** | 使用者裁決 ＋ 定案⑥ | ⬜ |
+  | 3 | **每家的代表專利，且要帶技術內容摘要** | 使用者裁決 ＋ 定案⑥ | ✅ `c377f85`＋`526aa7d` |
+
+  第 3 項的三個待決問題**由使用者裁決為「讓 CLI 自行查」**（2026-08-10，原話：
+  「要發揮讓系統 CLI 自行查資料的優勢，不然我允許權限讓 CLI 找證據的用意就白費了」）：
+  資料層只交 `patent_ids`（該家全部專利 id），摘要由 CLI 自己查 `文獻備註` 產生
+  ——不預先決定取幾件、也不由引擎產摘要。取證入口規則與正反例寫在
+  `content_standard.md` 第 6 節。
 
   ### 第 3 項的具體要求與待決問題
 
@@ -140,6 +146,20 @@
   要一路補：`strength_rows` 查詢帶專利號與內容欄 → profile 聚合 →
   `applicant_strength_rows` 攤平 → 顯示端。
 - [ ] 2.4 Green：完成必要輸出與持久化，使 job succeeded 對應可讀回 artifact，並讓內容元件可由 goal-driven SlidePlan 消費
+
+  ### 2.4 查證與進度（2026-08-10）
+
+  | 項 | 狀態 |
+  |---|---|
+  | artifact 持久化 | ✅ 已實作——`handlers.py:416` 產完即 `upload_run_dir`；例外**不吞**，上傳失敗即 job 失敗（結構上滿足「succeeded 對應讀得回」） |
+  | Key Player 內容元件可被消費 | ✅ `chart_runner.applicant_strength_rows` 呼叫 `content_blocks.key_player_profiles`（唯一定義處） |
+  | reader guide 內容元件可被消費 | ✅ `3833796`——⚠ 查證發現 `reader_guide_blocks()` **全庫只有測試在呼叫**，沒有生產端消費者；已沿 `encoding_notes` 同一條通道加進 `table_display` |
+  | 判讀說明頁的內容規則 | ✅ `17c4ca7`——從滑雪機 V2 p11 反解四個必填區與四個偏差角度，寫進 `content_standard.md` 5-1 |
+  | 「零上傳失敗」實跑驗證 | ⬜ 需完整 job（DB＋worker），留待第 5 輪產 PPTX 時一併驗 |
+
+  ⚠ **落點誤判已修**：一度把口徑定義（計數單位／同族合併／共同申請／分類覆蓋）
+  當成範例頁上的「可觀測性偏差」。前者答「數字怎麼算」、後者答「不能怎麼推論」，
+  兩者不得互相頂替——界線已寫進 `content_standard.md` 與 `SKILL.md`，並加測試守住。
 - [ ] 2.5 Refactor：測試全綠後移除被取代圖表與重複 narrative/renderer 邏輯
 
 ## 3. 驗證與輸出
