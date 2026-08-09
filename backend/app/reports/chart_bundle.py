@@ -51,6 +51,25 @@ def _rows_for(report_data: dict[str, Any], report_key: str) -> list[dict[str, An
     return []
 
 
+def _profile_lineage(run_dir: Path, ppt_file: str) -> dict[str, dict[str, str] | None]:
+    """同一 identity 的 web／PPT 兩份圖各自的路徑與 checksum。
+
+    ⚠ 缺 web profile 時留 `None` 而不是省略這個鍵：2026-08-09 之前的每個報表
+    版本都只有一份圖，靜默省略會讓「這版沒有 web 圖」與「忘了記錄」長得一樣。
+    ⚠ 也不因此讓打包失敗——使用者仍該產得出簡報，只是 lineage 要看得出缺哪一份。
+    """
+    from backend.app.reports.chart_profiles import profile_filename
+
+    lineage: dict[str, dict[str, str] | None] = {}
+    for profile in ("ppt", "web"):
+        path = run_dir / profile_filename(ppt_file, profile)
+        lineage[profile] = {
+            "path": path.name,
+            "checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
+        } if path.exists() else None
+    return lineage
+
+
 def build_selected_bundles(
     run_dir: Path,
     selected_identities: list[str],
@@ -105,6 +124,11 @@ def build_selected_bundles(
             "version": version,
             # checksum 綁**圖片＋數據**：任一改變就換值，錯配當場現形。
             "checksum": digest.hexdigest(),
+            # 雙 profile lineage（A2）：使用者在**網頁**看圖選圖，簡報用的是
+            # 同一 identity 的 **PPT** profile——兩者是不同檔案。只記一個
+            # checksum 的話，「網頁看到的那張有沒有跟著換版本」無從查核，
+            # 兩個 profile 來自不同次產圖也沒有東西攔得住。
+            "profile_lineage": _profile_lineage(run_dir, meta["file"]),
         })
 
     (work_dir / "bundle_manifest.json").write_text(

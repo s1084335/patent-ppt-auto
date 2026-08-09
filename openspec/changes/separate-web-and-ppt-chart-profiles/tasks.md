@@ -16,7 +16,7 @@
 ## 3. 選圖與唯讀 CLI 最小 Green
 
 - [x] 3.1 Green：匯出入口以 report version＋chart identity 驗證使用者選取集合，解析同 identity 的 PPT profile
-- [ ] 3.2 Green：evidence manifest 保存選取順序、web/PPT checksum lineage 與全部 PPT asset，並經版本化 artifact store 交接 Companion　（**部分**：選圖包已帶 checksum 綁圖片＋數據並經 artifact store 交接，但那是**單一** checksum；web/ppt 雙 profile 的 lineage 尚未進 evidence manifest）
+- [x] 3.2 Green：evidence manifest 保存選取順序、web/PPT checksum lineage 與全部 PPT asset，並經版本化 artifact store 交接 Companion　（2026-08-09 補齊：profile_lineage 落在 bundle_manifest.json，缺 web profile 留 null 使其現形）
 - [x] 3.3 Green：SlidePlan／組版 validator 強制 input selected set、plan referenced set 與 rendered set 完全相等，拒絕 CLI 自行增減或替換圖片
 - [ ] 3.4 Green：舊版本或不完整 profile 明確回報需重產，不 fallback 到任意舊圖　（PPT 端已 fail loud；**網頁端刻意退回**顯示既有單圖，理由見 spec 回寫）
 - [ ] 3.5 Green：實跑 1.4 全部目標測試直到通過，確認 mismatch 均 fail loud 且不產可核准 PPT　（未逐項跑：1.4 未補齊）
