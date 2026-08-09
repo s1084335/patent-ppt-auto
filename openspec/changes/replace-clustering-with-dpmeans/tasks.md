@@ -21,8 +21,9 @@
     ——⚠ 原 fallback 會把 DP-Means 新主題靜默併進舊主題，跑完沒有錯誤、新主題一個都沒有。
   - **topic label**（`handlers._enqueue_topic_label_for_new_topics`）：只在**真的長出
     新主題**時排，否則每次增量都重跑整個 workspace 的 AI 命名（max_attempts=1，重跑＝真的再花額度）。
-  - **API**：無需改動。DP-Means 主題走既有 topic_state_json 通道；keywords 為空清單，
-    既有契約測試（`test_api_topics_keywords_contract`）通過。
+  - **API**：無需改動。DP-Means 主題走既有 topic_state_json 通道；關鍵詞由
+    `clustering/keywords.py` 自行抽取（class-TF-IDF），既有契約測試
+    （`test_api_topics_keywords_contract`）通過。
   - 測試 44 支：核心 27、artifact 11（既有）＋ finalize 11、分流 11、新主題落地 16、命名接續 5。
 - [x] 2.5 Refactor：全綠後抽離共用向量前處理並**隔離**已無用途的 K 選擇路徑；保留必要 rollback feature flag
 
@@ -34,8 +35,10 @@
   - **隔離 K 選擇路徑**：`_calibrate_with_dpmeans` 跑一次、產一個候選，不掃七組 k。
     ⚠ 不隔離的後果不只是浪費算力：使用者會被要求在三個**完全不影響結果**的候選之間
     選一個，選了也沒反應——這種「操作沒有效果」比報錯更難察覺。
-  - **品質指標回 None 不回 0**：coherence／diversity／balance 都算在 c-TF-IDF top terms
-    上，DP-Means 沒有。填 0 會讓前端顯示「品質 0 分」，那是憑空捏造的壞消息。
+  - **品質指標照常計算**：⚠ 本項原本寫「DP-Means 沒有 c-TF-IDF，指標只能填 None」
+    ——**那是錯的**。coherence／diversity 只需要每群 top_terms、不綁 BERTopic，補上
+    `clustering/keywords.py` 後兩個既有指標完全適用；balance／small_topic_ratio 本就
+    只看件數分布。指標算不出來時（缺文件、長度對不上）才回 None，且排序時視為最差。
   - **rollback flag**：`CLUSTERING_ALGORITHM` 未設＝舊引擎（`test_default_is_kmeans`）；
     增量跟隨 artifact 不看 flag（`test_incremental_ignores_feature_flag`），所以切回舊
     引擎不會讓既有 DP-Means workspace 讀錯格式。
@@ -78,11 +81,11 @@
   對照 1.1 基準（MiniBatchKMeans 技術 5／功效 8）。執行時間：`select_lambda`
   在 n=44 約 6 秒（掃 18 點含穩定度與 coherence）。掃描原始資料留在
   `output/_verify/dpmeans/`。
-- [ ] 3.2 執行 clustering/topic/API 目標測試、相關模組回歸與 `scripts/verify_module.py`
+- [x] 3.2 執行 clustering/topic/API 目標測試、相關模組回歸與 `scripts/verify_module.py`
 
   | 項目 | 結果 |
   |---|---|
-  | 目標測試（9 支 DP-Means 測試檔） | **68 過**，0 紅 |
+  | 目標測試（11 支 DP-Means／排序測試檔） | **136 過**，0 紅 |
   | 範圍回歸（`-k dpmeans/topic/clustering/handler/artifact/keyword/candidate/ranking`） | **614 過、1 紅** ——`test_default_report_names_match_definitions`，⚠ **既有失敗**（`DEFAULT_REPORT_NAMES` 12→13，PR #19 合併時即存在），非本輪造成 |
   | `verify_module.py` 功能測試 | **136 過**（首輪 119） |
   | `verify_module.py` 靜態分析 | ✅ **新增行 0 個**（首輪 5 個；全庫既有 59 個另計） |
