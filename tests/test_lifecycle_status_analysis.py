@@ -6,10 +6,14 @@ registry、SECTION_SPECS、CHART_FILE_REPORTS、讀圖說明、母體登記與�
 本檔仍然成立的部分是**與該報表無關的共用零件**：`transforms/legal_status` 的狀態桶
 （`country_distribution` 仍在用）與 `render_matrix_chart`（公司×國家矩陣仍在用）。
 
-⚠ 待使用者裁決：`chart_runner._build_lifecycle_section` 與 `lifecycle_status_pivot`
-沒有任何 SectionSpec 指得到，已是死程式；下方 `LifecycleSectionTests` 與
-`LifecycleBuilderIntegrationTests` 因此守著一條永遠不會執行的路徑。要一併刪就連同
-這兩個 class 移除，不要只留測試綠著。
+## 🔴 2026-08-10：死程式與其測試已一併移除
+
+`chart_runner._build_lifecycle_section` 與 `lifecycle_status_pivot` 沒有任何
+SectionSpec 指得到，已是死程式，故連同 `LifecycleSectionTests` 與
+`LifecycleBuilderIntegrationTests` 一起刪除。
+
+⚠ 為什麼不「留測試綠著就好」：那兩組測試在守一條永遠不會執行的路徑——它們綠著，
+卻證明不了任何線上行為，反而讓人以為該功能仍有覆蓋。裁撤理由逐處留在原位註解。
 
 ## 定案（2026-08-07，已於 2026-08-09 被刪除決策取代）
 
@@ -121,45 +125,18 @@ class LifecycleDefinitionTests(unittest.TestCase):
         self.assertNotIn("專利狀態分析", html)
 
 
-class LifecycleSectionTests(unittest.TestCase):
-    """section builder：前十大 × 狀態桶 pivot；含共同申請註記。"""
-
-    ROWS = [
-        # applicant, raw status, count —— 造 12 家測前十截取
-        *[{"applicant_display_name": f"公司{chr(65 + i)}", "legal_status": "授权",
-           "patent_count": 20 - i} for i in range(12)],
-        {"applicant_display_name": "公司A", "legal_status": "审查中", "patent_count": 3},
-        {"applicant_display_name": "公司A", "legal_status": "到期(Expiration of the term)",
-         "patent_count": 2},
-        {"applicant_display_name": "公司B", "legal_status": None, "patent_count": 4},
-    ]
-
-    def _pivot(self):
-        from backend.app.reports.chart_runner import lifecycle_status_pivot
-
-        return lifecycle_status_pivot(self.ROWS, limit=10)
-
-    def test_top10_by_total_and_bucketed(self):
-        rows = self._pivot()
-        self.assertEqual(len(rows), 10, "前十大截取")
-        a = rows[0]
-        self.assertEqual(a["applicant_display_name"], "公司A")   # 20+3+2=25 最大
-        self.assertEqual(a["已授權"], 20)
-        self.assertEqual(a["審查中"], 3)
-        self.assertEqual(a["已失效"], 2)
-        self.assertEqual(a["未知"], 0)
-        self.assertEqual(a["patent_count"], 25)
-
-    def test_unknown_bucket_counted(self):
-        rows = self._pivot()
-        b = [r for r in rows if r["applicant_display_name"] == "公司B"][0]
-        self.assertEqual(b["未知"], 4)
-        self.assertEqual(b["patent_count"], 23)
-
-    # 🔴 test_over_counting_note_applies 已裁撤（2026-08-09）：報表刪除後
-    # `lifecycle` 已從 population.OVER_COUNTING_REPORTS 移除；「死條目要一併清掉」
-    # 改由 test_report_catalog_and_population.py 的
-    # test_removed_reports_gone_from_population_registry 守著。
+# 🔴 LifecycleSectionTests 已整個裁撤（2026-08-10）：它守的
+# `chart_runner.lifecycle_status_pivot` 已隨報表刪除一併移除。
+#
+# ⚠ 那個函式在 2026-08-09 之後就沒有任何 SectionSpec 指得到（唯一呼叫端是
+# `_build_lifecycle_section`，而它自己也沒人叫），本組測試等於在守一條永遠不會
+# 執行的路徑——測試綠著，卻證明不了任何線上行為。
+#
+# 它原本涵蓋的兩件事現在各有歸屬：狀態桶收斂由 `StatusBucketTests`（本檔上方，
+# `country_distribution` 仍在用）守；「報表確實已移除」由
+# `test_report_catalog_and_population.py` 守。
+#
+# 🔴 test_over_counting_note_applies 亦已於 2026-08-09 裁撤（同上，登記已清）。
 
 
 class StatusMatrixSvgTests(unittest.TestCase):
@@ -229,38 +206,13 @@ class StatusMatrixSvgTests(unittest.TestCase):
         self.assertLess(svg.index(">CN<"), svg.index(">TW<"), "量大的欄應在前")
 
 
-class LifecycleBuilderIntegrationTests(unittest.TestCase):
-    """builder 端到端：假 ctx＋stub 報表 → 矩陣 SVG＋pivot 數據表＋section note。"""
-
-    def test_builder_renders_matrix_and_pivot(self):
-        import tempfile
-        from pathlib import Path
-        from types import SimpleNamespace
-
-        from backend.app.reports import chart_runner
-
-        rows = [
-            {"applicant_display_name": "公司A", "legal_status": "授权", "patent_count": 9},
-            {"applicant_display_name": "公司A", "legal_status": "审查中", "patent_count": 2},
-            {"applicant_display_name": "公司B", "legal_status": None, "patent_count": 3},
-        ]
-
-        def report(_key):
-            return {"report_name": "lifecycle", "label_zh": "專利狀態分析", "rows": rows}
-
-        with tempfile.TemporaryDirectory() as tmp:
-            ctx = SimpleNamespace(run_dir=Path(tmp), chart_rows={}, sections=[],
-                                  report=report, cluster_data=None, cluster_reports={},
-                                  meta={}, ipc_levels=(4,), cpc_levels=(4,))
-            chart_runner._build_lifecycle_section(ctx)
-            svg = (Path(tmp) / "lifecycle.svg").read_text(encoding="utf-8")
-        self.assertIn(">已授權<", svg)
-        self.assertIn(">未知<", svg)
-        pivot = ctx.chart_rows["lifecycle"]
-        self.assertEqual(pivot[0]["已授權"], 9)
-        note = ctx.sections[0]["note"]
-        self.assertIn("含共同申請", note)
-        self.assertIn("未知", note)
+# 🔴 LifecycleBuilderIntegrationTests 已裁撤（2026-08-10）：它端到端呼叫
+# `chart_runner._build_lifecycle_section`，而該 builder 已隨 lifecycle 報表刪除
+# 一併移除（沒有任何 SectionSpec 指得到它，是死程式）。
+#
+# ⚠ 它驗的兩件事仍有守門者：矩陣渲染器 `render_matrix_chart` 由上方
+# `StatusMatrixSvgTests` 守（公司×國家矩陣仍在用同一支）；「報表確實已從
+# registry／population 移除」由 `test_report_catalog_and_population.py` 守。
 
 
 if __name__ == "__main__":

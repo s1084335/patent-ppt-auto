@@ -3331,29 +3331,6 @@ def _build_applicant_country_section(ctx: ChartContext) -> None:
     })
 
 
-def lifecycle_status_pivot(rows: list[dict[str, Any]], limit: int = CHART_ROW_LIMIT) -> list[dict[str, Any]]:
-    """(申請人, 原始狀態, 件數) 長格式 → 前 N 大申請人 × 四狀態桶（數據表用）。
-
-    桶收斂一律走唯一定義處 `transforms.legal_status.status_bucket`。
-    輸出每列：{applicant_display_name, 已授權, 審查中, 已失效, 未知, patent_count}，
-    依總件數降冪取前 `limit` 家。矩陣圖走長格式另餵 render_matrix_chart，
-    本函式只服務 chart_rows 數據表——同一份桶邏輯、兩種消費形狀。
-    """
-    from backend.app.transforms.legal_status import STATUS_BUCKET_ORDER, status_bucket
-
-    by_applicant: dict[str, dict[str, int]] = {}
-    for row in rows:
-        name = str(row.get("applicant_display_name") or "").strip()
-        if not name:
-            continue
-        bucket = status_bucket(row.get("legal_status"))
-        entry = by_applicant.setdefault(name, {b: 0 for b in STATUS_BUCKET_ORDER})
-        entry[bucket] += int(row.get("patent_count") or 0)
-    ranked = sorted(by_applicant.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))[:limit]
-    return [{"applicant_display_name": name, **buckets, "patent_count": sum(buckets.values())}
-            for name, buckets in ranked]
-
-
 def country_status_pivot(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """(受理局, 原始狀態, 件數) 長格式 → 每國一列：申請件數＋四狀態桶。
 
@@ -3377,49 +3354,6 @@ def country_status_pivot(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
          **{b: buckets[b] for b in STATUS_BUCKET_ORDER}}
         for country, buckets in ranked
     ]
-
-
-def _build_lifecycle_section(ctx: ChartContext) -> None:
-    """專利狀態分析（2026-08-07 改版）：前十大申請人 × 狀態桶。
-
-    🔴 呈現形式＝**交叉矩陣**（2026-08-07 使用者定案「不要做 bar，像公司×國家
-    交叉表的形式」）：列＝申請人、欄＝狀態桶、儲存格＝件數＋藍階色階——
-    格值就是件數，直接解掉「堆疊段看不出各狀態件數」的問題。
-    複用 render_matrix_chart（同一支畫公司×國家），欄序用 col_order 固定為
-    語意序（已授權→審查中→已失效→未知），不按量排。
-    """
-    from backend.app.transforms.legal_status import STATUS_BUCKET_ORDER, status_bucket
-
-    report = ctx.report("lifecycle")
-    # 長格式＋桶收斂（唯一定義處），餵矩陣渲染器
-    bucketed = [
-        {"applicant_display_name": str(r.get("applicant_display_name") or "").strip(),
-         "status_bucket": status_bucket(r.get("legal_status")),
-         "patent_count": int(r.get("patent_count") or 0)}
-        for r in report["rows"]
-        if str(r.get("applicant_display_name") or "").strip()
-    ]
-    meta = render_matrix_chart(
-        ctx.run_dir / "lifecycle.svg",
-        report["label_zh"],
-        bucketed,
-        row_key="applicant_display_name",
-        col_key="status_bucket",
-        row_limit=CHART_ROW_LIMIT,
-        col_order=STATUS_BUCKET_ORDER,
-    )
-    ctx.chart_rows["lifecycle"] = lifecycle_status_pivot(report["rows"])
-    ctx.sections.append({
-        "title": report["label_zh"],
-        "report_key": "lifecycle",
-        "variants": [{"label": "Status", "file": "lifecycle.svg", "variant_key": "default"}],
-        "note": (
-            f"一列＝一位申請人（前 {meta['rows_drawn']} 大／共 {meta['rows_total']} 位，"
-            "含共同申請，總和大於專利件數）；欄＝狀態桶（已授權／審查中／已失效／未知）；"
-            "儲存格＝件數。「未知」為來源無狀態值的案件，據實呈現不併入他桶。"
-        ),
-    })
-
 
 
 # 主題來源段名／檔名後綴（2026-07-21 定案：技術、功效不混；原始欄名不進使用者介面）
