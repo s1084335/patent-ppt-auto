@@ -5894,10 +5894,16 @@ async function approveTopicBackfill() {
 async function loadPptChartPicker() {
   const box = el('ppt-chart-picker');
   if (!box || !exportPreview || !exportPreview.data) return;
-  const sections = (exportPreview.data.sections || []);
+  // ⚠ 只列有圖的 variant（2026-08-10）：部分 variant 的 file 是空字串——
+  // 那是解讀落點（如主題統計表，表格由組版端自己畫），不是可選圖表。
+  // 本清單預設全選，列進來就必然被送出，後端會直接失敗。
+  const sections = (exportPreview.data.sections || [])
+    .map(sec => ({ ...sec, variants: (sec.variants || []).filter(v => v.file) }))
+    .filter(sec => sec.variants.length);
   if (!sections.length) { box.textContent = ''; return; }
+  const chartCount = sections.reduce((n, sec) => n + sec.variants.length, 0);
   box.innerHTML = '<details><summary>選擇要用的圖表（預設全選，共 '
-    + sections.length + ' 張）</summary><div style="max-height:12rem;overflow:auto;padding:.3rem 0">'
+    + chartCount + ' 張）</summary><div style="max-height:12rem;overflow:auto;padding:.3rem 0">'
     + sections.map(sec => (sec.variants || []).map(v => {
         const id = escHtml(sec.report_key + ':' + (v.variant_key || 'default'));
         return '<label class="checkbox-row"><input type="checkbox" class="ppt-chart-cb" value="'

@@ -102,6 +102,14 @@ def build_selected_bundles(
             raise ChartBundleError(
                 f"選圖 identity {identity!r} 不在本報表版本（{version}）——"
                 f"可用：{sorted(index)}")
+        # ⚠ 空 file 要先擋（2026-08-10 實測）：部分 variant **刻意沒有圖檔**
+        # （`cluster_topic_table` 的主題統計表是表格，variant 只是解讀掛點）。
+        # `run_dir / ""` 等於 run_dir 本身，`.exists()` 會回 True 讓防禦整個失效，
+        # 最後炸在 shutil 的 `PermissionError`，訊息看不出真因。
+        if not meta["file"]:
+            raise ChartBundleError(
+                f"{identity} 沒有圖檔——該 variant 是解讀落點、不是可選圖表，"
+                "不得列入選圖")
         source = run_dir / meta["file"]
         if not source.exists():
             raise ChartBundleError(
