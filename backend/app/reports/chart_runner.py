@@ -378,6 +378,44 @@ from backend.app.reports.chart_profiles import (  # noqa: E402  （模組中段�
 PROFILE_MANIFEST_NAME = "profile_manifest.json"
 
 
+def _fetch_workspace_name(workspace_id: int) -> str | None:
+    """由 workspace_id 取顯示名稱（封面主標用）。"""
+    from backend.app.db.connection import get_pool
+
+    with get_pool().connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT workspace_name FROM app_layer.workspaces WHERE workspace_id = %s",
+                    (workspace_id,))
+        row = cur.fetchone()
+    return str(row[0]) if row and row[0] else None
+
+
+def build_workspace_identity(
+    *,
+    workspace_id: int | None,
+    workspace_name: str | None,
+    name_fetcher: "Callable[[int], str | None]" = _fetch_workspace_name,
+) -> dict[str, Any]:
+    """報表版本的 workspace 身分欄位（封面主標的來源）。
+
+    🔴 2026-08-09：`parameters` 原本只帶 `workspace_id`，封面因此永遠取不到
+    名稱、每次都退到後面的順位——使用者反映「主管看到第一時間也不知道是啥」。
+    ⚠ 不是版面問題，是**資料沒帶到**。
+
+    呼叫端明確給名稱時不查（人工指定優先於推導）；查不到或查失敗就**不放**
+    這個欄位——封面自有後續順位，不硬湊假名稱。
+    ⚠ 查名稱失敗不得讓整個產圖掛掉：它只是封面的一個字串。
+    """
+    if workspace_name:
+        return {"workspace_name": workspace_name}
+    if workspace_id is None:
+        return {}
+    try:
+        resolved = name_fetcher(int(workspace_id))
+    except Exception:  # noqa: BLE001 名稱查不到就退回，不影響產圖
+        return {}
+    return {"workspace_name": resolved} if resolved else {}
+
+
 def _write_svg(path: Path, svg: list[str]) -> Path:
     """SVG 的**唯一寫檔出口**；實際落點依作用中的 profile 決定。
 
@@ -4090,7 +4128,9 @@ def run_chart_trial(
         "has_cluster_analytics": cluster_data is not None,
         # workspace 顯示名稱（P3-2）：封面主標的資料源（P1-8 cover.title 退場後由此組成）。
         # ⚠ 不給就不落鍵——封面端以「鍵不存在」走通用標題 fallback，落 null 反而混淆。
-        **({"workspace_name": workspace_name} if workspace_name else {}),
+        # 🔴 2026-08-09：呼叫端沒帶名稱時改由 workspace_id 反查，否則封面永遠
+        # 取不到、每次都退到後面的順位（使用者：「主管看到第一時間也不知道是啥」）。
+        **build_workspace_identity(workspace_id=workspace_id, workspace_name=workspace_name),
         # workspace_id（2026-07-31 版本區隔定案）：name 會撞名，id 才是穩定歸屬鍵。
         **({"workspace_id": int(workspace_id)} if workspace_id is not None else {}),
         **patent_snapshot_metadata(patent_ids),

@@ -2042,7 +2042,7 @@ def _render_cover(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> N
         stripe.rotation = g["stripe_rotation_deg"]
         stripe.text_frame.text = ""
 
-    _add_text(slide, theme, COVER_EYEBROW,
+    _add_text(slide, theme, _cover_eyebrow(ctx["report_data"]),
               left=g["eyebrow_left_in"], top=g["eyebrow_top_in"],
               width=g["eyebrow_width_in"], height=g["eyebrow_height_in"],
               size=theme.size("cover_subtitle_pt"), color="accent", bold=True)
@@ -3646,6 +3646,26 @@ def _apply_chart_degradation(layout: list[PageSpec], charts: ChartIndex) -> list
 # --------------------------------------------------------------------------
 # 封面統計卡與分析框架
 # --------------------------------------------------------------------------
+def _plan_headline(report_data: dict[str, Any]) -> str:
+    """規劃寫出的主題句（SlidePlan 首頁第一條 narrative）。"""
+    for slide in ((report_data.get("slide_plan") or {}).get("slides") or [])[:1]:
+        for point in slide.get("narrative") or []:
+            text = str(point.get("text") or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def _cover_eyebrow(report_data: dict[str, Any]) -> str:
+    """封面上方小字：這份簡報**在講什麼**。
+
+    🔴 2026-08-09：原本寫死「專利情報整合分析」，零資訊量且會與主標撞名。
+    改放規劃寫出的主題句——主標回答「這是哪一份報表」（主管認得的名稱），
+    小字回答「在講什麼」，兩行各司其職。
+    """
+    return _plan_headline(report_data) or COVER_EYEBROW
+
+
 def _cover_title(report_data: dict[str, Any], slots: dict[str, str]) -> str:
     """封面主標＝workspace 顯示名稱（P1-8，確定性組成；cover.title AI slot 已退場）。
 
@@ -3656,16 +3676,10 @@ def _cover_title(report_data: dict[str, Any], slots: dict[str, str]) -> str:
     manual = str(slots.get("cover.title") or "").strip()
     if manual:
         return manual
-    # 🔴 2026-08-09：goal-driven 規劃時，CLI 會在 s1 的第一條 narrative 寫出
-    # 針對這批資料的主標。⚠ 順位排在 workspace 名稱**之後**（不推翻 07-31
-    # 定案），但要排在通用 fallback 之前——否則 workspace 名稱缺失時主標會
-    # 退回寫死的「專利情報整合分析」，與封面 eyebrow 一字不差印兩次（實測）。
-    plan_title = ""
-    for slide in ((report_data.get("slide_plan") or {}).get("slides") or [])[:1]:
-        for point in slide.get("narrative") or []:
-            plan_title = str(point.get("text") or "").strip()
-            if plan_title:
-                break
+    # 🔴 2026-08-09：workspace 名稱缺失時退用規劃寫出的主題句。順位排在
+    # workspace 名稱**之後**（不推翻 07-31 定案），但排在通用 fallback 之前
+    # ——否則主標會退回寫死字串，與封面小字一字不差印兩次（實測）。
+    plan_title = _plan_headline(report_data)
     params = report_data.get("parameters") or {}
     for key in ("workspace_name", "workspace_display_name", "workspace"):
         value = str(params.get(key) or "").strip()
