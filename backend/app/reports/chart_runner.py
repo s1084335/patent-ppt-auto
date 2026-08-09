@@ -766,10 +766,15 @@ def render_paired_bar_chart(
     right = 150
     bottom = 34
     # 兩條 bar 一組：列高照單條版加倍再留組距，沿用字級迭代解算。
-    bar_h = 16
-    gap = 4
+    # 🔴 2026-08-09（A3 實測）：`bar_h`／`gap` 原本寫死 16／4 px，**不隨 profile
+    # 變**。web profile 不經 PPT 圖框的二次縮放，同一個數值標籤在圖上相對更大
+    # ——實測受理局分布圖 EP 的「2 件」直接壓在「1 件」上。改為依字級推導：
+    # 兩條 bar 的中心距至少要容得下一個字高。
+    def _bar_metrics(font_px: float) -> tuple[int, int]:
+        return max(16, round(font_px * 0.85)), max(4, round(font_px * 0.4))
 
     def _row_h(font_px: float) -> int:
+        bar_h, gap = _bar_metrics(font_px)
         base = round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX) * 2
         rh = _fill_row_height(len(data), top=top, bottom=bottom, base=base)
         cap = int((_sizing_value("canvas_max_height") - top - bottom) / max(1, len(data)))
@@ -780,6 +785,7 @@ def render_paired_bar_chart(
 
     label_px, _ = solve_chart_font(width, _canvas_height)
     row_h = _row_h(label_px)
+    bar_h, gap = _bar_metrics(label_px)
     left = label_gutter([str(row.get(label_key) or "") for row in data], font_px=label_px)
     height = round(_canvas_height(label_px))
     plot_w = width - left - right

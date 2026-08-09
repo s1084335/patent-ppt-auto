@@ -30,6 +30,6 @@
 ## 5. 重產與實物驗收
 
 - [ ] 5.1 重產固定 report version 的全部可選圖 web／PPT profiles，核對 identity、dataset、排序、語意色彩、dimensions 與 checksum lineage　（已重產三張代表圖並逐項核對 identity／寬度／checksum，非全部可選圖）
-- [ ] 5.2 在桌面與行動 viewport 驗證 web 圖；渲染 PPTX 全頁並檢查字級、裁切、重疊、圖例與中文字型　（未做：需桌面與行動 viewport 實測）
+- [x] 5.2 在桌面與行動 viewport 驗證 web 圖；渲染 PPTX 全頁並檢查字級、裁切、重疊、圖例與中文字型　（2026-08-09 Playwright 實測 1440x900／390x844：三張圖比例不變不裁切、桌面佔容器 95-98%、行動無水平捲動；實測抓到成對 bar 標籤在 web profile 重疊，已修）
 - [ ] 5.3 選取多張圖跑完整 goal-driven CLI／PPT 流程，逐一核對選取集合、CLI input、SlidePlan 與成品頁全部一致　（未做）
 - [ ] 5.4 保存 manifest、測試結果、web 截圖、PPTX 與全頁轉圖；使用者驗收後才 archive，未重產舊版本須明確列為限制　（未做：等使用者驗收）
