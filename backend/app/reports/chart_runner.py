@@ -1528,7 +1528,11 @@ def render_matrix_chart(
     max_value = max((cells[(r, c)] for r in top_rows for c in cols if (r, c) in cells), default=1)
 
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" font-family="Segoe UI, sans-serif">',
+        # ⚠ viewBox 不可省：沒有它的 SVG 以 inline 方式嵌進較窄容器時不會等比
+        # 縮放，`max-width:100%` 會直接把右側與下方**裁掉**（2026-08-09 驗收頁
+        # 實測，lifecycle 的 web profile 被切掉一整欄與三列，誤判成「內容比較少」）。
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
+        f' viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
         f'<rect width="{width}" height="{height}" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="26" font-size="{note_px:.1f}" font-weight="bold" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         f'<text x="16" y="56" font-size="{label_px:.1f}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',

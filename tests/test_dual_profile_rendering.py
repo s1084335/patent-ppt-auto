@@ -180,3 +180,39 @@ class WebAssetsStayOutOfPptIndexTests(unittest.TestCase):
         self.assertEqual(cr.report_names_for_artifact("opportunity_quadrant_tech.svg"),
                          ["opportunity_quadrant"])
         self.assertEqual(cr.report_names_for_artifact("lifecycle.svg"), ["lifecycle"])
+
+
+class ViewBoxTests(unittest.TestCase):
+    """每支 renderer 產的 SVG 都要有 viewBox（2026-08-09 驗收時發現）。
+
+    🔴 沒有 viewBox 的 SVG **不會等比縮放**：以 inline 方式嵌進較窄的容器時，
+    `max-width:100%` 只會把它**裁掉**而不是縮小。實測 lifecycle 的 web profile
+    （1142 寬）在驗收頁裡被切掉整整一欄與三列，看起來像「web 版內容比較少」
+    ——圖本身其實完整。
+
+    ⚠ 目前網頁報表用 `<img>` 嵌入、PPT 走點陣化，兩者都不受影響；但少了
+    viewBox 等於這張圖缺了「可縮放」這個基本性質，任何 inline 使用都會踩到。
+    10 支 renderer 有 9 支都寫了，漏的那支是遺漏不是設計。
+    """
+
+    SOURCE = (Path(__file__).resolve().parents[1] / "backend" / "app" / "reports"
+              / "chart_runner.py").read_text(encoding="utf-8")
+
+    def test_every_svg_root_declares_viewbox(self):
+        """⚠ 逐行掃描不夠：SVG 根標籤常被拆成多行 f-string，viewBox 可能在下一行。
+
+        改為看每個 `<svg xmlns=` 之後、標籤結束（`>`）之前的整段內容。
+        """
+        offenders = []
+        start = 0
+        while True:
+            idx = self.SOURCE.find("<svg xmlns=", start)
+            if idx < 0:
+                break
+            tag_end = self.SOURCE.find(">", idx)
+            tag = self.SOURCE[idx:tag_end if tag_end > 0 else idx + 400]
+            if "viewBox" not in tag:
+                line_no = self.SOURCE.count(chr(10), 0, idx) + 1
+                offenders.append(f"{line_no}: {tag[:70]}")
+            start = idx + 1
+        self.assertEqual(offenders, [], f"SVG 根標籤缺 viewBox（縮放時會被裁）：{offenders}")
