@@ -15,7 +15,7 @@
 
 - [x] 3.1 Red：新增 report-research tool registry 精確白名單測試，確認 save/refresh/generate/apply/shell/filesystem-write 均不可見
 - [x] 3.2 Green：建立獨立 read-only MCP profile 與 typed catalog/evidence query broker，沿用 `REPORT_DEFINITIONS` 與 snapshot scope，不接受 SQL 字串
-- [ ] 3.3 Red：新增欄位/filter/snapshot/row-limit/timeout、跨 workspace、stale evidence 與 query audit 測試　（**部分**：欄位／filter／snapshot／row-limit 已守；query audit 未做）
+- [x] 3.3 Red：新增欄位/filter/snapshot/row-limit/timeout、跨 workspace、stale evidence 與 query audit 測試　（2026-08-09 補齊 query audit：逐次記工具／snapshot／列數／截斷／錯誤，經環境變數指定的 JSONL 跨行程傳回 runner result）
 - [x] 3.4 Green：完成 preview/query/company/topic/patent evidence 工具與分頁／截斷 metadata
 - [ ] 3.5（移出範圍）DB reader role：2026-08-07 使用者裁決不做——正式部署為公司內網自管伺服器、CLI 依架構不持有 credential，維運成本大於邊際效益。改以「CLI 不得持有 DB credential」契約測試守（見 PRT-012 回寫）。
 - [x] 3.6 Green：MCP config 與 payload 不含 credential；工具層 allowlist contract test。

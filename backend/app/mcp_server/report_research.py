@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from datetime import date, datetime
 from decimal import Decimal
@@ -84,6 +85,49 @@ class ReportResearchError(RuntimeError):
     """查詢不合契約（未知報表、缺 snapshot、逾越上限、傳 SQL 字串等）。"""
 
 
+# ── 取證稽核（A7，2026-08-09）─────────────────────────────────────
+# 🔴 動因：使用者問「你要怎知道 CLI 有沒有去資料庫找證據」，當時只能事後翻
+# CLI transcript（開發機上的 jsonl）數 tool_use——正式部署根本沒有那個檔案。
+# 取證通道自己要記：誰查的、查了什麼、回幾列、有沒有截斷、有沒有失敗。
+#
+# ⚠ audit 是**觀測不是防護**：它不阻擋任何查詢，只讓「查了沒有」從推論變成
+# 事實。防護在別處（唯讀連線、單句 SELECT、工具白名單）。
+# ⚠ 只記查詢不記資料：回傳的專利內容不進紀錄，稽核不該變成資料副本。
+_QUERY_AUDIT: list[dict[str, Any]] = []
+
+
+def reset_query_audit() -> None:
+    """清空稽核紀錄（每個任務開始時呼叫，讓紀錄對得上單次規劃）。"""
+    _QUERY_AUDIT.clear()
+
+
+def get_query_audit() -> list[dict[str, Any]]:
+    """回傳本次累積的取證紀錄（複本，呼叫端改不到內部狀態）。"""
+    return [dict(entry) for entry in _QUERY_AUDIT]
+
+
+#: 稽核落檔路徑的環境變數。
+#: 🔴 MCP server 是 CLI 的**子行程**，runner 在 worker 行程——只記在記憶體
+#: runner 一筆也拿不到。runner 起 CLI 前設這個變數，server 子行程繼承後逐筆
+#: 寫 JSONL，任務結束再讀回。
+#: ⚠ 未設就只留記憶體：不該因為有人 import 這個模組就在檔案系統留下東西。
+AUDIT_PATH_ENV = "PATENT_QUERY_AUDIT_PATH"
+
+
+def _audit(tool: str, **fields: Any) -> None:
+    entry = {"tool": tool, **fields}
+    _QUERY_AUDIT.append(entry)
+    target = os.environ.get(AUDIT_PATH_ENV)
+    if not target:
+        return
+    try:
+        with open(target, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        # ⚠ 稽核寫不進去不得讓取證失敗——它是觀測，不是查詢的前置條件。
+        pass
+
+
 def _default_snapshot_loader(snapshot_id: str) -> dict[str, Any]:
     """正式路徑：讀該報表版本的 report_data.json（伺服器端檔案，CLI 碰不到）。"""
     from backend.app.reports.chart_runner import DEFAULT_OUTPUT_DIR
@@ -107,6 +151,8 @@ def _guard(report_key: str, snapshot_id: str, limit: int) -> None:
 
 def list_report_catalog() -> list[dict[str, Any]]:
     """報表目錄：名稱、中文標題、型別與**這張報表回答什麼問題**。"""
+    _audit("list_report_catalog", snapshot_id=None, rows=len(REPORT_DEFINITIONS),
+           truncated=False, error=None)
     return [
         {
             "name": name,
@@ -141,7 +187,12 @@ def query_report_evidence(
     回傳帶 `evidence_ref`（供 SlidePlan narrative 引用）、`population_note`
     （母體口徑）與 `truncated`（截斷要明說）。
     """
-    _guard(report_key, snapshot_id, limit)
+    try:
+        _guard(report_key, snapshot_id, limit)
+    except ReportResearchError as exc:
+        _audit("query_report_evidence", snapshot_id=snapshot_id, report_key=report_key,
+               rows=0, truncated=False, error=str(exc))
+        raise
     loader = snapshot_loader or _default_snapshot_loader
     snapshot = loader(snapshot_id)  # type: ignore[operator]
     rows = _rows_of(snapshot, report_key)
@@ -150,6 +201,8 @@ def query_report_evidence(
             wanted = {str(v) for v in values}
             rows = [r for r in rows if str(r.get(column)) in wanted]
     total = len(rows)
+    _audit("query_report_evidence", snapshot_id=snapshot_id, report_key=report_key,
+           rows=min(total, limit), truncated=total > limit, error=None)
     return {
         "report_key": report_key,
         "snapshot_id": snapshot_id,
@@ -171,6 +224,10 @@ def preview_report_rows(
     result = query_report_evidence(report_key, snapshot_id, limit=limit,
                                    snapshot_loader=snapshot_loader)
     result["columns"] = sorted(result["rows"][0]) if result["rows"] else []
+    # ⚠ 內部那次 query 已自行留痕，這裡再記一筆是刻意的：稽核要看得出
+    # 「CLI 呼叫的是 preview」還是「直接 query」——兩者的意圖不同。
+    _audit("preview_report_rows", snapshot_id=snapshot_id, report_key=report_key,
+           rows=len(result["rows"]), truncated=result["truncated"], error=None)
     return result
 
 
@@ -299,9 +356,14 @@ def query_database(sql: str, limit: int = SQL_DEFAULT_ROWS) -> dict[str, Any]:
     只接受單句 SELECT／WITH。連線由 server 端強制 read-only 交易與逾時，
     CLI 端拿不到任何 DB credential。回傳含 `truncated`，截斷會明說。
     """
-    if limit > SQL_MAX_ROWS:
-        raise ReportResearchError(f"limit 超過上限 {SQL_MAX_ROWS}")
-    text = validate_sql(sql)
+    try:
+        if limit > SQL_MAX_ROWS:
+            raise ReportResearchError(f"limit 超過上限 {SQL_MAX_ROWS}")
+        text = validate_sql(sql)
+    except ReportResearchError as exc:
+        _audit("query_database", snapshot_id=None, sql=str(sql)[:200],
+               rows=0, truncated=False, error=str(exc))
+        raise
 
     import psycopg
 
@@ -317,6 +379,8 @@ def query_database(sql: str, limit: int = SQL_DEFAULT_ROWS) -> dict[str, Any]:
         rows = cur.fetchmany(limit + 1)
     truncated = len(rows) > limit
     rows = rows[:limit]
+    _audit("query_database", snapshot_id=None, sql=text[:200],
+           rows=len(rows), truncated=truncated, error=None)
     return {
         "columns": columns,
         "rows": [[_jsonable(v) for v in row] for row in rows],

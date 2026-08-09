@@ -13,9 +13,13 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Callable
 
-from backend.app.mcp_server.report_research import TOOL_NAMES
+from backend.app.mcp_server.report_research import AUDIT_PATH_ENV, TOOL_NAMES
 from backend.app.reports.planning_contracts import (
     APPROVED_LAYOUT_PRESETS,
     validate_evidence,
@@ -95,6 +99,44 @@ def _parse_reply(raw: str) -> dict[str, Any]:
         raise ReportPlanningError(f"CLI JSON 解析失敗：{exc}") from exc
 
 
+@contextmanager
+def _query_audit_file():
+    """為本次規劃開一個稽核落檔，並讓 MCP server 子行程看得到路徑。
+
+    ⚠ 用暫存檔而不是固定路徑：多個規劃任務可能並行，共用一個檔會互相污染。
+    """
+    handle = tempfile.NamedTemporaryFile(
+        prefix="query_audit_", suffix=".jsonl", delete=False)
+    handle.close()
+    path = Path(handle.name)
+    previous = os.environ.get(AUDIT_PATH_ENV)
+    os.environ[AUDIT_PATH_ENV] = str(path)
+    try:
+        yield path
+    finally:
+        if previous is None:
+            os.environ.pop(AUDIT_PATH_ENV, None)
+        else:
+            os.environ[AUDIT_PATH_ENV] = previous
+        path.unlink(missing_ok=True)
+
+
+def _read_query_audit(path: Path) -> list[dict[str, Any]]:
+    """讀回稽核 JSONL。⚠ 讀不到就回空清單——稽核缺失不得讓規劃失敗。"""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    entries = []
+    for line in lines:
+        if line.strip():
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return entries
+
+
 def run_report_planning(
     brief: dict[str, Any],
     cli_runner: Callable[..., str],
@@ -112,7 +154,13 @@ def run_report_planning(
         raise ReportPlanningError(f"ReportBrief 不合格：{brief_errors}")
 
     _tick("CLI 規劃中", 30)
-    reply = _parse_reply(cli_runner(build_prompt(brief), timeout_seconds=timeout_seconds))
+    # 取證稽核（A7）：指定落檔路徑，MCP server 子行程繼承後逐筆寫入，
+    # 任務結束讀回。⚠ 這是唯一能證明「CLI 到底查了沒有」的系統內紀錄——
+    # 在此之前只能事後翻開發機上的 CLI transcript。
+    with _query_audit_file() as audit_path:
+        reply = _parse_reply(
+            cli_runner(build_prompt(brief), timeout_seconds=timeout_seconds))
+        query_audit = _read_query_audit(audit_path)
 
     plan = {
         "plan_id": reply.get("plan_id") or f"plan-{brief['snapshot_id']}",
@@ -137,6 +185,9 @@ def run_report_planning(
         "prompt_version": PROMPT_VERSION,
         "snapshot_id": brief["snapshot_id"],
         "validation_errors": [],
+        # 取證紀錄：查了幾次、用哪些工具、有沒有截斷或失敗。
+        # ⚠ 空清單有意義——代表這次規劃**完全沒有查證**，只用了選圖數據。
+        "query_audit": query_audit,
     }
     _tick("保存候選", 90)
     if persister is not None:
