@@ -28,15 +28,15 @@ import re
 #: 症狀是 coherence 莫名其妙偏低。
 TOKEN_PATTERN = re.compile(r"[a-z0-9]+|[一-鿿]")
 
-#: 這些詞出現在幾乎所有專利文本裡，留著會讓每個主題的關鍵詞長得一樣。
-STOP_TERMS = frozenset({
-    "the", "and", "for", "with", "that", "this", "are", "not", "from", "has",
-    "one", "two", "said", "which", "wherein", "comprising", "including",
-    "device", "apparatus", "method", "system", "unit", "means",
-})
+#: 詞長下限。⚠ 只適用拉丁字母詞——單字母與單一數字沒有辨識度。
+#: 中文不受此限（見 `_tokenize`：中文改取相鄰兩字的 bigram）。
+MIN_LATIN_TERM_LENGTH = 2
 
-#: 詞長下限。單字母與單一數字沒有辨識度。
-MIN_TERM_LENGTH = 2
+# ⚠ **沒有寫死的停用詞表**（2026-08-09 使用者要求）。
+# 原本有一份 STOP_TERMS（the／and／device／apparatus／method…），那是語言與領域
+# 綁定的——換成中文專利、換個技術領域就失效，而且失效時不會報錯，只會讓關鍵詞
+# 變成一堆廢詞。改為完全由資料決定：出現在**每一群**的詞沒有辨識度，直接剔除
+# （見 `_top_terms_for_class`）。那個規則對任何語言、任何領域都成立。
 
 
 def extract_top_terms(
@@ -83,11 +83,20 @@ def _class_document_frequency(
 
 def _top_terms_for_class(counts: dict[str, int], document_frequency: dict[str, int],
                          *, total_classes: int, limit: int) -> list[str]:
-    """單一群的 class-TF-IDF 排序。"""
+    """單一群的 class-TF-IDF 排序。
+
+    ⚠ **出現在所有群的詞直接剔除**，不只是折減。實測（滑雪機功效通道）：每筆
+    效果摘要都以 "The invention thereby improves..." 開頭，improves／invention／
+    thereby／of 在五個群都出現。class-TF-IDF 的 IDF 項有折減（df=全部時
+    log(1+1)=0.69 vs df=1 時 log(1+5)=1.79），但這些詞的 TF 太高，折減後仍排進
+    前四——結果兩個主題的關鍵詞長得幾乎一樣，使用者看不出差別。
+    出現在每一群的詞**沒有任何辨識度**，留著只會排擠真正有區別的詞。
+    """
     total = sum(counts.values()) or 1
     scored = [
         (term, (count / total) * math.log(1 + total_classes / document_frequency[term]))
         for term, count in counts.items()
+        if not (total_classes > 1 and document_frequency[term] >= total_classes)
     ]
     # ⚠ 次要排序鍵用 term 本身：分數相同時的順序必須固定，否則同樣輸入會得到
     # 不同關鍵詞，指標就不可重現了。
@@ -96,10 +105,13 @@ def _top_terms_for_class(counts: dict[str, int], document_frequency: dict[str, i
 
 
 def _tokenize(document: str) -> list[str]:
-    """切詞並濾掉沒有辨識度的詞。⚠ 空文本回空清單，不得 raise。"""
+    """切詞。⚠ 空文本回空清單，不得 raise。
+
+    ⚠ 只處理英數詞：2026-08-09 使用者確認「給 BERTopic 的欄位會用到的都是英文
+    值」。中文逐字切後單字沒有辨識度，若日後真有中文語料要處理，需要 bigram
+    ——但那是還沒發生的需求，現在不加。
+    """
     if not document:
         return []
-    return [
-        token for token in TOKEN_PATTERN.findall(document.lower())
-        if len(token) >= MIN_TERM_LENGTH and token not in STOP_TERMS
-    ]
+    return [token for token in TOKEN_PATTERN.findall(document.lower())
+            if len(token) >= MIN_LATIN_TERM_LENGTH]

@@ -39,7 +39,28 @@ POPULATION_REASONS: dict[str, str] = {
     "family_country_layout": "同族合併後",
     # 分群兩通道：技術缺無獨立項者、功效缺設計案。
     "cluster_topic_table": "{excluded} 件無分群來源文本",
+    # ⚠ 2026-08-09 補：未授權公告的專利沒有公告年，母體**必然**小於總數。
+    # 先前沒登記，讀者看到「母體 40/55 件」只會認為資料錯誤——那正是本模組
+    # 當初要解決的問題本身。
+    "publication_trend": "{excluded} 件尚未授權公告",
+    "country_distribution": "{excluded} 件無受理局資訊",
 }
+
+#: 單位不是「件」的報表。
+#: ⚠ 機會四象限的一個點是**一個主題**不是一件專利——沿用件數句型會產出
+#: 「母體 7/55 件」這種語意錯誤的註記。這類報表不套用專利母體對帳。
+NON_PATENT_UNIT_REPORTS = frozenset({
+    "opportunity_quadrant",
+})
+
+#: 母體恆等於專利總數的報表（每件專利都會落進去，不需要理由）。
+#: ⚠ 明列出來而不是「沒登記就當作相等」：沒登記代表「沒有人檢查過它的母體
+#: 對不對」，那與「檢查過，確認相等」是兩回事。
+SAME_AS_TOTAL_REPORTS = frozenset({
+    "application_trend",
+    # 待 2.3 與 kp_quadrant 一起重新設計；屆時重新歸類。
+    "applicant_strength_profile",
+})
 
 # 申請人三報表走展開 VIEW，件數總和**會大於**專利總數（共同申請一件算兩家）。
 # ⚠ 這是刻意的（0042 定案：專利分析慣例），但必須加註，否則讀者以為算錯。
@@ -47,8 +68,6 @@ OVER_COUNTING_REPORTS = frozenset({
     "applicant_ranking",
     "applicant_country_distribution",
     "applicant_year_matrix",
-    # lifecycle（專利狀態分析）2026-08-07 起走展開口徑（前十大申請人 × 狀態桶）。
-    "lifecycle",
 })
 OVER_COUNTING_NOTE = "含共同申請，總和大於專利件數"
 

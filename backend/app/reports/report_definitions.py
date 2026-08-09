@@ -257,20 +257,10 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
     # 走展開 VIEW（共同申請各自計數，同 applicant_ranking；母體註記標含共同申請）。
     # 狀態桶收斂在 chart_runner 端呼叫 transforms/legal_status（唯一定義處），
     # SQL 只回 (申請人, 原值, 件數)——桶邏輯不複製進 SQL。
-    "lifecycle": ReportDefinition(
-        name="lifecycle",
-        report_type="aggregate",
-        label="Patent Status Analysis",
-        label_zh="專利狀態分析",
-        source_table=APPLICANT_EXPANDED_TABLE,
-        columns=("applicant_display_name", "legal_status"),
-        group_by=("applicant_display_name", "legal_status"),
-        default_order=(("patent_count", "desc"), ("applicant_display_name", "asc")),
-        exclude_blank_columns=("applicant_display_name",),
-    ),
-    # 國家佈局（現有保護口徑）：家族×國家 一列，COUNT(family_id) = 各國家族數。
-    # rows 已按 (family_id, country_code) 去重，alias 沿用 patent_count 讓
-    # choropleth/render 零改動複用；語意是「家族數」，見 docs/report_field_matrix.md。
+    # ⚠ `lifecycle`（專利狀態分析，申請人×法律狀態）2026-08-09 使用者裁決刪除：
+    # 兩個維度已分別由 `country_distribution`（法律狀態）與 `applicant_ranking`
+    # （申請人）回答；交叉後每格件數極少（60 件樣本、十餘家申請人），圖上看不出
+    # 任何模式。TW 專利狀態登錄後的刷新目標改指 `country_distribution`。
     "family_country_layout": ReportDefinition(
         name="family_country_layout",
         report_type="aggregate",

@@ -321,7 +321,6 @@ CHART_FILE_REPORTS: dict[str, list[str]] = {
     "applicant_country_matrix.svg": ["applicant_country_distribution"],
     "applicant_year_matrix.svg": ["applicant_year_matrix"],
     "applicant_year_matrix_more.svg": ["applicant_year_matrix"],
-    "lifecycle.svg": ["lifecycle"],
     # KP 競爭定位象限（值與 KP_QUADRANT_FILENAME 同源，測試 test_kp_quadrant_artifact 盯著）
     "kp_quadrant.svg": ["applicant_strength_profile"],
     # 三個分群 artifact 各自對回自己的報表名（供 manifest／解讀查找定位到正確報表）。
@@ -2553,7 +2552,6 @@ CHART_ENCODING_NOTES: dict[str, str] = {
     "applicant_ranking": "條長＝件數｜排序＝件數由高至低",
     "applicant_country_distribution": "格值＝件數｜列＝申請人、欄＝受理國",
     "applicant_year_matrix": "泡泡大小與顏色＝件數｜列＝申請人、欄＝申請年",
-    "lifecycle": "格值＝件數｜列＝申請人（前十大，含共同申請）、欄＝狀態桶",
 }
 
 
@@ -4107,7 +4105,8 @@ SECTION_SPECS: tuple[SectionSpec, ...] = (
     SectionSpec("applicant_ranking", ("applicant_ranking",), _build_applicant_ranking_section),
     SectionSpec("applicant_year_matrix", ("applicant_year_matrix",), _build_applicant_year_matrix_section),
     SectionSpec("applicant_country", ("applicant_country_distribution",), _build_applicant_country_section),
-    SectionSpec("lifecycle", ("lifecycle",), _build_lifecycle_section),
+    # ⚠ `lifecycle` section 2026-08-09 移除（使用者裁決刪報表）：申請人×法律狀態
+    # 交叉後每格件數極少，圖上看不出模式。法律狀態改由 country_distribution 承接。
     # 分群卡片＝一張 section 出三個 artifact（主題統計表＋機會板＋痛點板）。三個報表名
     # 都掛在此 spec：requestreport_names 帶其中任一就渲染整張分群卡（三者同源、一體呈現）；
     # 保留 "cluster_analytics" 虛擬別名，相容既有「無對應報表的特殊 section」契約與呼叫端。

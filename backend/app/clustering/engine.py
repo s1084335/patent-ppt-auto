@@ -269,24 +269,35 @@ MAX_STABILITY_SPREAD = 1           # 換順序群數變動；大代表 lambda �
 
 #: 掃描的分位範圍與點數。⚠ 上下界用**該批資料的距離分位**而不是絕對值——
 #: 寫死 0.5–1.1 這種區間，換一批分布不同的資料就整段落在區間外。
-SWEEP_QUANTILE_LOW = 0.10
+#: 掃描區間的分位下界／上界。
+#:
+#: ⚠ 2026-08-09 下界由 P10 改為 P1——**P10 會切掉整個有效區**。
+#: 群數越多，同群距離佔全體成對距離的比例越小（≈ 1/群數）。12 群時同群距離
+#: 只佔 8.3%，全部落在 P8 以下，而群半徑（λ 該取的量）就在那裡。
+#:
+#: 實測（合成資料 n=300、12 個真實群、每群 25 篇）：
+#: - 正確的 λ 落在 0.30–0.80
+#: - P10–P60 的掃描區間是 0.88–1.01 —— **完全錯過**，結果只分出 2 群
+#:
+#: 滑雪機資料只有 5–7 群，同群距離佔約 17% > 10%，所以 P10 剛好還涵蓋得到
+#: ——⚠ 這就是「小資料對、大資料爆」的真正原因，而且完全不會報錯。
+#:
+#: 下界取 P1 而非 0：λ 太小只會產生全單點群，會被判準①②刷掉不致誤選，
+#: 但掃在那裡純屬浪費點數。
+SWEEP_QUANTILE_LOW = 0.01
 SWEEP_QUANTILE_HIGH = 0.60
 
-#: 掃描點數。⚠ 2026-08-09 由 18 改為 24——**原值 18 是我憑感覺定的，沒有依據**，
-#: 實測發現它取樣不足：
+#: 掃描的起始點數與上限。⚠ **點數不是固定值**——由收斂判準決定掃多細。
 #:
-#: | 點數 | 技術群數 | 功效群數 |
-#: |---|---|---|
-#: | 6／9／12 | 5／6／7 | 5／5／5 |
-#: | 18 | 7 | **5** |
-#: | 24／36／60 | 7／7／7 | **6／6／6** |
+#: 先前寫死 18（憑感覺）實測取樣不足：功效通道 18 點給 5 群、24 點給 6 群。
+#: 改成 24 只是換一個猜的數字——那與「固定 λ 分位數」是**同一個錯誤**：把該由
+#: 資料決定的東西寫成常數。
 #:
-#: 功效通道在 18→24 時從 5 群跳到 6 群，而 24 以上一致——代表 18 點的結果不是
-#: 收斂值。24 是群數開始穩定的起點，成本也還可接受（n=35 約 6 秒、n=44 約 1 秒）。
-#:
-#: ⚠ 這個值仍只在滑雪機兩通道 + 合成資料上驗過收斂性。換一批資料若群數隨點數
-#: 持續變動，要再往上調——判準是「**群數在點數增加時是否穩定**」，不是某個定值。
-SWEEP_STEPS = 24
+#: 現在的做法：從 `SWEEP_START_POINTS` 開始，每輪在相鄰兩點間插中點
+#: （8→15→29→57），直到**連續兩輪選出的群數相同**。
+#: ⚠ 插中點而非等分重取，是為了讓舊點全部保留——掃描具決定性，重算純屬浪費。
+SWEEP_START_POINTS = 8
+
 
 #: 穩定度重跑次數。⚠ 只對通過前三項的 lambda 才跑——每次都跑會讓校準變慢
 #: 一個數量級，而大部分 lambda 在前三項就被刷掉了。
@@ -305,6 +316,10 @@ class LambdaSelection:
     value: float
     method: str
     version: str
+    #: 實際掃了幾點，以及是否收斂。⚠ 沒收斂要說——假裝收斂會讓使用者以為
+    #: 結果比實際可靠。
+    sweep_points: int = 0
+    converged: bool = False
     #: 實際用來推導的樣本數。⚠ 欄位名與 `dpmeans.LambdaResult` 一致——
     #: `artifacts.build_run_metadata` 兩種都要收得下，缺一個欄位就 AttributeError，
     #: 而且是跑到 finalize 才炸（2026-08-09 實機驗收抓到）。
@@ -312,8 +327,24 @@ class LambdaSelection:
     sweep: list[dict[str, Any]] = field(default_factory=list)
 
 
-def select_lambda(vectors: list[list[float]], *, documents: list[str]) -> LambdaSelection:
-    """掃 lambda 區間，用四項判準過濾，再用主題一致性挑最佳（CLU-008）。
+def resolution_limit(distances: list[float], *, low: float, high: float) -> int:
+    """掃描區間內**實際存在的相異距離值**數量——掃描的自然上限。
+
+    ⚠ λ 只在跨過某個實際距離值時才改變分群結果：兩個 λ 之間若沒有任何距離落在
+    其中，它們產生完全相同的分群。所以細分到步進細於這些值的間隔時，再細分只是
+    在掃空白。
+
+    ⚠ 重複的距離值只算一次——它們是同一個切點，不增加解析度。
+    """
+    return len({d for d in distances if low <= d <= high})
+
+
+def select_lambda(vectors: list[list[float]], *, documents: list[str],
+                  max_points: int | None = None) -> LambdaSelection:
+    """掃 lambda 區間並用判準挑選，掃描密度**由收斂判準決定**（CLU-008）。
+
+    每輪在相鄰兩點間插中點加密，直到連續兩輪選出的群數相同為止。
+    ⚠ 舊點的結果直接重用：掃描具決定性，同一個 λ 在同一批資料上必得同一結果。
 
     ⚠ 全軍覆沒時回退到分位數公式並在 method 標明。會發生在資料本身沒有結構時
     （全部很像、或全部互相遠離）——那是資料的性質不是錯誤，仍要產出可用的 run
@@ -322,46 +353,162 @@ def select_lambda(vectors: list[list[float]], *, documents: list[str]) -> Lambda
     points = [dpmeans.l2_normalize(v) for v in vectors]
     distances = _pairwise_sorted(points)
     if not distances:
-        result = dpmeans.derive_lambda(vectors)
-        return LambdaSelection(value=result.value, method=f"fallback:{result.method}",
-                               version=result.version, sample_size=result.sample_size)
+        return _fallback_selection(vectors, reason="no_pairwise_distance")
 
-    rows: list[dict[str, Any]] = []
-    for value in _sweep_values(distances):
-        state = dpmeans.fit(vectors, lambda_=value)
-        row = _evaluate(value, state, points, documents)
-        rows.append(row)
+    grid = _initial_grid(distances)
+    if not grid:
+        return _fallback_selection(vectors, reason="degenerate_range")
+
+    # ⚠ 上限由**資料的自然解析度**決定，不是固定點數（見 resolution_limit）。
+    if max_points is None:
+        # ⚠ 下限保底 SWEEP_START_POINTS：區間內沒有距離值時仍要能掃完第一輪。
+        max_points = max(resolution_limit(distances, low=grid[0], high=grid[-1]),
+                         SWEEP_START_POINTS)
+
+    evaluated: dict[float, dict[str, Any]] = {}
+    previous_count: int | None = None
+    converged = False
+    previous_counts: set[int] | None = None
+    while True:
+        for value in grid:
+            if value not in evaluated:
+                evaluated[value] = _evaluate(
+                    value, dpmeans.fit(vectors, lambda_=value), points, documents)
+        rows = [evaluated[value] for value in sorted(evaluated)]
+        candidates = build_candidates(rows)
+        best = pick_best_candidate(candidates)
+        count = best["topic_count"] if best else None
+        counts = {c["topic_count"] for c in candidates}
+        # ⚠ 收斂＝**候選集合**穩定，不只是最佳候選的群數相同。
+        # 實測（12 個真實群的合成資料）：只比最佳群數時，n=300／600 在第二輪
+        # 碰巧兩次都選到 2 群就停了，標成「已收斂」卻只找到 2 個主題——假收斂。
+        # 只要還在發現新的群數選項，就代表還沒掃夠。
+        if (count is not None and count == previous_count
+                and previous_counts is not None and counts == previous_counts):
+            converged = True
+            break
+        previous_count = count
+        previous_counts = counts
+        if len(evaluated) >= max_points:
+            break
+        grid = _refine(sorted(evaluated))
+
+    rows = [evaluated[value] for value in sorted(evaluated)]
+    best = _pick_best(rows)
+    if best is None:
+        selection = _fallback_selection(vectors, reason="no_lambda_passed")
+        selection.sweep = rows
+        selection.sweep_points = len(rows)
+        return selection
+    suffix = "converged" if converged else "not_converged"
+    return LambdaSelection(
+        value=best["lambda"],
+        method=f"sweep:{SWEEP_QUANTILE_LOW}-{SWEEP_QUANTILE_HIGH}:weighted_quality:{suffix}",
+        version=dpmeans.LAMBDA_METHOD_VERSION,
+        sample_size=len(points),
+        sweep_points=len(rows),
+        converged=converged,
+        sweep=rows,
+    )
+
+
+def build_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把通過四項判準的掃描點**依群數去重**成候選清單。
+
+    ⚠ 這一步同時解掉兩個問題：
+
+    1. **使用者失去調整主題數的能力**：DP-Means 只產一個候選時，介面上是
+       「請選擇方案」但實際沒得選。去重後每種群數一個候選，選了真的會不同。
+    2. **評分對掃描密度敏感**：`rank_candidates` 是跨候選正規化，候選集合一變
+       所有分數就變。實測固定 24／36／60 點給技術 7 群，逐步細分到 29 點卻給
+       6 群——同一批資料、不同掃法、不同答案。去重後候選集合＝群數種類（有限
+       且穩定），掃描再密只會讓代表更準，不改變候選集合。
+
+    代表取**該群數區間的中位 λ**——⚠ 不取分數最高或邊緣：邊緣值換一批資料就
+    掉到隔壁群數去了，中點最耐得住資料微變。
+    """
+    from .model import rank_candidates
 
     passed = [row for row in rows if not row["failed"]]
     if not passed:
-        result = dpmeans.derive_lambda(vectors)
-        return LambdaSelection(
-            value=result.value,
-            method=f"fallback:no_lambda_passed:{result.method}",
-            version=result.version, sample_size=result.sample_size, sweep=rows)
+        return []
+    by_count: dict[int, list[dict[str, Any]]] = {}
+    for row in passed:
+        by_count.setdefault(row["topic_count"], []).append(row)
 
-    # ⚠ 用**既有候選排序的同一套加權**（model.rank_candidates）綜合四個指標，
-    # 不是只看 coherence——一致性高但主題彼此重複、或件數嚴重傾斜的方案，
-    # 單看一個指標會勝出。權重的唯一定義處在 model.RANKING_WEIGHTS。
-    from .model import rank_candidates
+    representatives = []
+    for count in sorted(by_count):
+        group = sorted(by_count[count], key=lambda r: r["lambda"])
+        representatives.append(dict(group[len(group) // 2]))
 
     scores = rank_candidates([
         {"coherence": r["coherence"], "diversity": r["diversity"],
          "balance": r["balance"], "small_topic_ratio": r["small_topic_ratio"]}
-        for r in passed
+        for r in representatives
     ])
-    for row, score in zip(passed, scores):
+    for row, score in zip(representatives, scores):
         row["score"] = round(score, 6)
-    # 分數相同時取較大的 lambda（主題較少、較保守）——並列必須有固定解，
-    # 否則同一批資料兩次校準會選到不同的 lambda。
-    best = max(passed, key=lambda r: (r["score"], r["lambda"]))
+    return representatives
+
+
+def pick_best_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """挑分數最高的候選。
+
+    ⚠ 分數相同時取較大的 lambda（主題較少、較保守）——並列必須有固定解，
+    否則同一批資料兩次校準會選到不同的方案。
+    """
+    if not candidates:
+        return None
+    return max(candidates, key=lambda c: (c["score"], c["lambda"]))
+
+
+def _pick_best(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """掃描收斂判斷用：先去重再挑最佳，與正式候選同一條路徑。"""
+    return pick_best_candidate(build_candidates(rows))
+
+
+def _quantile_at(distances: list[float], quantile: float) -> float:
+    """取排序後距離的第 q 分位值。"""
+    n = len(distances)
+    return distances[min(n - 1, max(0, round(quantile * (n - 1))))]
+
+
+def _initial_grid(distances: list[float]) -> list[float]:
+    """起始掃描點：在**分位空間**等分，不是數值空間。
+
+    ⚠ 為什麼是分位而不是等距：λ 的有效變化只發生在距離值密集的地方——兩個 λ
+    之間若沒有距離值，它們產出完全相同的分群。等距取樣會把大量點浪費在稀疏區，
+    而在密集區（正是群結構所在）太疏。
+
+    實測：下界由 P10 放寬到 P1 後區間寬了 3 倍，8 個等距點讓功效通道從能找到
+    5–6 群退步到只剩 3–4 群——點都掃在空曠處了。改分位等分後回復。
+    """
+    quantiles = _initial_quantiles()
+    if not quantiles:
+        return []
+    values = sorted({round(_quantile_at(distances, q), 6) for q in quantiles})
+    return [v for v in values if v > 0]
+
+
+def _initial_quantiles() -> list[float]:
+    step = (SWEEP_QUANTILE_HIGH - SWEEP_QUANTILE_LOW) / (SWEEP_START_POINTS - 1)
+    return [SWEEP_QUANTILE_LOW + step * i for i in range(SWEEP_START_POINTS)]
+
+
+def _refine(existing: list[float]) -> list[float]:
+    """在相鄰兩點間插中點。⚠ 舊點全部保留——掃描具決定性，重算純屬浪費。"""
+    return [round((existing[i] + existing[i + 1]) / 2, 6)
+            for i in range(len(existing) - 1)]
+
+
+def _fallback_selection(vectors: list[list[float]], *, reason: str) -> LambdaSelection:
+    """掃描產不出結果時退回分位數公式，並在 method 標明原因。"""
+    result = dpmeans.derive_lambda(vectors)
     return LambdaSelection(
-        value=best["lambda"],
-        method=f"sweep:{SWEEP_QUANTILE_LOW}-{SWEEP_QUANTILE_HIGH}:weighted_quality",
-        version=dpmeans.LAMBDA_METHOD_VERSION,
-        sample_size=len(points),
-        sweep=rows,
-    )
+        value=result.value, method=f"fallback:{reason}:{result.method}",
+        version=result.version, sample_size=result.sample_size)
+
+
 
 
 #: 精簡掃描表時，非選中列保留的欄位。
@@ -559,45 +706,58 @@ CANDIDATE_TYPE_DPMEANS = "dpmeans"
 
 def plan_dpmeans_calibration(
     vectors: list[list[float]], *, documents: list[str], elapsed_seconds: float,
-) -> dict[str, Any]:
-    """DP-Means 的校準結果：一個候選，不掃 k。
+) -> list[dict[str, Any]]:
+    """DP-Means 的校準：掃 λ 到收斂，**每種群數產一個候選**。
 
-    ⚠ 掃 k 那條路徑的存在理由是「k 要由人決定」。DP-Means 的主題數由資料與
-    lambda 決定，選 k 沒有意義——不隔離的話，使用者會被要求在三個**完全不影響
-    結果**的候選之間選一個。介面看起來正常、選了也沒反應，比報錯更難察覺。
+    ⚠ 掃 k 那條路徑的存在理由是「k 要由人決定」。DP-Means 的群數由資料與 λ 決定，
+    掃固定的七組 k 沒有意義。但**使用者仍該有得選**——所以改成把通過判準的掃描點
+    依群數去重，每種群數一個候選（見 `build_candidates`）。選了會真的不同。
 
-    ⚠ lambda 由 `select_lambda` **掃描選出**，不是套一個固定分位數：固定分位
-    等於假設所有批次的專利都適用同一個群半徑，而那只在一批資料上驗過。
-
-    四項品質指標照常計算——使用者要能拿它跟舊引擎的候選比較。
+    ⚠ 每個候選帶**自己的 λ**：共用一個的話選哪個都一樣。finalize 依使用者選定的
+    candidate_id 取回對應的 λ，不重新掃描。
     """
     selection = select_lambda(vectors, documents=documents)
-    state = dpmeans.fit(vectors, lambda_=selection.value)
-    topic_count = len(state.centers)
-    quality = _quality(state.labels, documents)
-    sizes = _size_metrics(state.labels) if state.labels else {
-        "balance": None, "small_topic_ratio": None}
-    return {
-        "candidate_type": CANDIDATE_TYPE_DPMEANS,
-        # k 沿用既有 schema 欄位，值＝實際群數。⚠ 它不是使用者選的。
-        "k": topic_count,
-        "topic_count": topic_count,
-        "coherence": quality["coherence"],
-        "diversity": quality["diversity"],
-        "balance": sizes["balance"],
-        "small_topic_ratio": sizes["small_topic_ratio"],
-        "elapsed_seconds": elapsed_seconds,
-        "parameters": {
-            "lambda": selection.value,
-            "lambda_method": selection.method,
-            "lambda_version": selection.version,
-            # ⚠ 掃描表要留下：使用者才看得出「為什麼是這個 lambda」、其他被哪
-            # 一項判準刷掉。只給一個數字無從判斷可信度。
-            # 寫入前精簡（見 compact_sweep）——完整表可用同一批資料重跑取得。
-            "lambda_sweep": compact_sweep(selection.sweep,
-                                          chosen_lambda=selection.value),
-        },
-    }
+    candidates = build_candidates(selection.sweep)
+    if not candidates:
+        # 全軍覆沒：仍要產出一個可用的候選，讓使用者看到結果再判斷。
+        state = dpmeans.fit(vectors, lambda_=selection.value)
+        candidates = [{
+            "lambda": selection.value, "topic_count": len(state.centers),
+            "coherence": None, "diversity": None, "balance": None,
+            "small_topic_ratio": None, "score": None, "failed": ["fallback"],
+        }]
+    best = pick_best_candidate(candidates)
+    compact = compact_sweep(selection.sweep,
+                            chosen_lambda=best["lambda"] if best else None)
+    return [
+        {
+            "candidate_type": CANDIDATE_TYPE_DPMEANS,
+            # k 沿用既有 schema 欄位，值＝該候選的群數。⚠ 不是使用者選的 k，
+            # 是這個 λ 產出的群數。
+            "k": candidate["topic_count"],
+            "topic_count": candidate["topic_count"],
+            "coherence": candidate["coherence"],
+            "diversity": candidate["diversity"],
+            "balance": candidate["balance"],
+            "small_topic_ratio": candidate["small_topic_ratio"],
+            "score": candidate["score"],
+            "elapsed_seconds": elapsed_seconds,
+            "is_recommended": best is not None and candidate["lambda"] == best["lambda"],
+            "parameters": {
+                "lambda": candidate["lambda"],
+                "lambda_method": selection.method,
+                "lambda_version": selection.version,
+                "lambda_sample_size": selection.sample_size,
+                "sweep_points": selection.sweep_points,
+                "sweep_converged": selection.converged,
+                # ⚠ 掃描表只掛在推薦的候選上，不逐一複製——它描述的是整輪掃描，
+                # 不是單一候選，複製 N 份純粹浪費空間。
+                "lambda_sweep": compact if (
+                    best is not None and candidate["lambda"] == best["lambda"]) else None,
+            },
+        }
+        for candidate in candidates
+    ]
 
 
 # --------------------------------------------------------------------------

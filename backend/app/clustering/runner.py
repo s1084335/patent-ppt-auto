@@ -809,6 +809,7 @@ def finalize_top_level(
                 artifact_version=int(run_row["artifact_version"]),
                 model_key=model_key,
                 model_path=model_path,
+                candidate_row=candidate_row,
             )
         else:
             config = ModelConfig(
@@ -1096,61 +1097,89 @@ def _persist_final_topics(
 def _calibrate_with_dpmeans(
     *, run_id: int, reduced_matrix: ReducedEmbeddingMatrix, documents: list[str],
 ) -> tuple[list[KScanResult], list[dict[str, Any]]]:
-    """DP-Means 的校準：跑一次、產一個候選，不掃 k（tasks 2.5）。
+    """DP-Means 的校準：掃 λ 到收斂，每種群數產一個候選（tasks 2.5／3.1）。
 
     ⚠ 回傳形狀刻意與 KMeans 路徑相同（scan_results, persisted_candidates），
     好讓 `CalibrationSummary` 與前端候選介面不必為第二個引擎分岔。
     """
     started = time.perf_counter()
-    profile = engine.plan_dpmeans_calibration(
+    profiles = engine.plan_dpmeans_calibration(
         reduced_matrix.vectors, documents=documents, elapsed_seconds=0.0)
-    profile["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-    scan = KScanResult(
-        k=int(profile["k"]),
-        topic_count=int(profile["topic_count"]),
-        coherence=float(profile["coherence"] or 0.0),
-        diversity=float(profile["diversity"] or 0.0),
-        balance=float(profile["balance"] or 0.0),
-        small_topic_ratio=float(profile["small_topic_ratio"]),
-        elapsed_seconds=float(profile["elapsed_seconds"]),
-        score=0.0,
-    )
-    candidate = {
-        "candidate_id": 1,
-        "run_id": run_id,
-        "is_selected": False,
-        "selected_by": None,
-        "selected_at": None,
-        "llm_explanation": None,
-        "candidate_type": profile["candidate_type"],
-        # ⚠ 既有候選的鍵是 candidate_k（finalize 與 API 都讀它）；k 是 KScanResult
-        # 內部欄位。兩個都給，讓 DP-Means 候選與 KMeans 候選在下游完全同形。
-        "k": profile["k"],
-        "candidate_k": profile["k"],
-        "topic_count": profile["topic_count"],
-        "coherence": profile["coherence"],
-        "diversity": profile["diversity"],
-        "balance": profile["balance"],
-        "small_topic_ratio": profile["small_topic_ratio"],
-        "elapsed_seconds": profile["elapsed_seconds"],
-        "score": None,
-        "parameters": {
-            "small_topic_ratio": profile["small_topic_ratio"],
+    elapsed = round(time.perf_counter() - started, 3)
+
+    scans: list[KScanResult] = []
+    candidates: list[dict[str, Any]] = []
+    for index, profile in enumerate(profiles, start=1):
+        profile["elapsed_seconds"] = elapsed
+        scans.append(KScanResult(
+            k=int(profile["k"]),
+            topic_count=int(profile["topic_count"]),
+            coherence=float(profile["coherence"] or 0.0),
+            diversity=float(profile["diversity"] or 0.0),
+            balance=float(profile["balance"] or 0.0),
+            small_topic_ratio=float(profile["small_topic_ratio"] or 0.0),
+            elapsed_seconds=elapsed,
+            score=float(profile["score"] or 0.0),
+        ))
+        candidates.append({
+            "candidate_id": index,
+            "run_id": run_id,
+            "is_selected": False,
+            "selected_by": None,
+            "selected_at": None,
+            "llm_explanation": None,
+            "candidate_type": profile["candidate_type"],
+            "k": profile["k"],
+            # ⚠ 既有候選的鍵是 candidate_k（finalize 與 API 都讀它）。
+            "candidate_k": profile["k"],
             "topic_count": profile["topic_count"],
-            "elapsed_seconds": profile["elapsed_seconds"],
-            **profile["parameters"],
-        },
-    }
+            "coherence": profile["coherence"],
+            "diversity": profile["diversity"],
+            "balance": profile["balance"],
+            "small_topic_ratio": profile["small_topic_ratio"],
+            "elapsed_seconds": elapsed,
+            "score": profile["score"],
+            "is_recommended": profile["is_recommended"],
+            "parameters": {
+                "small_topic_ratio": profile["small_topic_ratio"],
+                "topic_count": profile["topic_count"],
+                "elapsed_seconds": elapsed,
+                **profile["parameters"],
+            },
+        })
+
     with psycopg.connect(**get_connection_kwargs()) as conn:
         # ⚠ k_scan 落點是 metrics.k_scan（與 _persist_calibration 同源），
         # 不是 state 頂層——放錯地方前端讀不到，而且不會報錯。
         _merge_topic_state(conn, run_id, {
-            "candidates": [candidate],
+            "candidates": candidates,
             "status": "needs_review",
             "algorithm": ALGORITHM_DPMEANS,
-            "metrics": {"k_scan": [scan.to_dict()]},
+            "metrics": {"k_scan": [scan.to_dict() for scan in scans]},
         })
-    return [scan], [candidate]
+    return scans, candidates
+
+
+def _lambda_from_candidate(candidate_row: Any) -> Any:
+    """從使用者選定的候選取回 λ 與推導方法。
+
+    ⚠ **這是正確性問題不只是效能**：候選去重後同一批資料有多個方案（3／5／7 群）。
+    使用者選了「3 群」，finalize 就必須用該候選的 λ。若重新呼叫 `select_lambda`，
+    它會自己挑分數最高的（可能是 5 群）——使用者選了 3 群、系統給 5 群，
+    而且**不會有任何錯誤訊息**。
+
+    ⚠ 舊候選（calibrate 時還沒存 λ）回 None，由呼叫端退回重算，不得 raise。
+    """
+    parameters = dict((candidate_row or {}).get("parameters") or {})
+    value = parameters.get("lambda")
+    if value is None:
+        return None
+    return dpmeans.LambdaResult(
+        value=float(value),
+        method=str(parameters.get("lambda_method") or "candidate"),
+        version=str(parameters.get("lambda_version") or dpmeans.LAMBDA_METHOD_VERSION),
+        sample_size=int(parameters.get("lambda_sample_size") or 0),
+    )
 
 
 def _finalize_with_dpmeans(
@@ -1166,6 +1195,7 @@ def _finalize_with_dpmeans(
     artifact_version: int,
     model_key: str,
     model_path: Path,
+    candidate_row: Any = None,
 ) -> tuple[int, int]:
     """以 Cosine Online DP-Means 定案第一層主題（CLU-001／CLU-008／CLU-009）。
 
@@ -1179,8 +1209,11 @@ def _finalize_with_dpmeans(
       在降維後才重新成立。
     """
     vectors = reduced_matrix.vectors
-    # ⚠ 用掃描選出的 lambda，不是固定分位數公式——每批資料自己決定群半徑。
-    lambda_result = engine.select_lambda(vectors, documents=corpus.documents)
+    # ⚠ 沿用**使用者選定候選**記錄的 λ，不重新掃描——重掃會覆蓋使用者的選擇
+    # （見 _lambda_from_candidate）。舊候選沒存 λ 時才退回重算。
+    lambda_result = _lambda_from_candidate(candidate_row)
+    if lambda_result is None:
+        lambda_result = engine.select_lambda(vectors, documents=corpus.documents)
     state = dpmeans.fit(vectors, lambda_=lambda_result.value)
     model_hash = save_artifact(
         WorkspaceTopicArtifact(

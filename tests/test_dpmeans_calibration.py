@@ -37,14 +37,35 @@ class DpmeansCalibrationTests(unittest.TestCase):
                  "treadmill deck cushion", "treadmill running damping",
                  "elliptical stride length"]
 
-    def _profile(self):
+    def _profiles(self):
         return engine.plan_dpmeans_calibration(
             self.VECTORS, documents=self.DOCUMENTS, elapsed_seconds=1.5)
 
-    def test_returns_exactly_one_candidate(self):
-        """⚠ 一個候選，不是三個——沒有 k 可選，就不該假裝有得選。"""
-        profile = self._profile()
-        self.assertEqual(profile["candidate_type"], "dpmeans")
+    def _profile(self):
+        """推薦的那個候選。
+
+        ⚠ 2026-08-09 契約變更：`plan_dpmeans_calibration` 由回傳**單一候選**改為
+        回傳**每種群數一個候選**的清單。理由有二（使用者定案）：
+        ① 只給一個候選時，介面上是「請選擇方案」但實際沒得選，使用者失去調整
+           主題數的能力；② `rank_candidates` 是跨候選正規化，候選集合隨掃描密度
+           變動會讓分數不穩定——依群數去重後候選集合固定為群數種類。
+        本輔助函式取推薦的那個，讓原有斷言的語意不變。
+        """
+        profiles = self._profiles()
+        recommended = [p for p in profiles if p["is_recommended"]]
+        return recommended[0] if recommended else profiles[0]
+
+    def test_returns_one_candidate_per_topic_count(self):
+        """每種群數一個候選，且只有一個被標為推薦。"""
+        profiles = self._profiles()
+        counts = [p["topic_count"] for p in profiles]
+        self.assertEqual(len(counts), len(set(counts)), "同一群數不得出現兩個候選")
+        self.assertEqual(sum(1 for p in profiles if p["is_recommended"]), 1)
+
+    def test_candidate_type_is_dpmeans(self):
+        """⚠ 候選由資料產生（每種群數一個），不是固定的保守／平衡／細分三選一。"""
+        for profile in self._profiles():
+            self.assertEqual(profile["candidate_type"], "dpmeans")
 
     def test_topic_count_comes_from_data(self):
         profile = self._profile()
@@ -86,15 +107,16 @@ class DpmeansCalibrationTests(unittest.TestCase):
         self.assertEqual(self._profile()["elapsed_seconds"], 1.5)
 
     def test_reproducible(self):
-        """同一批資料兩次校準要得到同一個候選（含 lambda）。"""
-        self.assertEqual(self._profile(), self._profile())
+        """同一批資料兩次校準要得到同一組候選（含 lambda）。"""
+        self.assertEqual(self._profiles(), self._profiles())
 
     def test_single_cluster_data_still_yields_candidate(self):
         """⚠ 全部擠成一群也要能產候選——那是有效結果，不是錯誤。"""
         tight = [_unit(1.0, 0.0), _unit(0.999, 0.01), _unit(0.998, 0.02)]
-        profile = engine.plan_dpmeans_calibration(
+        profiles = engine.plan_dpmeans_calibration(
             tight, documents=["a b", "a c", "a d"], elapsed_seconds=0.1)
-        self.assertGreaterEqual(profile["topic_count"], 1)
+        self.assertTrue(profiles, "全軍覆沒也要產出候選，讓使用者看到結果再判斷")
+        self.assertGreaterEqual(profiles[0]["topic_count"], 1)
 
 
 if __name__ == "__main__":
