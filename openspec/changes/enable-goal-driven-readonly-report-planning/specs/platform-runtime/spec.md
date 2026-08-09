@@ -6,7 +6,11 @@
 
 🔴 **2026-08-09 使用者定案（規格回寫）**：原條文要求「工具 MUST NOT 接受 SQL 字串」，被實測推翻——照該條實作出來的七支工具讀的全是 `report_data.json`（引擎彙總好的報表快照），**沒有一支查資料庫**，於是「讓 CLI 去資料庫找證據來寫簡報」這個最大目標並不成立。使用者定案「整合到 MCP 去，包括敘述線也是」後，新增 `query_database` 一支收 SQL 的唯讀工具（原敘述線靠 `Bash(uv run:*)`＋`query_patents.py` 取得的能力搬進 MCP，不因換通道而縮權）。
 
-⇒ 修正後的邊界：**快照型工具** MUST 收 typed 參數且 MUST NOT 接受 SQL；**`query_database`** MAY 接受 SQL，但 MUST 限單句 `SELECT`／`WITH`，MUST 由連線層強制 `default_transaction_read_only` 與語句逾時，且 MUST 明示截斷（`truncated`）。唯讀性的保證從「不收 SQL」改為「**連線層強制唯讀＋語法前置檢查**」——前者只是讓工具不好被誤用，後者才是真正擋得住寫入的那一層。
+⇒ 修正後的邊界：**快照型工具** MUST 收 typed 參數且 MUST NOT 接受 SQL；**`query_database`** MAY 接受 SQL，但 MUST 限單句 `SELECT`／`WITH`，MUST 在**該筆交易內**以 `SET TRANSACTION READ ONLY` 與 `SET LOCAL statement_timeout` 強制唯讀與逾時，且 MUST 明示截斷（`truncated`）。唯讀性的保證從「不收 SQL」改為「**交易層強制唯讀＋語法前置檢查**」——前者只是讓工具不好被誤用，後者才是真正擋得住寫入的那一層。
+
+🔴 **2026-08-09（A6 實測）二次修正**：原文寫「由**連線層**強制 `default_transaction_read_only`」，實測**不成立**。本專案 DSN 走 Supabase transaction pooler（6543），pooler **忽略連線字串的 startup options**（`-c`）——繞過語法檢查後 UPDATE／INSERT／CREATE／DELETE **全部執行成功**，`statement_timeout` 也沒有作用。也就是說在那之前，「真護欄」只存在於註解裡，實際只有可繞過的語法檢查一道。
+
+⚠ 這是「規格與現實不符」最危險的一種：文件宣稱有兩層防護，維護者據此放心開放自由 SQL，而第二層根本不存在——**且不會有任何錯誤訊息**（連線成功、查詢正常，只有真的去寫才會發現）。改綁交易後實測四種寫入全被 DB 拒絕、300ms 逾時亦生效。
 
 🔴 **2026-08-07 使用者裁決（規格回寫）**：原條文要求另建 DB reader role 作第二層邊界。正式部署為**公司內網自管伺服器、單一組織使用**，且 CLI 依架構本就拿不到 credential，額外 role 的維運成本（多一組密碼輪替、grants migration、漂移守門）大於邊際安全效益 ⇒ **不採 DB reader role**。若日後開放外部存取、多租戶或把 MCP server 移到使用者端執行，本條須重新評估並回復雙層要求。
 
@@ -15,6 +19,16 @@
 - **WHEN** report-research MCP profile 列出可用工具
 - **THEN** 清單 SHALL 只含 catalog／preview／query／evidence 類唯讀工具
 - **AND** allowlist contract test SHALL 在出現任何 save／refresh／generate／apply／shell／write 工具時失敗
+
+#### Scenario: 唯讀強制必須在交易層（2026-08-09 新增）
+
+⚠ 動因：連線字串的 startup options 在 pooler 後面會被丟棄，而這**不會有任何
+錯誤訊息**——連線成功、查詢正常，只有真的去寫才會發現護欄不存在。
+
+- **WHEN** `query_database` 或查詢閘道對資料庫執行查詢
+- **THEN** 該筆交易 SHALL 先執行 `SET TRANSACTION READ ONLY` 與 `SET LOCAL statement_timeout`
+- **AND** SHALL NOT 依賴連線字串的 `-c default_transaction_read_only`（pooler 會忽略）
+- **AND** 契約測試 SHALL 檢查實際的連線呼叫未使用該 startup option
 
 #### Scenario: CLI 不持有資料庫憑證
 
