@@ -244,6 +244,74 @@ def build_topic_entries(
     return entries
 
 
+# --------------------------------------------------------------------------
+# 全量定案（finalize）
+# --------------------------------------------------------------------------
+
+
+def plan_finalize_topics(
+    *,
+    state: Any,
+    vectors: list[list[float]],
+    patent_ids: list[int],
+    source_field: str,
+    run_id: int,
+    representative_limit: int,
+) -> list[dict[str, Any]]:
+    """DP-Means 全量分群結果 → 正式 topics 清單。
+
+    ⚠ 與 BERTopic finalize 的兩點差異：
+
+    - **不產關鍵詞**。DP-Means 沒有 c-TF-IDF。這不影響命名——`ai_topic_label_runner`
+      有紅線黑名單明文禁止 keywords 進 CLI payload（給了關鍵字，LLM 會覆述關鍵詞
+      而不是讀專利內容）。命名靠的是代表文檔。
+    - **代表文檔改用「離中心最近的 N 篇」**。向量直接算得出來，語意上就是「最能
+      代表這群的文件」，不需要 c-TF-IDF。
+    """
+    topics: list[dict[str, Any]] = []
+    for index, center in enumerate(state.centers):
+        members = [i for i, label in enumerate(state.labels) if label == index]
+        # 離中心最近的排前面——AI 命名只讀前幾篇，順序就是重要性。
+        members.sort(key=lambda i: dpmeans.cosine_distance(
+            dpmeans.l2_normalize(vectors[i]), center))
+        position = index + 1
+        topics.append({
+            "topic_id": position,
+            "topic_code": format_topic_code(position),
+            "source_field": source_field,
+            "created_run_id": run_id,
+            "model_topic_ids": [index],
+            "topic_kind": "model",
+            "doc_count": len(members),
+            "keywords": [],
+            "representative_patent_ids": [patent_ids[i] for i in members[:representative_limit]],
+            "label": f"主題 {format_topic_code(position)}",
+            "label_source": "fallback",
+            "display_order": position,
+            "status": "active",
+        })
+    return topics
+
+
+def plan_finalize_assignments(
+    *,
+    state: Any,
+    vectors: list[list[float]],
+    patent_ids: list[int],
+) -> list[tuple[int, str, float]]:
+    """DP-Means 分群結果 → assignment 三元組 (patent_id, topic_code, distance)。
+
+    ⚠ 距離用 cosine，與分群同一把尺。混用歐氏距離會讓「離中心多遠」這個數字在
+    報表與分群之間互相矛盾，而且看不出來。
+    """
+    rows: list[tuple[int, str, float]] = []
+    for index, label in enumerate(state.labels):
+        distance = dpmeans.cosine_distance(
+            dpmeans.l2_normalize(vectors[index]), state.centers[label])
+        rows.append((patent_ids[index], format_topic_code(label + 1), float(distance)))
+    return rows
+
+
 def _next_topic_position(existing_codes: list[str]) -> int:
     """下一個可用位置＝既有最大號 + 1。
 

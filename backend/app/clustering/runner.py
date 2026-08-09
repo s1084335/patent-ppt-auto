@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 import json
 import logging
 import math
+import os
 from pathlib import Path
 import time
 from typing import Any
@@ -44,7 +45,16 @@ from .model import (
     reduce_with_incremental_pca,
     topic_cv_coherence_per_topic,
 )
-from .artifacts import WorkspaceTopicArtifact, artifact_key, artifact_path, save_artifact
+from .artifacts import (
+    ALGORITHM_DPMEANS,
+    WorkspaceTopicArtifact,
+    artifact_key,
+    artifact_path,
+    build_run_metadata,
+    save_artifact,
+    serialize_dpmeans_state,
+)
+from . import dpmeans, engine
 from .engine import format_topic_code
 from .preprocessing import clean_patent_text, sha256_text
 from .sources import SOURCE_FIELD_TECHNICAL, get_source_spec
@@ -766,19 +776,6 @@ def finalize_top_level(
             n_components=PCA_COMPONENTS,
             batch_size=min(kmeans_batch_size, len(corpus.documents)),
         )
-        config = ModelConfig(
-            n_components=PCA_COMPONENTS,
-            n_clusters=selected_k,
-            batch_size=batch_size,
-            kmeans_batch_size=kmeans_batch_size,
-            show_progress_bar=False,
-        )
-        result = fit_bertopic(
-            corpus.documents,
-            reduced_matrix,
-            scheme_name=f"PCA{PCA_COMPONENTS}D-k{selected_k}",
-            config=config,
-        )
         model_key = artifact_key(
             workspace_id=int(workspace_id),
             source_field=source_field,
@@ -789,31 +786,62 @@ def finalize_top_level(
             source_field=source_field,
             run_id=run_id,
         )
-        model_hash = save_artifact(
-            WorkspaceTopicArtifact(
+        # ⚠ 只有**新 run** 看 feature flag；增量一律跟隨 artifact 記錄的演算法
+        # （見 clustering/engine.py 模組說明）。預設仍是舊引擎。
+        algorithm = engine.resolve_algorithm(os.getenv(engine.ALGORITHM_ENV))
+        if algorithm == ALGORITHM_DPMEANS:
+            topic_count, assignment_count = _finalize_with_dpmeans(
+                run_id=run_id,
+                candidate_id=candidate_id,
+                selected_by=selected_by,
                 workspace_id=int(workspace_id),
                 source_field=source_field,
-                run_id=run_id,
-                artifact_version=int(run_row["artifact_version"]),
+                corpus=corpus,
+                reduced_matrix=reduced_matrix,
                 reducer=reducer,
-                topic_model=result.topic_model,
-                embedding_model=corpus.embedding_model,
-                embedding_model_version=corpus.model_version,
-                preprocessing_version=corpus.preprocessing_version,
-            ),
-            model_path,
-        )
-        topic_count, assignment_count = _persist_final_topics(
-            run_id=run_id,
-            candidate_id=candidate_id,
-            selected_by=selected_by,
-            corpus=corpus,
-            reduced_matrix=reduced_matrix,
-            result=result,
-            selected_score=float(candidate_row["score"]),
-            model_artifact_key=model_key,
-            model_hash=model_hash,
-        )
+                artifact_version=int(run_row["artifact_version"]),
+                model_key=model_key,
+                model_path=model_path,
+            )
+        else:
+            config = ModelConfig(
+                n_components=PCA_COMPONENTS,
+                n_clusters=selected_k,
+                batch_size=batch_size,
+                kmeans_batch_size=kmeans_batch_size,
+                show_progress_bar=False,
+            )
+            result = fit_bertopic(
+                corpus.documents,
+                reduced_matrix,
+                scheme_name=f"PCA{PCA_COMPONENTS}D-k{selected_k}",
+                config=config,
+            )
+            model_hash = save_artifact(
+                WorkspaceTopicArtifact(
+                    workspace_id=int(workspace_id),
+                    source_field=source_field,
+                    run_id=run_id,
+                    artifact_version=int(run_row["artifact_version"]),
+                    reducer=reducer,
+                    topic_model=result.topic_model,
+                    embedding_model=corpus.embedding_model,
+                    embedding_model_version=corpus.model_version,
+                    preprocessing_version=corpus.preprocessing_version,
+                ),
+                model_path,
+            )
+            topic_count, assignment_count = _persist_final_topics(
+                run_id=run_id,
+                candidate_id=candidate_id,
+                selected_by=selected_by,
+                corpus=corpus,
+                reduced_matrix=reduced_matrix,
+                result=result,
+                selected_score=float(candidate_row["score"]),
+                model_artifact_key=model_key,
+                model_hash=model_hash,
+            )
     except Exception as exc:
         _mark_run_failed(run_id, exc)
         raise
@@ -1044,12 +1072,125 @@ def _persist_final_topics(
         for index, topic_id in enumerate(topics)
         if topic_id != -1
     ]
+    return _finish_final_topics(
+        run_id=run_id,
+        candidate_id=candidate_id,
+        selected_by=selected_by,
+        scope=scope,
+        topic_dicts=topic_dicts,
+        assignment_rows=assignment_rows,
+        metrics={"selected_result": {**result.metrics, "score": selected_score},
+                 "model_artifact_hash": model_hash},
+        model_artifact_key=model_artifact_key,
+        model_hash=model_hash,
+    )
+
+
+def _finalize_with_dpmeans(
+    *,
+    run_id: int,
+    candidate_id: int,
+    selected_by: str,
+    workspace_id: int,
+    source_field: str,
+    corpus: ClusteringCorpus,
+    reduced_matrix: ReducedEmbeddingMatrix,
+    reducer: Any,
+    artifact_version: int,
+    model_key: str,
+    model_path: Path,
+) -> tuple[int, int]:
+    """以 Cosine Online DP-Means 定案第一層主題（CLU-001／CLU-008／CLU-009）。
+
+    ⚠ 與 BERTopic 路徑的三點差異，都是演算法本質決定的：
+
+    - **不用 selected_k**：主題數由資料與 lambda 決定，候選 k 在此無作用。
+      候選旗標仍照寫（使用者確實選過），但 k 不參與計算。
+    - **lambda 由資料推導**（CLU-008），不要求使用者輸入；值與推導方法一起寫進
+      run metadata，否則日後改公式就再也回答不了「當時為什麼是這個值」。
+    - **PCA 後重做 L2 normalize**（CLU-009）在 dpmeans 內部完成——cosine 的前提
+      在降維後才重新成立。
+    """
+    vectors = reduced_matrix.vectors
+    lambda_result = dpmeans.derive_lambda(vectors)
+    state = dpmeans.fit(vectors, lambda_=lambda_result.value)
+    model_hash = save_artifact(
+        WorkspaceTopicArtifact(
+            workspace_id=workspace_id,
+            source_field=source_field,
+            run_id=run_id,
+            artifact_version=artifact_version,
+            reducer=reducer,
+            # DP-Means 沒有 sklearn 模型；狀態全存在 dpmeans_state（純 JSON 型別）。
+            topic_model=None,
+            embedding_model=corpus.embedding_model,
+            embedding_model_version=corpus.model_version,
+            preprocessing_version=corpus.preprocessing_version,
+            algorithm=ALGORITHM_DPMEANS,
+            dpmeans_state=serialize_dpmeans_state(state, lambda_=lambda_result.value),
+        ),
+        model_path,
+    )
+    topic_dicts = engine.plan_finalize_topics(
+        state=state,
+        vectors=vectors,
+        patent_ids=corpus.patent_ids,
+        source_field=source_field,
+        run_id=run_id,
+        representative_limit=REPRESENTATIVE_DOC_LIMIT_FOR_LLM,
+    )
+    assignment_rows = engine.plan_finalize_assignments(
+        state=state, vectors=vectors, patent_ids=corpus.patent_ids)
+    scope = load_run_scope(run_id)
+    if not can_refinalize(scope):
+        raise ValueError("workspace source already has topics; use incremental or merge")
+    clear_topic_scoped_state(run_id)
+    return _finish_final_topics(
+        run_id=run_id,
+        candidate_id=candidate_id,
+        selected_by=selected_by,
+        scope=scope,
+        topic_dicts=topic_dicts,
+        assignment_rows=assignment_rows,
+        metrics={
+            "selected_result": build_run_metadata(
+                algorithm=ALGORITHM_DPMEANS,
+                lambda_result=lambda_result,
+                pca_normalized=True,
+                topics_before=0,
+                topics_after=len(state.centers),
+            ),
+            "model_artifact_hash": model_hash,
+        },
+        model_artifact_key=model_key,
+        model_hash=model_hash,
+    )
+
+
+def _finish_final_topics(
+    *,
+    run_id: int,
+    candidate_id: int,
+    selected_by: str,
+    scope: dict[str, Any],
+    topic_dicts: list[dict[str, Any]],
+    assignment_rows: list[tuple[int, str, float | None]],
+    metrics: dict[str, Any],
+    model_artifact_key: str,
+    model_hash: str,
+) -> tuple[int, int]:
+    """定案落庫的共用尾段：兩種分群引擎產出的主題都由這裡寫入。
+
+    ⚠ 抽出來的理由：前半（關鍵詞、代表文檔、coherence）是 BERTopic 專屬，
+    DP-Means 完全不同；後半（落庫、候選旗標、state 頂層鍵）則必須一模一樣。
+    不抽的話兩條路徑會各自複製這段，而其中 `model_artifact_hash` 要落 state
+    頂層這種細節（漏了會讓後續增量 KeyError）只要漏抄一次就爆。
+    """
     persist_final_topics(
         run_id=run_id,
         topics=topic_dicts,
         assignments=assignment_rows,
-        metrics={"selected_result": {**result.metrics, "score": selected_score},
-                 "model_artifact_hash": model_hash},
+        metrics=metrics,
         artifact_key=model_artifact_key,
     )
     # 候選選定旗標同樣記在 topic_state_json（與候選寫入端同源）
@@ -1069,13 +1210,13 @@ def _persist_final_topics(
             _merge_topic_state(
                 cur, run_id,
                 {"candidates": updated_candidates, "status": "completed",
-                 "topic_count": len(topic_ids), "error_message": None,
+                 "topic_count": len(topic_dicts), "error_message": None,
                  "model_artifact_hash": model_hash,
                  "artifact_version": int(
                      dict(scope.get("topic_state_json") or {}).get("artifact_version") or 1)},
             )
             _set_workflow_status(cur, run_id, "succeeded")
-    return len(topic_ids), len(assignment_rows)
+    return len(topic_dicts), len(assignment_rows)
 
 
 def _mark_run_running(run_id: int) -> None:

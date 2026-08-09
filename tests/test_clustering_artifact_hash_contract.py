@@ -25,9 +25,16 @@ class ArtifactHashTopLevelContractTests(unittest.TestCase):
     """finalize 與 incremental 都須把 model_artifact_hash 寫在 topic_state 頂層。"""
 
     def _finalize_merge_patch(self) -> str:
-        """取 _persist_final_topics 內 _merge_topic_state 的 patch 片段（state 頂層寫入處）。"""
+        """取 finalize 落庫尾段內 _merge_topic_state 的 patch 片段（state 頂層寫入處）。
+
+        ⚠ 2026-08-09 掃描目標由 `_persist_final_topics` 改為 `_finish_final_topics`。
+        **契約沒有變**——finalize 仍必須把 hash 與 version 寫進 state 頂層；變的是
+        這段落庫尾段被抽出成獨立函式，好讓 DP-Means 與 BERTopic 兩條路徑共用
+        （replace-clustering-with-dpmeans）。抽出的目的正是**避免第二條路徑漏抄
+        這段**，與本測試要守的東西同向。
+        """
         source = RUNNER.read_text(encoding="utf-8")
-        start = source.index("def _persist_final_topics")
+        start = source.index("def _finish_final_topics")
         end = source.index("\ndef ", start + 1)
         body = source[start:end]
         merge_idx = body.find("_merge_topic_state")

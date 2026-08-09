@@ -186,6 +186,24 @@ def _enqueue_topic_label(summary: Any) -> None:
         LOGGER.exception("topic label enqueue failed after finalize")
 
 
+def _enqueue_topic_label_for_new_topics(summary: Any) -> None:
+    """增量長出新主題時才排 ai:topic_label（CLU-004）。
+
+    ⚠ 判準是「**這批有沒有長出新主題**」，不是「有沒有跑增量」。
+    `ai_topic_label_runner` 會重寫所有非 manual 的主題名——人工命名有 guard 保護，
+    但既有 AI 命名會被重跑。每次增量都排等於每次重新命名整個 workspace，
+    而 max_attempts=1 意味著重跑就是真的再花一次 LLM 額度。
+
+    ⚠ KMeans 固定 k，永遠不會長出新主題，這條路徑對舊引擎完全靜默。
+    """
+    try:
+        if not _summary_field(summary, "new_topic_codes"):
+            return
+        _enqueue_topic_label(summary)
+    except Exception:  # noqa: BLE001 - 命名是加值，排不進去不得讓已完成的增量變失敗
+        LOGGER.exception("topic label enqueue failed after incremental")
+
+
 def handle_clustering_incremental(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
     """對指定 workspace/source_field 執行 incremental 分群更新。"""
     context.heartbeat("clustering_incremental_started", 5)
@@ -196,6 +214,8 @@ def handle_clustering_incremental(payload: dict[str, Any], context: JobContext) 
     # incremental 也可能批次處理大量新增專利，因此與 full flow 使用同一個保活機制。
     with context.keepalive("clustering_incremental_running", 35, interval_seconds=_heartbeat_interval(payload)):
         summary = incremental_workspace(workspace_id=int(workspace_id), source_field=_source_field(source_field))
+    # DP-Means 可能長出新主題；只有長出來時才排命名（見該函式說明）。
+    _enqueue_topic_label_for_new_topics(summary)
     context.heartbeat("clustering_incremental_completed", 95)
     return _json_safe(summary)
 

@@ -27,11 +27,29 @@
 
 Run metadata 新增 algorithm/version、lambda/value source、PCA normalization 與新舊 topic 統計；artifact 保存 centers、counts 與可繼續增量的必要狀態。
 
+## 實作期補充（2026-08-09，實作中確認）
+
+**DP-Means 的主題不產 c-TF-IDF 關鍵詞。** 這是演算法差異的必然結果（c-TF-IDF 是
+BERTopic 全量擬合的產物），影響範圍已逐項查證：
+
+| 消費點 | 影響 | 處置 |
+|---|---|---|
+| `ai_topic_label_runner`（AI 命名） | **無影響** | 該模組本就有紅線黑名單禁止 keywords 進 CLI payload——給了關鍵字，LLM 會覆述關鍵詞而非讀專利內容命名。命名靠代表文檔 |
+| `api/topics.py` → 前端主題卡 | keywords 顯示為空 | 待 3.3 實測確認可接受；主題名稱由 AI 命名提供 |
+| `postgres_topic_repository` | 讀出空清單，不報錯 | 無需改動 |
+
+**代表文檔改用「離中心最近的 N 篇」**（`engine.plan_finalize_topics`）。向量直接
+算得出來，不需 c-TF-IDF，語意上就是「最能代表這群的文件」——AI 命名讀的正是這些。
+
+**K 選擇路徑改為隔離而非移除**（tasks 2.5 已回寫）：使用者定案「確定新引擎穩定後
+舊引擎才會移除」，驗收期間舊引擎必須能跑，移除會讓 rollback 失效。
+
 ## Risks / Trade-offs
 
 - [順序敏感] → 固定 deterministic order 並測 permutation 影響界線。
 - [lambda 過小產生碎群] → 以 calibration distribution 與最小群治理規則限制。
 - [舊人工主題失效] → 先定 artifact migration 與 topic key 對映，再重跑正式資料。
+- [DP-Means 主題無關鍵詞] → 命名不受影響（見上表）；前端顯示待 3.3 實測確認。
 
 ## Migration Plan
 

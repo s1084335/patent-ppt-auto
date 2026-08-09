@@ -209,6 +209,14 @@ class IncrementalSummary:
     artifact_version: int
     pca_updated: bool
     status: str
+    #: 本批新長出的主題 topic_code（只有 DP-Means 會有）。
+    #: ⚠ 空清單與 None 都代表「沒長出新主題」——呼叫端據此決定要不要排
+    #: ai:topic_label。每次增量都排等於每次重跑整個 workspace 的 AI 命名。
+    new_topic_codes: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.new_topic_codes is None:
+            object.__setattr__(self, "new_topic_codes", [])
 
 
 @dataclass(frozen=True)
@@ -799,7 +807,7 @@ def incremental_workspace(
         # 中心格式對不上，而且不會報錯（見 incremental 模組說明）。
         prediction = engine.predict_incremental(
             artifact, documents=batch.documents, vectors=reduced.vectors)
-        assignment_count = _persist_incremental_assignments(
+        assignment_count, new_topic_codes = _persist_incremental_assignments(
             run_id=run_id,
             workspace_id=workspace_id,
             source_field=source_field,
@@ -845,6 +853,7 @@ def incremental_workspace(
         artifact_version=artifact.artifact_version,
         pca_updated=pca_updated,
         status="completed",
+        new_topic_codes=new_topic_codes,
     )
 
 
@@ -1372,7 +1381,7 @@ def _persist_incremental_assignments(
     reduced: ReducedEmbeddingMatrix,
     predicted_topics: list[int],
     new_topic_indexes: list[int] | None = None,
-) -> int:
+) -> tuple[int, list[str]]:
     """把本批模型 topic 映射到永久 topic；未知 ID 改派 centroid 最近的 active 主題。
 
     0021：指派落 derived_layer.topic_assignments，topic_key＝topic_code；
@@ -1455,7 +1464,7 @@ def _persist_incremental_assignments(
                         doc_counts=counts,
                     ),
                 })
-    return len(rows)
+    return len(rows), [topic.topic_code for topic in plan.new_topics]
 
 
 def _complete_incremental_run(
