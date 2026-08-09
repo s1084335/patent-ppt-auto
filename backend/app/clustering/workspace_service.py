@@ -1411,21 +1411,8 @@ def _persist_incremental_assignments(
                 existing_codes=[str(t.get("topic_code")) for t in all_topics],
             )
             vectors = np.asarray(reduced.vectors, dtype=float)
-            centers = {
-                topic_id: vectors[[i for i, value in enumerate(predicted_topics) if value == topic_id]].mean(axis=0)
-                for topic_id in set(predicted_topics)
-            }
-            # 2026-07-27：移除未分類桶後，未知 model topic ID 改以 centroid 最近的 active
-            # 主題承接。MiniBatchKMeans 不產生 outlier，未知 ID 只在使用者合併／停用主題後
-            # 出現（模型仍吐舊 ID，但該 ID 已不在 active 清單）——這些專利本就該歸到合併後
-            # 的主題，塞「未分類」反而失真。
-            # active 主題的 centroid 以本批同 code 的成員均值代表；本批沒有該 code 的成員時
-            # 該主題不參與比較（無從得知其位置），屬正常情形。
-            active_centers: dict[str, Any] = {}
-            for model_topic_id, center in centers.items():
-                code = model_to_code.get(model_topic_id)
-                if code is not None:
-                    active_centers[code] = center
+            centers, active_centers = _batch_centers(
+                vectors, predicted_topics=predicted_topics, model_to_code=model_to_code)
             rows = []
             for index, model_topic_id in enumerate(predicted_topics):
                 # plan 已把新主題配好 code；只有「未知舊 ID」才是 None。
@@ -1447,24 +1434,60 @@ def _persist_incremental_assignments(
                 """,
                 rows,
             )
-            if plan.new_topics:
-                # ⚠ 一旦有新主題，這個 incremental run 就必須寫出**完整** topics
-                # 清單（既有 + 新）。讀取端只認 topics 非空的 run（_latest_state_run），
-                # 不寫的話新主題等於沒存進去；只寫新的則會讓既有主題整批消失。
-                counts: dict[str, int] = {}
-                for key in plan.topic_keys:
-                    if key is not None:
-                        counts[key] = counts.get(key, 0) + 1
-                _merge_topic_state(cur, run_id, {
-                    "topics": engine.build_topic_entries(
-                        existing_topics=all_topics,
-                        new_topics=plan.new_topics,
-                        source_field=source_field,
-                        run_id=run_id,
-                        doc_counts=counts,
-                    ),
-                })
+            _write_new_topics(cur, plan, run_id=run_id, source_field=source_field,
+                              existing_topics=all_topics)
     return len(rows), [topic.topic_code for topic in plan.new_topics]
+
+
+def _batch_centers(
+    vectors: Any, *, predicted_topics: list[int], model_to_code: dict[int, str],
+) -> tuple[dict[int, Any], dict[str, Any]]:
+    """本批各 model topic 的 centroid，以及其中對得上 active 主題的那些。
+
+    2026-07-27：移除未分類桶後，未知 model topic ID 改以 centroid 最近的 active
+    主題承接。MiniBatchKMeans 不產生 outlier，未知 ID 只在使用者合併／停用主題後
+    出現（模型仍吐舊 ID，但該 ID 已不在 active 清單）——這些專利本就該歸到合併後
+    的主題，塞「未分類」反而失真。
+
+    ⚠ active 主題的 centroid 以本批同 code 的成員均值代表；本批沒有該 code 的
+    成員時該主題不參與比較（無從得知其位置），屬正常情形。
+    """
+    centers = {
+        topic_id: vectors[[i for i, value in enumerate(predicted_topics)
+                           if value == topic_id]].mean(axis=0)
+        for topic_id in set(predicted_topics)
+    }
+    active_centers = {
+        code: center
+        for topic_id, center in centers.items()
+        if (code := model_to_code.get(topic_id)) is not None
+    }
+    return centers, active_centers
+
+
+def _write_new_topics(cur: Any, plan: Any, *, run_id: int, source_field: str,
+                      existing_topics: list[dict[str, Any]]) -> None:
+    """把本批新長出的主題寫進這個 run 的 topic_state_json。
+
+    ⚠ 一旦有新主題，這個 incremental run 就必須寫出**完整** topics 清單
+    （既有 + 新）：讀取端只認 topics 非空的 run（`_latest_state_run`）。
+    不寫的話新主題等於沒存進去；只寫新的則會讓既有主題整批消失。
+    """
+    if not plan.new_topics:
+        return
+    counts: dict[str, int] = {}
+    for key in plan.topic_keys:
+        if key is not None:
+            counts[key] = counts.get(key, 0) + 1
+    _merge_topic_state(cur, run_id, {
+        "topics": engine.build_topic_entries(
+            existing_topics=existing_topics,
+            new_topics=plan.new_topics,
+            source_field=source_field,
+            run_id=run_id,
+            doc_counts=counts,
+        ),
+    })
 
 
 def _complete_incremental_run(

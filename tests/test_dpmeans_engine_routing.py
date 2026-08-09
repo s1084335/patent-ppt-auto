@@ -140,5 +140,60 @@ class FinalizeRoutingTests(unittest.TestCase):
             engine.resolve_algorithm("dp-means")
 
 
+
+class EdgeCaseCoverageTests(unittest.TestCase):
+    """邊界分支——都是「不常走但走到時不能出錯」的路徑。"""
+
+    def test_kmeans_empty_batch_is_noop(self):
+        """⚠ 空批次不得呼叫模型：sklearn 的 partial_fit 收到空清單會炸。"""
+        artifact = _kmeans_artifact()
+        result = engine.predict_incremental(artifact, documents=[], vectors=[])
+        self.assertEqual(result.topics, [])
+        self.assertEqual(artifact.topic_model.calls, 0)
+
+    def test_select_lambda_with_single_vector_falls_back(self):
+        """只有一筆文件時算不出兩兩距離——要回退，不得 raise。"""
+        result = engine.select_lambda([[1.0, 0.0]], documents=["only one"])
+        self.assertGreater(result.value, 0.0)
+        self.assertIn("fallback", result.method)
+
+    def test_select_lambda_subsamples_large_input(self):
+        """⚠ 超過上限時抽樣：O(n²) 的距離計算會讓校準卡住。"""
+        big = [[1.0, i / 1000.0] for i in range(dpmeans.PAIRWISE_SAMPLE_LIMIT + 20)]
+        docs = [f"doc {i % 7} term{i % 7}" for i in range(len(big))]
+        result = engine.select_lambda(big, documents=docs)
+        self.assertGreater(result.value, 0.0)
+
+    def test_quality_without_documents_returns_none(self):
+        """文件缺漏時指標算不出來——回 None，不得讓整輪掃描失敗。"""
+        self.assertEqual(engine._quality([0, 1], []),
+                         {"coherence": None, "diversity": None})
+
+    def test_quality_with_mismatched_lengths_returns_none(self):
+        """⚠ 文件數與標籤數對不上代表上游出錯，不得硬算出一個假指標。"""
+        self.assertEqual(engine._quality([0, 1, 2], ["only one"]),
+                         {"coherence": None, "diversity": None})
+
+    def test_quality_survives_coherence_failure(self):
+        """⚠ coherence 算不出來時仍要回 diversity——它只是排序依據之一。"""
+        from unittest import mock
+
+        with mock.patch("backend.app.clustering.model.topic_cv_coherence_per_topic",
+                        side_effect=RuntimeError("gensim unavailable")):
+            quality = engine._quality([0, 0, 1], ["ski belt", "ski drive", "treadmill deck"])
+        self.assertIsNone(quality["coherence"])
+        self.assertIsNotNone(quality["diversity"])
+
+    def test_quality_with_blank_documents_scores_zero_diversity(self):
+        """⚠ 全空文本抽不出關鍵詞 → diversity 0，不是 None。
+
+        兩者語意不同：None 是「算不出來」（缺文件、長度對不上），0 是「算出來
+        就是最差」。排序時 None 視為最差、0 也接近最差，結果相近——但混用會讓
+        「為什麼這個候選沒有分數」查不出來。
+        """
+        quality = engine._quality([0, 1], ["", ""])
+        self.assertEqual(quality["diversity"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

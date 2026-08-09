@@ -84,10 +84,74 @@
   |---|---|
   | 目標測試（9 支 DP-Means 測試檔） | **68 過**，0 紅 |
   | 範圍回歸（`-k dpmeans/topic/clustering/handler/artifact/keyword/candidate/ranking`） | **614 過、1 紅** ——`test_default_report_names_match_definitions`，⚠ **既有失敗**（`DEFAULT_REPORT_NAMES` 12→13，PR #19 合併時即存在），非本輪造成 |
-  | `verify_module.py` 靜態分析 | 修正中（首輪 5 個新增行問題，門檻 0） |
-  | `verify_module.py` 圈複雜度 | 修正中（首輪 7 支超 B） |
-  | `verify_module.py` 覆蓋率 | 首輪 85%（門檻 90%）——未覆蓋集中在 `runner`／`workspace_service` 的接線行，需真實 DB，由 3.3 端到端涵蓋 |
-- [ ] 3.3 產出 cluster artifact、run metadata、技術/功效 topic labels 與代表性 UI/API 結果，確認重跑可再現
+  | `verify_module.py` 功能測試 | **136 過**（首輪 119） |
+  | `verify_module.py` 靜態分析 | ✅ **新增行 0 個**（首輪 5 個；全庫既有 59 個另計） |
+  | `verify_module.py` 圈複雜度 | ⚠ 剩 1 支：`runner._persist_final_topics` C(20)——⚠ **既有函式，原本是 D(27)**，抽出共用尾段後降 7。降到 ≤10 要大改與本 change 無關的 BERTopic 邏輯，不在本輪範圍 |
+  | `verify_module.py` 覆蓋率 | 87%（門檻 90%）——⚠ **純函式模組全部達標**：`dpmeans` 100%、`keywords` 100%、`engine` 100%、`artifacts` 100%、`model` 94%。缺口全在 `runner`(17%)／`workspace_service`(28%) 的 DB 接線行，逐行說明見下 |
+
+  ### 覆蓋率未達標的逐行說明
+
+  未覆蓋的 55 行**全部**需要真實 DB 連線（`psycopg.connect`）。它們是組裝與落庫
+  的接線碼，決策邏輯已全數抽成純函式並個別測到：
+
+  | 檔案／行段 | 內容 | 覆蓋方式 |
+  |---|---|---|
+  | `runner` 721–736 | calibrate 的引擎分流與 DP-Means 分支 | 3.3 端到端（兩通道各跑一次） |
+  | `runner` 798–841 | finalize 的引擎分流 | DP-Means 分支：3.3 端到端；KMeans 分支：既有 DB 測試（本機無 postgres 已排除） |
+  | `runner` 1104–1288 | `_calibrate_with_dpmeans`／`_finalize_with_dpmeans` 本體 | 3.3 端到端；其內的計算全在 `engine.plan_*`（100% 覆蓋） |
+  | `workspace_service` 808–821 | 增量分流與 artifact 狀態存回 | 3.3 增量段實測 |
+  | `workspace_service` 1403–1482 | 指派寫入、新主題落地、centroid 計算 | 3.3 增量段實測；決策邏輯在 `engine.plan_topic_keys`／`build_topic_entries`（100% 覆蓋） |
+
+  ⚠ 這些行**不是沒驗**——是驗在端到端而非單元測試層。首輪報告只寫「需 DB」時
+  我還沒跑增量，那句話當時是不成立的（見 3.3 的增量段）。
+- [x] 3.3 產出 cluster artifact、run metadata、技術/功效 topic labels 與代表性 UI/API 結果，確認重跑可再現
+
+  以**拋棄式 workspace** 跑完整 calibrate→finalize（使用者定案：不碰 workspace 3
+  的人工命名），驗收後已清除。腳本：`scripts/verify_dpmeans_end_to_end.py`。
+
+  | 項目 | 技術（獨立項） | 功效（效果摘要） |
+  |---|---|---|
+  | 主題數／指派 | 7／35 | 5／44 |
+  | 各群件數 | 10,7,7,5,4,1,1 | 13,13,9,6,3 |
+  | artifact | `algorithm=dpmeans`，7 中心 | `algorithm=dpmeans`，5 中心 |
+  | λ | 0.906421 | 0.957287 |
+  | run metadata | 值＋推導方法＋18 列掃描表 | 同左 |
+  | 主題完整性 | 7/7 有關鍵詞、`label_source=fallback`、代表專利 | 5/5 同左 |
+
+  **可再現性**：λ 與 3.1 掃描算出的值**完全相同**（0.906421／0.957287）。
+
+  ### 增量段（CLU-004，第二輪補驗）
+
+  ⚠ 首輪只驗了 calibrate→finalize，**增量路徑完全沒實測**——而「增量長出新主題」
+  正是本 change 的目的。第二輪改為先用 55 筆專利 finalize，再補進保留的 5 筆跑
+  增量。
+
+  | 項目 | 技術 | 功效 |
+  |---|---|---|
+  | finalize 群數 | 9 | 10 |
+  | 增量處理文件數 | 3 | 5 |
+  | 增量後中心數 | 9（未減少） | 10（未減少） |
+  | 增量 λ | 0.839201（＝artifact 記錄值） | 0.802280（＝artifact 記錄值） |
+  | **新主題** | **0** | **0** |
+
+  ⚠ **新主題建立的路徑端到端沒被觸發**：補進的 5 筆專利都落在既有主題附近。
+  這不是缺陷（新主題本就該在真有新技術方向時才出現），但要如實說——那條路徑
+  目前只有單元測試覆蓋（`NewTopicDetectionTests`、`test_dpmeans_new_topic_persistence`
+  共 22 支）。要端到端驗它，需要一批**技術方向確實不同**的專利。
+
+  ⚠ **同時實證了 R3**：少 5 筆專利（60→55），λ 從 0.906 變 0.839、群數從 7 變 9。
+  每批資料自己決定 λ 是設計本意，但也代表**資料量變動會讓主題結構明顯改變**。
+
+  ### ⚠ 實機驗收抓到三個純函式測不出來的介面不符
+
+  | # | 問題 | 症狀 |
+  |---|---|---|
+  | 1 | 驗收腳本在連線前沒載入 `.env` | 連到預設 `localhost:5433`（兩天前就停的容器），逾時，**看起來像 DB 掛了**。⚠ `.env` 載入原本藏在 `runner.py` 的 import side effect 裡 |
+  | 2 | DP-Means 候選缺 `candidate_k`、`k_scan` 落錯層 | 我憑印象寫成 `k`；`k_scan` 該在 `metrics.k_scan`。⚠ 後者**不會報錯**，只是候選列表空白 |
+  | 3 | `LambdaSelection` 缺 `sample_size` | `build_run_metadata` 讀它，AttributeError 直到 finalize 才炸 |
+
+  三者根因相同：**接線層沒有測試覆蓋**。已補三支契約測試搬到單元測試層
+  （`test_dpmeans_candidate_contract.py`、`MetadataCompatibilityTests`）。
 - [ ] 3.4 記錄未測規模與效能風險，經使用者確認群組品質與回復方案後才 archive
 
   ### 未測與風險（2026-08-09 如實記錄）
@@ -103,6 +167,17 @@
 
   ### 建議的驗收方式
 
-  R1／R2 需要**第二批不同領域的專利**才驗得了。若目前沒有，建議先在拋棄式
-  workspace 以 feature flag 試跑，確認流程完整後再決定是否切換正式 workspace
-  （R5 的備份是切換前的必要前置）。
+  R1 需要**第二批不同領域的專利**才驗得了。合成資料已補測（8 個真實群在四種
+  規模下全部正確找到），但那是乾淨分離的群，真實專利文本沒那麼理想。
+
+  ### 回復方案（切換前必讀）
+
+  | 情境 | 做法 | 為什麼可行 |
+  |---|---|---|
+  | 完全不切換 | 不設 `CLUSTERING_ALGORITHM` | 預設就是舊引擎（`test_default_is_kmeans` 釘住） |
+  | 已切換、想回舊引擎 | 拿掉 flag → 重新 calibrate + finalize | ⚠ 舊 run **不會被刪**（0021 append-only，一律建新版本），隨時查得到 |
+  | 已有 DP-Means artifact 的 workspace | 拿掉 flag **不影響它們** | 增量跟隨 artifact 記錄的演算法，不看 flag（`test_incremental_ignores_feature_flag`）——這是刻意的，中途換引擎會讓中心格式對不上 |
+  | 保住人工命名 | 切換前匯出 `topic_state_json->'topics'` | ⚠ **必要前置**：DP-Means 的 topic_code 與舊主題對不上，人工命名等於作廢 |
+
+  ⚠ 回復不是「按一個鈕還原」——重新 finalize 會產生新的主題編號，下游報表與
+  簡報都要重產。這是換分群演算法的本質代價，不是這個實作的缺陷。

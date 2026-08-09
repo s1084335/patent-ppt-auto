@@ -796,13 +796,23 @@ RANKING_LOWER_IS_BETTER = frozenset({"small_topic_ratio"})
 
 
 def _normalized_column(metrics: list[dict[str, float | None]], key: str) -> list[float]:
-    """取出單一指標欄並正規化。⚠ None（算不出來）視為該項最差，不是跳過——
-    跳過會讓「指標算不出來的候選」因為少扣分而勝出。"""
+    """取出單一指標欄並正規化。
+
+    ⚠ None（算不出來）在**正規化後**設為 0，即該項最低分。
+
+    先前寫成「用現有候選中的最差值填補再正規化」是錯的：只有兩個候選、其中一個
+    是 None 時，填補值就等於另一個的值，兩者正規化後同分——等於白送分給指標算
+    不出來的候選，正好獎勵了品質最不明的方案。
+    """
     raw = [m.get(key) for m in metrics]
-    present = [v for v in raw if v is not None]
-    worst = min(present) if present else 0.0
-    filled = [float(v) if v is not None else worst for v in raw]
-    return _normalize_metric(filled, higher_is_better=key not in RANKING_LOWER_IS_BETTER)
+    present = [float(v) for v in raw if v is not None]
+    if not present:
+        return [0.0 for _ in raw]
+    filled = [float(v) if v is not None else min(present) for v in raw]
+    normalized = _normalize_metric(
+        filled, higher_is_better=key not in RANKING_LOWER_IS_BETTER)
+    return [0.0 if value is None else score
+            for value, score in zip(raw, normalized)]
 
 
 def rank_candidates(metrics: list[dict[str, float | None]]) -> list[float]:

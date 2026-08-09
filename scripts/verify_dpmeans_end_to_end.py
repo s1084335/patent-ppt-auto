@@ -10,7 +10,10 @@
 1. **artifact**：檔案存在、`algorithm='dpmeans'`、`dpmeans_state` 可還原並繼續增量
 2. **run metadata**：記錄 lambda 的**值與推導方法**（CLU-008）與掃描表
 3. **topics**：每個主題有關鍵詞、`label_source='fallback'`（等 AI 命名）、有代表專利
-4. **可再現**：同一批資料重跑一次，λ 與群數必須一致
+4. **增量**（CLU-004）：⚠ 先用**一半**專利 finalize，再補進另一半跑 incremental。
+   這是本 change 的核心目的——舊引擎固定 k、長不出新主題。要驗的是新專利真的
+   能形成新主題、既有主題不被覆寫、artifact 狀態能接續。
+5. **可再現**：同一批資料重跑一次，λ 與群數必須一致
 
 ## 用法
 
@@ -43,9 +46,18 @@ load_dotenv(pathlib.Path(__file__).resolve().parents[1] / ".env", override=False
 
 VERIFY_WORKSPACE_NAME = "_dpmeans_verify"
 
+#: finalize 時先保留幾筆專利，之後補進來驗增量。
+#: ⚠ 不能保留太多：分群門檻是 30 篇**可用文件**，而可用文件數少於專利數。
+HOLD_BACK_PATENTS = 5
 
-def _create_workspace(source_workspace_id: int) -> int:
-    """複製來源 workspace 的專利清單建立拋棄式 workspace。"""
+
+def _create_workspace(source_workspace_id: int) -> tuple[int, list[int]]:
+    """建立拋棄式 workspace，**先只放一半專利**。
+
+    ⚠ 留一半是為了驗增量（CLU-004）：finalize 之後補進另一半，看新專利能不能
+    形成新主題。全部一次放進去就只驗得到 finalize，而「長不出新主題」正是舊
+    引擎的問題本身。
+    """
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
         row = conn.execute(
             "SELECT patent_ids_json FROM app_layer.workspaces WHERE workspace_id = %s",
@@ -53,13 +65,57 @@ def _create_workspace(source_workspace_id: int) -> int:
         ).fetchone()
         if row is None:
             raise SystemExit(f"source workspace not found: {source_workspace_id}")
+        all_ids = list(row["patent_ids_json"])
+        # ⚠ 只保留少數幾筆：分群有 MIN_CLUSTERING_DOCUMENTS=30 的門檻，而「可用
+        # 文件數」少於專利數（不是每筆都有該欄位）。留太多會讓 finalize 直接被
+        # 門檻擋下——2026-08-09 留 1/3 時技術通道只剩 27 篇，calibrate 就失敗了。
         created = conn.execute(
             "INSERT INTO app_layer.workspaces (workspace_name, patent_ids_json) "
             "VALUES (%s, %s) RETURNING workspace_id",
-            (VERIFY_WORKSPACE_NAME, Jsonb(row["patent_ids_json"])),
+            (VERIFY_WORKSPACE_NAME, Jsonb(all_ids[:-HOLD_BACK_PATENTS])),
         ).fetchone()
         conn.commit()
-        return int(created["workspace_id"])
+        return int(created["workspace_id"]), all_ids
+
+
+def _add_remaining_patents(workspace_id: int, all_ids: list[int]) -> int:
+    """把保留的專利補進 workspace，回傳新增筆數。"""
+    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
+        current = conn.execute(
+            "SELECT patent_ids_json FROM app_layer.workspaces WHERE workspace_id = %s",
+            (workspace_id,)).fetchone()
+        existing = set(current["patent_ids_json"])
+        added = [pid for pid in all_ids if pid not in existing]
+        conn.execute(
+            "UPDATE app_layer.workspaces SET patent_ids_json = %s WHERE workspace_id = %s",
+            (Jsonb(all_ids), workspace_id))
+        conn.commit()
+        return len(added)
+
+
+def _run_incremental(workspace_id: int, source_field: str) -> dict[str, Any]:
+    """跑增量並回傳驗收事實（CLU-004）。"""
+    from backend.app.clustering.artifacts import (
+        deserialize_dpmeans_state, load_artifact, resolve_artifact_path,
+    )
+    from backend.app.clustering.workspace_service import incremental_workspace
+
+    summary = incremental_workspace(workspace_id=workspace_id, source_field=source_field)
+    with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
+        run = conn.execute(
+            "SELECT topic_state_json, artifact_key FROM derived_layer.topic_runs "
+            "WHERE run_id = %s", (summary.run_id,)).fetchone()
+    artifact = load_artifact(resolve_artifact_path(str(run["artifact_key"])))
+    state, lambda_ = deserialize_dpmeans_state(artifact.dpmeans_state)
+    return {
+        "incremental_run_id": summary.run_id,
+        "new_document_count": summary.new_document_count,
+        "incremental_assignment_count": summary.assignment_count,
+        # ⚠ 這一項是本 change 的目的：舊引擎固定 k，這個清單永遠是空的。
+        "new_topic_codes": list(summary.new_topic_codes or []),
+        "incremental_center_count": len(state.centers),
+        "incremental_lambda": round(lambda_, 6),
+    }
 
 
 def _drop_workspace(workspace_id: int) -> None:
@@ -87,7 +143,10 @@ def _drop_workspace(workspace_id: int) -> None:
 def _run_channel(workspace_id: int, source_field: str) -> dict[str, Any]:
     """對一個通道跑 calibrate → finalize，回傳驗收所需的事實。"""
     from backend.app.clustering.artifacts import (
-        ALGORITHM_DPMEANS, deserialize_dpmeans_state, load_artifact, resolve_artifact_path,
+        ALGORITHM_DPMEANS,
+        deserialize_dpmeans_state,
+        load_artifact,
+        resolve_artifact_path,
     )
     from backend.app.clustering.runner import calibrate_top_level, finalize_top_level
 
@@ -103,29 +162,36 @@ def _run_channel(workspace_id: int, source_field: str) -> dict[str, Any]:
             "SELECT topic_state_json, artifact_key FROM derived_layer.topic_runs "
             "WHERE run_id = %s", (finalization.run_id,)).fetchone()
     state = dict(run["topic_state_json"] or {})
-    topics = state.get("topics") or []
-
     artifact = load_artifact(resolve_artifact_path(str(run["artifact_key"])))
     dp_state, lambda_ = deserialize_dpmeans_state(artifact.dpmeans_state)
-
-    candidate = (state.get("candidates") or [{}])[0]
-    parameters = candidate.get("parameters") or {}
 
     return {
         "source_field": source_field,
         "run_id": finalization.run_id,
         "topic_count": finalization.topic_count,
         "assignment_count": finalization.assignment_count,
-        # 1. artifact
         "artifact_algorithm": artifact.algorithm,
         "artifact_is_dpmeans": artifact.algorithm == ALGORITHM_DPMEANS,
         "artifact_center_count": len(dp_state.centers),
         "artifact_lambda": round(lambda_, 6),
-        # 2. run metadata
+        **_metadata_facts(state),
+        **_topic_facts(state.get("topics") or []),
+    }
+
+
+def _metadata_facts(state: dict[str, Any]) -> dict[str, Any]:
+    """run metadata 的驗收事實：lambda 的值、推導方法與掃描表列數。"""
+    parameters = (state.get("candidates") or [{}])[0].get("parameters") or {}
+    return {
         "metadata_lambda": parameters.get("lambda"),
         "metadata_lambda_method": parameters.get("lambda_method"),
         "metadata_sweep_rows": len(parameters.get("lambda_sweep") or []),
-        # 3. topics
+    }
+
+
+def _topic_facts(topics: list[dict[str, Any]]) -> dict[str, Any]:
+    """主題的驗收事實：關鍵詞、待命名狀態、代表專利與件數分布。"""
+    return {
         "topics_with_keywords": sum(1 for t in topics if t.get("keywords")),
         "topics_awaiting_label": sum(1 for t in topics
                                      if t.get("label_source") == "fallback"),
@@ -152,6 +218,20 @@ def _check(result: dict[str, Any]) -> list[str]:
         failed.append("有主題的 label_source 不是 fallback")
     if result["topics_with_representatives"] != result["topic_count"]:
         failed.append("有主題沒有代表專利，AI 命名無從下手")
+    if "incremental_run_id" in result:
+        failed.extend(_check_incremental(result))
+    return failed
+
+
+def _check_incremental(result: dict[str, Any]) -> list[str]:
+    """增量的判定（CLU-004）。"""
+    failed = []
+    if not result["new_document_count"]:
+        failed.append("增量沒有處理到新文件，這次驗收無效")
+    if result["incremental_center_count"] < result["topic_count"]:
+        failed.append("增量後中心數變少，既有主題被吃掉了")
+    if result["incremental_lambda"] != result["artifact_lambda"]:
+        failed.append("增量用了不同的 lambda——門檻必須跟隨 artifact，否則群半徑會漂移")
     return failed
 
 
@@ -165,11 +245,15 @@ def main() -> None:
     if os.getenv("CLUSTERING_ALGORITHM") != "dpmeans":
         raise SystemExit("請設 CLUSTERING_ALGORITHM=dpmeans 再執行")
 
-    workspace_id = _create_workspace(args.source_workspace)
+    workspace_id, all_ids = _create_workspace(args.source_workspace)
     report: dict[str, Any] = {"workspace_id": workspace_id, "channels": []}
     try:
+        results = {}
         for source_field in ("wips_independent_claims", "effect_summary"):
-            result = _run_channel(workspace_id, source_field)
+            results[source_field] = _run_channel(workspace_id, source_field)
+        report["patents_added"] = _add_remaining_patents(workspace_id, all_ids)
+        for source_field, result in results.items():
+            result.update(_run_incremental(workspace_id, source_field))
             result["failed"] = _check(result)
             report["channels"].append(result)
     finally:

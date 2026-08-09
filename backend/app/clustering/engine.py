@@ -17,9 +17,9 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import logging
 import random
+from dataclasses import dataclass, field
 from typing import Any
 
 from . import artifacts, dpmeans, keywords
