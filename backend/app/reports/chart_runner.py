@@ -323,6 +323,8 @@ CHART_FILE_REPORTS: dict[str, list[str]] = {
     "applicant_year_matrix.svg": ["applicant_year_matrix"],
     "applicant_year_matrix_more.svg": ["applicant_year_matrix"],
     "lifecycle.svg": ["lifecycle"],
+    # KP 競爭定位象限（值與 KP_QUADRANT_FILENAME 同源，測試 test_kp_quadrant_artifact 盯著）
+    "kp_quadrant.svg": ["applicant_strength_profile"],
     # 三個分群 artifact 各自對回自己的報表名（供 manifest／解讀查找定位到正確報表）。
     "cluster_topic_table.html": ["cluster_topic_table"],
     "opportunity_quadrant.svg": ["opportunity_quadrant"],
@@ -1153,6 +1155,8 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
 
 
 # ── KP 競爭定位象限（P2 版型；範例＝滑雪機 V2 p7）────────────────────
+# 圖檔名（唯一定義處：對照表、產圖與測試都取這裡）。
+KP_QUADRANT_FILENAME = "kp_quadrant.svg"
 # 定位分類**由資料推導**，不吃 AI 給的字串——分類是統計事實不是敘述。
 KP_CLASS_FULL_DOMAIN = "全領域布局"
 KP_CLASS_SINGLE_TECH = "單一技術深布局"
@@ -1186,6 +1190,46 @@ def kp_position_class(row: dict[str, Any], x_median: float, y_median: float) -> 
     return KP_CLASS_NICHE
 
 
+def emit_kp_quadrant(ctx: "ChartContext", rows: list[dict[str, Any]]) -> None:
+    """產 KP 象限圖並掛上對應的 section。
+
+    🔴 2026-08-09：`render_kp_quadrant_chart` 與四面向資料都早已就位，缺的只是
+    這個接點——沒接時組版端 `_render_kp_quadrant` 拿不到圖會**靜默降級**成
+    stat_callout，投影片只剩一個大數字。
+
+    ⚠ 沒有資料就不出圖也不出卡（撐不起就不開那一頁，見 content_standard）。
+    標題取 REPORT_DEFINITIONS 的 label_zh，不在這裡另寫一份字串。
+    """
+    if not rows:
+        return
+    definition = REPORT_DEFINITIONS["applicant_strength_profile"]
+    render_kp_quadrant_chart(ctx.run_dir / KP_QUADRANT_FILENAME, definition.label_zh, rows)
+    ctx.sections.append({
+        "title": definition.label_zh,
+        "report_key": "applicant_strength_profile",
+        "note": "X＝布局國數、Y＝涉入主題數、泡泡＝同族件數、顏色＝定位分類"
+                "（分類由件數與法律狀態推導，非人工標註）。",
+        "variants": [{
+            "label": definition.label_zh,
+            "variant_key": "default",
+            "file": KP_QUADRANT_FILENAME,
+            "rows": rows,
+        }],
+    })
+
+
+def _quadrant_axis_max(values: list[float]) -> float:
+    """象限圖的軸上限：貼齊刻度的最後一格，只留半格餘裕。
+
+    ⚠ 不用「最大值 × 固定倍率」：倍率對小整數軸會多推出一整格
+    （最大 4 → 5 → 刻度畫到 6），右側整片空白且資料全擠在一角。
+    """
+    top_value = max(values + [1.0])
+    ticks = nice_ticks(top_value)
+    step = (ticks[1] - ticks[0]) if len(ticks) > 1 else 1
+    return max(float(ticks[-1]), top_value + step / 2)
+
+
 def render_kp_quadrant_chart(
     path: Path,
     title: str,
@@ -1217,8 +1261,14 @@ def render_kp_quadrant_chart(
     xs = [float(r.get("country_count") or 0) for r in rows]
     ys = [float(r.get("topic_count") or 0) for r in rows]
     sizes = [float(r.get("family_count") or 0) or 1.0 for r in rows]
-    x_max = max(xs + [1.0]) * 1.25
-    y_max = max(ys + [1.0]) * 1.25
+    # 🔴 2026-08-09 首次實機產圖：原本 `max * 1.25` 再套 nice_ticks，資料最大 4
+    # 會把軸推到 6——右側三分之一空白，而**所有泡泡被擠進左下角互相重疊**，
+    # 標籤避讓再好也救不回來。⚠ 這不是避讓演算法的問題，是軸範圍的問題。
+    #
+    # 改為以刻度的最後一格當軸上限（nice_ticks 本身已「夠用就截短」），只留
+    # 半格餘裕讓最外側的泡泡不貼邊。
+    x_max = _quadrant_axis_max(xs)
+    y_max = _quadrant_axis_max(ys)
     s_max = max(sizes)
     x_median = statistics.median(xs) if xs else 0.0
     y_median = statistics.median(ys) if ys else 0.0
@@ -1258,7 +1308,7 @@ def render_kp_quadrant_chart(
         svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" fill="{color}" fill-opacity="0.75" stroke="{color}" stroke-width="1.5"/>')
         points.append((x, y, radius, str(row.get("applicant_display_name") or "")))
     # 標籤避讓走共用函式（不重寫一套）。
-    svg.extend(place_bubble_labels(points, label_px))
+    svg.extend(place_bubble_labels(points, label_px, top_limit=top))
 
     legend_x = left + plot_w + 24
     svg.append(f'<text x="{legend_x}" y="{top + 4}" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">定位分類</text>')
@@ -1273,27 +1323,46 @@ def render_kp_quadrant_chart(
 def place_bubble_labels(
     points: list[tuple[float, float, float, str]],
     label_px: float,
+    top_limit: float = 0.0,
 ) -> list[str]:
     """泡泡標籤避讓（**唯一定義處**）：交錯外推找空位，被推開就畫引線。
 
     points＝[(x, y, radius, label)]，須**已按泡泡由大到小排序**（大泡先佔位）。
+    `top_limit`＝繪圖區上緣，標籤不得推到它之上（壓到標題／副標）。
+
     ⚠ 2026-08-07：KP 象限初版複製了泡泡圖骨架卻漏掉這段，真資料一畫就四家
     標籤疊成一團——避讓抽成共用函式，兩張圖吃同一份邏輯。
+
+    🔴 2026-08-09 首次實機產圖後修兩個參數錯（不是「沒接上」，是接上了但沒效）：
+    - 最小垂直間距原本寫死 **12px，比字高還小**（label_px 約 17）——判定為
+      「不重疊」的兩行實際上疊在一起。改為依字高推導。
+    - 候選位置可以往上推出繪圖區，最高的泡泡標籤因此壓到副標。
+    - 候選全部落空時原本取最後一個（仍可能重疊），改為從已佔位處往下續推。
     """
     out: list[str] = []
     placed: list[tuple[float, float, float]] = []  # (x_center, y_baseline, half_width)
+    # 字高即最小間距：兩行 baseline 差距小於字高就是視覺重疊。
+    min_gap = label_px * 1.15
+    step_px = min_gap
     for x, y, radius, label in points:
         half_w = len(label) * (label_px * 0.32)
         default_y = y - radius - 5
         candidate_ys = [default_y]
-        for i in range(1, 12):
-            step = 13 * ((i + 1) // 2)
-            candidate_ys.append(y + radius + 12 + step if i % 2 else default_y - step)
-        label_y = candidate_ys[-1]
-        for cy in candidate_ys:
-            if all(abs(cy - py) > 12 or abs(x - px) > (half_w + pw) for px, py, pw in placed):
-                label_y = cy
-                break
+        for i in range(1, 24):
+            step = step_px * ((i + 1) // 2)
+            candidate_ys.append(y + radius + min_gap + step if i % 2 else default_y - step)
+        candidate_ys = [cy for cy in candidate_ys if cy >= top_limit] or [max(default_y, top_limit)]
+
+        def _free(cy: float) -> bool:
+            return all(abs(cy - py) >= min_gap or abs(x - px) > (half_w + pw)
+                       for px, py, pw in placed)
+
+        label_y = next((cy for cy in candidate_ys if _free(cy)), None)
+        if label_y is None:
+            # 全部落空：從最低的已佔位往下續推，直到真的空出來（不硬塞回重疊處）。
+            label_y = max([py for _, py, _ in placed] or [default_y]) + min_gap
+            while not _free(label_y):
+                label_y += min_gap
         placed.append((x, label_y, half_w))
         if abs(label_y - default_y) > 6:
             if label_y < y:
@@ -3950,8 +4019,10 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     ranking_names = [str(r.get("applicant_display_name") or "") for r in ranking_rows]
     strength_source = data.get("strength_rows") or []
     if strength_source:
-        ctx.chart_rows["applicant_strength_profile"] = applicant_strength_rows(
+        strength_profile_rows = applicant_strength_rows(
             strength_source, ranking=ranking_names or None)
+        ctx.chart_rows["applicant_strength_profile"] = strength_profile_rows
+        emit_kp_quadrant(ctx, strength_profile_rows)
 
     # CLU-016（補分 change）：母體註記分計 AI 建議、人工核准件數——assignments
     # 每列帶 assigned_source（0048 起），缺欄（舊資料）視為幾何指派、count 0 不出註記。
