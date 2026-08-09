@@ -71,6 +71,12 @@ def key_player_profiles(
             "solo_count": len(pids) - joint,
             "joint_with": [{"applicant": p, "count": c}
                            for p, c in sorted(partners.items(), key=lambda kv: (-kv[1], kv[0]))],
+            # ⚠ 該家**全部**專利的 id（2026-08-10 使用者定案「每家全取」）。
+            # 用途：讓 CLI 知道要查哪些專利——摘要由 CLI 自行透過 MCP
+            # `query_database` 讀 `patents."文獻備註"` 產生，不在此預先算。
+            # 排序固定（升冪）：同一批資料兩次產出要給 CLI 同一份清單，
+            # 否則 prompt 變動會讓 AI 產出無謂地不一致。
+            "patent_ids": sorted(pids),
         })
     if ranking:
         by_name = {p["applicant"]: p for p in profiles}
