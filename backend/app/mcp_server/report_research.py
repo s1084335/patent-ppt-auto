@@ -29,10 +29,11 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Callable  # noqa: F401
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable  # noqa: F401
+from typing import Any
 
 from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 

@@ -37,7 +37,7 @@
 
 ## 6. 整合、實物與安全驗收
 
-- [x] 6.1 執行 MCP/report/AI runner/PPT builder/frontend 目標測試、受影響回歸與 `scripts/verify_module.py`，保存 Red/Green/Refactor 證據　（目標測試與範圍回歸已跑；verify_module 見 A5）
+- [x] 6.1 執行 MCP/report/AI runner/PPT builder/frontend 目標測試、受影響回歸與 `scripts/verify_module.py`，保存 Red/Green/Refactor 證據　（2026-08-09 A5：功能測試通過、新增行 lint 0、本輪新增/改寫 33 支函式 CC 全 <= B、新增行覆蓋率 87%；未覆蓋 18 行全為需真 DB/真 CLI 的路徑，已由 A4/A6 實測腳本驗證）
 - [x] 6.2 在隔離 DB 及正式部署等價設定驗證 reader role 權限矩陣、secret redaction、statement timeout、row limit、跨 workspace/snapshot 拒絕與 rollback　（2026-08-09 實測：抓到唯讀護欄從未生效——pooler 忽略 startup options，UPDATE/CREATE/DELETE 全過。改綁交易層後四項判準全通過）
 - [x] 6.3 以真 CLI 讀取全部選圖圖片／數據並迭代補證據，核對 tool audit、EvidenceManifest、數字與具名主張；不得只用 fake CLI 宣告完成
 - [x] 6.4 產生完整 PPTX、report strategy、slide plan、evidence manifest、artifact manifest 與全頁 PNG，程式化掃描全部頁後逐頁人工檢查目標論證、選圖完整、截字、重疊與空白圖

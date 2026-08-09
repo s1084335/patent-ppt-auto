@@ -25,7 +25,7 @@
 
 - [x] 4.1 Refactor：目標測試全綠後收斂 renderer 參數、manifest serializer 與 asset resolver，移除 web/PPT 重複邏輯
 - [ ] 4.2 執行 report registry/transform/chart、artifact store/API、goal-driven planner、SlidePlan validator 與 PPT builder 回歸　（已跑範圍回歸；完整回歸依 AGENTS.md 規則不跑）
-- [ ] 4.3 執行 `scripts/verify_module.py`，回報 lint、type、複雜度、新增行覆蓋率與未達門檻　（未跑 verify_module.py）
+- [x] 4.3 執行 `scripts/verify_module.py`，回報 lint、type、複雜度、新增行覆蓋率與未達門檻　（2026-08-09 A5 已跑，四項門檻結果見 commit 說明）
 
 ## 5. 重產與實物驗收
 

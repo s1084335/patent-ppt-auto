@@ -85,8 +85,8 @@ def _slide_geometry_errors(slide: dict[str, Any]) -> list[str]:
     hits = [k for k in _GEOMETRY_KEYS if k in slide]
     if not hits:
         return []
-    return [f"slide {slide.get('slide_id', '?')} 含幾何欄位 {hits}——"
-            "CLI 只給版型意圖，座標／字級／色彩由 builder 決定"]
+    return [(f"slide {slide.get('slide_id', '?')} 含幾何欄位 {hits}——"
+             "CLI 只給版型意圖，座標／字級／色彩由 builder 決定")]
 
 
 def validate_slide_plan(

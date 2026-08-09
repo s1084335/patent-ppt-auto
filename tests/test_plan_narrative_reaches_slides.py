@@ -42,6 +42,10 @@ _MARKERS = {
     "exec_summary": "結論標記甲乙丙",
     "walls_gaps": "牆與空白標記甲乙丙",
     "reading_guide": "判讀說明標記甲乙丙",
+    # kp 三種版型在沒有選圖時也走要點頁（2026-08-09 A4：它們原本會被降級）。
+    "kp_deepdive": "競爭者深入標記甲乙丙",
+    "kp_cards": "利基玩家標記甲乙丙",
+    "kp_compare": "兩強對照標記甲乙丙",
 }
 
 

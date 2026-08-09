@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import argparse
-
-
 import hashlib
 import html
 import json
@@ -14,11 +12,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from backend.app.clustering.sources import SOURCE_SEGMENT_SLUGS as _SOURCE_SEGMENT_SLUGS
 from backend.app.reports.cluster_analytics import (
     build_opportunity_matrix,
     build_topic_effect_table,
 )
-from backend.app.clustering.sources import SOURCE_SEGMENT_SLUGS as _SOURCE_SEGMENT_SLUGS
 from backend.app.reports.population import population_notes
 from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 from backend.app.reports.report_engine import parse_json_arg, run_report
@@ -156,11 +154,12 @@ COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
 # 版面邏輯共用）。修 PPT 的尺寸改 chart_sizing.PPT；本檔常數只是綁定，不自帶數值。
 from backend.app.reports.chart_sizing import PPT as _SIZING
 
+
 # 🔴 P3（2026-08-07）：畫布與字級目標改**依作用中的 profile** 取值——
 # 同一支 renderer 服務 web 與 ppt，只有尺寸／字級不同（版面邏輯共用）。
 # ⚠ 保留模組層常數名不變：既有呼叫端一處不用改（介面不變的深化寫法）。
 def _sizing_value(attr: str) -> float:
-    """取作用中 profile 的尺寸值（唯一定義處＝chart_sizing）。
+    r"""取作用中 profile 的尺寸值（唯一定義處＝chart_sizing）。
 
     ⚠ 畫布尺寸維持 **int**：轉成 float 會讓 SVG 屬性變成 `width="949.0"`，
     下游以 `width="(\d+)"` 解析的地方就對不上（2026-08-07 實測一支測試紅）。
@@ -365,7 +364,7 @@ def report_names_for_artifact(filename: str) -> list[str]:
 
 
 # profile 檔名規則的唯一定義處在 chart_profiles；本模組只消費，不另立一套。
-from backend.app.reports.chart_profiles import (  # noqa: E402  （模組中段：避免頂部循環相依）
+from backend.app.reports.chart_profiles import (
     DEFAULT_PROFILE,
     PROFILES,
     ChartProfileError,
@@ -374,7 +373,6 @@ from backend.app.reports.chart_profiles import (  # noqa: E402  （模組中段�
     profile_context,
     profile_filename,
 )
-
 
 # profile manifest 的檔名（前端與組版都靠它把 identity 對到實際圖檔）。
 PROFILE_MANIFEST_NAME = "profile_manifest.json"
@@ -395,7 +393,7 @@ def build_workspace_identity(
     *,
     workspace_id: int | None,
     workspace_name: str | None,
-    name_fetcher: "Callable[[int], str | None]" = _fetch_workspace_name,
+    name_fetcher: Callable[[int], str | None] = _fetch_workspace_name,
 ) -> dict[str, Any]:
     """報表版本的 workspace 身分欄位（封面主標的來源）。
 
@@ -413,7 +411,7 @@ def build_workspace_identity(
         return {}
     try:
         resolved = name_fetcher(int(workspace_id))
-    except Exception:  # noqa: BLE001 名稱查不到就退回，不影響產圖
+    except Exception:  # noqa: BLE001 名稱查不到就退回，不得讓整個產圖掛掉
         return {}
     return {"workspace_name": resolved} if resolved else {}
 
@@ -431,8 +429,8 @@ def _write_svg(path: Path, svg: list[str]) -> Path:
     return target
 
 
-def render_sections_all_profiles(ctx: "ChartContext",
-                                 specs: "tuple[SectionSpec, ...]") -> None:
+def render_sections_all_profiles(ctx: ChartContext,
+                                 specs: tuple[SectionSpec, ...]) -> None:
     """為每個 profile 各跑一次 section builders。
 
     PPT 先跑（既有行為，且它的產出是 report_data.json 與 artifact_manifest 的
@@ -460,7 +458,7 @@ def _variant_key_of(base_name: str, report_key: str) -> str:
     `jurisdiction_distribution.svg` ＋ `country_distribution` → `default`
     （檔名與 report_key 不同名，本來就沒有變體後綴）。
     """
-    stem = base_name[:-4] if base_name.endswith(".svg") else base_name
+    stem = base_name.removesuffix(".svg")
     if stem.startswith(f"{report_key}_"):
         return stem[len(report_key) + 1:]
     return "default"
@@ -1003,8 +1001,8 @@ def render_segmented_bar_chart(
             f'<text x="254" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">'
             f'{xml_text(hatch_label)}</text>')]
           if hatch_label else []),
-        *([f'<text x="{width - 40}" y="67" text-anchor="end" font-size="{note_px:.1f}" '
-           f'fill="{COLOR_TEXT_SOFT}">{xml_text(truncation_note(len(data), total_rows))}</text>']
+        *([(f'<text x="{width - 40}" y="67" text-anchor="end" font-size="{note_px:.1f}" '
+            f'fill="{COLOR_TEXT_SOFT}">{xml_text(truncation_note(len(data), total_rows))}</text>')]
           if truncation_note(len(data), total_rows) else []),
     ]
     y_cursor = top
@@ -1196,7 +1194,7 @@ def kp_position_class(row: dict[str, Any], x_median: float, y_median: float) -> 
     return KP_CLASS_NICHE
 
 
-def emit_kp_quadrant(ctx: "ChartContext", rows: list[dict[str, Any]]) -> None:
+def emit_kp_quadrant(ctx: ChartContext, rows: list[dict[str, Any]]) -> None:
     """產 KP 象限圖並掛上對應的 section。
 
     🔴 2026-08-09：`render_kp_quadrant_chart` 與四面向資料都早已就位，缺的只是
@@ -1254,8 +1252,8 @@ def render_kp_quadrant_chart(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="28" y="34" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="28" y="56" font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">'
-        f'橫軸＝跨國布局深度（國數）｜縱軸＝技術廣度（主題數）｜泡泡大小＝家族件數</text>',
+        (f'<text x="28" y="56" font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">'
+         f'橫軸＝跨國布局深度（國數）｜縱軸＝技術廣度（主題數）｜泡泡大小＝家族件數</text>'),
     ]
     if not rows:
         svg.append(f'<text x="{width / 2:.0f}" y="{height / 2:.0f}" text-anchor="middle" '
@@ -1326,6 +1324,20 @@ def render_kp_quadrant_chart(
     _write_svg(path, svg)
 
 
+def _label_candidate_ys(y: float, radius: float, default_y: float,
+                        min_gap: float, top_limit: float) -> list[float]:
+    """標籤 baseline 的候選位置：預設在泡泡正上方，衝突時上下交錯外推。
+
+    ⚠ 過濾掉繪圖區上緣之上的候選——往上推過頭會壓到標題與副標
+    （2026-08-09 實測 KP 象限最高的泡泡標籤壓到副標）。全部被濾掉時至少留一個。
+    """
+    candidates = [default_y]
+    for i in range(1, 24):
+        step = min_gap * ((i + 1) // 2)
+        candidates.append(y + radius + min_gap + step if i % 2 else default_y - step)
+    return [cy for cy in candidates if cy >= top_limit] or [max(default_y, top_limit)]
+
+
 def place_bubble_labels(
     points: list[tuple[float, float, float, str]],
     label_px: float,
@@ -1349,17 +1361,14 @@ def place_bubble_labels(
     placed: list[tuple[float, float, float]] = []  # (x_center, y_baseline, half_width)
     # 字高即最小間距：兩行 baseline 差距小於字高就是視覺重疊。
     min_gap = label_px * 1.15
-    step_px = min_gap
     for x, y, radius, label in points:
         half_w = len(label) * (label_px * 0.32)
         default_y = y - radius - 5
-        candidate_ys = [default_y]
-        for i in range(1, 24):
-            step = step_px * ((i + 1) // 2)
-            candidate_ys.append(y + radius + min_gap + step if i % 2 else default_y - step)
-        candidate_ys = [cy for cy in candidate_ys if cy >= top_limit] or [max(default_y, top_limit)]
+        candidate_ys = _label_candidate_ys(y, radius, default_y, min_gap, top_limit)
 
-        def _free(cy: float) -> bool:
+        # ⚠ x／half_w 以預設參數綁定當輪的值：閉包捕捉迴圈變數在這裡雖然
+        # 同輪就用掉、行為正確，但那是「剛好沒事」——綁定後語意才明確（ruff B023）。
+        def _free(cy: float, x: float = x, half_w: float = half_w) -> bool:
             return all(abs(cy - py) >= min_gap or abs(x - px) > (half_w + pw)
                        for px, py, pw in placed)
 
@@ -1537,8 +1546,8 @@ def render_matrix_chart(
         # ⚠ viewBox 不可省：沒有它的 SVG 以 inline 方式嵌進較窄容器時不會等比
         # 縮放，`max-width:100%` 會直接把右側與下方**裁掉**（2026-08-09 驗收頁
         # 實測，lifecycle 的 web profile 被切掉一整欄與三列，誤判成「內容比較少」）。
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
-        f' viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
+        (f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
+         f' viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">'),
         f'<rect width="{width}" height="{height}" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="26" font-size="{note_px:.1f}" font-weight="bold" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         f'<text x="16" y="56" font-size="{label_px:.1f}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
@@ -1736,8 +1745,8 @@ def render_year_bubble_matrix_chart(
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="28" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         f'<text x="16" y="90" font-size="{note_px:.1f}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
-        *([f'<text x="{width - 34}" y="{top - 14}" text-anchor="end" font-size="{note_px:.1f}" '
-           f'fill="{COLOR_TEXT_SOFT}">僅顯示 {years[0]}–{years[-1]}（共 {years_total} 年）</text>']
+        *([(f'<text x="{width - 34}" y="{top - 14}" text-anchor="end" font-size="{note_px:.1f}" '
+            f'fill="{COLOR_TEXT_SOFT}">僅顯示 {years[0]}–{years[-1]}（共 {years_total} 年）</text>')]
           if years_total > len(years) else []),
     ]
     # 🔴 圖例標出**本圖實際的級距數值**，不只寫「低／中／高」。
@@ -3214,7 +3223,7 @@ def _build_applicant_ranking_section(ctx: ChartContext) -> None:
     })
 
 
-def shared_matrix_max(ctx: "ChartContext", *report_names: str) -> int | None:
+def shared_matrix_max(ctx: ChartContext, *report_names: str) -> int | None:
     """跨報表的共同色階基準（取各報表格值的最大值）。
 
     ⚠ **目前未採用**，保留供日後參考並記下否決理由：泡泡半徑也用 `max_value`

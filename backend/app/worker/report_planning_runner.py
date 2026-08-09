@@ -15,9 +15,10 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from backend.app.mcp_server.report_research import AUDIT_PATH_ENV, TOOL_NAMES
 from backend.app.reports.planning_contracts import (
@@ -105,7 +106,9 @@ def _query_audit_file():
 
     ⚠ 用暫存檔而不是固定路徑：多個規劃任務可能並行，共用一個檔會互相污染。
     """
-    handle = tempfile.NamedTemporaryFile(
+    # ⚠ 不用 context manager：這個檔要活到 CLI 子行程寫完才讀，
+    # 由本函式的 finally 負責刪除。
+    handle = tempfile.NamedTemporaryFile(  # noqa: SIM115
         prefix="query_audit_", suffix=".jsonl", delete=False)
     handle.close()
     path = Path(handle.name)

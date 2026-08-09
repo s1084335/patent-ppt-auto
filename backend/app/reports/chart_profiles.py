@@ -12,9 +12,10 @@ renderer 依 profile 調整**呈現參數**，資料、排序、配色一律共�
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from backend.app.reports.chart_sizing import PPT as _PPT
 from backend.app.reports.chart_sizing import WEB as _WEB
@@ -102,10 +103,10 @@ def profile_filename(base_name: str, profile: str) -> str:
     # 切字串會產出 `cluster_topic_ta.web.svg` 這種壞檔名。
     if profile == "ppt" or not name.endswith(".svg"):
         return name
-    return f"{name[:-len('.svg')]}{_WEB_INFIX}.svg"
+    return f"{name.removesuffix('.svg')}{_WEB_INFIX}.svg"
 
 
-def resolve_web_asset(file_name: str, exists: "Callable[[str], bool]") -> str:
+def resolve_web_asset(file_name: str, exists: Callable[[str], bool]) -> str:
     """網頁報表要顯示的圖檔名：有 web profile 就用它，沒有就用原檔。
 
     ⚠ 退回**不是**可有可無的寬容：`.web.svg` 是 2026-08-09 才開始產的，在那

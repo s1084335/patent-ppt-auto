@@ -26,12 +26,12 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import math
 import re
 import sys
-import dataclasses
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -3602,7 +3602,7 @@ class SlidePlanError(RuntimeError):
 
 
 def page_specs_from_plan(plan: dict[str, Any],
-                        charts: "ChartIndex | None" = None) -> list[PageSpec]:
+                        charts: ChartIndex | None = None) -> list[PageSpec]:
     """把通過驗證的 SlidePlan 轉成 PageSpec 序列（頁碼依 slides 順序連號）。
 
     ⚠ `charts` 要給：chart_identity 只是 `report_key:variant`，實際檔名不同名
