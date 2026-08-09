@@ -722,7 +722,8 @@ def calibrate_top_level(
             # ⚠ 隔離 K 選擇路徑：DP-Means 的主題數由資料與 lambda 決定，掃七組 k
             # 沒有意義，還會讓使用者在三個不影響結果的候選之間選一個。
             scan_results, persisted_candidates = _calibrate_with_dpmeans(
-                run_id=run_id, reduced_matrix=reduced_matrix)
+                run_id=run_id, reduced_matrix=reduced_matrix,
+                documents=corpus.documents)
         else:
             scan_results = scan_top_level_k(
                 corpus,
@@ -1093,7 +1094,7 @@ def _persist_final_topics(
 
 
 def _calibrate_with_dpmeans(
-    *, run_id: int, reduced_matrix: ReducedEmbeddingMatrix,
+    *, run_id: int, reduced_matrix: ReducedEmbeddingMatrix, documents: list[str],
 ) -> tuple[list[KScanResult], list[dict[str, Any]]]:
     """DP-Means 的校準：跑一次、產一個候選，不掃 k（tasks 2.5）。
 
@@ -1102,17 +1103,14 @@ def _calibrate_with_dpmeans(
     """
     started = time.perf_counter()
     profile = engine.plan_dpmeans_calibration(
-        reduced_matrix.vectors, elapsed_seconds=0.0)
+        reduced_matrix.vectors, documents=documents, elapsed_seconds=0.0)
     profile["elapsed_seconds"] = round(time.perf_counter() - started, 3)
     scan = KScanResult(
         k=int(profile["k"]),
         topic_count=int(profile["topic_count"]),
-        # ⚠ KScanResult 這三欄型別是 float，但 DP-Means 沒有 c-TF-IDF 指標。
-        # 這裡放 0.0 只是為了滿足 dataclass；**送到前端的候選走 profile**，
-        # 那份保留 None（見下方 candidate payload）。
-        coherence=0.0,
-        diversity=0.0,
-        balance=0.0,
+        coherence=float(profile["coherence"] or 0.0),
+        diversity=float(profile["diversity"] or 0.0),
+        balance=float(profile["balance"] or 0.0),
         small_topic_ratio=float(profile["small_topic_ratio"]),
         elapsed_seconds=float(profile["elapsed_seconds"]),
         score=0.0,
@@ -1176,7 +1174,8 @@ def _finalize_with_dpmeans(
       在降維後才重新成立。
     """
     vectors = reduced_matrix.vectors
-    lambda_result = dpmeans.derive_lambda(vectors)
+    # ⚠ 用掃描選出的 lambda，不是固定分位數公式——每批資料自己決定群半徑。
+    lambda_result = engine.select_lambda(vectors, documents=corpus.documents)
     state = dpmeans.fit(vectors, lambda_=lambda_result.value)
     model_hash = save_artifact(
         WorkspaceTopicArtifact(
@@ -1199,6 +1198,7 @@ def _finalize_with_dpmeans(
         state=state,
         vectors=vectors,
         patent_ids=corpus.patent_ids,
+        documents=corpus.documents,
         source_field=source_field,
         run_id=run_id,
         representative_limit=REPRESENTATIVE_DOC_LIMIT_FOR_LLM,

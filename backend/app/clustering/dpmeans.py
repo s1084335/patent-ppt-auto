@@ -24,11 +24,13 @@
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass, field
 
 #: lambda 推導公式的版本。⚠ 改公式一定要跟著改：run metadata 存的是這個字串，
 #: 舊 run 的 lambda 為何是那個值，日後只能靠它追。
-LAMBDA_METHOD_VERSION = "v1"
+#: v1＝最近鄰 P75（2026-08-09 實測推翻，見 PAIRWISE_QUANTILE）；v2＝全體兩兩距離 P25。
+LAMBDA_METHOD_VERSION = "v2"
 
 #: 校準樣本不足時的預設 lambda。
 #: ⚠ 取 0.35 的依據：PatentSBERTa 的專利文本向量在 PCA 後，同主題成對距離多在
@@ -36,10 +38,31 @@ LAMBDA_METHOD_VERSION = "v1"
 #: 這是**回退值**不是主要路徑——正常情況一律走 derive_lambda 的資料推導。
 FALLBACK_LAMBDA = 0.35
 
-#: 推導 lambda 時取的分位數。
-#: ⚠ 取「每點到最近鄰距離」的 P75：讓四分之三的點能併入既有群，其餘較孤立的
-#: 才有機會開新群。取中位數會太少群、取 P90 會碎成一堆單點群。
-NEAREST_NEIGHBOR_QUANTILE = 0.75
+#: 分位數公式的參數。⚠ **這是 fallback，不是主路徑**——正式流程走
+#: `engine.select_lambda`：每批資料自己掃 lambda 區間、用四項判準過濾、
+#: 用四指標加權挑最佳。
+#:
+#: 為什麼固定分位數不能當主路徑：它等於假設「**所有批次**的專利，第 N 百分位
+#: 就是對的群半徑」。那個假設只在滑雪機這一批的兩個通道驗過——換一批專利
+#: （不同技術領域、撰寫風格、件數），距離分布的形狀就變了。
+#:
+#: P33 的依據：兩通道共同通過區間 0.95–0.98 的中點所對應的分位（技術 0.963、
+#: 功效 0.970），兩邊都離失敗邊界 ≥0.02。掃描全軍覆沒時退回這個值，至少落在
+#: 已知可用的範圍附近。
+#:
+#: ⚠ v1（最近鄰 P75）已被實測推翻：在真實資料上碎成 18／25 群、半數以上是
+#: 單點群。根因是**衡量的量選錯了**——最近鄰回答「最近的鄰居有多近」，但建群
+#: 門檻要回答的是「一個群的半徑該多大」。高維向量有維度詛咒，同一主題內的
+#: 文件距離也可能到 0.9，最近鄰距離則普遍落在 0.1–0.7。
+PAIRWISE_QUANTILE = 0.33
+
+#: 計算兩兩距離的取樣上限。⚠ 全體兩兩距離是 O(n²)——一萬份文件＝五千萬對，
+#: 校準會卡住。超過此數即抽樣，且抽樣**固定 seed**：同一批資料兩次校準必須
+#: 得到同一個 lambda（CLU-008 的可重現要求）。
+PAIRWISE_SAMPLE_LIMIT = 600
+
+#: 抽樣用的固定亂數種子。⚠ 不可改成時間或隨機來源——那會讓 lambda 不可重現。
+PAIRWISE_SAMPLE_SEED = 20260809
 
 Vector = list[float]
 
@@ -96,13 +119,12 @@ def cosine_distance(a: Vector, b: Vector) -> float:
 def derive_lambda(sample: list[Vector]) -> LambdaResult:
     """由校準樣本推導建群門檻（CLU-008）。
 
-    做法：算每個點到**最近鄰**的 cosine distance，取其 P75。
-
-    ⚠ 為什麼用最近鄰而不是全體兩兩距離：後者被離群點主導，一個孤立文件就能
-    把門檻拉高到整批併成一群。最近鄰距離反映的是「同類文件有多近」，那才是
-    這個門檻該回答的問題。
+    做法：算**全體兩兩** cosine distance，取其 P25（見 `PAIRWISE_QUANTILE`
+    的實測依據）。
 
     ⚠ 與順序無關——它是資料的統計量，不是流程的產物（測試釘著）。
+    ⚠ 樣本超過 `PAIRWISE_SAMPLE_LIMIT` 時抽樣（O(n²) 會讓校準卡住），
+    抽樣用固定 seed，同一批資料兩次校準必得同一個 lambda。
     """
     points = [l2_normalize(v) for v in sample]
     if len(points) < 2:
@@ -110,24 +132,26 @@ def derive_lambda(sample: list[Vector]) -> LambdaResult:
                             method=f"fallback:constant:{FALLBACK_LAMBDA}",
                             sample_size=len(points))
 
-    nearest: list[float] = []
-    for i, point in enumerate(points):
-        others = (cosine_distance(point, other)
-                  for j, other in enumerate(points) if j != i)
-        nearest.append(min(others))
-    nearest.sort()
+    if len(points) > PAIRWISE_SAMPLE_LIMIT:
+        rng = random.Random(PAIRWISE_SAMPLE_SEED)
+        points = rng.sample(points, PAIRWISE_SAMPLE_LIMIT)
 
-    index = min(len(nearest) - 1,
-                max(0, int(round(NEAREST_NEIGHBOR_QUANTILE * (len(nearest) - 1)))))
-    value = nearest[index]
+    distances = sorted(
+        cosine_distance(points[i], points[j])
+        for i in range(len(points))
+        for j in range(i + 1, len(points))
+    )
+    index = min(len(distances) - 1,
+                max(0, int(round(PAIRWISE_QUANTILE * (len(distances) - 1)))))
+    value = distances[index]
     if value <= 0.0:
-        # 全部重複文件時最近鄰距離會是 0——那不是有效門檻。
+        # 全部重複文件時距離會是 0——那不是有效門檻。
         return LambdaResult(value=FALLBACK_LAMBDA,
                             method=f"fallback:degenerate:{FALLBACK_LAMBDA}",
                             sample_size=len(points))
     return LambdaResult(
         value=value,
-        method=f"nearest_neighbor_quantile:{NEAREST_NEIGHBOR_QUANTILE}",
+        method=f"pairwise_quantile:{PAIRWISE_QUANTILE}",
         sample_size=len(points),
     )
 

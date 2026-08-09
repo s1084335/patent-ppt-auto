@@ -777,24 +777,60 @@ def evaluate_topic_model(
     }
 
 
+#: 候選排序的加權（2026 定案）。⚠ **唯一定義處**——DP-Means 的 lambda 掃描也用
+#: 同一套（clustering/engine.py 呼叫 rank_candidates）。複製第二份會讓兩條路徑
+#: 各自漂移，而症狀是「同一批資料，兩個引擎挑出的方案品質判準不一樣」，
+#: 且不會有任何錯誤訊息。
+#:
+#: coherence 最重（主題內部是否在講同一件事）；diversity 與 balance 各 0.25
+#: （主題之間別重複、件數別過度傾斜）；small_topic_ratio 反向計入 0.10。
+RANKING_WEIGHTS = {
+    "coherence": 0.40,
+    "diversity": 0.25,
+    "balance": 0.25,
+    "small_topic_ratio": 0.10,
+}
+
+#: small_topic_ratio 是「越小越好」，正規化時要反向。
+RANKING_LOWER_IS_BETTER = frozenset({"small_topic_ratio"})
+
+
+def rank_candidates(metrics: list[dict[str, float | None]]) -> list[float]:
+    """把多組候選的品質指標算成可比較的加權分數（0..1）。
+
+    ⚠ 一律**跨候選正規化再加權**，不是直接把原始值相加：四個指標的量綱不同
+    （coherence 的 0.8 與 diversity 的 0.8 不是同一回事），直接相加等於偷偷
+    給了 coherence 更大的權重。
+
+    ⚠ 指標為 None（算不出來）時視為該項最差，不是跳過——跳過會讓「指標算不
+    出來的候選」因為少扣分而勝出。
+    """
+    if not metrics:
+        return []
+    normalized: dict[str, list[float]] = {}
+    for key in RANKING_WEIGHTS:
+        raw = [m.get(key) for m in metrics]
+        present = [v for v in raw if v is not None]
+        worst = min(present) if present else 0.0
+        filled = [float(v) if v is not None else worst for v in raw]
+        normalized[key] = _normalize_metric(
+            filled, higher_is_better=key not in RANKING_LOWER_IS_BETTER)
+    return [
+        sum(RANKING_WEIGHTS[key] * normalized[key][index] for key in RANKING_WEIGHTS)
+        for index in range(len(metrics))
+    ]
+
+
 def attach_ranking_scores(results: list[TopicModelRunResult]) -> list[TopicModelRunResult]:
     """加入比較用加權 score，同時保留所有原始指標供前端呈現。"""
     if not results:
         return []
 
-    coherence = _normalize_metric([result.metrics["coherence"] for result in results], higher_is_better=True)
-    diversity = _normalize_metric([result.metrics["diversity"] for result in results], higher_is_better=True)
-    balance = _normalize_metric([result.metrics["balance"] for result in results], higher_is_better=True)
-    small = _normalize_metric([result.metrics["small_topic_ratio"] for result in results], higher_is_better=False)
+    scores = rank_candidates([dict(result.metrics) for result in results])
 
     scored: list[TopicModelRunResult] = []
     for index, result in enumerate(results):
-        score = (
-            0.40 * coherence[index]
-            + 0.25 * diversity[index]
-            + 0.25 * balance[index]
-            + 0.10 * small[index]
-        )
+        score = scores[index]
         scored.append(
             TopicModelRunResult(
                 scheme_name=result.scheme_name,

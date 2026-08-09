@@ -5,9 +5,10 @@
 現行 finalize 依賴 BERTopic 的 c-TF-IDF 取關鍵詞與代表文檔。DP-Means 沒有
 c-TF-IDF，所以：
 
-- **關鍵詞**：不產。⚠ 這**不影響主題命名**——`ai_topic_label_runner` 有一條紅線
-  黑名單明文禁止 keywords 進入 CLI payload（給了關鍵字，LLM 會覆述關鍵詞而不
-  是讀專利內容命名）。命名靠的是代表文檔。
+- **關鍵詞**：⚠ 2026-08-09 修正——原本寫「不產」是**錯的**。coherence／diversity
+  只需要 top_terms、不綁 BERTopic，所以改由 `clustering/keywords.py` 以
+  class-TF-IDF 自行抽取。關鍵詞仍**不得**進 CLI payload（紅線黑名單不變）：
+  給了關鍵字，LLM 會覆述關鍵詞而不是讀專利內容命名。
 - **代表文檔**：改用「離中心最近的 N 篇」。這是向量直接算得出來的，不需要
   c-TF-IDF，且語意上就是「最能代表這群的文件」。
 
@@ -33,10 +34,14 @@ class FinalizeTopicShapeTests(unittest.TestCase):
                _unit(0.0, 1.0), _unit(0.05, 0.99)]
     PATENT_IDS = [101, 102, 103, 201, 202]
 
+    DOCUMENTS = ["ski belt drive", "ski belt motor", "ski drive control",
+                 "treadmill deck cushion", "treadmill running damping"]
+
     def _plan(self, doc_limit=2):
         state = dpmeans.fit(self.VECTORS, lambda_=0.5)
         return state, engine.plan_finalize_topics(
             state=state, vectors=self.VECTORS, patent_ids=self.PATENT_IDS,
+            documents=self.DOCUMENTS,
             source_field="wips_independent_claims", run_id=9,
             representative_limit=doc_limit)
 
@@ -50,13 +55,25 @@ class FinalizeTopicShapeTests(unittest.TestCase):
         _, topics = self._plan()
         self.assertEqual(sorted(t["doc_count"] for t in topics), [2, 3])
 
-    def test_no_keywords_and_label_awaits_ai(self):
-        """⚠ 沒有 c-TF-IDF 就不產關鍵詞；label_source 留 fallback 等 AI 命名。"""
+    def test_keywords_extracted_and_label_awaits_ai(self):
+        """關鍵詞由 class-TF-IDF 抽出；label_source 仍留 fallback 等 AI 命名。
+
+        ⚠ label 不得用關鍵詞拼接：那正是 ai_topic_label_runner 紅線要擋的東西
+        （關鍵詞拼接的舊 label 也在黑名單內）。
+        """
         _, topics = self._plan()
         for topic in topics:
-            self.assertEqual(topic["keywords"], [])
+            self.assertTrue(topic["keywords"], "每個主題都要有關鍵詞，否則前端是空卡片")
             self.assertEqual(topic["label_source"], "fallback")
             self.assertTrue(topic["label"], "佔位名字仍要有，前端不得顯示空白")
+
+    def test_keywords_do_not_overlap_between_topics(self):
+        """⚠ 兩個主題的關鍵詞若一樣，使用者會看到兩張講同一件事的卡片。"""
+        # keywords 的結構是 [{"term":..., "weight":...}]，與既有 finalize 同格式
+        _, topics = self._plan()
+        first = {k["term"] for k in topics[0]["keywords"]}
+        second = {k["term"] for k in topics[1]["keywords"]}
+        self.assertFalse(first & second)
 
     def test_representative_docs_are_nearest_to_center(self):
         """代表文檔＝離中心最近的 N 篇（AI 命名讀的就是這些）。"""
@@ -87,7 +104,7 @@ class FinalizeTopicShapeTests(unittest.TestCase):
 
     def test_empty_state_returns_no_topics(self):
         topics = engine.plan_finalize_topics(
-            state=dpmeans.ClusterState(), vectors=[], patent_ids=[],
+            state=dpmeans.ClusterState(), vectors=[], patent_ids=[], documents=[],
             source_field="x", run_id=1, representative_limit=3)
         self.assertEqual(topics, [])
 

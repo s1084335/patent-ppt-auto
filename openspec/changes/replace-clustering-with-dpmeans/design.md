@@ -29,14 +29,23 @@ Run metadata 新增 algorithm/version、lambda/value source、PCA normalization 
 
 ## 實作期補充（2026-08-09，實作中確認）
 
-**DP-Means 的主題不產 c-TF-IDF 關鍵詞。** 這是演算法差異的必然結果（c-TF-IDF 是
-BERTopic 全量擬合的產物），影響範圍已逐項查證：
+**DP-Means 的主題自行抽取關鍵詞（class-TF-IDF）。**
+
+> ⚠ **2026-08-09 同日修正**：本節原本寫「DP-Means 不產關鍵詞，coherence／
+> diversity 只能填 None」。使用者指出「主題一致性與主題多樣性可以繼續用」，
+> 查證後確認**原判斷錯誤**——`topic_cv_coherence_per_topic` 與 `topic_diversity`
+> 都只需要 `top_terms`，不綁 BERTopic（gensim 算 c_v 用的是文件本身）。缺的
+> 只是「產出關鍵詞」這一步，補上即可，兩個既有品質指標完全適用。
+
+`clustering/keywords.py` 以 class-TF-IDF 抽取每群關鍵詞：把每群文件併成一個
+「類別文件」算詞頻，再依該詞出現在幾個類別中折減。與 BERTopic 的 c-TF-IDF
+同原理，只用既有 tokenizer，不引入新依賴。
 
 | 消費點 | 影響 | 處置 |
 |---|---|---|
-| `ai_topic_label_runner`（AI 命名） | **無影響** | 該模組本就有紅線黑名單禁止 keywords 進 CLI payload——給了關鍵字，LLM 會覆述關鍵詞而非讀專利內容命名。命名靠代表文檔 |
-| `api/topics.py` → 前端主題卡 | keywords 顯示為空 | 待 3.3 實測確認可接受；主題名稱由 AI 命名提供 |
-| `postgres_topic_repository` | 讀出空清單，不報錯 | 無需改動 |
+| `ai_topic_label_runner`（AI 命名） | **無影響** | 該模組有紅線黑名單禁止 keywords 進 CLI payload——給了關鍵字，LLM 會覆述關鍵詞而非讀專利內容命名。命名靠代表文檔 |
+| `api/topics.py` → 前端主題卡 | 照常有關鍵詞 | 無需改動 |
+| 校準候選的品質指標 | coherence／diversity 照常計算 | 無需改動 |
 
 **代表文檔改用「離中心最近的 N 篇」**（`engine.plan_finalize_topics`）。向量直接
 算得出來，不需 c-TF-IDF，語意上就是「最能代表這群的文件」——AI 命名讀的正是這些。

@@ -18,13 +18,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import random
 from typing import Any
 
-from . import artifacts, dpmeans
+from . import artifacts, dpmeans, keywords
 from .artifacts import ALGORITHM_DPMEANS, ALGORITHM_KMEANS
 
 #: 讀 feature flag 的環境變數名。⚠ 預設不設＝走舊引擎。
 ALGORITHM_ENV = "CLUSTERING_ALGORITHM"
+
+#: 每群取幾個關鍵詞算 coherence／diversity（與既有 finalize 同口徑）。
+TOP_TERMS_PER_TOPIC = 10
 
 _SUPPORTED = (ALGORITHM_KMEANS, ALGORITHM_DPMEANS)
 
@@ -245,6 +249,236 @@ def build_topic_entries(
 
 
 # --------------------------------------------------------------------------
+# lambda 自動選擇
+# --------------------------------------------------------------------------
+
+#: 選 lambda 的四項判準（2026-08-09 使用者定案，事前定死）。
+#:
+#: ⚠ 為什麼要掃描而不是用一個固定分位數：固定分位等於假設「**所有批次**的
+#: 專利，第 N 百分位就是對的群半徑」。那個假設只在一批資料上驗過——換一批
+#: 專利（不同技術領域、撰寫風格、件數），距離分布的形狀就變了。
+#: 掃描讓每批資料自己決定，這才是 CLU-008「由資料推導」的意思。
+MIN_MEDIAN_TOPIC_SIZE = 3          # 典型主題要夠厚，少於 3 件講不出趨勢
+MAX_SINGLETON_DOC_SHARE = 0.15     # ⚠ 用**文件**佔比：小資料裡一兩個單件主題可容許
+MIN_BETWEEN_DISTANCE = 0.30        # 低於此表示兩個主題在講同一件事
+MAX_STABILITY_SPREAD = 1           # 換順序群數變動；大代表 lambda 落在分界上
+
+#: 掃描的分位範圍與點數。⚠ 上下界用**該批資料的距離分位**而不是絕對值——
+#: 寫死 0.5–1.1 這種區間，換一批分布不同的資料就整段落在區間外。
+SWEEP_QUANTILE_LOW = 0.10
+SWEEP_QUANTILE_HIGH = 0.60
+SWEEP_STEPS = 18
+
+#: 穩定度重跑次數。⚠ 只對通過前三項的 lambda 才跑——每次都跑會讓校準變慢
+#: 一個數量級，而大部分 lambda 在前三項就被刷掉了。
+STABILITY_ROUNDS = 5
+STABILITY_SEED = 20260809
+
+
+@dataclass
+class LambdaSelection:
+    """選出的 lambda 與整張掃描表。
+
+    ⚠ 掃描表要留給使用者看：選了哪個、其他被哪一項判準刷掉。只給一個數字，
+    使用者無從判斷這次分群可不可信。
+    """
+
+    value: float
+    method: str
+    version: str
+    sweep: list[dict[str, Any]] = field(default_factory=list)
+
+
+def select_lambda(vectors: list[list[float]], *, documents: list[str]) -> LambdaSelection:
+    """掃 lambda 區間，用四項判準過濾，再用主題一致性挑最佳（CLU-008）。
+
+    ⚠ 全軍覆沒時回退到分位數公式並在 method 標明。會發生在資料本身沒有結構時
+    （全部很像、或全部互相遠離）——那是資料的性質不是錯誤，仍要產出可用的 run
+    讓使用者看到結果再判斷。
+    """
+    points = [dpmeans.l2_normalize(v) for v in vectors]
+    distances = _pairwise_sorted(points)
+    if not distances:
+        result = dpmeans.derive_lambda(vectors)
+        return LambdaSelection(value=result.value, method=f"fallback:{result.method}",
+                               version=result.version)
+
+    rows: list[dict[str, Any]] = []
+    for value in _sweep_values(distances):
+        state = dpmeans.fit(vectors, lambda_=value)
+        row = _evaluate(value, state, points, documents)
+        rows.append(row)
+
+    passed = [row for row in rows if not row["failed"]]
+    if not passed:
+        result = dpmeans.derive_lambda(vectors)
+        return LambdaSelection(
+            value=result.value,
+            method=f"fallback:no_lambda_passed:{result.method}",
+            version=result.version, sweep=rows)
+
+    # ⚠ 用**既有候選排序的同一套加權**（model.rank_candidates）綜合四個指標，
+    # 不是只看 coherence——一致性高但主題彼此重複、或件數嚴重傾斜的方案，
+    # 單看一個指標會勝出。權重的唯一定義處在 model.RANKING_WEIGHTS。
+    from .model import rank_candidates
+
+    scores = rank_candidates([
+        {"coherence": r["coherence"], "diversity": r["diversity"],
+         "balance": r["balance"], "small_topic_ratio": r["small_topic_ratio"]}
+        for r in passed
+    ])
+    for row, score in zip(passed, scores):
+        row["score"] = round(score, 6)
+    # 分數相同時取較大的 lambda（主題較少、較保守）——並列必須有固定解，
+    # 否則同一批資料兩次校準會選到不同的 lambda。
+    best = max(passed, key=lambda r: (r["score"], r["lambda"]))
+    return LambdaSelection(
+        value=best["lambda"],
+        method=f"sweep:{SWEEP_QUANTILE_LOW}-{SWEEP_QUANTILE_HIGH}:weighted_quality",
+        version=dpmeans.LAMBDA_METHOD_VERSION,
+        sweep=rows,
+    )
+
+
+def _pairwise_sorted(points: list[list[float]]) -> list[float]:
+    """全體兩兩距離（已排序）。⚠ 超過上限時抽樣，固定 seed 保可重現。"""
+    if len(points) < 2:
+        return []
+    sample = points
+    if len(sample) > dpmeans.PAIRWISE_SAMPLE_LIMIT:
+        sample = random.Random(dpmeans.PAIRWISE_SAMPLE_SEED).sample(
+            sample, dpmeans.PAIRWISE_SAMPLE_LIMIT)
+    return sorted(
+        dpmeans.cosine_distance(sample[i], sample[j])
+        for i in range(len(sample)) for j in range(i + 1, len(sample))
+    )
+
+
+def _sweep_values(distances: list[float]) -> list[float]:
+    """掃描點：由該批資料的距離分位決定，不寫死絕對值。"""
+    n = len(distances)
+
+    def at(quantile: float) -> float:
+        return distances[min(n - 1, max(0, int(round(quantile * (n - 1)))))]
+
+    low, high = at(SWEEP_QUANTILE_LOW), at(SWEEP_QUANTILE_HIGH)
+    if high <= low:
+        return [low] if low > 0 else []
+    step = (high - low) / (SWEEP_STEPS - 1)
+    return [round(low + step * i, 6) for i in range(SWEEP_STEPS)]
+
+
+def _evaluate(value: float, state: Any, points: list[list[float]],
+              documents: list[str]) -> dict[str, Any]:
+    """對單一 lambda 逐項判定。⚠ 及格制，不做加總分數。
+
+    加總會讓「主題全是單點但分離度很好」這種組合看起來還行。
+    """
+    sizes = sorted(state.counts, reverse=True)
+    singletons = sum(1 for size in sizes if size == 1)
+    median_size = sizes[len(sizes) // 2] if sizes else 0
+    doc_share = singletons / len(state.labels) if state.labels else 0.0
+    between = _min_center_distance(state.centers)
+
+    failed: list[str] = []
+    if median_size < MIN_MEDIAN_TOPIC_SIZE:
+        failed.append("median_size")
+    if doc_share > MAX_SINGLETON_DOC_SHARE:
+        failed.append("singleton_doc_share")
+    if between is not None and between < MIN_BETWEEN_DISTANCE:
+        failed.append("between_min")
+
+    row: dict[str, Any] = {
+        "lambda": value,
+        "topic_count": len(state.centers),
+        "median_size": median_size,
+        "singleton_doc_share": round(doc_share, 4),
+        "between_min": round(between, 4) if between is not None else None,
+        "coherence": None,
+        "diversity": None,
+        "balance": None,
+        "small_topic_ratio": None,
+        "score": None,
+        "failed": failed,
+    }
+    # ⚠ 穩定度與品質指標只對通過前三項的 lambda 才算——每個都算會讓校準慢
+    # 一個數量級，而大部分 lambda 在前三項就被刷掉了。
+    if not failed:
+        spread = _stability_spread(points, value)
+        row["stability_spread"] = spread
+        if spread > MAX_STABILITY_SPREAD:
+            failed.append("stability")
+        else:
+            row.update(_quality(state.labels, documents))
+            row.update(_size_metrics(state.labels))
+    return row
+
+
+def _size_metrics(labels: list[int]) -> dict[str, float]:
+    """件數分布指標——沿用既有定義，不另寫一份。
+
+    ⚠ balance（normalized entropy）與 small_topic_ratio 本來就只看件數分布，
+    與 c-TF-IDF 無關，所以對 DP-Means 直接適用。
+    """
+    from .model import small_topic_ratio, topic_balance
+
+    return {
+        "balance": round(topic_balance(labels), 4),
+        "small_topic_ratio": round(small_topic_ratio(labels, min_topic_docs=5), 4),
+    }
+
+
+def _min_center_distance(centers: list[list[float]]) -> float | None:
+    if len(centers) < 2:
+        return None
+    return min(dpmeans.cosine_distance(centers[a], centers[b])
+               for a in range(len(centers)) for b in range(a + 1, len(centers)))
+
+
+def _stability_spread(points: list[list[float]], lambda_: float) -> int:
+    """換餵入順序重跑，回傳群數的變動範圍。
+
+    ⚠ DP-Means **是**順序敏感的演算法。正式流程一律固定順序，但資料若脆弱到
+    換個順序就多出兩群，那個 lambda 換一批資料也會忽多忽少。
+    """
+    rng = random.Random(STABILITY_SEED)
+    counts = []
+    for _ in range(STABILITY_ROUNDS):
+        shuffled = list(points)
+        rng.shuffle(shuffled)
+        counts.append(len(dpmeans.fit(shuffled, lambda_=lambda_).centers))
+    return max(counts) - min(counts)
+
+
+def _quality(labels: list[int], documents: list[str]) -> dict[str, Any]:
+    """主題一致性（c_v）與多樣性。
+
+    ⚠ 這兩個既有指標**不綁 BERTopic**：coherence 由 gensim 依文件本身計算，
+    diversity 只看關鍵詞重疊度。補上關鍵詞抽取後對 DP-Means 一樣適用。
+    """
+    from .model import topic_diversity
+
+    if not documents or len(documents) != len(labels):
+        return {"coherence": None, "diversity": None}
+    top_terms = keywords.extract_top_terms(
+        documents, labels=labels, limit=TOP_TERMS_PER_TOPIC)
+    if not top_terms:
+        return {"coherence": None, "diversity": None}
+    quality: dict[str, Any] = {"diversity": round(topic_diversity(top_terms), 4),
+                               "coherence": None}
+    try:
+        from .model import topic_cv_coherence_per_topic
+
+        per_topic = topic_cv_coherence_per_topic(
+            documents, topics=labels, top_terms=top_terms)
+        if per_topic:
+            quality["coherence"] = round(sum(per_topic.values()) / len(per_topic), 4)
+    except Exception:  # noqa: BLE001 - 指標算不出來不得讓整個校準失敗
+        pass
+    return quality
+
+
+# --------------------------------------------------------------------------
 # 校準（calibrate）
 # --------------------------------------------------------------------------
 
@@ -254,7 +488,7 @@ CANDIDATE_TYPE_DPMEANS = "dpmeans"
 
 
 def plan_dpmeans_calibration(
-    vectors: list[list[float]], *, elapsed_seconds: float,
+    vectors: list[list[float]], *, documents: list[str], elapsed_seconds: float,
 ) -> dict[str, Any]:
     """DP-Means 的校準結果：一個候選，不掃 k。
 
@@ -262,30 +496,34 @@ def plan_dpmeans_calibration(
     lambda 決定，選 k 沒有意義——不隔離的話，使用者會被要求在三個**完全不影響
     結果**的候選之間選一個。介面看起來正常、選了也沒反應，比報錯更難察覺。
 
-    ⚠ coherence／diversity／balance 回 None 而不是 0.0：這三個指標都算在
-    c-TF-IDF 的 top terms 上，DP-Means 沒有。填 0 會讓前端顯示「品質 0 分」，
-    那是憑空捏造的壞消息。沒有就是沒有，由顯示端標「不適用」。
+    ⚠ lambda 由 `select_lambda` **掃描選出**，不是套一個固定分位數：固定分位
+    等於假設所有批次的專利都適用同一個群半徑，而那只在一批資料上驗過。
+
+    四項品質指標照常計算——使用者要能拿它跟舊引擎的候選比較。
     """
-    lambda_result = dpmeans.derive_lambda(vectors)
-    state = dpmeans.fit(vectors, lambda_=lambda_result.value)
-    singletons = sum(1 for count in state.counts if count <= 1)
+    selection = select_lambda(vectors, documents=documents)
+    state = dpmeans.fit(vectors, lambda_=selection.value)
     topic_count = len(state.centers)
+    quality = _quality(state.labels, documents)
+    sizes = _size_metrics(state.labels) if state.labels else {
+        "balance": None, "small_topic_ratio": None}
     return {
         "candidate_type": CANDIDATE_TYPE_DPMEANS,
         # k 沿用既有 schema 欄位，值＝實際群數。⚠ 它不是使用者選的。
         "k": topic_count,
         "topic_count": topic_count,
-        "coherence": None,
-        "diversity": None,
-        "balance": None,
-        # ⚠ 這個指標算得出來，而且正是 lambda 太小的警訊——碎成一堆單點群。
-        "small_topic_ratio": round(singletons / topic_count, 6) if topic_count else 0.0,
+        "coherence": quality["coherence"],
+        "diversity": quality["diversity"],
+        "balance": sizes["balance"],
+        "small_topic_ratio": sizes["small_topic_ratio"],
         "elapsed_seconds": elapsed_seconds,
         "parameters": {
-            "lambda": lambda_result.value,
-            "lambda_method": lambda_result.method,
-            "lambda_version": lambda_result.version,
-            "lambda_sample_size": lambda_result.sample_size,
+            "lambda": selection.value,
+            "lambda_method": selection.method,
+            "lambda_version": selection.version,
+            # ⚠ 掃描表要留下：使用者才看得出「為什麼是這個 lambda」、
+            # 其他被哪一項判準刷掉。只給一個數字無從判斷可信度。
+            "lambda_sweep": selection.sweep,
         },
     }
 
@@ -300,6 +538,7 @@ def plan_finalize_topics(
     state: Any,
     vectors: list[list[float]],
     patent_ids: list[int],
+    documents: list[str],
     source_field: str,
     run_id: int,
     representative_limit: int,
@@ -308,12 +547,14 @@ def plan_finalize_topics(
 
     ⚠ 與 BERTopic finalize 的兩點差異：
 
-    - **不產關鍵詞**。DP-Means 沒有 c-TF-IDF。這不影響命名——`ai_topic_label_runner`
-      有紅線黑名單明文禁止 keywords 進 CLI payload（給了關鍵字，LLM 會覆述關鍵詞
-      而不是讀專利內容）。命名靠的是代表文檔。
+    - **關鍵詞自行抽取**（class-TF-IDF，見 keywords 模組）。⚠ 關鍵詞仍不得進
+      CLI payload——`ai_topic_label_runner` 有紅線黑名單擋著（給了關鍵字，LLM 會
+      覆述關鍵詞而不是讀專利內容）。命名靠的是代表文檔。
     - **代表文檔改用「離中心最近的 N 篇」**。向量直接算得出來，語意上就是「最能
       代表這群的文件」，不需要 c-TF-IDF。
     """
+    top_terms = keywords.extract_top_terms(
+        documents, labels=state.labels, limit=TOP_TERMS_PER_TOPIC) if documents else {}
     topics: list[dict[str, Any]] = []
     for index, center in enumerate(state.centers):
         members = [i for i, label in enumerate(state.labels) if label == index]
@@ -329,7 +570,8 @@ def plan_finalize_topics(
             "model_topic_ids": [index],
             "topic_kind": "model",
             "doc_count": len(members),
-            "keywords": [],
+            "keywords": [{"term": term, "weight": 1.0}
+                         for term in top_terms.get(index, [])],
             "representative_patent_ids": [patent_ids[i] for i in members[:representative_limit]],
             "label": f"主題 {format_topic_code(position)}",
             "label_source": "fallback",

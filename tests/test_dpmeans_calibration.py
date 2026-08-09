@@ -33,8 +33,13 @@ class DpmeansCalibrationTests(unittest.TestCase):
     VECTORS = [_unit(1.0, 0.0), _unit(0.99, 0.05), _unit(0.98, 0.1),
                _unit(0.0, 1.0), _unit(0.05, 0.99), _unit(-1.0, 0.0)]
 
+    DOCUMENTS = ["ski belt drive", "ski belt motor", "ski drive control",
+                 "treadmill deck cushion", "treadmill running damping",
+                 "elliptical stride length"]
+
     def _profile(self):
-        return engine.plan_dpmeans_calibration(self.VECTORS, elapsed_seconds=1.5)
+        return engine.plan_dpmeans_calibration(
+            self.VECTORS, documents=self.DOCUMENTS, elapsed_seconds=1.5)
 
     def test_returns_exactly_one_candidate(self):
         """⚠ 一個候選，不是三個——沒有 k 可選，就不該假裝有得選。"""
@@ -52,11 +57,16 @@ class DpmeansCalibrationTests(unittest.TestCase):
         profile = self._profile()
         self.assertEqual(profile["k"], profile["topic_count"])
 
-    def test_quality_metrics_are_none_not_zero(self):
-        """⚠ 沒有 c-TF-IDF 就沒有這三個指標。填 0 等於捏造壞消息。"""
+    def test_quality_metrics_are_computed(self):
+        """coherence／diversity 照常算——使用者要能拿它跟舊引擎的候選比較。"""
         profile = self._profile()
-        for key in ("coherence", "diversity", "balance"):
-            self.assertIsNone(profile[key], f"{key} 應為 None，不得填 0")
+        self.assertIsNotNone(profile["diversity"])
+        self.assertGreater(profile["diversity"], 0.0)
+
+    def test_balance_is_computed_from_sizes(self):
+        """balance 只看各群件數分布，本來就與 c-TF-IDF 無關。"""
+        profile = self._profile()
+        self.assertIsNotNone(profile["balance"])
 
     def test_small_topic_ratio_is_computed(self):
         """⚠ 這個指標**算得出來**（單件主題佔比），而且正是 lambda 太小的警訊。"""
@@ -82,7 +92,8 @@ class DpmeansCalibrationTests(unittest.TestCase):
     def test_single_cluster_data_still_yields_candidate(self):
         """⚠ 全部擠成一群也要能產候選——那是有效結果，不是錯誤。"""
         tight = [_unit(1.0, 0.0), _unit(0.999, 0.01), _unit(0.998, 0.02)]
-        profile = engine.plan_dpmeans_calibration(tight, elapsed_seconds=0.1)
+        profile = engine.plan_dpmeans_calibration(
+            tight, documents=["a b", "a c", "a d"], elapsed_seconds=0.1)
         self.assertGreaterEqual(profile["topic_count"], 1)
 
 

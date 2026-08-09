@@ -180,6 +180,44 @@ class LambdaDerivationTests(unittest.TestCase):
         self.assertGreater(result.value, 0.0)
         self.assertIn("fallback", result.method)
 
+    def test_derives_from_pairwise_not_nearest_neighbor(self):
+        """⚠ 2026-08-09 契約修正：門檻由**全體兩兩距離**的低分位推導，
+        不是最近鄰距離。
+
+        改的理由是實測推翻了原公式（見 dpmeans.PAIRWISE_QUANTILE 的說明）：
+        最近鄰衡量的是「最近的鄰居有多近」，但建群門檻要回答的是「一個群的
+        半徑該多大」。在 PatentSBERTa + PCA100 的真實向量上，前者給的門檻讓
+        35 份文件碎成 18 群（9 個單點群）。
+
+        本測試釘的是**方向**：門檻必須大於多數點的最近鄰距離，否則幾乎每個點
+        都會自成一群。
+        """
+        # 兩個緊密小群 + 一個離群點：最近鄰距離都很小，但群半徑不小
+        sample = [_unit(1.0, 0.0), _unit(0.95, 0.05), _unit(0.9, 0.1),
+                  _unit(0.0, 1.0), _unit(0.05, 0.95), _unit(-1.0, 0.2)]
+        result = dpmeans.derive_lambda(sample)
+        nearest = []
+        for i, point in enumerate(sample):
+            nearest.append(min(dpmeans.cosine_distance(point, other)
+                               for j, other in enumerate(sample) if j != i))
+        median_nearest = sorted(nearest)[len(nearest) // 2]
+        self.assertGreater(result.value, median_nearest,
+                           "門檻小於多數點的最近鄰距離時，幾乎每個點都會自成一群")
+        self.assertIn("pairwise", result.method)
+
+    def test_large_sample_is_subsampled_deterministically(self):
+        """⚠ 全體兩兩距離是 O(n²)：一萬份文件＝五千萬對，會讓校準卡住。
+
+        超過門檻時抽樣，且抽樣必須**可重現**（固定 seed）——否則同一批資料
+        兩次校準會得到不同的 lambda，違反 CLU-008 的可重現要求。
+        """
+        big = [_unit(1.0, i / 500.0) for i in range(dpmeans.PAIRWISE_SAMPLE_LIMIT + 50)]
+        first = dpmeans.derive_lambda(big)
+        second = dpmeans.derive_lambda(big)
+        self.assertEqual(first.value, second.value)
+        self.assertEqual(first.sample_size, dpmeans.PAIRWISE_SAMPLE_LIMIT,
+                         "sample_size 要據實記錄實際用了幾個點，不是原始筆數")
+
 
 class IncrementalTests(unittest.TestCase):
     """CLU-004：以既有中心對新文件增量分群，舊 assignment 不動。"""
