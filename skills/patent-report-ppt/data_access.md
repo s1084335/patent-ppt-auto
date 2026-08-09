@@ -6,14 +6,39 @@
 
 ## 查詢工具
 
-```bash
-uv run --no-project --python 3.12 --with "psycopg[binary]" python <skill目錄>/scripts/query_patents.py \
-    --sql "SELECT ..."            # 單句 SELECT/WITH；多行建議 --sql-file
+取證一律走 **MCP 唯讀工具**（工具清單即能力清單；你拿不到、也不需要任何資料庫憑證）。
+
+### 先問「快照答不答得出來」
+
+多數問題不必查資料庫——報表快照已經把彙總算好了：
+
+| 工具 | 回答什麼 |
+|---|---|
+| `list_report_catalog()` | 有哪些報表、各自回答什麼問題（**第一步先看這個**） |
+| `preview_report_rows(report_key, snapshot_id)` | 先看幾列與欄位長相，再決定要不要細查 |
+| `query_report_evidence(report_key, snapshot_id, filters=…)` | 取可直接引用的數據列 |
+| `get_chart_metadata(report_key, snapshot_id)` | 這張圖在畫什麼（寫判讀前要知道） |
+| `lookup_company_evidence(applicant, snapshot_id)` | 單一公司的具名證據 |
+| `lookup_topic_evidence(topic_key, snapshot_id)` | 單一主題的件數、家數、代表專利 |
+| `lookup_patent_evidence(patent_ids, snapshot_id)` | 點名某幾件時的專利號與標題 |
+
+以上都收 typed 參數、綁 `snapshot_id`，回傳帶 `evidence_ref` 可直接放進敘述。
+
+### 快照答不出來才查資料庫
+
+```
+query_database(sql="SELECT ...", limit=500)
 ```
 
-- 輸出 JSON：`{columns, rows, row_count, truncated}`；預設 500 列上限（`--limit` 最高 2000）
-- 連線層**強制唯讀**＋30 秒逾時——你查不壞任何東西，放心探索
-- 需要環境變數 `DATABASE_URL`（執行環境已帶入；缺了會明確報錯）
+- 單句 `SELECT`／`WITH`；連線層**強制唯讀**＋30 秒逾時——你查不壞任何東西，放心探索
+- 預設 500 列、最高 2000；輸出 `{columns, rows, row_count, truncated, evidence_ref}`
+- ⚠ `truncated=true` 代表**還有沒給你的資料**，不要當成全部就下結論
+
+什麼時候需要它：個別案件清單、完整同族、快照沒有的交叉統計
+（例如「某公司在某年的每一件案子」）。這些是彙總表答不出來的問題。
+
+⚠ 數字**只能**來自這些工具或你手上的選圖數據，不得自行推算或憑印象填。
+每個帶數字的敘述都要有 `evidence_ref`。
 
 ## 界定範圍（第一步永遠是這個）
 

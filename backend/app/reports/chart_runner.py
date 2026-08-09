@@ -1,23 +1,22 @@
 from __future__ import annotations
 
 import argparse
-
-
 import hashlib
 import html
 import json
 import math
+import statistics
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from backend.app.clustering.sources import SOURCE_SEGMENT_SLUGS as _SOURCE_SEGMENT_SLUGS
 from backend.app.reports.cluster_analytics import (
     build_opportunity_matrix,
     build_topic_effect_table,
 )
-from backend.app.clustering.sources import SOURCE_SEGMENT_SLUGS as _SOURCE_SEGMENT_SLUGS
 from backend.app.reports.population import population_notes
 from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 from backend.app.reports.report_engine import parse_json_arg, run_report
@@ -155,6 +154,22 @@ COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
 # 版面邏輯共用）。修 PPT 的尺寸改 chart_sizing.PPT；本檔常數只是綁定，不自帶數值。
 from backend.app.reports.chart_sizing import PPT as _SIZING
 
+
+# 🔴 P3（2026-08-07）：畫布與字級目標改**依作用中的 profile** 取值——
+# 同一支 renderer 服務 web 與 ppt，只有尺寸／字級不同（版面邏輯共用）。
+# ⚠ 保留模組層常數名不變：既有呼叫端一處不用改（介面不變的深化寫法）。
+def _sizing_value(attr: str) -> float:
+    r"""取作用中 profile 的尺寸值（唯一定義處＝chart_sizing）。
+
+    ⚠ 畫布尺寸維持 **int**：轉成 float 會讓 SVG 屬性變成 `width="949.0"`，
+    下游以 `width="(\d+)"` 解析的地方就對不上（2026-08-07 實測一支測試紅）。
+    """
+    from backend.app.reports.chart_profiles import active_sizing
+
+    value = getattr(active_sizing(), attr)
+    return int(value) if isinstance(value, int) else float(value)
+
+
 CHART_CANVAS_WIDTH = _SIZING.canvas_width
 CHART_CANVAS_MAX_HEIGHT = _SIZING.canvas_max_height
 CHART_LABEL_PX = 18          # （已停用）舊的寫死字級；改由 chart_font_px() 反推
@@ -219,7 +234,7 @@ def solve_chart_font(width_px: float, height_for_font, *,
 
 
 def chart_font_px(width_px: float, height_px: float, *,
-                  target_pt: float = CHART_DATA_TARGET_PT) -> float:
+                  target_pt: float | None = None) -> float:
     """要讓文字在 PPT 上顯示成 `target_pt`，這張畫布的 SVG 字級要開多大。
 
     **唯一定義處**——圖表字級一律問這裡，不再寫死數字。
@@ -230,6 +245,8 @@ def chart_font_px(width_px: float, height_px: float, *,
     差 0.004pt 跌破 12pt 下限。同「文字容量估算加 epsilon」教訓：
     邊界值必須留餘裕，不能指望浮點剛好站在線上。
     """
+    if target_pt is None:
+        target_pt = _sizing_value("data_target_pt")   # 依 profile（P3）
     return target_pt * 1.005 / PT_PER_PX / chart_scale(width_px, height_px)
 CHART_ROW_HEIGHT = _SIZING.row_height
 #: 年度矩陣泡泡的最小「大泡泡」半徑——格內兩位數（18px 字）放得下的下限。
@@ -305,6 +322,8 @@ CHART_FILE_REPORTS: dict[str, list[str]] = {
     "applicant_year_matrix.svg": ["applicant_year_matrix"],
     "applicant_year_matrix_more.svg": ["applicant_year_matrix"],
     "lifecycle.svg": ["lifecycle"],
+    # KP 競爭定位象限（值與 KP_QUADRANT_FILENAME 同源，測試 test_kp_quadrant_artifact 盯著）
+    "kp_quadrant.svg": ["applicant_strength_profile"],
     # 三個分群 artifact 各自對回自己的報表名（供 manifest／解讀查找定位到正確報表）。
     "cluster_topic_table.html": ["cluster_topic_table"],
     "opportunity_quadrant.svg": ["opportunity_quadrant"],
@@ -312,7 +331,15 @@ CHART_FILE_REPORTS: dict[str, list[str]] = {
 
 
 def report_names_for_artifact(filename: str) -> list[str]:
-    """推回單一 artifact 對應的 report key。"""
+    """推回單一 artifact 對應的 report key。
+
+    🔴 web profile 的圖一律回空（2026-08-09）：這張對照表的消費者是
+    artifact_manifest → build_ppt 的 ChartIndex，登記進去等於讓**網頁尺寸的圖
+    有機會被放進簡報**。⚠ 尤其 `opportunity_quadrant_*` 那條前綴規則對
+    `.web.svg` 一樣命中，不擋就會靜默混用。
+    """
+    if filename.endswith(".web.svg"):
+        return []
     # .csv 分支保留：歷史 report_trial manifest 可能還含 .csv 路徑，
     # 若移除會使這些 manifest 的 artifact 無法對應回正確 report key；
     # 新版不再輸出 CSV，但保留此分支不影響行為且避免舊 manifest 讀取異常。
@@ -334,6 +361,136 @@ def report_names_for_artifact(filename: str) -> list[str]:
         if filename.startswith(f"{base}_") and filename.endswith(ext):
             return [base]
     return []
+
+
+# profile 檔名規則的唯一定義處在 chart_profiles；本模組只消費，不另立一套。
+from backend.app.reports.chart_profiles import (
+    DEFAULT_PROFILE,
+    PROFILES,
+    ChartProfileError,
+    active_profile_name,
+    parse_profile_filename,
+    profile_context,
+    profile_filename,
+)
+
+# profile manifest 的檔名（前端與組版都靠它把 identity 對到實際圖檔）。
+PROFILE_MANIFEST_NAME = "profile_manifest.json"
+
+
+def _fetch_workspace_name(workspace_id: int) -> str | None:
+    """由 workspace_id 取顯示名稱（封面主標用）。"""
+    from backend.app.db.connection import get_pool
+
+    with get_pool().connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT workspace_name FROM app_layer.workspaces WHERE workspace_id = %s",
+                    (workspace_id,))
+        row = cur.fetchone()
+    return str(row[0]) if row and row[0] else None
+
+
+def build_workspace_identity(
+    *,
+    workspace_id: int | None,
+    workspace_name: str | None,
+    name_fetcher: Callable[[int], str | None] = _fetch_workspace_name,
+) -> dict[str, Any]:
+    """報表版本的 workspace 身分欄位（封面主標的來源）。
+
+    🔴 2026-08-09：`parameters` 原本只帶 `workspace_id`，封面因此永遠取不到
+    名稱、每次都退到後面的順位——使用者反映「主管看到第一時間也不知道是啥」。
+    ⚠ 不是版面問題，是**資料沒帶到**。
+
+    呼叫端明確給名稱時不查（人工指定優先於推導）；查不到或查失敗就**不放**
+    這個欄位——封面自有後續順位，不硬湊假名稱。
+    ⚠ 查名稱失敗不得讓整個產圖掛掉：它只是封面的一個字串。
+    """
+    if workspace_name:
+        return {"workspace_name": workspace_name}
+    if workspace_id is None:
+        return {}
+    try:
+        resolved = name_fetcher(int(workspace_id))
+    except Exception:  # noqa: BLE001 名稱查不到就退回，不得讓整個產圖掛掉
+        return {}
+    return {"workspace_name": resolved} if resolved else {}
+
+
+def _write_svg(path: Path, svg: list[str]) -> Path:
+    """SVG 的**唯一寫檔出口**；實際落點依作用中的 profile 決定。
+
+    🔴 呼叫端一律傳「原本的」路徑（`run_dir / "lifecycle.svg"`），不必知道
+    profile 這回事——web profile 會自動改寫成 `lifecycle.web.svg`。
+    ⚠ 反過來做（每個 renderer 多收一個 profile 參數）會讓 8 支 renderer 與
+    它們的每一個測試都跟著改介面，正是 AGENTS.md「入口要精簡」那條的反例。
+    """
+    target = path.with_name(profile_filename(path.name, active_profile_name()))
+    target.write_text("\n".join(svg), encoding="utf-8")
+    return target
+
+
+def render_sections_all_profiles(ctx: ChartContext,
+                                 specs: tuple[SectionSpec, ...]) -> None:
+    """為每個 profile 各跑一次 section builders。
+
+    PPT 先跑（既有行為，且它的產出是 report_data.json 與 artifact_manifest 的
+    依據）；web 隨後只補圖。
+
+    ⚠ 第二輪要把 `sections` 還原：builder 同時負責「畫圖」與「append 卡片資料」，
+    不還原的話網頁報表會出現重複卡片。`chart_rows` 是 dict 覆寫，重跑無害。
+    """
+    for spec in specs:
+        spec.build(ctx)
+    first_round_sections = list(ctx.sections)
+    for profile in PROFILES:
+        if profile == DEFAULT_PROFILE:
+            continue
+        with profile_context(profile):
+            for spec in specs:
+                spec.build(ctx)
+        ctx.sections[:] = first_round_sections
+
+
+def _variant_key_of(base_name: str, report_key: str) -> str:
+    """從既有檔名推出 variant：檔名去掉 report_key 前綴後的剩餘，沒有就是 default。
+
+    `ipc_main_distribution_L4.svg` ＋ `ipc_main_distribution` → `L4`；
+    `jurisdiction_distribution.svg` ＋ `country_distribution` → `default`
+    （檔名與 report_key 不同名，本來就沒有變體後綴）。
+    """
+    stem = base_name.removesuffix(".svg")
+    if stem.startswith(f"{report_key}_"):
+        return stem[len(report_key) + 1:]
+    return "default"
+
+
+def build_profile_manifest(run_dir: Path, version: str) -> dict[str, Any]:
+    """掃描版本目錄，建立 identity → 各 profile（web／ppt）的對應與 checksum。
+
+    identity＝`report_key:variant`（與 `chart_bundle` 選圖用的一致），path 指向
+    **既有檔名**——PPT profile 沿用原名、web profile 帶 `.web` 中綴。
+
+    ⚠ 一個檔可對應多個 report_key（`annual_trend.svg` 同時是申請與公告趨勢的
+    圖），此時該檔在每個 identity 下都登記。這正是原「一檔一 identity」命名
+    契約表達不了、因而於 2026-08-09 回寫的情形。
+
+    ⚠ checksum 綁檔案內容：兩個 profile 尺寸不同故必然不同，配錯或拿到過期檔
+    時對不上。
+    """
+    charts: dict[str, dict[str, Any]] = {}
+    for path in sorted(run_dir.glob("*.svg")):
+        try:
+            base_name, profile = parse_profile_filename(path.name)
+        except ChartProfileError:
+            continue
+        for report_key in report_names_for_artifact(base_name):
+            identity = f"{report_key}:{_variant_key_of(base_name, report_key)}"
+            entry = charts.setdefault(identity, {"version": version, "profiles": {}})
+            entry["profiles"][profile] = {
+                "path": path.name,
+                "checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+    return {"version": version, "charts": charts}
 
 
 def build_artifact_manifest(
@@ -412,7 +569,7 @@ def render_line_chart(
     }
     years = sorted(set(app) | set(pub))
     max_count = max([*app.values(), *pub.values(), 1])
-    width, height = CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT
+    width, height = _sizing_value("canvas_width"), _sizing_value("canvas_max_height")
     # 字級由縮放反推（資料 14pt／註記 12pt）；畫布固定，不需迭代。
     label_px = chart_font_px(width, height)
     note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
@@ -461,12 +618,12 @@ def render_line_chart(
         svg.append(f'<rect x="{left + 148}" y="{top + 8}" width="12" height="12" fill="{COLOR_PUBLICATION}"/>'
                    f'<text x="{left + 166}" y="{top + 19}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">授權公告年</text>')
     svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
+    _write_svg(path, svg)
 
 
 def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_key: str, value_key: str = "patent_count", limit: int = 20) -> None:
     data = rows[:limit]
-    width = CHART_CANVAS_WIDTH
+    width = _sizing_value("canvas_width")
     top = 68
     # 🔴 G-7：列少時把列高撐開，否則圖只有一小條、框空掉一半
     # （實機 p9 CPC L4 只有 1 列，圖高 130px 放進 3.2in 的框，空 48%）。
@@ -480,7 +637,7 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
                               base=int(round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX)))
         # ⚠ 列多時字級縮放會把總高撐過畫布上限（P-2：畫布過高整張圖被縮小）——
         # 上限內裝不下就壓回平均列高，字仍讀得到（row ≥ font×1.25 由 20 列上限保證）。
-        cap = int((CHART_CANVAS_MAX_HEIGHT - top - bottom) / max(1, len(data)))
+        cap = int((_sizing_value("canvas_max_height") - top - bottom) / max(1, len(data)))
         return max(1, min(rh, cap))
 
     def _canvas_height(font_px: float) -> float:
@@ -533,7 +690,7 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
         svg.append(f'<rect x="{left}" y="{y + 5}" width="{bar_w:.1f}" height="18" rx="2" fill="{color}"/>')
         svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value}</text>')
     svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
+    _write_svg(path, svg)
 
 
 def _paired_legend_svg(
@@ -602,18 +759,23 @@ def render_paired_bar_chart(
     值一律標「N 件」——口徑是件 vs 件（使用者定案），不得混入家族數。
     """
     data = rows[:limit]
-    width = CHART_CANVAS_WIDTH
+    width = _sizing_value("canvas_width")
     top = 68
     right = 150
     bottom = 34
     # 兩條 bar 一組：列高照單條版加倍再留組距，沿用字級迭代解算。
-    bar_h = 16
-    gap = 4
+    # 🔴 2026-08-09（A3 實測）：`bar_h`／`gap` 原本寫死 16／4 px，**不隨 profile
+    # 變**。web profile 不經 PPT 圖框的二次縮放，同一個數值標籤在圖上相對更大
+    # ——實測受理局分布圖 EP 的「2 件」直接壓在「1 件」上。改為依字級推導：
+    # 兩條 bar 的中心距至少要容得下一個字高。
+    def _bar_metrics(font_px: float) -> tuple[int, int]:
+        return max(16, round(font_px * 0.85)), max(4, round(font_px * 0.4))
 
     def _row_h(font_px: float) -> int:
+        bar_h, gap = _bar_metrics(font_px)
         base = round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX) * 2
         rh = _fill_row_height(len(data), top=top, bottom=bottom, base=base)
-        cap = int((CHART_CANVAS_MAX_HEIGHT - top - bottom) / max(1, len(data)))
+        cap = int((_sizing_value("canvas_max_height") - top - bottom) / max(1, len(data)))
         return max(bar_h * 2 + gap * 3, min(rh, cap))
 
     def _canvas_height(font_px: float) -> float:
@@ -621,6 +783,7 @@ def render_paired_bar_chart(
 
     label_px, _ = solve_chart_font(width, _canvas_height)
     row_h = _row_h(label_px)
+    bar_h, gap = _bar_metrics(label_px)
     left = label_gutter([str(row.get(label_key) or "") for row in data], font_px=label_px)
     height = round(_canvas_height(label_px))
     plot_w = width - left - right
@@ -642,7 +805,7 @@ def render_paired_bar_chart(
         bar_h=bar_h, gap=gap, left=left, plot_w=plot_w,
         max_value=max_value, label_px=label_px))
     svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
+    _write_svg(path, svg)
 
 
 def ranking_segments(row: dict[str, Any]) -> dict[str, int]:
@@ -757,7 +920,7 @@ def render_segmented_bar_chart(
     """
     total_rows = len(rows)
     data = rows[:limit]
-    width = CHART_CANVAS_WIDTH
+    width = _sizing_value("canvas_width")
     # 🔴 P-2：row_h 由 50 壓到 28——原本每列固定 50px 讓 12 列的畫布高達 7.54in，
     # 塞進 4.32in 圖框被壓到 0.573 倍，字只剩 5.6pt（下限 12pt）。
     #
@@ -783,7 +946,7 @@ def render_segmented_bar_chart(
         total = top + bottom
         for note in _notes_preview:
             step = row_px * (2 if note else 1)
-            if total > top + bottom and total + step > CHART_CANVAS_MAX_HEIGHT:
+            if total > top + bottom and total + step > _sizing_value("canvas_max_height"):
                 break
             total += step
         return total
@@ -838,8 +1001,8 @@ def render_segmented_bar_chart(
             f'<text x="254" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">'
             f'{xml_text(hatch_label)}</text>')]
           if hatch_label else []),
-        *([f'<text x="{width - 40}" y="67" text-anchor="end" font-size="{note_px:.1f}" '
-           f'fill="{COLOR_TEXT_SOFT}">{xml_text(truncation_note(len(data), total_rows))}</text>']
+        *([(f'<text x="{width - 40}" y="67" text-anchor="end" font-size="{note_px:.1f}" '
+            f'fill="{COLOR_TEXT_SOFT}">{xml_text(truncation_note(len(data), total_rows))}</text>')]
           if truncation_note(len(data), total_rows) else []),
     ]
     y_cursor = top
@@ -882,7 +1045,7 @@ def render_segmented_bar_chart(
             svg.append(f'<text x="{left}" y="{note_y:.1f}" font-size="{note_font}" '
                        f'fill="{COLOR_TEXT_SOFT}">{xml_text(notes[index])}</text>')
     svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
+    _write_svg(path, svg)
 
 
 def classification_level_key(value: Any, level: int) -> str:
@@ -992,7 +1155,239 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
         footnote += " 無地域代碼：" + "、".join(no_geo_notes)
     svg.append(f'<text x="50" y="505" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{xml_text(footnote)}</text>')
     svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
+    _write_svg(path, svg)
+
+
+# ── KP 競爭定位象限（P2 版型；範例＝滑雪機 V2 p7）────────────────────
+# 圖檔名（唯一定義處：對照表、產圖與測試都取這裡）。
+KP_QUADRANT_FILENAME = "kp_quadrant.svg"
+# 定位分類**由資料推導**，不吃 AI 給的字串——分類是統計事實不是敘述。
+KP_CLASS_FULL_DOMAIN = "全領域布局"
+KP_CLASS_SINGLE_TECH = "單一技術深布局"
+KP_CLASS_NICHE = "利基／探索"
+KP_CLASS_PRIOR_ART = "前案（多失效）"
+
+_KP_CLASS_COLORS = {
+    KP_CLASS_FULL_DOMAIN: "#D97706",   # 橘：範例右上大泡
+    KP_CLASS_SINGLE_TECH: "#0D9488",   # 青綠：右下
+    KP_CLASS_NICHE: "#60A5FA",         # 淺藍：左側
+    KP_CLASS_PRIOR_ART: "#6B7280",     # 灰：僅具前案價值
+}
+
+
+def kp_position_class(row: dict[str, Any], x_median: float, y_median: float) -> str:
+    """依四面向數字判定競爭定位（順序即優先序）。
+
+    ⚠ 前案優先於其他分類：0 授權且有失效者無論布局多廣，都不構成現實障礙
+    ——範例 p7 的「孟喬／億軒件數雖多，但相關案件多已失效，僅具前案價值」。
+    """
+    granted = int(row.get("granted_count") or 0)
+    dead = int(row.get("dead_count") or 0)
+    if granted == 0 and dead > 0:
+        return KP_CLASS_PRIOR_ART
+    wide = float(row.get("country_count") or 0) >= x_median
+    broad = float(row.get("topic_count") or 0) >= y_median
+    if wide and broad:
+        return KP_CLASS_FULL_DOMAIN
+    if wide and not broad:
+        return KP_CLASS_SINGLE_TECH
+    return KP_CLASS_NICHE
+
+
+def emit_kp_quadrant(ctx: ChartContext, rows: list[dict[str, Any]]) -> None:
+    """產 KP 象限圖並掛上對應的 section。
+
+    🔴 2026-08-09：`render_kp_quadrant_chart` 與四面向資料都早已就位，缺的只是
+    這個接點——沒接時組版端 `_render_kp_quadrant` 拿不到圖會**靜默降級**成
+    stat_callout，投影片只剩一個大數字。
+
+    ⚠ 沒有資料就不出圖也不出卡（撐不起就不開那一頁，見 content_standard）。
+    標題取 REPORT_DEFINITIONS 的 label_zh，不在這裡另寫一份字串。
+    """
+    if not rows:
+        return
+    definition = REPORT_DEFINITIONS["applicant_strength_profile"]
+    render_kp_quadrant_chart(ctx.run_dir / KP_QUADRANT_FILENAME, definition.label_zh, rows)
+    ctx.sections.append({
+        "title": definition.label_zh,
+        "report_key": "applicant_strength_profile",
+        "note": "X＝布局國數、Y＝涉入主題數、泡泡＝同族件數、顏色＝定位分類"
+                "（分類由件數與法律狀態推導，非人工標註）。",
+        "variants": [{
+            "label": definition.label_zh,
+            "variant_key": "default",
+            "file": KP_QUADRANT_FILENAME,
+            "rows": rows,
+        }],
+    })
+
+
+def _quadrant_axis_max(values: list[float]) -> float:
+    """象限圖的軸上限：貼齊刻度的最後一格，只留半格餘裕。
+
+    ⚠ 不用「最大值 × 固定倍率」：倍率對小整數軸會多推出一整格
+    （最大 4 → 5 → 刻度畫到 6），右側整片空白且資料全擠在一角。
+    """
+    top_value = max(values + [1.0])
+    ticks = nice_ticks(top_value)
+    step = (ticks[1] - ticks[0]) if len(ticks) > 1 else 1
+    return max(float(ticks[-1]), top_value + step / 2)
+
+
+def render_kp_quadrant_chart(
+    path: Path,
+    title: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    """KP 競爭定位象限：X＝國數、Y＝主題數、泡泡＝家族件數、色＝定位分類。
+
+    沿用泡泡圖骨架，另加**中位數象限線**與分類圖例——不重造第二支散點圖。
+    """
+    width, height = _sizing_value("canvas_width"), _sizing_value("canvas_max_height")
+    label_px = chart_font_px(width, height)
+    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
+    left, right, top, bottom = 90, 210, 72, 84
+    plot_w, plot_h = width - left - right, height - top - bottom
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
+        '<rect width="100%" height="100%" fill="white"/>',
+        f'<text data-role="chart-title" x="28" y="34" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        (f'<text x="28" y="56" font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">'
+         f'橫軸＝跨國布局深度（國數）｜縱軸＝技術廣度（主題數）｜泡泡大小＝家族件數</text>'),
+    ]
+    if not rows:
+        svg.append(f'<text x="{width / 2:.0f}" y="{height / 2:.0f}" text-anchor="middle" '
+                   f'font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">本批無競爭者資料</text>')
+        svg.append("</svg>")
+        _write_svg(path, svg)
+        return
+
+    xs = [float(r.get("country_count") or 0) for r in rows]
+    ys = [float(r.get("topic_count") or 0) for r in rows]
+    sizes = [float(r.get("family_count") or 0) or 1.0 for r in rows]
+    # 🔴 2026-08-09 首次實機產圖：原本 `max * 1.25` 再套 nice_ticks，資料最大 4
+    # 會把軸推到 6——右側三分之一空白，而**所有泡泡被擠進左下角互相重疊**，
+    # 標籤避讓再好也救不回來。⚠ 這不是避讓演算法的問題，是軸範圍的問題。
+    #
+    # 改為以刻度的最後一格當軸上限（nice_ticks 本身已「夠用就截短」），只留
+    # 半格餘裕讓最外側的泡泡不貼邊。
+    x_max = _quadrant_axis_max(xs)
+    y_max = _quadrant_axis_max(ys)
+    s_max = max(sizes)
+    x_median = statistics.median(xs) if xs else 0.0
+    y_median = statistics.median(ys) if ys else 0.0
+
+    for tick in nice_ticks(y_max):
+        y = scale(tick, 0, y_max, top + plot_h, top)
+        svg.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}" stroke="{COLOR_GRID}" stroke-width="1"/>')
+        svg.append(f'<text x="{left - LABEL_TEXT_OFFSET_PX}" y="{y + 4:.1f}" text-anchor="end" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{tick}</text>')
+    for tick in nice_ticks(x_max):
+        x = scale(tick, 0, x_max, left, left + plot_w)
+        svg.append(f'<text x="{x:.1f}" y="{top + plot_h + 26}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT_SOFT}">{tick}</text>')
+    # 中位數象限線（虛線）：四格界線要看得見。
+    mx = scale(x_median, 0, x_max, left, left + plot_w)
+    my = scale(y_median, 0, y_max, top + plot_h, top)
+    svg.append(f'<line x1="{mx:.1f}" y1="{top}" x2="{mx:.1f}" y2="{top + plot_h}" stroke="{COLOR_TEXT_SOFT}" stroke-width="1" stroke-dasharray="6 4"/>')
+    svg.append(f'<line x1="{left}" y1="{my:.1f}" x2="{left + plot_w}" y2="{my:.1f}" stroke="{COLOR_TEXT_SOFT}" stroke-width="1" stroke-dasharray="6 4"/>')
+    svg.append(f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
+    svg.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="{COLOR_TEXT}"/>')
+    svg.append(f'<text x="{left + plot_w / 2:.0f}" y="{height - 20}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">跨國布局深度（國數）→</text>')
+
+    ordered = sorted(rows, key=lambda r: -float(r.get("family_count") or 0))
+    # ⚠ 同座標抖開：國數／主題數是小整數，多家常落在同一點（實測左下四家全疊）。
+    # 抖動量由該座標的第幾家決定（deterministic，兩次產出相同）。
+    seen_at: dict[tuple[float, float], int] = {}
+    points: list[tuple[float, float, float, str]] = []
+    for row in ordered:
+        cx = float(row.get("country_count") or 0)
+        cy = float(row.get("topic_count") or 0)
+        n = seen_at.get((cx, cy), 0)
+        seen_at[(cx, cy)] = n + 1
+        angle = 0.9 * n
+        offset = 13.0 * n
+        x = scale(cx, 0, x_max, left, left + plot_w) + offset * math.cos(angle)
+        y = scale(cy, 0, y_max, top + plot_h, top) - offset * math.sin(angle)
+        radius = 8 + 26 * math.sqrt((float(row.get("family_count") or 0) or 1.0) / s_max)
+        color = _KP_CLASS_COLORS[kp_position_class(row, x_median, y_median)]
+        svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" fill="{color}" fill-opacity="0.75" stroke="{color}" stroke-width="1.5"/>')
+        points.append((x, y, radius, str(row.get("applicant_display_name") or "")))
+    # 標籤避讓走共用函式（不重寫一套）。
+    svg.extend(place_bubble_labels(points, label_px, top_limit=top))
+
+    legend_x = left + plot_w + 24
+    svg.append(f'<text x="{legend_x}" y="{top + 4}" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">定位分類</text>')
+    for i, (name, color) in enumerate(_KP_CLASS_COLORS.items()):
+        y = top + 30 + i * 26
+        svg.append(f'<circle cx="{legend_x + 8}" cy="{y - 4}" r="7" fill="{color}" fill-opacity="0.8"/>')
+        svg.append(f'<text x="{legend_x + 24}" y="{y}" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{xml_text(name)}</text>')
+    svg.append("</svg>")
+    _write_svg(path, svg)
+
+
+def _label_candidate_ys(y: float, radius: float, default_y: float,
+                        min_gap: float, top_limit: float) -> list[float]:
+    """標籤 baseline 的候選位置：預設在泡泡正上方，衝突時上下交錯外推。
+
+    ⚠ 過濾掉繪圖區上緣之上的候選——往上推過頭會壓到標題與副標
+    （2026-08-09 實測 KP 象限最高的泡泡標籤壓到副標）。全部被濾掉時至少留一個。
+    """
+    candidates = [default_y]
+    for i in range(1, 24):
+        step = min_gap * ((i + 1) // 2)
+        candidates.append(y + radius + min_gap + step if i % 2 else default_y - step)
+    return [cy for cy in candidates if cy >= top_limit] or [max(default_y, top_limit)]
+
+
+def place_bubble_labels(
+    points: list[tuple[float, float, float, str]],
+    label_px: float,
+    top_limit: float = 0.0,
+) -> list[str]:
+    """泡泡標籤避讓（**唯一定義處**）：交錯外推找空位，被推開就畫引線。
+
+    points＝[(x, y, radius, label)]，須**已按泡泡由大到小排序**（大泡先佔位）。
+    `top_limit`＝繪圖區上緣，標籤不得推到它之上（壓到標題／副標）。
+
+    ⚠ 2026-08-07：KP 象限初版複製了泡泡圖骨架卻漏掉這段，真資料一畫就四家
+    標籤疊成一團——避讓抽成共用函式，兩張圖吃同一份邏輯。
+
+    🔴 2026-08-09 首次實機產圖後修兩個參數錯（不是「沒接上」，是接上了但沒效）：
+    - 最小垂直間距原本寫死 **12px，比字高還小**（label_px 約 17）——判定為
+      「不重疊」的兩行實際上疊在一起。改為依字高推導。
+    - 候選位置可以往上推出繪圖區，最高的泡泡標籤因此壓到副標。
+    - 候選全部落空時原本取最後一個（仍可能重疊），改為從已佔位處往下續推。
+    """
+    out: list[str] = []
+    placed: list[tuple[float, float, float]] = []  # (x_center, y_baseline, half_width)
+    # 字高即最小間距：兩行 baseline 差距小於字高就是視覺重疊。
+    min_gap = label_px * 1.15
+    for x, y, radius, label in points:
+        half_w = len(label) * (label_px * 0.32)
+        default_y = y - radius - 5
+        candidate_ys = _label_candidate_ys(y, radius, default_y, min_gap, top_limit)
+
+        # ⚠ x／half_w 以預設參數綁定當輪的值：閉包捕捉迴圈變數在這裡雖然
+        # 同輪就用掉、行為正確，但那是「剛好沒事」——綁定後語意才明確（ruff B023）。
+        def _free(cy: float, x: float = x, half_w: float = half_w) -> bool:
+            return all(abs(cy - py) >= min_gap or abs(x - px) > (half_w + pw)
+                       for px, py, pw in placed)
+
+        label_y = next((cy for cy in candidate_ys if _free(cy)), None)
+        if label_y is None:
+            # 全部落空：從最低的已佔位往下續推，直到真的空出來（不硬塞回重疊處）。
+            label_y = max([py for _, py, _ in placed] or [default_y]) + min_gap
+            while not _free(label_y):
+                label_y += min_gap
+        placed.append((x, label_y, half_w))
+        if abs(label_y - default_y) > 6:
+            if label_y < y:
+                line_y1, line_y2 = label_y + 3, y - radius
+            else:
+                line_y1, line_y2 = label_y - 10, y + radius
+            out.append(f'<line x1="{x:.1f}" y1="{line_y1:.1f}" x2="{x:.1f}" y2="{line_y2:.1f}" stroke="#94A3B8" stroke-width="1"/>')
+        out.append(f'<text x="{x:.1f}" y="{label_y:.1f}" text-anchor="middle" '
+                   f'font-size="{label_px:.1f}" font-weight="600" fill="{COLOR_TEXT}">{xml_text(label)}</text>')
+    return out
 
 
 def render_bubble_chart(
@@ -1005,7 +1400,7 @@ def render_bubble_chart(
     label_key: str,
 ) -> None:
     """氣泡圖：X/Y 線性軸、泡泡面積正比 size_key（企業研發能量用）。"""
-    width, height = CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT
+    width, height = _sizing_value("canvas_width"), _sizing_value("canvas_max_height")
     # 字級由縮放反推（資料 14pt／註記 12pt）；畫布固定，不需迭代。
     label_px = chart_font_px(width, height)
     note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
@@ -1073,7 +1468,7 @@ def render_bubble_chart(
             svg.append(f'<line x1="{x:.1f}" y1="{line_y1:.1f}" x2="{x:.1f}" y2="{line_y2:.1f}" stroke="#94A3B8" stroke-width="1"/>')
         svg.append(f'<text x="{x:.1f}" y="{label_y:.1f}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{xml_text(label)}</text>')
     svg.append("</svg>")
-    path.write_text("\n".join(svg), encoding="utf-8")
+    _write_svg(path, svg)
 
 
 def render_matrix_chart(
@@ -1125,10 +1520,10 @@ def render_matrix_chart(
     # 🔴 2026-08-04：字級由縮放反推（資料 14pt／註記 12pt）。
     # ⚠ 先用畫布上限求初值排版面（格高、標籤區都跟著字級走），
     # 畫布尺寸算完後再定最終字級——高度受 max_visible_rows 限制，接近上限。
-    _f0 = chart_font_px(CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT)
+    _f0 = chart_font_px(_sizing_value("canvas_width"), _sizing_value("canvas_max_height"))
     cell_h = max(30, int(round(_f0 * 30 / CHART_LABEL_PX)))
     label_width, cell_w, top_margin = 300, 66, 96
-    usable = CHART_CANVAS_MAX_HEIGHT - top_margin - 28
+    usable = _sizing_value("canvas_max_height") - top_margin - 28
     # 🔴 前十一致（2026-08-07 使用者裁決「排名就是取前十個」）：高度上限**不得**
     # 把列數砍進 row_limit 以內——同一個「前十大」在排名/年度矩陣/狀態矩陣三頁
     # 曾是 7/10/9 三種數。列數優先於高度：畫布長高由字級解算補償（字仍 14pt，
@@ -1137,7 +1532,7 @@ def render_matrix_chart(
     rows_total_count = len(top_rows)
     top_rows = top_rows[:max_visible_rows]
     # 欄寬吃滿畫布：欄少時把剩餘寬度分給列標籤與格子，避免圖過窄而字被縮小。
-    grid_w = CHART_CANVAS_WIDTH - label_width - 24
+    grid_w = _sizing_value("canvas_width") - label_width - 24
     cell_w = max(cell_w, grid_w // max(len(cols), 1))
     width = label_width + cell_w * max(len(cols), 1) + 24
     height = top_margin + cell_h * max(len(top_rows), 1) + 28
@@ -1148,7 +1543,11 @@ def render_matrix_chart(
     max_value = max((cells[(r, c)] for r in top_rows for c in cols if (r, c) in cells), default=1)
 
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" font-family="Segoe UI, sans-serif">',
+        # ⚠ viewBox 不可省：沒有它的 SVG 以 inline 方式嵌進較窄容器時不會等比
+        # 縮放，`max-width:100%` 會直接把右側與下方**裁掉**（2026-08-09 驗收頁
+        # 實測，lifecycle 的 web profile 被切掉一整欄與三列，誤判成「內容比較少」）。
+        (f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
+         f' viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">'),
         f'<rect width="{width}" height="{height}" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="26" font-size="{note_px:.1f}" font-weight="bold" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         f'<text x="16" y="56" font-size="{label_px:.1f}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
@@ -1197,7 +1596,7 @@ def render_matrix_chart(
                 f'text-anchor="middle" fill="{readable_text_on(fill)}" data-on-fill="{fill}">{value}</text>'
             )
     parts.append("</svg>")
-    path.write_text("\n".join(parts), encoding="utf-8")
+    _write_svg(path, parts)
     return {"rows_drawn": len(top_rows), "rows_total": len(row_totals), "cols": cols}
 
 
@@ -1314,17 +1713,17 @@ def render_year_bubble_matrix_chart(
     # ⚠ 本圖的畫布高度幾乎固定（row_h 會自適應填滿 CHART_CANVAS_MAX_HEIGHT），
     # 故先用畫布上限求初值排版面，最後再用**實際**畫布尺寸定字級——
     # 標籤區用初值多留 5% 餘裕，避免字放大後撞到左緣。
-    _f0 = chart_font_px(CHART_CANVAS_WIDTH, CHART_CANVAS_MAX_HEIGHT)
+    _f0 = chart_font_px(_sizing_value("canvas_width"), _sizing_value("canvas_max_height"))
     left = label_gutter([str(name) for name in row_names], font_px=_f0 * 1.05)
     top = 132
-    usable = CHART_CANVAS_MAX_HEIGHT - top - 34
+    usable = _sizing_value("canvas_max_height") - top - 34
     row_h = max(26, usable // max(1, len(row_names)))
     if row_h * len(row_names) > usable:          # 列太多時砍列，不是縮字
         row_names = row_names[:max(1, usable // 26)]
         row_h = 26
     # ⚠ 欄寬有下限（泡泡要放得下），年份多到撐破畫布時**砍年份**而不是繼續縮——
     # 縮到看不清楚等於資訊沒了。砍掉的是最舊的年份，圖上仍是連續區間。
-    grid_w = CHART_CANVAS_WIDTH - left - 34
+    grid_w = _sizing_value("canvas_width") - left - 34
     years_total = len(years)
     # 固定顯示最新 CHART_YEAR_WINDOW 年（使用者定案）。少了的年份必須在圖上標明——
     # 靜默切掉才是不能接受的。
@@ -1346,8 +1745,8 @@ def render_year_bubble_matrix_chart(
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="28" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         f'<text x="16" y="90" font-size="{note_px:.1f}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
-        *([f'<text x="{width - 34}" y="{top - 14}" text-anchor="end" font-size="{note_px:.1f}" '
-           f'fill="{COLOR_TEXT_SOFT}">僅顯示 {years[0]}–{years[-1]}（共 {years_total} 年）</text>']
+        *([(f'<text x="{width - 34}" y="{top - 14}" text-anchor="end" font-size="{note_px:.1f}" '
+            f'fill="{COLOR_TEXT_SOFT}">僅顯示 {years[0]}–{years[-1]}（共 {years_total} 年）</text>')]
           if years_total > len(years) else []),
     ]
     # 🔴 圖例標出**本圖實際的級距數值**，不只寫「低／中／高」。
@@ -1402,7 +1801,7 @@ def render_year_bubble_matrix_chart(
                 f'text-anchor="middle" fill="{readable_text_on(fill)}" data-on-fill="{fill}" pointer-events="none">{value}</text>'
             )
     parts.append("</svg>")
-    path.write_text("\n".join(parts), encoding="utf-8")
+    _write_svg(path, parts)
 
 
 LABEL_FONT_SIZE = CHART_LABEL_PX  # P-2：縮放後 ≥12pt
@@ -1750,7 +2149,7 @@ def _fill_row_height(row_count: int, *, top: int, bottom: int,
     """
     if row_count <= 0:
         return base
-    usable = CHART_CANVAS_MAX_HEIGHT - top - bottom
+    usable = _sizing_value("canvas_max_height") - top - bottom
     # 🔴 H-6（2026-08-03 實機 p9）：CPC 四階只有 1 列，撐到 base×4＝112px 後
     # 那根長條橫貫全寬、粗到變成一整塊色帶，已經不像圖表了。
     # ⚠ 列數極少時**不追求填滿**：填滿是為了避免大片留白，但把單一長條撐成色帶
@@ -1794,6 +2193,17 @@ def label_gutter(labels: list[str], *, minimum: int = 180, maximum: int = 480,
                                 widest * font_px + LABEL_GUTTER_PADDING_PX)))
 
 
+# 字寬估算係數——⚠ 與 `skills/patent-report-ppt/scripts/build_ppt.py` **必須同值**
+# （測試 test_both_implementations_stay_in_sync／test_display_width_matches_chart_runner
+# 釘住；本專案已因「兩處落點只改一邊」出過 8 次問題）。
+ALNUM_EM_WIDTH = 0.62      # 半形英數（2026-08-03 實測像素校準，0.55→0.62）
+PUNCT_EM_WIDTH = 0.5       # 全形標點（2026-08-09：字面右半是空白、排版可壓縮）
+_FULLWIDTH_PUNCT = frozenset(
+    "、。〈〉《》「」『』【】〔〕・〜（）［］｛｝！＃＄％＆＇＊，－．／：；＜＝＞？＠＼＾｀｜～"
+    "　"
+)
+
+
 def _display_width(text: str) -> float:
     """字串的顯示寬度，單位是「全形字」。
 
@@ -1806,7 +2216,12 @@ def _display_width(text: str) -> float:
     ⚠ 這是估算不是量測——SVG 沒有 text metrics，只能用係數逼近。
     因此 `LABEL_GUTTER_PADDING_PX` 要留誤差空間，兩者搭配才安全。
     """
-    return sum(0.62 if ord(ch) < 0x2E80 else 1.0 for ch in str(text))
+    return sum(
+        ALNUM_EM_WIDTH if ord(ch) < 0x2E80
+        else PUNCT_EM_WIDTH if ch in _FULLWIDTH_PUNCT
+        else 1.0
+        for ch in str(text)
+    )
 
 
 def nice_ticks(max_value: float, count: int = 5) -> list[int]:
@@ -2808,7 +3223,7 @@ def _build_applicant_ranking_section(ctx: ChartContext) -> None:
     })
 
 
-def shared_matrix_max(ctx: "ChartContext", *report_names: str) -> int | None:
+def shared_matrix_max(ctx: ChartContext, *report_names: str) -> int | None:
     """跨報表的共同色階基準（取各報表格值的最大值）。
 
     ⚠ **目前未採用**，保留供日後參考並記下否決理由：泡泡半徑也用 `max_value`
@@ -3095,7 +3510,7 @@ def render_cluster_topic_table_html(
             )
         parts.append("</tbody></table>")
     parts.append("</body></html>")
-    path.write_text("\n".join(parts), encoding="utf-8")
+    path.write_text("\n".join(parts), encoding="utf-8")  # HTML 無 profile 之分
 
 
 def _qlabel(px: float, py: float, p_med: float, a_med: float) -> tuple[str, str]:
@@ -3445,12 +3860,48 @@ def render_opportunity_quadrant_svg(
         f'本分析非侵權迴避(FTO)結論｜資料依公開專利資訊整理</text>')
 
     parts.append("</svg>")
-    path.write_text("\n".join(parts), encoding="utf-8")
+    _write_svg(path, parts)
 
 
 # 🔴 2026-08-04：痛點板（pain_point_quadrant）已整個刪除（使用者定案）。
 # 07-29 起本就停產（「整個藏起來，等市場線做好再放出來」），市場線也已定案移除，
 # 留著的程式每次改字級、用詞、版面都多一份要同步、又永遠驗不到。
+
+
+def applicant_strength_rows(
+    rows: list[dict[str, Any]],
+    ranking: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """申請人四面向報表列（KP 象限的兩軸＋泡泡＋定位所需欄位）。
+
+    計算**不在此重寫**——一律呼叫 `content_blocks.key_player_profiles`
+    （唯一定義處，同時服務 PPT 與日後 SlidePlan）；本函式只把 profile 攤平成
+    報表列（dict 值換成可顯示字串，表格欄放不了巢狀 dict）。
+
+    ⚠ 這是資料層。簡報上的形狀是象限座標（橫軸國數／縱軸主題數／泡泡家族數）
+    與數字卡，**不是屬性表**——見 skills/patent-report-ppt/content_standard.md。
+    """
+    from backend.app.reports.content_blocks import key_player_profiles
+
+    out: list[dict[str, Any]] = []
+    for profile in key_player_profiles(rows, ranking=ranking):
+        kinds = profile.get("kind_counts") or {}
+        out.append({
+            "applicant_display_name": profile["applicant"],
+            "patent_count": profile["patent_count"],
+            "family_count": profile.get("family_count", 0),
+            "country_count": profile.get("country_count", 0),
+            "topic_count": profile.get("topic_count", 0),
+            "ipc_subclass_count": profile.get("ipc_subclass_count", 0),
+            "granted_count": profile.get("granted_count", 0),
+            "pending_count": profile.get("pending_count", 0),
+            "dead_count": profile.get("dead_count", 0),
+            # 種類三分攤成一欄可讀字串（表格欄不吃 dict）。
+            "kind_summary": "／".join(f"{k}{v}" for k, v in sorted(kinds.items())),
+            "has_trajectory": profile.get("has_trajectory", False),
+            "joint_count": profile.get("joint_count", 0),
+        })
+    return out
 
 
 def _build_cluster_analytics_section(ctx: ChartContext) -> None:
@@ -3597,6 +4048,17 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
         "機會板採板狀佈局（chip 流式排列，結構上不重疊）、每個來源各一組——"
         "2×2 格依該段專利件數與申請人家數中位數分高低，chip 色＝主要申請人涉入三級。"
     )
+    # 申請人四面向（KP 象限引擎端配套）：進 chart_rows 讓 report_data 帶得出去，
+    # CLI（P2 規劃）與畫圖端才拿得到兩軸資料。名單以排名頁為準。
+    ranking_rows = ctx.chart_rows.get("applicant_ranking") or []
+    ranking_names = [str(r.get("applicant_display_name") or "") for r in ranking_rows]
+    strength_source = data.get("strength_rows") or []
+    if strength_source:
+        strength_profile_rows = applicant_strength_rows(
+            strength_source, ranking=ranking_names or None)
+        ctx.chart_rows["applicant_strength_profile"] = strength_profile_rows
+        emit_kp_quadrant(ctx, strength_profile_rows)
+
     # CLU-016（補分 change）：母體註記分計 AI 建議、人工核准件數——assignments
     # 每列帶 assigned_source（0048 起），缺欄（舊資料）視為幾何指派、count 0 不出註記。
     backfill_n = sum(
@@ -3651,7 +4113,9 @@ SECTION_SPECS: tuple[SectionSpec, ...] = (
     # 保留 "cluster_analytics" 虛擬別名，相容既有「無對應報表的特殊 section」契約與呼叫端。
     SectionSpec(
         "cluster_analytics",
-        ("cluster_analytics", "cluster_topic_table", "opportunity_quadrant"),
+        ("cluster_analytics", "cluster_topic_table", "opportunity_quadrant",
+         # 申請人四面向：同吃 cluster_data（要主題數），與分群卡同 section。
+         "applicant_strength_profile"),
         _build_cluster_analytics_section,
     ),
 )
@@ -3751,8 +4215,7 @@ def run_chart_trial(
         analysis_id=analysis_id,
         cluster_data=cluster_data,
     )
-    for spec in specs:
-        spec.build(ctx)
+    render_sections_all_profiles(ctx, specs)
 
     fetched = ctx.fetched_reports()
     generated_at = datetime.now().isoformat(timespec="seconds")
@@ -3771,7 +4234,9 @@ def run_chart_trial(
         "has_cluster_analytics": cluster_data is not None,
         # workspace 顯示名稱（P3-2）：封面主標的資料源（P1-8 cover.title 退場後由此組成）。
         # ⚠ 不給就不落鍵——封面端以「鍵不存在」走通用標題 fallback，落 null 反而混淆。
-        **({"workspace_name": workspace_name} if workspace_name else {}),
+        # 🔴 2026-08-09：呼叫端沒帶名稱時改由 workspace_id 反查，否則封面永遠
+        # 取不到、每次都退到後面的順位（使用者：「主管看到第一時間也不知道是啥」）。
+        **build_workspace_identity(workspace_id=workspace_id, workspace_name=workspace_name),
         # workspace_id（2026-07-31 版本區隔定案）：name 會撞名，id 才是穩定歸屬鍵。
         **({"workspace_id": int(workspace_id)} if workspace_id is not None else {}),
         **patent_snapshot_metadata(patent_ids),
@@ -3870,6 +4335,19 @@ def run_chart_trial(
     )
     write_json(run_dir / "artifact_manifest.json", manifest)
     files.append("artifact_manifest.json")
+    # profile manifest：identity → web／ppt 兩份圖的 path 與 checksum。
+    # ⚠ 必須在圖檔全部產完後才掃描（它是掃目錄產出的，不是累積出來的）。
+    profile_manifest = build_profile_manifest(run_dir, version)
+    write_json(run_dir / PROFILE_MANIFEST_NAME, profile_manifest)
+    # web profile 的圖要進 files——`files` 是各 builder 累積的，而 builder 只
+    # 知道自己傳進去的原路徑，不知道寫檔出口把 web 版寫到哪。以 manifest 為
+    # 單一來源補齊，不另外掃一次目錄。
+    files += sorted({
+        asset["path"]
+        for entry in profile_manifest["charts"].values()
+        for asset in entry["profiles"].values()
+    })
+    files.append(PROFILE_MANIFEST_NAME)
     files = list(dict.fromkeys(files))
     file_metadata = {
         item["file"]: item

@@ -26,12 +26,12 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import math
 import re
 import sys
-import dataclasses
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -203,6 +203,10 @@ _VECTOR_INDEX = 0
 # ⚠ 主題分布不走「多圖拆頁」（它根本沒圖）——是**依列值**拆成兩張表格頁。
 # 通道 → 解讀變體鍵（2026-07-31）：主題統計表拆成技術／功效兩頁後，各取各的解讀。
 # ⚠ 上游 `chart_runner` 必須宣告同名 variant，否則這裡對不到、兩頁又會共用同一段。
+# 技術通道 source_field（封面漏斗的群數只算它；功效不上封面）——
+# 與 CHANNEL_SPLIT_REPORTS 同一份字面來源，改欄名時一起改。
+TECHNICAL_SOURCE_FIELD = "wips_independent_claims"
+
 CHANNEL_NARRATIVE_VARIANTS: dict[str, str] = {
     "wips_independent_claims": "topic_table_tech",
     "effect_summary": "topic_table_effect",
@@ -280,6 +284,19 @@ def _filter_report_charts(report_keys: tuple[str, ...], files: tuple[str, ...]) 
 # 成對圖的左右順序偏好：L4 在 L5 前、技術面在功效面前；其餘照檔名排序保持 deterministic。
 CHART_ORDER_HINTS = ("_L4", "_L5", "_tech", "_effect", "_more")
 
+# 封面 eyebrow（小字）與主標的最後 fallback。
+# ⚠ 兩者原本各自寫死「專利情報整合分析」，workspace 名稱缺失時同一句印兩次。
+COVER_EYEBROW = "專利情報整合分析"
+COVER_TITLE_FALLBACK = "專利布局與競爭分析"
+
+# ── 空白頁偵測（產檔後掃描用；與版型無關，換任何一批資料都適用）──
+# 正文帶＝標題與註腳之間的縱向區間（比例，不寫死英吋，換版面尺寸仍成立）。
+BODY_BAND_TOP_RATIO = 0.15
+BODY_BAND_BOTTOM_RATIO = 0.88
+# 正文帶內少於這個字數就視為空頁。⚠ 門檻取在「只有面板標題」與「有實質敘述」
+# 之間：實測空框頁只有 12 字（兩個面板標題），最短的有效內容頁遠超過 60 字。
+EMPTY_BODY_MIN_CHARS = 40
+
 # 成對圖的子標，讓使用者一眼知道左右差在哪（禁止合成一張圖的配套說明）。
 CHART_VARIANT_LABELS = {
     "_L4": "4 階細分類（L4）",
@@ -348,8 +365,12 @@ NARRATIVE_POINT_LINES = 2
 POINT_LABEL_COST = max(len(label) for label in ("現況", "意涵", "後續")) + 1
 
 
-def points_budget(per_line: int, max_lines: int, columns: int) -> dict[str, int]:
+def points_budget(per_line: float, max_lines: int, columns: int) -> dict[str, int]:
     """一個要點框放得下幾條、每條正文幾個字。**容量宣告的唯一公式**。
+
+    ⚠ `per_line` 收精確寬度（em）但本函式算的是**字數**，故在此取整一次——
+    2026-08-09 起 `_text_capacity` 回傳 float（容量比較要精確），若讓每個呼叫端
+    自己記得轉，漏一處就是 `"字" * 26.3` 這種 TypeError。
 
     🔴 2026-08-04：`max_chars` 必須**扣掉標籤佔的字**。
     症狀：第五輪實機丟了 5 條要點，但同一輪 narrative 的契約警告是 0
@@ -365,7 +386,7 @@ def points_budget(per_line: int, max_lines: int, columns: int) -> dict[str, int]
     lines_per_point = max(1, (max_lines * columns) // NARRATIVE_LAYERS)
     return {
         "max_points": NARRATIVE_LAYERS,
-        "max_chars": max(1, per_line * lines_per_point - POINT_LABEL_COST),
+        "max_chars": max(1, int(per_line) * lines_per_point - POINT_LABEL_COST),
     }
 
 
@@ -482,7 +503,7 @@ def narrative_capacity(theme: Theme | None = None,
             per_line, max_lines = _text_capacity(
                 theme, width_in=width_in, height_in=height_in, size_pt=size,
                 line_ratio=point_line_ratio(theme))
-            return points_budget(per_line, max_lines, columns)
+            return points_budget(int(per_line), max_lines, columns)
 
         # 🔴 I-1（2026-08-03 實機 #166）：容量必須**逐 variant** 算。
         #
@@ -590,7 +611,11 @@ def _text_capacity(theme: Theme, *, width_in: float, height_in: float, size_pt: 
     # ⚠ 加 epsilon：1.5 / (40/72*1.35) 在浮點下是 1.9999999998，直接 int() 會少算一行，
     # 讓剛好兩行的標題被誤判成裝不下而截字（封面標題被切成「…」就是這樣來的）。
     epsilon = 1e-6
-    per_line = max(1, int(width_in / char_in + epsilon))
+    # 🔴 2026-08-09（A1）：`per_line` 回傳**精確的每行寬度（em）**，不再 int()。
+    # ⚠ 向下取整等於白丟將近一個字的寬度：實機每行 25.83 em 被截成 25，一條
+    # 25.3 em 的要點就被推成兩行、整條丟棄——版面明明還有空位。
+    # 需要「幾個字」語意的呼叫端（points_budget、_fit_text）自行取整。
+    per_line = max(1.0, width_in / char_in)
     lines = max(1, int(height_in / line_in + epsilon))
     return per_line, lines
 
@@ -612,14 +637,35 @@ def _fit_text(theme: Theme, text: str, *, width_in: float, height_in: float, siz
 #: ⚠ 兩處必須同值；有測試 `test_display_width_matches_chart_runner` 釘住。
 ALNUM_EM_WIDTH = 0.62
 
+#: 全形標點的字寬（em）。
+#: 🔴 2026-08-09（A1）：原本與漢字同樣算 1 em，讓含標點的敘述行數被高估——
+#: 實機 p7「台廠雙邊布局：曾晴、祺驊各在 TW 另有 2 件，兼顧兩岸。」估 27.3 em
+#: 超過每行 25.8 em 而算成兩行，但實機只用一行。全形標點的字面右半是空白、
+#: 排版時可壓縮（標點擠壓），實際佔寬明顯不到一個漢字。
+#: ⚠ 只調標點：漢字 1.0 與英數 0.62 是 2026-08-03 以實測像素校準的，沒有新
+#: 量測就不動。⚠ 與 `chart_runner` 必須同值（見 PunctuationWidthTests）。
+PUNCT_EM_WIDTH = 0.5
+
+#: 視為「可壓縮」的全形標點（CJK 標點區＋全形 ASCII 標點區）。
+_FULLWIDTH_PUNCT = frozenset(
+    "、。〈〉《》「」『』【】〔〕・〜（）［］｛｝！＃＄％＆＇＊，－．／：；＜＝＞？＠＼＾｀｜～"
+    "　"
+)
+
 
 def _display_width(text: str) -> float:
-    """字串的顯示寬度（em）。中文、全形符號約 1 em，半形英數約 `ALNUM_EM_WIDTH`。
+    """字串的顯示寬度（em）。漢字約 1 em、半形英數約 `ALNUM_EM_WIDTH`、
+    全形標點約 `PUNCT_EM_WIDTH`。
 
     表格欄位混排 `applicant_display_name` 與中文公司名，一律當全形算會把英文
     表頭砍成一半；一律當半形算又會讓中文撐爆欄寬。
     """
-    return sum(ALNUM_EM_WIDTH if ord(ch) < 0x2E80 else 1.0 for ch in text)
+    return sum(
+        ALNUM_EM_WIDTH if ord(ch) < 0x2E80
+        else PUNCT_EM_WIDTH if ch in _FULLWIDTH_PUNCT
+        else 1.0
+        for ch in text
+    )
 
 
 #: 儲存格內視為「不可拆」的 token 分隔符。
@@ -736,8 +782,18 @@ def _truncate_to_width(text: str, width_in: float, size_pt: float) -> str:
 
 
 def _lines_needed(text: str, per_line: int) -> int:
-    """多段文字所需行數：每段至少佔一行，不足一行不合併。"""
-    return sum(max(1, math.ceil(len(line) / per_line)) for line in text.split("\n"))
+    """多段文字所需行數：每段至少佔一行，不足一行不合併。
+
+    🔴 2026-08-09（A1）：改用 `_display_width` 而不是 `len()`。中文約 1 em、
+    半形英數只有 `ALNUM_EM_WIDTH`，數字數會把中英混排的行數**高估**——實機
+    p7「美國玩家（扭矩、OXEFIT、NPD）各僅 US 1 件…」被判定放不下而整條丟棄，
+    但版面右欄其實只用了一行、下方一大片空白。
+
+    ⚠ 本檔早就有 `_display_width`（它的註解還記著「兩處落點只改了一邊」的
+    教訓），只是容量估算一直沒有消費它——正確的定義處存在，卻沒被用上。
+    """
+    return sum(max(1, math.ceil(_display_width(line) / per_line))
+               for line in text.split("\n"))
 
 
 # --------------------------------------------------------------------------
@@ -1733,7 +1789,7 @@ def _points_panel_height(
                                  line_ratio=point_line_ratio(theme))
     line_in = size_pt / 72.0 * point_line_ratio(theme)
     lines = sum(
-        max(1, math.ceil(((len(label) + 1 if label else 0) + len(text)) / per_line))
+        _lines_needed(f"{label}｜{text}" if label else text, per_line)
         for label, text, _, _ in blocks
     )
     return max(chrome + line_in, min(ceiling, chrome + lines * line_in))
@@ -1961,8 +2017,10 @@ def _trim_blocks(
         return blocks
     per_line, lines = _text_capacity(theme, width_in=width_in, height_in=height_in,
                                      size_pt=size_pt, line_ratio=point_line_ratio(theme))
+    # ⚠ 與 `_lines_needed` 用同一套寬度估算（顯示寬度，不是字數）——兩處若
+    # 一個數字數、一個算 em，同一條要點會得到兩個行數，容量判斷必然對不上。
     needs = [
-        max(1, math.ceil(((len(label) + 1 if label else 0) + len(text)) / per_line))
+        _lines_needed(f"{label}｜{text}" if label else text, per_line)
         for label, text, _, _ in blocks
     ]
     if sum(needs) <= lines:
@@ -2025,7 +2083,7 @@ def _render_cover(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> N
         stripe.rotation = g["stripe_rotation_deg"]
         stripe.text_frame.text = ""
 
-    _add_text(slide, theme, "專利情報整合分析",
+    _add_text(slide, theme, _cover_eyebrow(ctx["report_data"]),
               left=g["eyebrow_left_in"], top=g["eyebrow_top_in"],
               width=g["eyebrow_width_in"], height=g["eyebrow_height_in"],
               size=theme.size("cover_subtitle_pt"), color="accent", bold=True)
@@ -3096,6 +3154,132 @@ def _style_cell(
     _set_cell_borders(cell, theme)
 
 
+# ── KP 版型（P2；範例＝滑雪機 V2 p7–p10）──────────────────────────
+# ⚠ 三個都是**備選版型**：沒有那個內容就不出那一頁（2026-08-07 定案），
+# 由規劃端（SlidePlan）決定出不出，組版端只負責畫得對。
+
+
+def _render_kp_quadrant(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """KP 競爭定位象限：整頁一張泡泡圖（軸義與圖例都畫在 SVG 內）。
+
+    沿用 chart_hero 的幾何與圖框邏輯——象限圖與一般大圖的版面需求相同，
+    另立一套座標只會讓 theme 多一份會漂移的定義。
+    """
+    _render_chart_hero(slide, theme, spec, ctx)
+
+
+def _render_kp_deepdive(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """單一 KP 深入：演進時間軸＋三數字卡（家族件數／技術群／布局地區）。
+
+    ⚠ 沒有軌跡（不同申請年 <3）的公司**不該出這一頁**——規劃端把關；
+    組版端若真收到無軌跡資料，仍照畫數字卡，不自行降級成別的版型。
+
+    🔴 2026-08-09（A4 實測）：本頁**本來就不需要選圖**（內容是該公司的數字與
+    軌跡），但原本無條件轉呼叫 `chart_with_points`——那是需要圖的版型，於是
+    規劃端正確地給了空 chart_identities，組版端卻把整頁降級成 stat_callout，
+    正好違反上面那句「不自行降級」。與 exec_summary／walls_gaps 同一個模式：
+    **版型有 renderer、名稱對得上，但實作借用了需求不同的版型**。
+    """
+    if spec.report_keys and spec.charts:
+        _render_chart_with_points(slide, theme, spec, ctx)
+    else:
+        _render_points_page(slide, theme, spec, ctx)
+
+
+def _render_kp_cards(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """利基／新興玩家小卡矩陣（名稱＋一句定位＋件數）。
+
+    ⚠ 同 kp_deepdive：小卡的內容來自敘述，沒有選圖時不該降級。
+    """
+    if spec.report_keys and spec.charts:
+        _render_table_with_points(slide, theme, spec, ctx)
+    else:
+        _render_points_page(slide, theme, spec, ctx)
+
+
+# 無圖要點頁的面板標題（依版型語意，不重複頁標題）。
+POINTS_PAGE_PANEL_TITLES = {
+    "exec_summary": "關鍵結論",
+    "walls_gaps": "要迴避的牆與可切入的空白",
+    "reading_guide": "判讀說明",
+    "kp_deepdive": "競爭者深入",
+    "kp_cards": "利基與新興玩家",
+    "kp_compare": "兩強對照",
+}
+
+
+def _render_points_page(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """無圖的純要點頁：整頁一個面板，內容＝本頁 narrative。
+
+    🔴 2026-08-09：這三種版型原本轉呼叫 `_render_direction`，但那支的內容來自
+    固定 slot `direction.body`（研發方向頁專用），**讀不到 SlidePlan 的
+    narrative**——實機轉圖出來是三張一模一樣的空框（p2／p5／p9）。
+    ⚠ 版型名稱對、renderer 存在、雙向一致性測試也綠，成品仍是空的：
+    那種測試驗得到「有沒有 renderer」，驗不到「renderer 畫了什麼」。
+
+    座標沿用 direction 的 body 框並延伸到 basis 框右緣（不另立一套幾何）。
+    """
+    _render_header(slide, theme, spec, ctx)
+    g = theme.geometry["direction"]
+    left = g["body_left_in"]
+    width = (g["basis_left_in"] + g["basis_width_in"]) - left
+    _add_band(slide, theme, left, g["body_top_in"], width, g["body_height_in"],
+              "panel", rounded=True)
+    # ⚠ 面板標題不能用 spec.topic——那就是頁標題，會一頁印兩次（首版實測）。
+    _add_text(slide, theme, POINTS_PAGE_PANEL_TITLES.get(spec.kind, "重點"),
+              left=left + g["body_header_inset_left_in"],
+              top=g["body_top_in"] + g["body_header_top_offset_in"],
+              width=width - g["body_text_inset_right_in"],
+              height=g["body_header_height_in"],
+              size=theme.size("panel_header_pt"), color="accent", bold=True)
+    text_width = width - g["body_text_inset_right_in"]
+    text_height = (g["body_height_in"] - g["body_text_top_offset_in"]
+                   - g["body_text_bottom_pad_in"])
+    size = theme.size("body_pt")
+    blocks = _points_for(spec, ctx)
+    if not blocks:
+        blocks = [(label, text, "ink", False) for label, text in _row_highlights(spec, ctx)]
+    _add_number_bold_text(
+        slide, theme,
+        _trim_blocks(theme, blocks, width_in=text_width, height_in=text_height, size_pt=size),
+        left=left + g["body_text_inset_left_in"],
+        top=g["body_top_in"] + g["body_text_top_offset_in"],
+        width=text_width, height=text_height, size=size)
+    _render_footnote(slide, theme, spec, ctx)
+
+
+def _render_exec_summary(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """結論先行頁（範例 p2）：把三個可行動判斷放最前面。
+
+    內容來自 SlidePlan 的 narrative（CLI 已把結論寫成具名發現）。
+    """
+    if spec.report_keys and spec.charts:
+        _render_table_with_points(slide, theme, spec, ctx)
+    else:
+        _render_points_page(slide, theme, spec, ctx)
+
+
+def _render_walls_gaps(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """要迴避的牆 vs 可切入的空白（範例 p3／割草機 p2）：收斂成可行動清單。"""
+    _render_points_page(slide, theme, spec, ctx)
+
+
+def _render_reading_guide(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """判讀說明（範例 p11）：母體口徑、可觀測性偏差、資料限制。"""
+    _render_points_page(slide, theme, spec, ctx)
+
+
+def _render_kp_compare(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
+    """兩個 Key Player 左右對照（範例 p9）：核心技術架構與布局並列。
+
+    ⚠ 同 kp_deepdive：兩邊的對照內容來自敘述，沒有選圖時不該降級。
+    """
+    if spec.report_keys and spec.charts:
+        _render_comparison(slide, theme, spec, ctx)
+    else:
+        _render_points_page(slide, theme, spec, ctx)
+
+
 RENDERERS = {
     "cover": _render_cover,
     "section_divider": _render_section_divider,
@@ -3108,10 +3292,27 @@ RENDERERS = {
     "table_with_points": _render_table_with_points,
     "chart_wide": _render_chart_wide,
     "direction": _render_direction,
+    # KP 版型（P2）：備選版型庫的一部分，出不出由規劃端依內容決定。
+    "kp_quadrant": _render_kp_quadrant,
+    "kp_deepdive": _render_kp_deepdive,
+    "kp_cards": _render_kp_cards,
+    "kp_compare": _render_kp_compare,
+    # 敘事鏈版型（範例骨架）：結論先行、可行動清單、判讀說明。
+    "exec_summary": _render_exec_summary,
+    "walls_gaps": _render_walls_gaps,
+    "reading_guide": _render_reading_guide,
 }
 
 # 需要圖才成立的版型：解析不到圖就降級 stat_callout，不留佔位文字。
-CHART_DEPENDENT_KINDS = frozenset({"chart_hero", "chart_with_points", "comparison"})
+# 「沒有圖就撐不起來」的版型——缺圖時降級成 stat_callout。
+# 🔴 2026-08-09（A4 實測）：`kp_deepdive` 原本列在這裡是**錯的**。它的內容是
+# 單一 Key Player 的數字與軌跡，本來就不需要選圖；規劃端正確地給了空
+# chart_identities，這裡卻把整頁降級掉——正好違反該 renderer docstring 自己
+# 寫的「不自行降級成別的版型」。`kp_cards`／`kp_compare` 同理（內容來自敘述），
+# 它們沒被列入是對的。
+# ⚠ 判斷標準是「這個版型**沒有圖就畫不出東西**嗎」，不是「它可能會用到圖」。
+CHART_DEPENDENT_KINDS = frozenset({"chart_hero", "chart_with_points", "comparison",
+                                  "kp_quadrant"})
 # 單圖版型：被指定給多圖頁面時要拆成多頁（成對報表的「分頁」呈現）。
 SINGLE_CHART_KINDS = frozenset({"chart_hero", "chart_with_points", "stat_callout"})
 
@@ -3390,6 +3591,63 @@ def _split_multi_chart_page(spec: PageSpec, charts: ChartIndex | None = None) ->
     return pages
 
 
+# ══ SlidePlan 消費（P2 第 5 節）══════════════════════════════════════
+# 🔴 分工紅線：CLI 決定「哪一頁講什麼、用哪張圖、用哪種版型」；
+# builder 決定「那種版型長什麼樣」（座標／字級／顏色一律由 theme 解析）。
+# CLI 若硬塞幾何欄位，這裡**一律忽略**——不是報錯後照用，是根本不讀。
+
+
+class SlidePlanError(RuntimeError):
+    """SlidePlan 無法轉成版面（未知版型等）。"""
+
+
+def page_specs_from_plan(plan: dict[str, Any],
+                        charts: ChartIndex | None = None) -> list[PageSpec]:
+    """把通過驗證的 SlidePlan 轉成 PageSpec 序列（頁碼依 slides 順序連號）。
+
+    ⚠ `charts` 要給：chart_identity 只是 `report_key:variant`，實際檔名不同名
+    （country_distribution 的圖叫 jurisdiction_distribution.svg）——不反查就會
+    每頁都因「找不到圖」降級成 stat_callout（2026-08-09 首次串接實測）。
+    """
+    specs: list[PageSpec] = []
+    for index, slide in enumerate(plan.get("slides") or [], start=1):
+        preset = str(slide.get("layout_preset") or "")
+        if preset not in RENDERERS:
+            raise SlidePlanError(
+                f"slide {slide.get('slide_id', '?')} 的版型 {preset!r} 不在組版端支援清單")
+        identities = [str(i) for i in slide.get("chart_identities") or []]
+        report_keys = tuple(i.split(":", 1)[0] for i in identities)
+        # ⚠ files_for 收的是 tuple；傳單一字串會被當序列逐字元迭代而全部落空。
+        files = list(charts.files_for(report_keys)) if charts is not None else []
+        specs.append(PageSpec(
+            page=index,
+            kind=preset,
+            title=str(slide.get("title") or slide.get("purpose") or ""),
+            topic=str(slide.get("purpose") or ""),
+            # chart_identity 形如 `report_key:variant_key`——取前段當 report_key。
+            report_keys=report_keys,
+            charts=tuple(dict.fromkeys(files)),
+        ))
+    return specs
+
+
+def plan_coverage_manifest(
+    plan: dict[str, Any],
+    selected_identities: set[str],
+) -> dict[str, Any]:
+    """選圖覆蓋清單：使用者選了卻沒進 PPT 的圖必須現形。"""
+    used: set[str] = set()
+    for slide in plan.get("slides") or []:
+        used.update(str(i) for i in slide.get("chart_identities") or [])
+    return {
+        "plan_id": plan.get("plan_id", ""),
+        "slide_count": len(plan.get("slides") or []),
+        "used_charts": sorted(used),
+        "missing_selected": sorted(selected_identities - used),
+        "unselected_used": sorted(used - selected_identities),
+    }
+
+
 def resolve_layout(report_data: dict[str, Any], charts: ChartIndex,
                    theme: Theme | None, overrides: dict[str, str]) -> list[PageSpec]:
     """從報表資料算出最終版面：展開 → 套版型覆寫（含拆頁）→ 圖檔降級 → **重算標題**。
@@ -3406,7 +3664,13 @@ def resolve_layout(report_data: dict[str, Any], charts: ChartIndex,
     ⚠ 收成單一入口是為了讓測試驗得到**完整結果**：三個步驟散在呼叫端時，
     測試只驗得到中間狀態，正是這個 bug 混過去的原因。
     """
-    layout = _expand_page_layout(report_data, charts, theme)
+    # P2：有通過驗證的 SlidePlan 就照它出頁；沒有就走既有固定 PAGE_LAYOUT 展開
+    # ⚠ 舊路徑保留（不是換掉）——既有報告仍要能重產，且出問題有回頭路。
+    plan = (report_data.get("slide_plan") or {}) if isinstance(report_data, dict) else {}
+    if plan.get("slides"):
+        layout = page_specs_from_plan(plan, charts)
+    else:
+        layout = _expand_page_layout(report_data, charts, theme)
     layout = _apply_layout_overrides(layout, overrides, charts)
     layout = _apply_chart_degradation(layout, charts)
     return [_spec_with(spec, topic=_chart_page_topic(spec, report_data)) for spec in layout]
@@ -3454,6 +3718,26 @@ def _apply_chart_degradation(layout: list[PageSpec], charts: ChartIndex) -> list
 # --------------------------------------------------------------------------
 # 封面統計卡與分析框架
 # --------------------------------------------------------------------------
+def _plan_headline(report_data: dict[str, Any]) -> str:
+    """規劃寫出的主題句（SlidePlan 首頁第一條 narrative）。"""
+    for slide in ((report_data.get("slide_plan") or {}).get("slides") or [])[:1]:
+        for point in slide.get("narrative") or []:
+            text = str(point.get("text") or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def _cover_eyebrow(report_data: dict[str, Any]) -> str:
+    """封面上方小字：這份簡報**在講什麼**。
+
+    🔴 2026-08-09：原本寫死「專利情報整合分析」，零資訊量且會與主標撞名。
+    改放規劃寫出的主題句——主標回答「這是哪一份報表」（主管認得的名稱），
+    小字回答「在講什麼」，兩行各司其職。
+    """
+    return _plan_headline(report_data) or COVER_EYEBROW
+
+
 def _cover_title(report_data: dict[str, Any], slots: dict[str, str]) -> str:
     """封面主標＝workspace 顯示名稱（P1-8，確定性組成；cover.title AI slot 已退場）。
 
@@ -3464,6 +3748,10 @@ def _cover_title(report_data: dict[str, Any], slots: dict[str, str]) -> str:
     manual = str(slots.get("cover.title") or "").strip()
     if manual:
         return manual
+    # 🔴 2026-08-09：workspace 名稱缺失時退用規劃寫出的主題句。順位排在
+    # workspace 名稱**之後**（不推翻 07-31 定案），但排在通用 fallback 之前
+    # ——否則主標會退回寫死字串，與封面小字一字不差印兩次（實測）。
+    plan_title = _plan_headline(report_data)
     params = report_data.get("parameters") or {}
     for key in ("workspace_name", "workspace_display_name", "workspace"):
         value = str(params.get(key) or "").strip()
@@ -3471,7 +3759,33 @@ def _cover_title(report_data: dict[str, Any], slots: dict[str, str]) -> str:
             # 2026-07-31 使用者定案：「封面頁主題要顯示成 workspace 名稱配上專利分析」
             # ——單獨一個「滑雪機」不像簡報標題，補上主題詞才成句。
             return value if value.endswith("專利分析") else f"{value}專利分析"
-    return "專利情報整合分析"
+    return plan_title or COVER_TITLE_FALLBACK
+
+
+def _cover_funnel(report_data: dict[str, Any]) -> tuple[str, str, str] | None:
+    """三層漏斗併 1 格（Q3，2026-08-05 使用者定案）：原始→同族合併→技術主題。
+
+    ⚠ 單位與標籤走 unit／label 欄，**不得併進 value**——四張卡取同一級、
+    級數由最長值決定，把「件」「群」寫進 value 會讓整排字縮小（規格明列風險）。
+    ⚠ 技術群數只算**技術通道**（功效通道不上封面，也不得加總）。
+    缺同族或分群資料時回 None：少一格，不硬湊也不寫 0。
+    """
+    trend_rows = _rows_of(report_data, "application_trend")
+    if not trend_rows:
+        return None
+    total = sum(_as_int(row.get("patent_count")) for row in trend_rows)
+    # 第二層＝**同族合併後件數**（distinct 家族）。⚠ 不得用各國家族數加總——
+    # 跨國家族在每個國家各算一次（2026-08-07 真資料：加總 46 ≠ distinct 48）。
+    family_total = _as_int((report_data.get("parameters") or {}).get("family_merged_total"))
+    topic_rows = (report_data.get("chart_rows") or {}).get("cluster_topic_table") or []
+    tech_groups = len({
+        str(r.get("topic_code") or r.get("topic_key") or "")
+        for r in topic_rows
+        if str(r.get("source_field") or "") == TECHNICAL_SOURCE_FIELD
+    } - {""})
+    if not (total and family_total and tech_groups):
+        return None
+    return (f"{total}→{family_total}→{tech_groups}", "件→件→群", "原始→同族合併→技術主題")
 
 
 def _cover_stats(report_data: dict[str, Any]) -> list[tuple[str, str, str]]:
@@ -3489,8 +3803,14 @@ def _cover_stats(report_data: dict[str, Any]) -> list[tuple[str, str, str]]:
         # 但專利總數 60（US 9、EP 3 被丟）；且 TW／US 同 9 件時挑誰是任意的。
         # 改為 ≤4 局全列、>4 局取前 3 ＋「其他」合計：**件數總和恆等於總數**，
         # 排序（件數 desc, 代碼 asc）決定同數順序，不再任意。
-        ordered = sorted(country_rows,
-                         key=lambda r: (-_as_int(r.get(numeric)), str(r.get(label_col, ""))))
+        # 🔴 2026-08-07：country_distribution 改 (國×狀態) 群組後一國多列——
+        # 先按國彙總再排序，否則同一國重複出現、數字變成狀態分項。
+        merged: dict[str, int] = {}
+        for row in country_rows:
+            code = str(row.get(label_col, "-"))
+            merged[code] = merged.get(code, 0) + _as_int(row.get(numeric))
+        ordered = [{label_col: code, numeric: total}
+                   for code, total in sorted(merged.items(), key=lambda kv: (-kv[1], kv[0]))]
         if len(ordered) > 4:
             shown = ordered[:3]
             rest = sum(_as_int(r.get(numeric)) for r in ordered[3:])
@@ -3506,6 +3826,9 @@ def _cover_stats(report_data: dict[str, Any]) -> list[tuple[str, str, str]]:
     period = _statistics_period(report_data)
     if period:
         stats.append((period, "年", "年份區間"))
+    funnel = _cover_funnel(report_data)
+    if funnel:
+        stats.append(funnel)
     # 第 4 格由資料現有欄位組成；都沒有就只出 3 格。
     for report_key, unit, label in (
         ("applicant_ranking", "家", "申請人家數"),
@@ -3588,6 +3911,11 @@ def audit_layout(prs: Presentation, theme: Theme) -> list[dict[str, Any]]:
 
     for page, slide in enumerate(prs.slides, start=1):
         boxes: list[tuple[str, float, float, float, float]] = []
+        # 🔴 空白頁偵測（2026-08-09）：一頁若只有標題與註腳、正文區完全沒東西，
+        # 那是「版型有 renderer 但沒畫出內容」——實機出過三張一模一樣的空框。
+        # ⚠ 放在這個後置掃描而不是各 renderer 內部：這裡對**所有版型**一體適用，
+        # 在 renderer 裡各記各的只保護當下改到的那幾種，換一種版型又會靜默。
+        body_chars = 0
         for shape in slide.shapes:
             if shape.left is None or shape.top is None:
                 continue
@@ -3621,6 +3949,13 @@ def audit_layout(prs: Presentation, theme: Theme) -> list[dict[str, Any]]:
                     "margin_in": round(min(left, top, slide_w - right, slide_h - bottom), 3),
                 })
 
+            # 正文帶＝標題與註腳之間；圖片視為足量內容（圖表頁的正文就是圖）。
+            if BODY_BAND_TOP_RATIO * slide_h < top < BODY_BAND_BOTTOM_RATIO * slide_h:
+                if shape.shape_type == MSO_SHAPE_TYPE.PICTURE or shape.has_table:
+                    body_chars += EMPTY_BODY_MIN_CHARS
+                else:
+                    body_chars += len(text)
+
             if not text:
                 continue
             boxes.append((name, left, top, right, bottom))
@@ -3636,6 +3971,13 @@ def audit_layout(prs: Presentation, theme: Theme) -> list[dict[str, Any]]:
                         "type": "text_overflow_estimated", "page": page, "shape": name,
                         "lines_needed": needed, "lines_available": lines,
                     })
+
+        if body_chars < EMPTY_BODY_MIN_CHARS:
+            warnings.append({
+                "type": "empty_body", "page": page, "body_chars": body_chars,
+                "detail": "正文區幾乎沒有內容——版型有 renderer 但沒畫出東西，"
+                          "或規劃未提供本頁的敘述",
+            })
 
         for i in range(len(boxes)):
             for j in range(i + 1, len(boxes)):
@@ -3790,6 +4132,15 @@ def build_ppt(
 
     # 逐頁備妥 narrative（判讀式標題＋要點），fallback 一律寫 warning，不靜默。
     narratives_by_page: dict[int, tuple[str, list[dict[str, Any]], bool]] = {}
+    # plan 的 narrative（頁碼→要點）；沒有 plan 時為空 dict，行為與既有一致。
+    plan_narratives: dict[int, list[dict[str, Any]]] = {}
+    for index, slide in enumerate((report_data.get("slide_plan") or {}).get("slides") or [],
+                                  start=1):
+        points = [{"text": str(n.get("text") or ""), "label": "",
+                   "emphasis": bool(n.get("emphasis"))}
+                  for n in (slide.get("narrative") or []) if n.get("text")]
+        if points:
+            plan_narratives[index] = points
     titled: list[PageSpec] = []
     for spec in layout:
         if spec.kind in {"cover", "direction", "section_divider"} or spec.is_appendix:
@@ -3799,6 +4150,13 @@ def build_ppt(
         if spec.kind == "table":
             # 純表格頁（明細類，如家族完整性明細）本來就不配解讀——查了也是空，
             # 誤報 narrative_missing 會讓人白跑一趟「補解讀」（P1-4，實機 P17）。
+            titled.append(spec)
+            continue
+        # 🔴 SlidePlan 自帶 narrative 時以它為準（規劃與敘述同一份產出，
+        # 不必再去 narratives.json 找——那是固定頁序時代的來源）。
+        plan_points = plan_narratives.get(spec.page)
+        if plan_points is not None:
+            narratives_by_page[spec.page] = (spec.title, plan_points, False)
             titled.append(spec)
             continue
         matched, variant = _narrative_entry(narratives, _narrative_candidates(spec))

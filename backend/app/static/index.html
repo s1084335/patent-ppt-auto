@@ -528,8 +528,32 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 }
 
 /* ── 響應式：窄螢幕收合右欄與左欄 ── */
-@media (max-width: 960px) { #ai-panel { flex-basis: 240px; } #nav-panel { flex-basis: 160px; } }
-@media (max-width: 720px) {
+/* 🔴 2026-08-09 實測補的斷點：原本只有 960（縮欄）與 720（改直列），
+   **768–960 這一段是缺口**——三欄硬擠在一起，主內容只剩約 360px，
+   報表圖被壓到 233px 寬，圖裡的文字完全看不清。
+   ⚠ 版面沒有破（無捲動、無溢出），所以純幾何的檢查驗不出來；
+   要量的是「主內容還剩多寬」，不是「有沒有溢出」。
+   ⇒ 1024 以下就把 AI 助手移到主內容下方，把寬度還給報表。 */
+@media (max-width: 1024px) {
+  #layout { flex-wrap: wrap; }
+  /* ⚠ 基礎樣式是 `flex: 1 1 auto`——basis 跟著內容走，內容一寬就擠不進同一行，
+     於是**整個主內容換行**、側邊欄右邊留下一大片空白（實測 768 下約 600×250px）。
+     改 basis 為 0，讓它與側邊欄同行並吃掉剩餘寬度。 */
+  #main-panel { flex: 1 1 0; min-width: 0; }
+  #ai-panel {
+    flex: 1 1 100%;
+    width: 100%;
+    max-height: 22rem;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}
+@media (max-width: 960px) { #nav-panel { flex-basis: 160px; } }
+/* 🔴 2026-08-09：由 720 提高到 900。原本 768（平板縱向）落在 720–1024 之間，
+   側邊欄仍佔 200px，主內容只剩 473px、圖表被擠到看不清。
+   ⚠ 「AI 助手移下方」與「側邊欄橫列」是兩個不同的斷點需求：
+   1024 以下讓 AI 助手讓位就夠，900 以下連側邊欄也要讓。 */
+@media (max-width: 900px) {
   body { height: auto; min-height: 100vh; overflow: auto; }
   #topbar { flex-wrap: wrap; gap: 0.55rem; align-items: flex-start; }
   #topbar .brand { flex: 0 0 100%; }
@@ -559,6 +583,10 @@ table.data td.cell-wrap, table.data th.cell-wrap {
   #tw-legal-status-body table.data td:nth-child(4)::before { content: "Status"; font-weight: 600; }
   #tw-legal-status-body table.data td:nth-child(5)::before { content: "Action"; font-weight: 600; }
   #tw-legal-status-body select.text-input { width: 100%; min-width: 0; }
+  /* ⚠ 2026-08-09 實測（390px 瀏覽專利頁）：有個 select 寫死 max-width:26rem
+     （416px），在窄視窗直接溢出到 480px。TW 狀態表格的 select 早有處理，
+     其他的漏了——改為通用規則，避免下一個寫死寬度的欄位再犯。 */
+  select.text-input, input.text-input, .text-input { max-width: 100%; min-width: 0; }
   #tw-legal-status-body .btn { justify-content: center; width: 100%; }
 }
 </style>
@@ -3263,6 +3291,8 @@ const REPORT_TYPES = [
   // family_quality_detail（品質稽核不給決策者看，家族完整性併入國家佈局頁註記）。
   // ⚠ 後端 registry 已同步刪除——任一張留在這裡都會讓「全選」整批 400。
   ['applicant_year_matrix', '申請人年度分布矩陣'],
+  // 四面向（KP 象限的引擎端資料；簡報上呈現為象限座標與數字卡，不是表格）。
+  ['applicant_strength_profile', '申請人四面向'],
   ['lifecycle', '專利狀態分析'],
   ['family_country_layout', '國家佈局（現有保護）'],
   ['cluster_topic_table', '主題分類統計表'],
@@ -3702,6 +3732,15 @@ function renderExport() {
     + '<button class="btn btn-outline" id="btn-export-html" onclick="reviewExportOutput()">單頁 HTML 預覽</button>'
     + '<button class="btn btn-primary" id="btn-export-ppt" onclick="requestExportPpt()">產生 PPT</button>'
     + '</div>'
+    // 🔴 EXP-018（2026-08-09 使用者定案）：PPT **只有一個入口**，目標選填。
+    // 有填→以需求為重心；沒填→系統用預設策略規劃，品質仍須達範例水準
+    // （不是退回固定頁序——那只在規劃失敗時保底）。
+    + '<div class="toolbar" style="margin:.2rem 0 .6rem">'
+    + '<input class="text-input" id="ppt-goal-input" style="flex:1;min-width:280px" '
+    + 'placeholder="這份簡報的最大目標（選填，例：找出可切入的技術空白）">'
+    + '<span class="hint" style="padding:0;font-size:.8rem">留白＝系統依預設策略編排</span>'
+    + '</div>'
+    + '<div id="ppt-chart-picker" class="hint" style="padding:0 0 .4rem"></div>'
     + '<div id="export-job"></div>'
     + '<div id="export-ppt-result"></div>'
     + '<div id="export-preview"><div class="hint">載入報告內容中…</div></div>';
@@ -5842,6 +5881,31 @@ async function approveTopicBackfill() {
   } catch (e) {
     if (msg) msg.textContent = '核准失敗：' + ((e && e.message) || '未知錯誤');
   }
+}
+
+// ══════════ PPT 單一入口（EXP-018）：目標選填，一顆按鈕走完 ══════════
+// ⚠ 不做「固定架構／依目標規劃」兩顆按鈕——那是把系統的不確定推給使用者選。
+async function loadPptChartPicker() {
+  const box = el('ppt-chart-picker');
+  if (!box || !exportPreview || !exportPreview.data) return;
+  const sections = (exportPreview.data.sections || []);
+  if (!sections.length) { box.textContent = ''; return; }
+  box.innerHTML = '<details><summary>選擇要用的圖表（預設全選，共 '
+    + sections.length + ' 張）</summary><div style="max-height:12rem;overflow:auto;padding:.3rem 0">'
+    + sections.map(sec => (sec.variants || []).map(v => {
+        const id = escHtml(sec.report_key + ':' + (v.variant_key || 'default'));
+        return '<label class="checkbox-row"><input type="checkbox" class="ppt-chart-cb" value="'
+          + id + '" checked> ' + escHtml(sec.title || sec.report_key)
+          + (v.label ? '（' + escHtml(v.label) + '）' : '') + '</label>';
+      }).join('')).join('')
+    + '</div></details>';
+}
+function collectPptPlanBrief() {
+  const goal = ((el('ppt-goal-input') || {}).value || '').trim();
+  const charts = Array.from(document.querySelectorAll('.ppt-chart-cb'))
+    .filter(cb => cb.checked).map(cb => cb.value);
+  return { north_star_goal: goal, selected_charts: charts,
+           snapshot_id: exportPreview.version };
 }
 
 // ══════════ 初始化 ══════════

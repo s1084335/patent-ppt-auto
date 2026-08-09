@@ -184,30 +184,15 @@ def build_cli_command_with_payload(
     工具權限固定為 Read（見 READ_ONLY_TOOLS 的說明）；不沿用各 runner 原本的
     tail_args，避免又出現「同一件事多個落點」。
     """
-    from .ai_narrative_runner import NarrativeRunnerError, _CLI_SPECS
+    from .cli_gateway import READ_ONLY_TOOLS, build_cli_command
 
-    spec = _CLI_SPECS.get(cli_kind)
-    if spec is None:
-        raise NarrativeRunnerError(
-            f"未知 cli_kind：{cli_kind!r}（可用：{sorted(_CLI_SPECS)}）"
-        )
     prompt = (
         f"{instruction}\n\n"
         f"資料檔（JSON，UTF-8）：{payload_path}\n"
         "請先用 Read 讀取該檔，依其中 instruction 與 output_contract 欄位作業。\n"
         "只輸出契約指定的 JSON 物件，不要輸出多餘說明，也不要修改任何檔案。"
     )
-    model_args: list[str] = []
-    if model:
-        model_flag = spec.get("model_flag")
-        if not model_flag:
-            raise NarrativeRunnerError(f"{cli_kind!r} 不支援指定 model")
-        model_args = [model_flag, model]
-    return [
-        spec["binary"], spec["prompt_flag"], prompt, *model_args,
-        "--output-format", "json",
-        "--allowedTools", READ_ONLY_TOOLS,
-    ]
+    return build_cli_command(cli_kind, prompt, model=model, tools=READ_ONLY_TOOLS)
 
 
 def extract_json_payload(text: str) -> Any:

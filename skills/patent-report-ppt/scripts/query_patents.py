@@ -1,4 +1,11 @@
-"""唯讀專利資料查詢閘道——給報告產製 CLI 自主取證用。
+"""唯讀專利資料查詢閘道——**人工除錯用**（2026-08-09 起不再是取證主通道）。
+
+🔴 產報告 CLI 的取證已改走 MCP 唯讀工具 `query_database`（使用者定案「整合到
+MCP 去，包括敘述線也是」）。headless 白名單不再放行 `Bash(uv run:*)`，CLI
+**跑不到本腳本**——要改取證行為請改 MCP 端，改這裡不會生效。
+
+保留本腳本的理由：不 import 主專案、可攜，適合手動查資料排錯。
+⚠ 唯讀邏輯與 MCP 端是兩份實作；語意要一致，改一邊記得看另一邊。
 
 ## 用途
 
@@ -23,10 +30,16 @@ schema 地圖與取證守則見同目錄 `data_access.md`。
 
 ## 安全設計（為什麼敢開放自由查詢）
 
-1. **連線層唯讀**：`default_transaction_read_only=on` 由 PostgreSQL 強制執行，
+1. **交易層唯讀**：連線後以 `SET TRANSACTION READ ONLY` 由 PostgreSQL 強制，
    任何寫入（含 CTE 夾帶 `DELETE ... RETURNING`）都會被 DB 端拒絕——
    這才是真護欄，關鍵字檢查只是友善的提前報錯。
-2. `statement_timeout=30s`：慢查詢不會掛住整個產報流程。
+
+   🔴 **2026-08-09 更正**：原本寫「連線層唯讀：`default_transaction_read_only=on`」，
+   實測**不成立**——本專案 DSN 走 Supabase transaction pooler（6543），它會
+   **忽略**連線字串的 startup options（`-c`）。當時繞過關鍵字檢查後 UPDATE／
+   CREATE／DELETE 全部成功、`statement_timeout` 也沒作用，等於真護欄從未生效、
+   只剩關鍵字檢查一道。改綁交易後實測四種寫入全被 DB 拒絕。
+2. `statement_timeout=30s`（`SET LOCAL`）：慢查詢不會掛住整個產報流程。
 3. 列數上限（預設 500、`--limit` 最高 2000）：防止一次拖回全表把 context 撐爆。
 4. 單一語句：只接受一句 `SELECT`／`WITH`，分號串接直接拒絕。
 
@@ -53,7 +66,7 @@ if hasattr(sys.stdout, "reconfigure"):
 MAX_LIMIT = 2000
 DEFAULT_LIMIT = 500
 # 寫入類關鍵字（word boundary，"created_at" 不會誤中 "CREATE"）。
-# ⚠ 只是提前報錯讓訊息好懂；真正的防線是連線層 read-only。
+# ⚠ 只是提前報錯讓訊息好懂；真正的防線是交易層 SET TRANSACTION READ ONLY。
 _FORBIDDEN = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|COPY|VACUUM|CALL|DO)\b",
     re.IGNORECASE,
@@ -102,15 +115,17 @@ def run_query(sql: str, limit: int) -> dict:
     dsn = os.environ.get("DATABASE_URL", "").strip()
     if not dsn:
         _fail("環境變數 DATABASE_URL 未設定（Companion 應由專案 .env 載入）")
-    # options 由 server 端強制唯讀＋逾時；autocommit 免留 idle transaction。
-    with psycopg.connect(
-        dsn,
-        autocommit=True,
-        options="-c default_transaction_read_only=on -c statement_timeout=30000",
-    ) as conn, conn.cursor() as cur:
+    # 🔴 2026-08-09 實測：唯讀**不能**靠連線字串的 startup options。本專案的
+    # DSN 走 Supabase transaction pooler（6543），它會**忽略** `-c` 參數——
+    # 實測 UPDATE／CREATE／DELETE 全部成功、statement_timeout 也沒作用。
+    # 改為綁在交易上：`SET TRANSACTION READ ONLY` 由後端在該筆交易內強制。
+    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+        cur.execute("SET TRANSACTION READ ONLY")
+        cur.execute("SET LOCAL statement_timeout = 30000")
         cur.execute(sql)
         columns = [d.name for d in cur.description] if cur.description else []
         rows = cur.fetchmany(limit + 1)
+        conn.rollback()   # 唯讀交易，不需要 commit
     truncated = len(rows) > limit
     rows = rows[:limit]
     return {

@@ -18,9 +18,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
-import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -148,6 +145,7 @@ NARRATIVE_CONTRAST_WITH = {"cpc_main_distribution": "IPC"}
 def validate_narrative_contract(
     narratives: dict[str, Any],
     capacity: dict[str, dict[str, int]] | None = None,
+    subjects: dict[str, list[str]] | None = None,
 ) -> list[str]:
     """驗三件套契約，回傳警告清單（合規＝空）。
 
@@ -161,6 +159,8 @@ def validate_narrative_contract(
     contract_warnings，前端任務進度看得到——違規不得靜默。
     """
     capacity = capacity or {}
+    # subjects＝各變體可具名對象（Q14／RPT-012）：判讀要指名，不得只講泛稱。
+    subjects = subjects or {}
     warnings: list[str] = []
     for report_key, report in (narratives.get("reports") or {}).items():
         base_limits = capacity.get(report_key) or {}
@@ -252,6 +252,13 @@ def validate_narrative_contract(
                 warnings.append(
                     f"{where} 沒有任何一條解釋成因——只描述現象，"
                     "要說出為什麼會這樣（背後的驅動、結構或機制）")
+            # 鎖七·具名（Q14／RPT-012）：整頁至少點到一個具名對象。
+            page_subjects = [n for n in (subjects.get(where) or []) if n]
+            if points and page_subjects and not any(
+                    any(name in t for name in page_subjects) for t in all_texts):
+                warnings.append(
+                    f"{where} 整頁沒有點到任何具名對象——判讀要指名"
+                    f"（{'、'.join(page_subjects[:3])} 等），不能只說「主要申請人」")
             # 鎖六·該對照的要對照著講（CPC vs IPC）。
             counterpart = NARRATIVE_CONTRAST_WITH.get(report_key)
             if counterpart:
@@ -275,34 +282,29 @@ DEFAULT_CLI_TIMEOUT_SECONDS = 1800.0
 
 # 雙 CLI 指令對照（headless 非互動、只讀寫 narratives.json）。換 CLI 只改此表。
 # 各值為「除提示字串外」的固定 argv 尾段；提示由 build_cli_command 插在二進位之後。
-_CLI_SPECS: dict[str, dict[str, Any]] = {
-    "claude": {
-        "binary": "claude",
-        # -p 進 headless、json 輸出、限制工具僅讀寫（對齊 run_narrative_task.ps1）。
-        "prompt_flag": "-p",
-        # 指定模型的旗標名（模型值由任務 payload 帶，不寫死；None＝該 CLI 不支援指定）。
-        "model_flag": "--model",
-        "tail_args": [
-            "--output-format", "json",
-            # v5 自主取證（2026-08-06 定案）：解讀 CLI 依判斷自行查 DB。
-            # ⚠ Bash 用 `uv run:*` 前綴限定——只放行 uv 工具鏈（查詢閘道
-            # query_patents.py 靠它跑），不開全域 Bash；寫入防護在閘道的
-            # 連線層（default_transaction_read_only），不是靠這裡。
-            "--allowedTools", "Read", "Glob", "Grep", "Write", "Bash(uv run:*)",
-        ],
-    },
-    "opencode": {
-        # OpenCode 對接介面（Companion 雙 CLI 定案）；binary 與旗標到位時由此替換。
-        "binary": "opencode",
-        "prompt_flag": "run",
-        "model_flag": "--model",
-        "tail_args": ["--format", "json"],
-    },
-}
+# 🔴 2026-08-09：`_CLI_SPECS`／`build_cli_command`／`CliResult`／`parse_cli_result`
+# 已收斂到 `cli_gateway`（使用者定案「能整合的都要整合」）。七個 runner 各存一份
+# 時，加 MCP 取證白名單要改七處——漏一處那條線就查不到資料庫，而且不會報錯。
+#
+# ⚠ 取證通道同時由 `Bash(uv run:*)`＋query_patents.py 改為 MCP 唯讀工具
+# （RESEARCH_TOOLS）：工具清單即能力清單，不必靠提示詞約束「該查哪張表」。
+import functools
 
+from .cli_gateway import (  # 模組中段 re-export，維持既有 import 路徑
+    _CLI_SPECS,  # noqa: F401  （re-export：既有呼叫端仍由本模組取用）
+    RESEARCH_TOOLS,
+    CliGatewayError,
+    CliResult,
+    parse_cli_result,
+)
+from .cli_gateway import build_cli_command as _gw_build_cli_command
+from .cli_gateway import run_cli as _subprocess_cli_runner
 
-class NarrativeRunnerError(RuntimeError):
-    """headless 解讀流程失敗（CLI 不存在、非零退出、產物缺失或版本不符）。"""
+# headless 解讀流程失敗（CLI 不存在、非零退出、產物缺失或版本不符）。
+# ⚠ 2026-08-09 起是 CliGatewayError 的**別名**而非獨立類別：CLI 呼叫收斂到
+# cli_gateway 後，「起不來／非零退出／輸出非 JSON」由它拋——別名讓既有
+# `except NarrativeRunnerError` 仍然攔得到，不必逐處改捕捉型別。
+NarrativeRunnerError = CliGatewayError
 
 
 def _narrative_report_keys(narratives_path: Path) -> set[str]:
@@ -319,15 +321,6 @@ def _narrative_report_keys(narratives_path: Path) -> set[str]:
         return set()
     reports = data.get("reports")
     return set(reports) if isinstance(reports, dict) else set()
-
-
-@dataclass
-class CliResult:
-    """headless CLI 一次執行的結果（供解析與回報）。"""
-
-    exit_code: int
-    stdout: str
-    stderr: str
 
 
 # cli_runner 介面：收 (argv, timeout) 回 CliResult；預設 subprocess 實作，測試可注入 fake。
@@ -391,6 +384,35 @@ def resolve_run_dir(based_on_version: str | None, *, root: Path | None = None) -
         f"找不到可解讀的報表版本：本機 {base} 與 DB report_artifacts 都沒有已產製的報表。"
         "請先在「報表種類」頁按「產製選定報表」。"
     )
+
+
+def load_narrative_subjects(run_dir: Path | None = None) -> dict[str, list[str]]:
+    """各變體「可具名對象」清單（Q14／RPT-012 具名鎖的比對集）。
+
+    來源＝report_data.json 的 chart_rows：取每列的申請人／主題／專利號等
+    名稱型欄位。⚠ 只給**已在該頁資料裡**的名字，AI 提到別頁的公司不算命中——
+    具名要具體且該頁查得到。取不到就回空（該頁跳過鎖，不誤報）。
+    """
+    if run_dir is None:
+        return {}
+    try:
+        data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    name_keys = ("applicant_display_name", "label", "topic_label",
+                 "current_assignee_display_name", "patent_number")
+    out: dict[str, list[str]] = {}
+    for section in data.get("sections") or []:
+        report_key = str(section.get("report_key") or "")
+        rows = (data.get("chart_rows") or {}).get(report_key) or []
+        names = [str(r[k]).strip() for r in rows if isinstance(r, dict)
+                 for k in name_keys if r.get(k) and str(r[k]).strip()]
+        if not names:
+            continue
+        seen = list(dict.fromkeys(names))
+        for variant in section.get("variants") or [{}]:
+            out[f"{report_key}:{variant.get('variant_key', 'default')}"] = seen
+    return out
 
 
 def load_narrative_capacity(run_dir: Path | None = None) -> dict[str, dict[str, int]]:
@@ -507,6 +529,8 @@ def build_prompt(
         "   ⚠ **依此順序逐欄寫，不要跳著寫**——順序就是撰寫程序：\n"
         f"   points＝**{NARRATIVE_POINTS_MIN}–{NARRATIVE_POINTS_MAX} 條自由要點**"
         "（2026-08-07 起**不再加「現況／意涵／後續」標籤**，不要輸出 label 欄）。\n"
+        "   🔴 **要具名**（Q14／RPT-012）：判讀要點名具體對象（申請人全名、\n"
+        "   主題名、專利號），不得整頁只說「主要申請人」「部分廠商」這類泛稱。\n"
         "   🔴 **格式完全不固定（2026-08-07 使用者定案）**：條數、句式、順序、每條講\n"
         "   什麼，都由**這一頁的內容**決定，不要每頁套同一個模子（一條數字、一條解釋、\n"
         "   一條建議的公式化寫法＝失格）。固定的只有兩個**內容**要求：\n"
@@ -554,84 +578,8 @@ def build_prompt(
     )
 
 
-def build_cli_command(cli_kind: str, prompt: str, *, model: str | None = None) -> list[str]:
-    """依 cli_kind 組 headless argv（提示插在二進位之後，其餘旗標取自對照表）。
-
-    cli_kind 不在對照表時 raise（不默默 fallback 到 claude）；換 CLI 只改 _CLI_SPECS。
-    model 給定時插入該 CLI 的 model 旗標（值由任務 payload 帶下來，不寫死於此）；
-    未給則省略、用 CLI 預設模型。
-    """
-    spec = _CLI_SPECS.get(cli_kind)
-    if spec is None:
-        raise NarrativeRunnerError(
-            f"未知 cli_kind：{cli_kind!r}（可用：{sorted(_CLI_SPECS)}）"
-        )
-    model_args: list[str] = []
-    if model:
-        model_flag = spec.get("model_flag")
-        if not model_flag:
-            raise NarrativeRunnerError(f"{cli_kind!r} 不支援指定 model")
-        model_args = [model_flag, model]
-    return [spec["binary"], spec["prompt_flag"], prompt, *model_args, *spec["tail_args"]]
-
-
-def parse_cli_result(result: CliResult) -> dict[str, Any]:
-    """解析 headless CLI 的 --output-format json 輸出。
-
-    退出碼非 0 直接 raise（附 stderr）；stdout 應為單一 JSON 物件，解析失敗亦 raise
-    並保留原始輸出，避免無聲吞錯。
-    """
-    # 🔴 stdout／stderr 可能是 None（2026-07-30 實機 job #132 failed）：
-    # 子程序輸出未被捕捉時 subprocess 會給 None，直接 `.strip()` 會拋
-    # `AttributeError: 'NoneType' object has no attribute 'strip'`——
-    # ⚠ 那個例外**逃出 NarrativeRunnerError**，畫面只顯示裸的 AttributeError，
-    # 完全看不出是哪個環節、哪個變數，比明確的錯誤更難查。
-    # ⚠ `_default_build_ppt` 已於 6f50611 加過同樣防護，但這裡漏了——
-    # 同一個坑在相鄰模組各補各的，故兩處都要有。
-    stdout = result.stdout or ""
-    stderr = result.stderr or ""
-    if result.exit_code != 0:
-        detail = stderr.strip() or stdout.strip() or "stdout/stderr 皆為空"
-        raise NarrativeRunnerError(
-            f"headless CLI 失敗（exit={result.exit_code}）：{detail}"
-        )
-    text = stdout.strip()
-    if not text:
-        raise NarrativeRunnerError("headless CLI 正常結束但無 JSON 輸出")
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise NarrativeRunnerError(f"headless CLI 輸出非合法 JSON：{exc}；原始輸出：{text[:500]}") from exc
-    if not isinstance(parsed, dict):
-        raise NarrativeRunnerError(f"headless CLI 輸出 JSON 非物件：{type(parsed).__name__}")
-    return parsed
-
-
-def _subprocess_cli_runner(argv: Sequence[str], timeout: float) -> CliResult:
-    """預設 CLI 執行：subprocess 呼叫真實二進位（測試環境不會走到，由 handler 注入 fake）。"""
-    binary = argv[0]
-    if shutil.which(binary) is None:
-        raise NarrativeRunnerError(
-            f"找不到 CLI 二進位 {binary!r}（headless 解讀需已安裝並登入該 CLI）"
-        )
-    try:
-        # ⚠ env 強制 UTF-8＋errors="replace"：不設的話 CLI 輸出走系統 codepage，
-        #   父行程 UTF-8 解碼失敗會讓 stdout 回 None（2026-07-30 實機 job #132／
-        #   #135／#137 的共同根因，表徵是 splitlines AttributeError／「stdout 為空」）。
-        completed = subprocess.run(  # noqa: S603 argv 由固定對照表組成，非使用者字串
-            list(argv),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-            timeout=timeout,
-        )
-    except OSError as exc:
-        raise NarrativeRunnerError(
-            f"無法啟動 CLI 二進位 {binary!r}：{type(exc).__name__}: {exc}"
-        ) from exc
-    return CliResult(exit_code=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
+# 敘述線＝取證等級：要讀報表檔、寫 narratives.json，並經 MCP 唯讀工具查資料庫。
+build_cli_command = functools.partial(_gw_build_cli_command, tools=RESEARCH_TOOLS)
 
 
 def stamp_narrative_metadata(narratives: dict) -> None:
@@ -727,7 +675,9 @@ def run_narrative(
 
     # 三件套契約驗證（v4）：只警告不 raise——舊格式要能過渡、超限交 PPT 端 fallback；
     # 警告進 summary 讓前端任務進度看得到，違規不得靜默。
-    contract_warnings = validate_narrative_contract(narratives, load_narrative_capacity(run_dir))
+    contract_warnings = validate_narrative_contract(
+        narratives, load_narrative_capacity(run_dir),
+        subjects=load_narrative_subjects(run_dir))
 
     # 確定性程式重渲染 index（嵌入解讀）；CLI 不碰 index.html。
     refresh = refresh_index(run_dir)

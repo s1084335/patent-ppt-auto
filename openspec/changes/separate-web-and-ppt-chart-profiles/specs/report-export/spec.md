@@ -7,7 +7,11 @@
 #### Scenario: 使用者選取多張圖產生 PPT
 
 - **WHEN** 使用者提交多個已驗證 chart identities
-- **THEN** evidence manifest SHALL 為每個選項列出 web 與 PPT profile checksum lineage
+- **THEN** 選圖包 manifest（`bundle_manifest.json` 的 `profile_lineage`）SHALL
+  為每個選項列出 web 與 PPT profile 的 path 與 checksum
+- **AND** 該版本若沒有 web profile（2026-08-09 之前的舊版本），該欄 SHALL 留
+  `null` 使其現形，**不得省略**——省略會讓「這版沒有 web 圖」與「忘了記錄」
+  長得一樣；⚠ 但不得因此讓打包失敗，使用者仍該產得出簡報
 - **AND** CLI 輸入 SHALL 包含每個選項對應的 PPT profile asset
 - **AND** 最終 SlidePlan 與 PPT SHALL 使用全部選圖，不得漏圖或加圖
 

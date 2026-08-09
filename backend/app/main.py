@@ -375,6 +375,8 @@ def _report_content_payload(run_dir):
         except (json.JSONDecodeError, UnicodeDecodeError):
             narratives = {}
 
+    from backend.app.reports.chart_profiles import resolve_web_asset
+
     parameters = report_data.get("parameters", {}) or {}
     asset_base = f"{settings.API_V1_PREFIX}/report-latest/asset/{version}/"
     sections_out = []
@@ -407,7 +409,10 @@ def _report_content_payload(run_dir):
                 "label": variant.get("label", ""),
                 "variant_key": variant_key,
                 "file": file_name,
-                "chart_url": asset_base + file_name if run_dir.exists(file_name) else None,
+                # 網頁拿 web profile 的圖（P3）；舊版本沒有 `.web.svg` 時
+                # resolve_web_asset 會退回原檔——不退回＝舊版本網頁全空。
+                "chart_url": (asset_base + resolve_web_asset(file_name, run_dir.exists)
+                              if run_dir.exists(file_name) else None),
                 "narrative": narrative,
                 "rows": variant.get("rows", []),
                 "column_labels": _column_labels(variant.get("rows", [])),

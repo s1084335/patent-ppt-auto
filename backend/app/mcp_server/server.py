@@ -39,6 +39,7 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402（dotenv／logging 先設�
 
 from backend.app.db.connection import get_connection_kwargs  # noqa: E402
 from backend.app.mcp_server import (  # noqa: E402
+    report_research,
     tools_ai,
     tools_clustering,
     tools_reporting,
@@ -58,6 +59,15 @@ mcp.tool()(tools_reporting.generate_report_ppt)
 mcp.tool()(tools_ai.get_report_payload)
 mcp.tool()(tools_ai.save_analysis_narrative)
 
+
+
+# ══ report-research 唯讀 profile（P2，獨立 server 實例）════════════════
+# 🔴 刻意**不掛進上面的混合 server**（design.md 第 2 點）：同一 registry 日後
+# 新增工具容易無聲擴權。規劃 CLI 連的是這一個，看不到任何寫入工具。
+research_mcp = FastMCP("patent-report-research")
+for _tool_name in report_research.TOOL_NAMES:
+    research_mcp.tool()(getattr(report_research, _tool_name))
+
 # 🔴 2026-08-04：市場線整個移除（使用者定案，含資料表）。
 
 # ── clustering tools（分群引擎，輕量七支）───────────────────────
@@ -74,14 +84,20 @@ def main() -> None:
     """解析傳輸參數並啟動 server（stdio 預設；http 供中央部署）。"""
     parser = argparse.ArgumentParser(description="Central Patent MCP Server")
     parser.add_argument("--transport", choices=("stdio", "http"), default="stdio")
+    # 🔴 research profile 只掛唯讀取證工具（CLI 連的是這個，看不到任何寫入工具）。
+    # ⚠ 2026-08-09 之前 research_mcp 建了卻沒有啟動路徑，等於形同不存在——
+    # 規劃 CLI 的 prompt 教它用那些工具，實際上一支都呼叫不到。
+    parser.add_argument("--profile", choices=("full", "research"), default="full")
     parser.add_argument("--host", default="127.0.0.1", help="http 傳輸的綁定位址")
     parser.add_argument("--port", type=int, default=8100, help="http 傳輸的埠（8000 為 FastAPI）")
     args = parser.parse_args()
 
+    server = research_mcp if args.profile == "research" else mcp
     kwargs = get_connection_kwargs()
     logger.info(
-        "Patent MCP starting (transport=%s) DB target: %s:%s/%s",
+        "Patent MCP starting (transport=%s profile=%s) DB target: %s:%s/%s",
         args.transport,
+        args.profile,
         kwargs.get("host", "(DATABASE_URL)"),
         kwargs.get("port", ""),
         kwargs.get("dbname", ""),
@@ -93,16 +109,16 @@ def main() -> None:
         if not token:
             logger.error("PATENT_MCP_TOKEN 未設，拒絕以 http 模式啟動（內網 token 為必要條件）")
             raise SystemExit(2)
-        mcp.settings.host = args.host
-        mcp.settings.port = args.port
+        server.settings.host = args.host
+        server.settings.port = args.port
         import uvicorn
 
         from backend.app.mcp_server._auth import BearerTokenMiddleware
 
-        app = BearerTokenMiddleware(mcp.streamable_http_app(), token)
+        app = BearerTokenMiddleware(server.streamable_http_app(), token)
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     else:
-        mcp.run()  # stdio
+        server.run()  # stdio
 
 
 if __name__ == "__main__":

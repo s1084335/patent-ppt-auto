@@ -169,6 +169,41 @@ def load_cluster_workspace_data(
             "ai_backfill_approved" if a["patent_id"] in backfill_ids else "geometric"
         )
 
+    # 申請人四面向的來源列（KP 象限引擎端配套，2026-08-07）：展開 VIEW（共同申請
+    # 各自計數）JOIN patents 取國別／同族／狀態／種類，再 LATERAL 取該通道主題。
+    # ⚠ 一次查完：四面向要的五樣東西分開查就是四趟 DB。
+    # ⚠ 母體＝**該 workspace 全部專利**，不是有主題指派的那些——布局量要算
+    # 設計案等未分群件（2026-08-07 真資料抓到：只取 44 件會讓曾晴少算 1 件、
+    # 帝瑪斯少算 2 件，與排名頁 55 件口徑對不上）。主題數則自然只計有指派者。
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT e.applicant_display_name, e.patent_id, e.application_year, '
+            '       e.country_code, p."WIPS同族ID" AS family_id, p.legal_status, '
+            '       p.patent_type, p.document_kind, '
+            '       LEFT(NULLIF(BTRIM(p."Orig. IPC(Main)"), \'\'), 4) AS ipc_subclass, '
+            '       ta.topic_key '
+            'FROM derived_layer.report_patent_applicant_expanded e '
+            'JOIN core_layer.patents p ON p.id = e.patent_id '
+            'LEFT JOIN LATERAL ('
+            '    SELECT ta.topic_key FROM derived_layer.topic_assignments ta '
+            '    JOIN derived_layer.topic_runs tr ON tr.run_id = ta.run_id '
+            '    JOIN app_layer.workflow_runs wr ON wr.run_id = tr.workflow_run_id '
+            '    WHERE ta.patent_id = e.patent_id AND tr.source_field = %s '
+            '      AND wr.workspace_id = %s '
+            '    ORDER BY ta.run_id DESC LIMIT 1'
+            ') ta ON TRUE '
+            'WHERE EXISTS ('
+            '    SELECT 1 FROM app_layer.workspaces w '
+            '    JOIN LATERAL jsonb_array_elements(w.patent_ids_json) AS m(pid) ON TRUE '
+            '    WHERE w.workspace_id = %s AND (m.pid)::bigint = e.patent_id'
+            ')',
+            (source_field, workspace_id, workspace_id),
+        )
+        strength_rows = [dict(r) for r in cur.fetchall()]
+    except Exception:  # noqa: BLE001 - 四面向缺了不該讓整份報表產不出來
+        strength_rows = []
+
     return {
         "topics": topics_out,
         "assignments": assignments_out,
@@ -178,6 +213,7 @@ def load_cluster_workspace_data(
         # #3b（2026-08-05）：把 repository 已查到的版本帶出來供報表落章。
         # ⚠ 不多查一趟 DB——`get_latest_topic_state` 回傳裡本來就有這兩個值，
         # 只是先前沒往外傳，於是報表無從記錄自己用的是哪一版主題。
+        "strength_rows": strength_rows,
         "topic_run_id": state.get("run_id"),
         "topic_state_version": state.get("state_run_id"),
     }

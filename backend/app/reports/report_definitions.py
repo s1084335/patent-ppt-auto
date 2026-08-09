@@ -295,6 +295,21 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
     # cluster_analytics.build_topic_effect_table 以 set 去重一次算完（非 N+1）；
     # 主題→專利歸屬取自 topic_assignments（見 topic_state_repository），不是
     # topic_state_json 的 patent_ids（後者在 repository 被覆寫丟棄）。
+    # 申請人四面向（Q10／KP 象限的引擎端配套，2026-08-07）：per-applicant
+    # 布局量（件／族／國）＋技術廣度（主題／IPC 類）＋法律穩定性＋種類三分。
+    # ⚠ 資料層報表，**不是簡報上的表格**——簡報形狀是象限座標與數字卡
+    # （橫軸國數、縱軸主題數、泡泡家族數），見 content_standard.md。
+    # cluster 型：需 join 分群指派取主題數，單表 SQL 出不來。
+    "applicant_strength_profile": ReportDefinition(
+        name="applicant_strength_profile",
+        report_type="cluster",
+        label="Applicant Strength Profile",
+        label_zh="申請人四面向",
+        source_table="",
+        columns=(),
+        supports_patent_ids=False,
+        data_source_note="展開 VIEW JOIN patents 與技術通道 topic_assignments；名單以主要申請人排名為準",
+    ),
     "cluster_topic_table": ReportDefinition(
         name="cluster_topic_table",
         report_type="cluster",

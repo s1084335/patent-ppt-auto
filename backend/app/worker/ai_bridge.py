@@ -583,9 +583,84 @@ def _run_ai_topic_backfill_job(payload: dict[str, Any], context: JobContext) -> 
     return result
 
 
+def _run_ai_report_plan_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """目標驅動報告規劃（P2）：brief＋選圖包 → CLI → 驗證後的候選 SlidePlan。
+
+    payload：workspace_id／snapshot_id／north_star_goal／audience／page_budget／
+    selected_charts（identity 清單）。選圖包由 runner 端 materialize——CLI 只看得到
+    列入 manifest 的檔案，且**沒有任何寫入工具**。
+    """
+    from pathlib import Path
+
+    from backend.app.reports.chart_bundle import build_selected_bundles
+    from backend.app.reports.chart_runner import DEFAULT_OUTPUT_DIR
+
+    from . import report_planning_runner as rp
+
+    context.heartbeat("準備選圖資料包", 10)
+    snapshot_id = str(payload.get("snapshot_id") or "")
+    run_dir = Path(DEFAULT_OUTPUT_DIR) / snapshot_id
+    work_dir = Path(DEFAULT_OUTPUT_DIR) / snapshot_id / "_planning"
+    bundles = build_selected_bundles(
+        run_dir, list(payload.get("selected_charts") or []), work_dir)
+
+    # 單一入口（EXP-020）：目標選填——沒填就用預設策略，品質標準不降低。
+    from backend.app.reports.planning_defaults import build_brief
+
+    brief = build_brief(
+        snapshot_id=snapshot_id,
+        workspace_id=int(payload.get("workspace_id") or 0),
+        selected_charts=bundles,
+        north_star_goal=str(payload.get("north_star_goal") or ""),
+        audience=str(payload.get("audience") or ""),
+        page_budget=payload.get("page_budget"),
+    )
+
+    cli = payload.get("_cli_runner")
+    if cli is None:
+        from .ai_narrative_runner import (
+            _subprocess_cli_runner,
+            build_cli_command,
+            parse_cli_result,
+        )
+
+        cli_kind = str(payload.get("cli_kind") or "claude")
+        model = payload.get("model") or None
+
+        def cli(prompt: str, *, timeout_seconds: float) -> str:
+            argv = build_cli_command(cli_kind, prompt, model=model)
+            parsed = parse_cli_result(_subprocess_cli_runner(argv, timeout_seconds))
+            return str(parsed.get("result") or "")
+
+    result = rp.run_report_planning(
+        brief=brief, cli_runner=cli,
+        progress=lambda stage, pct: context.heartbeat(stage, pct))
+
+    # 🔴 串接（EXP-015／018）：把通過驗證的 plan 落進該版本的 report_data.json，
+    # deterministic builder 才讀得到（resolve_layout 有 slide_plan 就依它出頁，
+    # 沒有才退回固定頁序保底）。⚠ 只寫 slide_plan 這個鍵，不動報表數據本身。
+    import json as _json
+
+    data_path = run_dir / "report_data.json"
+    report_data = _json.loads(data_path.read_text(encoding="utf-8"))
+    report_data["slide_plan"] = {
+        "plan_id": result["plan_id"],
+        "slides": result["slides"],
+        "strategy": result.get("strategy") or {},
+        "evidence": result.get("evidence") or {},
+        "used_default_goal": brief.get("used_default_goal", False),
+        "north_star_goal": brief["north_star_goal"],
+    }
+    data_path.write_text(_json.dumps(report_data, ensure_ascii=False), encoding="utf-8")
+
+    context.heartbeat("規劃完成（已寫入報表版本）", 100)
+    return result
+
+
 _AI_JOB_RUNNERS: dict[str, str] = {
     "ai:narrative": "_run_ai_narrative_job",
     "ai:topic_backfill": "_run_ai_topic_backfill_job",
+    "ai:report_plan": "_run_ai_report_plan_job",
     "ai:topic_label": "_run_ai_topic_label_job",
     "ai:patent_note": "_run_ai_patent_note_job",
     "ai:candidate_explanation": "_run_ai_candidate_explanation_job",
