@@ -13,6 +13,17 @@ from backend.app.settings import get_model_artifact_root
 
 ARTIFACT_NAMESPACE = "clustering"
 
+#: artifact schema 版本。v1＝只有 MiniBatchKMeans；v2 起帶 algorithm 與
+#: DP-Means 狀態（openspec replace-clustering-with-dpmeans）。
+ARTIFACT_SCHEMA_VERSION = 2
+
+#: 分群演算法識別。⚠ 2026-08-09 使用者定案「feature flag 並存」——兩套引擎
+#: 同時存在，artifact **必須自己說出它是哪個演算法產的**。否則 DP-Means 的
+#: run 會被當成 KMeans 讀，中心格式對不上，而且是「載入成功、結果卻莫名
+#: 其妙」的靜默錯。
+ALGORITHM_KMEANS = "minibatch_kmeans"
+ALGORITHM_DPMEANS = "dpmeans"
+
 
 @dataclass
 class WorkspaceTopicArtifact:
@@ -27,6 +38,12 @@ class WorkspaceTopicArtifact:
     embedding_model: str
     embedding_model_version: str
     preprocessing_version: str
+    #: 產生這份 artifact 的演算法。⚠ 預設舊引擎：feature flag 並存期間沒特別
+    #: 指定就是舊的，而且舊 pickle 根本沒有這個欄位（見 load_artifact 補值）。
+    algorithm: str = ALGORITHM_KMEANS
+    #: DP-Means 的狀態（centers／counts／lambda）；KMeans 的 run 為 None。
+    #: 純基本型別，不 pickle 演算法物件——artifact 要能被檢視與比對。
+    dpmeans_state: dict[str, Any] | None = None
 
 
 def artifact_key(
@@ -133,3 +150,62 @@ def file_sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def serialize_dpmeans_state(state: Any, *, lambda_: float) -> dict[str, Any]:
+    """DP-Means 狀態 → 純 JSON 型別（centers／counts／lambda）。
+
+    ⚠ 不 pickle 演算法物件：這份狀態要能被人打開來看、被 diff、被比對。
+    分群是「結果對不對很難一眼看出」的程式，狀態再變成黑盒就無從查起。
+    """
+    return {
+        "centers": [[float(x) for x in center] for center in state.centers],
+        "counts": [int(c) for c in state.counts],
+        "lambda": float(lambda_),
+    }
+
+
+def deserialize_dpmeans_state(payload: dict[str, Any]) -> tuple[Any, float]:
+    """還原 DP-Means 狀態，回傳 (ClusterState, lambda)。存讀後要能繼續增量。"""
+    from backend.app.clustering.dpmeans import ClusterState
+
+    if not payload:
+        raise ValueError("dpmeans_state is empty; artifact 可能來自 KMeans run")
+    state = ClusterState(
+        centers=[[float(x) for x in center] for center in payload["centers"]],
+        counts=[int(c) for c in payload["counts"]],
+    )
+    return state, float(payload["lambda"])
+
+
+def build_run_metadata(
+    *,
+    algorithm: str,
+    lambda_result: Any = None,
+    pca_normalized: bool = False,
+    topics_before: int | None = None,
+    topics_after: int | None = None,
+) -> dict[str, Any]:
+    """run metadata：這次用了什麼演算法、lambda 怎麼來的、長出幾個新主題。
+
+    ⚠ CLU-008 要求 lambda 的**值與推導方法**都要留在 run metadata——只存數字
+    的話，日後改了公式就再也回答不了「當時為什麼是這個值」。
+    ⚠ 舊引擎不塞假的 lambda：沒有就是沒有（None），不要為了欄位齊全而編。
+    """
+    meta: dict[str, Any] = {
+        "algorithm": algorithm,
+        "pca_l2_normalized": bool(pca_normalized),
+        "lambda": None,
+    }
+    if lambda_result is not None:
+        meta["lambda"] = {
+            "value": lambda_result.value,
+            "method": lambda_result.method,
+            "version": lambda_result.version,
+            "sample_size": lambda_result.sample_size,
+        }
+    if topics_before is not None and topics_after is not None:
+        meta["topics_before"] = int(topics_before)
+        meta["topics_after"] = int(topics_after)
+        meta["topics_new"] = int(topics_after) - int(topics_before)
+    return meta
