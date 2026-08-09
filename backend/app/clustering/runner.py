@@ -718,19 +718,25 @@ def calibrate_top_level(
             n_components=PCA_COMPONENTS,
             batch_size=min(kmeans_batch_size, len(corpus.documents)),
         )
-        scan_results = scan_top_level_k(
-            corpus,
-            reduced_matrix=reduced_matrix,
-            batch_size=batch_size,
-            kmeans_batch_size=kmeans_batch_size,
-            k_values=k_values,
-        )
-        candidates = select_candidate_profiles(scan_results)
-        persisted_candidates = _persist_calibration(
-            run_id=run_id,
-            scan_results=scan_results,
-            candidates=candidates,
-        )
+        if engine.resolve_algorithm(os.getenv(engine.ALGORITHM_ENV)) == ALGORITHM_DPMEANS:
+            # ⚠ 隔離 K 選擇路徑：DP-Means 的主題數由資料與 lambda 決定，掃七組 k
+            # 沒有意義，還會讓使用者在三個不影響結果的候選之間選一個。
+            scan_results, persisted_candidates = _calibrate_with_dpmeans(
+                run_id=run_id, reduced_matrix=reduced_matrix)
+        else:
+            scan_results = scan_top_level_k(
+                corpus,
+                reduced_matrix=reduced_matrix,
+                batch_size=batch_size,
+                kmeans_batch_size=kmeans_batch_size,
+                k_values=k_values,
+            )
+            candidates = select_candidate_profiles(scan_results)
+            persisted_candidates = _persist_calibration(
+                run_id=run_id,
+                scan_results=scan_results,
+                candidates=candidates,
+            )
     except Exception as exc:
         _mark_run_failed(run_id, exc)
         raise
@@ -1084,6 +1090,64 @@ def _persist_final_topics(
         model_artifact_key=model_artifact_key,
         model_hash=model_hash,
     )
+
+
+def _calibrate_with_dpmeans(
+    *, run_id: int, reduced_matrix: ReducedEmbeddingMatrix,
+) -> tuple[list[KScanResult], list[dict[str, Any]]]:
+    """DP-Means 的校準：跑一次、產一個候選，不掃 k（tasks 2.5）。
+
+    ⚠ 回傳形狀刻意與 KMeans 路徑相同（scan_results, persisted_candidates），
+    好讓 `CalibrationSummary` 與前端候選介面不必為第二個引擎分岔。
+    """
+    started = time.perf_counter()
+    profile = engine.plan_dpmeans_calibration(
+        reduced_matrix.vectors, elapsed_seconds=0.0)
+    profile["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+    scan = KScanResult(
+        k=int(profile["k"]),
+        topic_count=int(profile["topic_count"]),
+        # ⚠ KScanResult 這三欄型別是 float，但 DP-Means 沒有 c-TF-IDF 指標。
+        # 這裡放 0.0 只是為了滿足 dataclass；**送到前端的候選走 profile**，
+        # 那份保留 None（見下方 candidate payload）。
+        coherence=0.0,
+        diversity=0.0,
+        balance=0.0,
+        small_topic_ratio=float(profile["small_topic_ratio"]),
+        elapsed_seconds=float(profile["elapsed_seconds"]),
+        score=0.0,
+    )
+    candidate = {
+        "candidate_id": 1,
+        "run_id": run_id,
+        "is_selected": False,
+        "selected_by": None,
+        "selected_at": None,
+        "llm_explanation": None,
+        "candidate_type": profile["candidate_type"],
+        "k": profile["k"],
+        "topic_count": profile["topic_count"],
+        "coherence": profile["coherence"],
+        "diversity": profile["diversity"],
+        "balance": profile["balance"],
+        "small_topic_ratio": profile["small_topic_ratio"],
+        "elapsed_seconds": profile["elapsed_seconds"],
+        "score": None,
+        "parameters": {
+            "small_topic_ratio": profile["small_topic_ratio"],
+            "topic_count": profile["topic_count"],
+            "elapsed_seconds": profile["elapsed_seconds"],
+            **profile["parameters"],
+        },
+    }
+    with psycopg.connect(**get_connection_kwargs()) as conn:
+        _merge_topic_state(conn, run_id, {
+            "k_scan": [scan.to_dict()],
+            "candidates": [candidate],
+            "status": "needs_review",
+            "algorithm": ALGORITHM_DPMEANS,
+        })
+    return [scan], [candidate]
 
 
 def _finalize_with_dpmeans(

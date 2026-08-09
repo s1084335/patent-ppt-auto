@@ -24,7 +24,22 @@
   - **API**：無需改動。DP-Means 主題走既有 topic_state_json 通道；keywords 為空清單，
     既有契約測試（`test_api_topics_keywords_contract`）通過。
   - 測試 44 支：核心 27、artifact 11（既有）＋ finalize 11、分流 11、新主題落地 16、命名接續 5。
-- [ ] 2.5 Refactor：全綠後抽離共用向量前處理並**隔離**已無用途的 K 選擇路徑；保留必要 rollback feature flag
+- [x] 2.5 Refactor：全綠後抽離共用向量前處理並**隔離**已無用途的 K 選擇路徑；保留必要 rollback feature flag
+
+  - **共用向量前處理：不另加抽象**。查證後 L2 normalize 只有 `dpmeans.l2_normalize`
+    一個定義處，calibrate／finalize／incremental 三條路徑都經它；PCA 沿用既有
+    `fit_incremental_pca`／`reduce_with_incremental_pca`。目標（前處理不得有第二份）
+    已達成，再包一層只會是轉手的碎塊——依 AGENTS.md「新增抽象前先確認它降低實際
+    複雜度」不加。
+  - **隔離 K 選擇路徑**：`_calibrate_with_dpmeans` 跑一次、產一個候選，不掃七組 k。
+    ⚠ 不隔離的後果不只是浪費算力：使用者會被要求在三個**完全不影響結果**的候選之間
+    選一個，選了也沒反應——這種「操作沒有效果」比報錯更難察覺。
+  - **品質指標回 None 不回 0**：coherence／diversity／balance 都算在 c-TF-IDF top terms
+    上，DP-Means 沒有。填 0 會讓前端顯示「品質 0 分」，那是憑空捏造的壞消息。
+  - **rollback flag**：`CLUSTERING_ALGORITHM` 未設＝舊引擎（`test_default_is_kmeans`）；
+    增量跟隨 artifact 不看 flag（`test_incremental_ignores_feature_flag`），所以切回舊
+    引擎不會讓既有 DP-Means workspace 讀錯格式。
+  - **落庫尾段抽離**：`_finish_final_topics` 供兩條路徑共用（見 2.4）。
 
   > ⚠ **2026-08-09 修正（規格被現實推翻，回寫理由）**：本項原文為「**移除**已無用途的
   > K 選擇路徑」。使用者當日定案為「feature flag 並存，**確定新引擎穩定後舊引擎才會

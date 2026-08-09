@@ -245,6 +245,52 @@ def build_topic_entries(
 
 
 # --------------------------------------------------------------------------
+# 校準（calibrate）
+# --------------------------------------------------------------------------
+
+#: DP-Means 候選的類型標記。既有三種是 conservative／balanced／granular
+#: （保守／平衡／細分），那是「選 k」的三個方向；DP-Means 只有一個。
+CANDIDATE_TYPE_DPMEANS = "dpmeans"
+
+
+def plan_dpmeans_calibration(
+    vectors: list[list[float]], *, elapsed_seconds: float,
+) -> dict[str, Any]:
+    """DP-Means 的校準結果：一個候選，不掃 k。
+
+    ⚠ 掃 k 那條路徑的存在理由是「k 要由人決定」。DP-Means 的主題數由資料與
+    lambda 決定，選 k 沒有意義——不隔離的話，使用者會被要求在三個**完全不影響
+    結果**的候選之間選一個。介面看起來正常、選了也沒反應，比報錯更難察覺。
+
+    ⚠ coherence／diversity／balance 回 None 而不是 0.0：這三個指標都算在
+    c-TF-IDF 的 top terms 上，DP-Means 沒有。填 0 會讓前端顯示「品質 0 分」，
+    那是憑空捏造的壞消息。沒有就是沒有，由顯示端標「不適用」。
+    """
+    lambda_result = dpmeans.derive_lambda(vectors)
+    state = dpmeans.fit(vectors, lambda_=lambda_result.value)
+    singletons = sum(1 for count in state.counts if count <= 1)
+    topic_count = len(state.centers)
+    return {
+        "candidate_type": CANDIDATE_TYPE_DPMEANS,
+        # k 沿用既有 schema 欄位，值＝實際群數。⚠ 它不是使用者選的。
+        "k": topic_count,
+        "topic_count": topic_count,
+        "coherence": None,
+        "diversity": None,
+        "balance": None,
+        # ⚠ 這個指標算得出來，而且正是 lambda 太小的警訊——碎成一堆單點群。
+        "small_topic_ratio": round(singletons / topic_count, 6) if topic_count else 0.0,
+        "elapsed_seconds": elapsed_seconds,
+        "parameters": {
+            "lambda": lambda_result.value,
+            "lambda_method": lambda_result.method,
+            "lambda_version": lambda_result.version,
+            "lambda_sample_size": lambda_result.sample_size,
+        },
+    }
+
+
+# --------------------------------------------------------------------------
 # 全量定案（finalize）
 # --------------------------------------------------------------------------
 
