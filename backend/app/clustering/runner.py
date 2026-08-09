@@ -45,6 +45,7 @@ from .model import (
     topic_cv_coherence_per_topic,
 )
 from .artifacts import WorkspaceTopicArtifact, artifact_key, artifact_path, save_artifact
+from .engine import format_topic_code
 from .preprocessing import clean_patent_text, sha256_text
 from .sources import SOURCE_FIELD_TECHNICAL, get_source_spec
 
@@ -1013,7 +1014,7 @@ def _persist_final_topics(
             {"term": term, "weight": float(weight)}
             for term, weight in (result.topic_model.get_topic(topic_id) or [])[:10]
         ]
-        topic_code = f"T{position:03d}"
+        topic_code = format_topic_code(position)
         code_by_model_id[topic_id] = topic_code
         topic_dicts.append({
             "topic_id": position,

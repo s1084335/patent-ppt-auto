@@ -24,7 +24,8 @@ from .artifacts import (
     resolve_artifact_path,
     save_artifact,
 )
-from .model import EmbeddingMatrix, ReducedEmbeddingMatrix, partial_fit_bertopic
+from . import engine
+from .model import EmbeddingMatrix, ReducedEmbeddingMatrix
 from .runner import (
     CANDIDATE_REFERENCE_PARAMETER_KEY,
     ClusteringCorpus,
@@ -794,15 +795,22 @@ def incremental_workspace(
     )
 
     try:
-        predicted_topics = partial_fit_bertopic(artifact.topic_model, batch.documents, reduced)
+        # ⚠ 依 artifact 記錄的演算法分流，**不看** feature flag：中途換引擎會讓
+        # 中心格式對不上，而且不會報錯（見 incremental 模組說明）。
+        prediction = engine.predict_incremental(
+            artifact, documents=batch.documents, vectors=reduced.vectors)
         assignment_count = _persist_incremental_assignments(
             run_id=run_id,
             workspace_id=workspace_id,
             source_field=source_field,
             corpus=batch,
             reduced=reduced,
-            predicted_topics=predicted_topics,
+            predicted_topics=prediction.topics,
+            new_topic_indexes=prediction.new_topic_indexes,
         )
+        if prediction.updated_state is not None:
+            # DP-Means 的狀態要存回 artifact，下一批增量才接得上。
+            artifact.dpmeans_state = prediction.updated_state
         artifact.run_id = run_id
         artifact.artifact_version = int(latest["artifact_version"]) + 1
         next_key = artifact_key(
@@ -1363,11 +1371,17 @@ def _persist_incremental_assignments(
     corpus: ClusteringCorpus,
     reduced: ReducedEmbeddingMatrix,
     predicted_topics: list[int],
+    new_topic_indexes: list[int] | None = None,
 ) -> int:
     """把本批模型 topic 映射到永久 topic；未知 ID 改派 centroid 最近的 active 主題。
 
     0021：指派落 derived_layer.topic_assignments，topic_key＝topic_code；
     模型 ID 與 topic_code 的對應來自最新 state 的 topics.model_topic_ids。
+
+    ⚠ `new_topic_indexes`（DP-Means 本批新開的群）必須與「未知舊 ID」分開處理：
+    兩者都不在 `model_to_code` 裡，但新主題要**建新主題**、未知舊 ID 才走 centroid
+    fallback。混為一談的話，DP-Means 的新主題會被靜默併進最近的舊主題——跑完沒有
+    任何錯誤、新主題一個都沒有，正是本 change 要解決的問題本身。
     """
     active = _active_model_topics(workspace_id=workspace_id, source_field=source_field)
     model_to_code = {
@@ -1377,8 +1391,16 @@ def _persist_incremental_assignments(
     }
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row) as conn:
         with conn.cursor() as cur:
-            _require_latest_state_run(
+            state_run = _require_latest_state_run(
                 cur, workspace_id=workspace_id, source_field=source_field)
+            # 撞號要看**全部**曾用過的 code（含已合併／停用），不能只看 active。
+            all_topics = _state_topics(state_run)
+            plan = engine.plan_topic_keys(
+                predicted_topics=predicted_topics,
+                new_topic_indexes=list(new_topic_indexes or []),
+                model_to_code=model_to_code,
+                existing_codes=[str(t.get("topic_code")) for t in all_topics],
+            )
             vectors = np.asarray(reduced.vectors, dtype=float)
             centers = {
                 topic_id: vectors[[i for i, value in enumerate(predicted_topics) if value == topic_id]].mean(axis=0)
@@ -1397,7 +1419,8 @@ def _persist_incremental_assignments(
                     active_centers[code] = center
             rows = []
             for index, model_topic_id in enumerate(predicted_topics):
-                topic_key = model_to_code.get(model_topic_id)
+                # plan 已把新主題配好 code；只有「未知舊 ID」才是 None。
+                topic_key = plan.topic_keys[index]
                 if topic_key is None:
                     topic_key = _nearest_active_topic_code(vectors[index], active_centers)
                 if topic_key is None:
@@ -1415,6 +1438,23 @@ def _persist_incremental_assignments(
                 """,
                 rows,
             )
+            if plan.new_topics:
+                # ⚠ 一旦有新主題，這個 incremental run 就必須寫出**完整** topics
+                # 清單（既有 + 新）。讀取端只認 topics 非空的 run（_latest_state_run），
+                # 不寫的話新主題等於沒存進去；只寫新的則會讓既有主題整批消失。
+                counts: dict[str, int] = {}
+                for key in plan.topic_keys:
+                    if key is not None:
+                        counts[key] = counts.get(key, 0) + 1
+                _merge_topic_state(cur, run_id, {
+                    "topics": engine.build_topic_entries(
+                        existing_topics=all_topics,
+                        new_topics=plan.new_topics,
+                        source_field=source_field,
+                        run_id=run_id,
+                        doc_counts=counts,
+                    ),
+                })
     return len(rows)
 
 
