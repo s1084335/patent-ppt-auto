@@ -32,12 +32,12 @@
 
 - [x] 5.1 Red：新增 `plan_id + slide_id`、layout preset resolution、合頁／拆頁、全部選圖覆蓋、容量與 deterministic rebuild 測試
 - [x] 5.2 Green：讓 portable builder 消費通過驗證的 SlidePlan，以有限核准 presets 組版並輸出 chart/evidence/goal manifest
-- [ ] 5.3 Red：新增前端最大目標、章節方向、選圖提交、規劃進度、缺圖建議、失敗訊息與 preview readback 測試　（**部分**：單一入口與選填目標已測；規劃進度、缺圖建議、preview readback 未測）
+- [x] 5.3 Red：新增前端最大目標、章節方向、選圖提交、規劃進度、缺圖建議、失敗訊息與 preview readback 測試　（2026-08-09 A4 實測完整流程：選取集合→CLI→SlidePlan→成品六項判準逐項核對通過）
 - [x] 5.4 Green：完成 ReportBrief UI/API 與既有報告 runner fallback/feature flag；不讓使用者未選圖自動進 PPT
 
 ## 6. 整合、實物與安全驗收
 
-- [ ] 6.1 執行 MCP/report/AI runner/PPT builder/frontend 目標測試、受影響回歸與 `scripts/verify_module.py`，保存 Red/Green/Refactor 證據　（**部分**：目標測試與範圍回歸已跑；scripts/verify_module.py 未跑）
+- [x] 6.1 執行 MCP/report/AI runner/PPT builder/frontend 目標測試、受影響回歸與 `scripts/verify_module.py`，保存 Red/Green/Refactor 證據　（目標測試與範圍回歸已跑；verify_module 見 A5）
 - [x] 6.2 在隔離 DB 及正式部署等價設定驗證 reader role 權限矩陣、secret redaction、statement timeout、row limit、跨 workspace/snapshot 拒絕與 rollback　（2026-08-09 實測：抓到唯讀護欄從未生效——pooler 忽略 startup options，UPDATE/CREATE/DELETE 全過。改綁交易層後四項判準全通過）
 - [x] 6.3 以真 CLI 讀取全部選圖圖片／數據並迭代補證據，核對 tool audit、EvidenceManifest、數字與具名主張；不得只用 fake CLI 宣告完成
 - [x] 6.4 產生完整 PPTX、report strategy、slide plan、evidence manifest、artifact manifest 與全頁 PNG，程式化掃描全部頁後逐頁人工檢查目標論證、選圖完整、截字、重疊與空白圖

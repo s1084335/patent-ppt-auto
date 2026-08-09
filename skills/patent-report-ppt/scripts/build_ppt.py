@@ -3173,13 +3173,28 @@ def _render_kp_deepdive(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]
 
     ⚠ 沒有軌跡（不同申請年 <3）的公司**不該出這一頁**——規劃端把關；
     組版端若真收到無軌跡資料，仍照畫數字卡，不自行降級成別的版型。
+
+    🔴 2026-08-09（A4 實測）：本頁**本來就不需要選圖**（內容是該公司的數字與
+    軌跡），但原本無條件轉呼叫 `chart_with_points`——那是需要圖的版型，於是
+    規劃端正確地給了空 chart_identities，組版端卻把整頁降級成 stat_callout，
+    正好違反上面那句「不自行降級」。與 exec_summary／walls_gaps 同一個模式：
+    **版型有 renderer、名稱對得上，但實作借用了需求不同的版型**。
     """
-    _render_chart_with_points(slide, theme, spec, ctx)
+    if spec.report_keys and spec.charts:
+        _render_chart_with_points(slide, theme, spec, ctx)
+    else:
+        _render_points_page(slide, theme, spec, ctx)
 
 
 def _render_kp_cards(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
-    """利基／新興玩家小卡矩陣（名稱＋一句定位＋件數）。"""
-    _render_table_with_points(slide, theme, spec, ctx)
+    """利基／新興玩家小卡矩陣（名稱＋一句定位＋件數）。
+
+    ⚠ 同 kp_deepdive：小卡的內容來自敘述，沒有選圖時不該降級。
+    """
+    if spec.report_keys and spec.charts:
+        _render_table_with_points(slide, theme, spec, ctx)
+    else:
+        _render_points_page(slide, theme, spec, ctx)
 
 
 # 無圖要點頁的面板標題（依版型語意，不重複頁標題）。
@@ -3187,6 +3202,9 @@ POINTS_PAGE_PANEL_TITLES = {
     "exec_summary": "關鍵結論",
     "walls_gaps": "要迴避的牆與可切入的空白",
     "reading_guide": "判讀說明",
+    "kp_deepdive": "競爭者深入",
+    "kp_cards": "利基與新興玩家",
+    "kp_compare": "兩強對照",
 }
 
 
@@ -3252,8 +3270,14 @@ def _render_reading_guide(slide, theme: Theme, spec: PageSpec, ctx: dict[str, An
 
 
 def _render_kp_compare(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
-    """兩個 Key Player 左右對照（範例 p9）：核心技術架構與布局並列。"""
-    _render_comparison(slide, theme, spec, ctx)
+    """兩個 Key Player 左右對照（範例 p9）：核心技術架構與布局並列。
+
+    ⚠ 同 kp_deepdive：兩邊的對照內容來自敘述，沒有選圖時不該降級。
+    """
+    if spec.report_keys and spec.charts:
+        _render_comparison(slide, theme, spec, ctx)
+    else:
+        _render_points_page(slide, theme, spec, ctx)
 
 
 RENDERERS = {
@@ -3280,8 +3304,15 @@ RENDERERS = {
 }
 
 # 需要圖才成立的版型：解析不到圖就降級 stat_callout，不留佔位文字。
+# 「沒有圖就撐不起來」的版型——缺圖時降級成 stat_callout。
+# 🔴 2026-08-09（A4 實測）：`kp_deepdive` 原本列在這裡是**錯的**。它的內容是
+# 單一 Key Player 的數字與軌跡，本來就不需要選圖；規劃端正確地給了空
+# chart_identities，這裡卻把整頁降級掉——正好違反該 renderer docstring 自己
+# 寫的「不自行降級成別的版型」。`kp_cards`／`kp_compare` 同理（內容來自敘述），
+# 它們沒被列入是對的。
+# ⚠ 判斷標準是「這個版型**沒有圖就畫不出東西**嗎」，不是「它可能會用到圖」。
 CHART_DEPENDENT_KINDS = frozenset({"chart_hero", "chart_with_points", "comparison",
-                                  "kp_quadrant", "kp_deepdive"})
+                                  "kp_quadrant"})
 # 單圖版型：被指定給多圖頁面時要拆成多頁（成對報表的「分頁」呈現）。
 SINGLE_CHART_KINDS = frozenset({"chart_hero", "chart_with_points", "stat_callout"})
 
