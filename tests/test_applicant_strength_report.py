@@ -23,7 +23,10 @@ class ReportRegistrationTests(unittest.TestCase):
 
         d = REPORT_DEFINITIONS["applicant_strength_profile"]
         self.assertEqual(d.report_type, "cluster")
-        self.assertEqual(d.label_zh, "申請人四面向")
+        # ⚠ 2026-08-10 改名：原「申請人四面向」與實際畫出來的**泡泡象限圖**
+        # 名實不符。2026-08-07 定案原文：「四面向就是這張圖的座標」——四面向是
+        # 資料維度，圖本身是範例（滑雪機 V2 p7）的「Key Players 競爭定位」。
+        self.assertEqual(d.label_zh, "Key Players 競爭定位")
 
     def test_section_registry_covers_it(self):
         """新報表必須掛進某個 section spec（否則 registry 覆蓋測試會紅）。"""

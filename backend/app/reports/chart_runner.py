@@ -3898,6 +3898,11 @@ def applicant_strength_rows(
             "country_count": profile.get("country_count", 0),
             "topic_count": profile.get("topic_count", 0),
             "ipc_subclass_count": profile.get("ipc_subclass_count", 0),
+            # ⚠ 該家全部專利 id——**給 CLI 自己去查用的**，不是給表格顯示的。
+            # 2026-08-10 使用者定案：摘要由 CLI 透過 MCP `query_database` 讀
+            # `patents."文獻備註"` 自行產生。資料層預先算好餵過去，等於白費了
+            # 開放取證權限的用意，而且預先算的東西 CLI 無法追問、無法深入。
+            "patent_ids": profile.get("patent_ids") or [],
             "granted_count": profile.get("granted_count", 0),
             "pending_count": profile.get("pending_count", 0),
             "dead_count": profile.get("dead_count", 0),
