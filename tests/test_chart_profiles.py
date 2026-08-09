@@ -84,19 +84,22 @@ class ManifestTests(unittest.TestCase):
     """
 
     def test_manifest_binds_identity_profile_and_checksum(self):
+        # ⚠ 2026-08-09 契約變更：原本取樣用 `lifecycle.svg`，`lifecycle` 報表已由
+        # 使用者裁決刪除、同時從 CHART_FILE_REPORTS 移除，identity 反查會落空。
+        # 改用仍在對照表裡的 `applicant_ranking.svg`（同樣是一檔對一報表）。
         from backend.app.reports.chart_runner import build_profile_manifest
 
         with TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
             for profile in ("web", "ppt"):
-                (run_dir / cp.profile_filename("lifecycle.svg", profile)).write_text(
+                (run_dir / cp.profile_filename("applicant_ranking.svg", profile)).write_text(
                     f"<svg>{profile}</svg>", encoding="utf-8")
             manifest = build_profile_manifest(run_dir, version="v1")
-            entry = manifest["charts"]["lifecycle:default"]
+            entry = manifest["charts"]["applicant_ranking:default"]
             self.assertEqual(sorted(entry["profiles"]), ["ppt", "web"])
             self.assertEqual(entry["version"], "v1")
-            self.assertEqual(entry["profiles"]["ppt"]["path"], "lifecycle.svg")
-            self.assertEqual(entry["profiles"]["web"]["path"], "lifecycle.web.svg")
+            self.assertEqual(entry["profiles"]["ppt"]["path"], "applicant_ranking.svg")
+            self.assertEqual(entry["profiles"]["web"]["path"], "applicant_ranking.web.svg")
             self.assertTrue(entry["profiles"]["ppt"]["checksum"])
             self.assertNotEqual(entry["profiles"]["ppt"]["checksum"],
                                 entry["profiles"]["web"]["checksum"])

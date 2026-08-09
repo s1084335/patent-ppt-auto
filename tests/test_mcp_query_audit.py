@@ -23,6 +23,12 @@ from pathlib import Path
 
 from backend.app.mcp_server import report_research as rr
 
+# 本檔驗的是稽核行為，report_key 只是取樣用的「任一張合法報表」。
+# ⚠ 2026-08-09 契約變更：原本取樣用 `lifecycle`，該報表已由使用者裁決刪除，
+# `_guard` 會直接以「未知 report_key」擋下——取樣鍵改用仍存在的
+# `country_distribution`。不得改成寫死的假鍵：那會把 `_guard` 的白名單檢查繞掉。
+SAMPLE_REPORT = "country_distribution"
+
 
 class AuditRecordingTests(unittest.TestCase):
     def setUp(self):
@@ -30,8 +36,8 @@ class AuditRecordingTests(unittest.TestCase):
 
     def test_snapshot_tool_records_one_entry(self):
         rr.query_report_evidence(
-            "lifecycle", "v1",
-            snapshot_loader=lambda _s: {"chart_rows": {"lifecycle": [{"a": 1}, {"a": 2}]}})
+            SAMPLE_REPORT, "v1",
+            snapshot_loader=lambda _s: {"chart_rows": {SAMPLE_REPORT: [{"a": 1}, {"a": 2}]}})
         audit = rr.get_query_audit()
         self.assertEqual(len(audit), 1)
         entry = audit[0]
@@ -44,8 +50,8 @@ class AuditRecordingTests(unittest.TestCase):
         """⚠ 截斷必須進紀錄：CLI 以為拿到全部、實際只有一半，事後要查得出來。"""
         rows = [{"a": i} for i in range(10)]
         rr.query_report_evidence(
-            "lifecycle", "v1", limit=3,
-            snapshot_loader=lambda _s: {"chart_rows": {"lifecycle": rows}})
+            SAMPLE_REPORT, "v1", limit=3,
+            snapshot_loader=lambda _s: {"chart_rows": {SAMPLE_REPORT: rows}})
         entry = rr.get_query_audit()[0]
         self.assertEqual(entry["rows"], 3)
         self.assertTrue(entry["truncated"])
@@ -62,17 +68,17 @@ class AuditRecordingTests(unittest.TestCase):
     def test_audit_keeps_query_but_not_returned_rows(self):
         """⚠ 記查詢、不記資料：稽核紀錄不該變成專利內容的副本。"""
         rr.query_report_evidence(
-            "lifecycle", "v1",
-            snapshot_loader=lambda _s: {"chart_rows": {"lifecycle": [{"secret": "內容"}]}})
+            SAMPLE_REPORT, "v1",
+            snapshot_loader=lambda _s: {"chart_rows": {SAMPLE_REPORT: [{"secret": "內容"}]}})
         blob = str(rr.get_query_audit())
-        self.assertIn("lifecycle", blob)
+        self.assertIn(SAMPLE_REPORT, blob)
         self.assertNotIn("內容", blob, "回傳的資料列不得進稽核紀錄")
 
     def test_multiple_calls_accumulate_in_order(self):
-        loader = lambda _s: {"chart_rows": {"lifecycle": [{"a": 1}]}}  # noqa: E731
-        rr.query_report_evidence("lifecycle", "v1", snapshot_loader=loader)
+        loader = lambda _s: {"chart_rows": {SAMPLE_REPORT: [{"a": 1}]}}  # noqa: E731
+        rr.query_report_evidence(SAMPLE_REPORT, "v1", snapshot_loader=loader)
         rr.list_report_catalog()
-        rr.preview_report_rows("lifecycle", "v1", snapshot_loader=loader)
+        rr.preview_report_rows(SAMPLE_REPORT, "v1", snapshot_loader=loader)
         # ⚠ preview 內部會先呼叫 query_report_evidence，所以它自己那筆排在後面
         # ——兩筆都留是刻意的：稽核要看得出 CLI 呼叫的是 preview 還是直接 query。
         self.assertEqual([e["tool"] for e in rr.get_query_audit()],
@@ -114,8 +120,8 @@ class AuditReachesRunnerTests(unittest.TestCase):
             try:
                 rr.list_report_catalog()
                 rr.query_report_evidence(
-                    "lifecycle", "v1",
-                    snapshot_loader=lambda _s: {"chart_rows": {"lifecycle": [{"a": 1}]}})
+                    SAMPLE_REPORT, "v1",
+                    snapshot_loader=lambda _s: {"chart_rows": {SAMPLE_REPORT: [{"a": 1}]}})
             finally:
                 os.environ.pop(rr.AUDIT_PATH_ENV, None)
             lines = [_json.loads(x) for x in

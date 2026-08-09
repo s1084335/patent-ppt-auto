@@ -76,7 +76,7 @@ class TwLegalStatusApiStaticContractTests(unittest.TestCase):
         self.assertNotIn("INSERT INTO core_layer", src)
         self.assertIn("list_pending_tw_legal_status_patents", src)
 
-    def test_repository_uses_atomic_tw_blank_update_and_lifecycle_enqueue(self) -> None:
+    def test_repository_uses_atomic_tw_blank_update_and_report_enqueue(self) -> None:
         src = (PROJECT_ROOT / "backend" / "app" / "app_layer" / "patent_queries.py").read_text(encoding="utf-8")
         self.assertIn("country_code = 'TW'", src)
         self.assertIn("NULLIF(BTRIM(p.legal_status), '') IS NULL", src)
@@ -84,7 +84,9 @@ class TwLegalStatusApiStaticContractTests(unittest.TestCase):
         self.assertIn("legal_status = %(status)s::text", src)
         self.assertIn("'to_status', %(status)s::text", src)
         self.assertIn("report_generate", src)
-        self.assertIn('"report_names": ["lifecycle"]', src)
+        # ⚠ 2026-08-09 契約變更：原本刷新 `lifecycle`，該報表已由使用者裁決刪除，
+        # 法律狀態改由 `country_distribution`（國別×法律狀態）承接。
+        self.assertIn('"report_names": ["country_distribution"]', src)
         body = src.split("def register_tw_legal_status", 1)[-1].split("def search_patents", 1)[0]
         self.assertNotIn("clustering_", body)
 
@@ -212,7 +214,7 @@ class TwLegalStatusRuntimeContractTests(unittest.TestCase):
         self.assertEqual(tuple(result["allowed_statuses"]), CURATED_TW_STATUSES)
         self.assertEqual(cursor.executed[0][1], {"workspace_id": 3, "limit": 10, "offset": 5})
 
-    def test_repository_register_commits_projection_and_enqueues_lifecycle(self) -> None:
+    def test_repository_register_commits_projection_and_enqueues_refresh(self) -> None:
         from backend.app.app_layer import patent_queries
 
         cursor = _FakeCursor(fetchone_rows=[{"patent_id": 7, "to_status": CURATED_TW_STATUSES[3]}])
@@ -353,7 +355,9 @@ class TwLegalStatusRuntimeContractTests(unittest.TestCase):
         ):
             self.assertEqual(patent_queries.get_patent_figure(1), b"abc")
 
-    def test_repository_enqueue_uses_lifecycle_only(self) -> None:
+    def test_repository_enqueue_uses_legal_status_report_only(self) -> None:
+        """⚠ 2026-08-09 契約變更：刷新目標由已刪除的 `lifecycle` 改為
+        `country_distribution`；「只排法律狀態相關報表、不牽動分群」的意圖不變。"""
         from backend.app.app_layer import patent_queries
 
         job = SimpleNamespace(job_id=123)
@@ -366,7 +370,7 @@ class TwLegalStatusRuntimeContractTests(unittest.TestCase):
         self.assertEqual(result, {"refresh_status": "queued", "refresh_job_id": 123})
         create_job.assert_called_once_with(
             "report_generate",
-            {"report_names": ["lifecycle"], "workspace_id": 5},
+            {"report_names": ["country_distribution"], "workspace_id": 5},
             workspace_id=5,
         )
 

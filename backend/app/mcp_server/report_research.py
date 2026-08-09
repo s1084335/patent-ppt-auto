@@ -73,7 +73,8 @@ _REPORT_ANSWERS: dict[str, str] = {
     "applicant_country_distribution": "哪家公司在哪些國家布局",
     "applicant_year_matrix": "哪家公司在哪幾年活躍",
     "applicant_strength_profile": "每家的布局形狀：件／族／國／技術廣度／法律狀態／種類",
-    "lifecycle": "前十大申請人的權利存續狀態分布",
+    # ⚠ 2026-08-09 移除 `lifecycle`：該報表已由使用者裁決刪除，法律狀態改由
+    # `country_distribution` 承接。留著等於在目錄語意表裡宣告一張不存在的報表。
     "ipc_main_distribution": "技術分類集中在哪些 IPC",
     "cpc_main_distribution": "CPC 有而 IPC 沒有的分類是什麼",
     "cluster_topic_table": "有哪些技術／功效主題、各幾件幾家",

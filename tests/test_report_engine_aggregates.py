@@ -42,18 +42,11 @@ class AggregateColumnsTests(unittest.TestCase):
         self.assertIn("top_cited_patents", archive_text)
         self.assertIn("company_rd_energy", archive_text)
 
-    def test_lifecycle_status_analysis_sql(self) -> None:
-        """🔴 2026-08-07 契約變更：lifecycle 改版「專利狀態分析」。
-
-        原「年度 × COUNT(DISTINCT 申請人)」散點已裁撤（與趨勢頁重複，年度家數
-        判讀由趨勢頁年度四欄承接）。新契約＝展開 VIEW 上 (申請人, 原始狀態) 聚合，
-        狀態桶收斂在 chart_runner 端（唯一定義處 transforms/legal_status），
-        **SQL 不得出現任何狀態字面**。"""
-        sql, _ = build_report_sql(REPORT_DEFINITIONS["lifecycle"], filters=None, limit=None)
-        self.assertIn('GROUP BY "applicant_display_name", "legal_status"', sql)
-        self.assertIn('"derived_layer"."report_patent_applicant_expanded"', sql)
-        self.assertNotIn("已授權", sql)
-        self.assertNotIn("授权", sql)
+    # 🔴 test_lifecycle_status_analysis_sql 已裁撤（2026-08-09）：`lifecycle`
+    # 報表由使用者裁決刪除，REPORT_DEFINITIONS 已無此鍵。申請人×法律狀態交叉後
+    # 每格件數極少、圖上讀不出模式；法律狀態改由 country_distribution 承接。
+    # ⚠ 「報表確實已從 registry 移除」由 tests/test_report_catalog_and_population.py
+    # 的 test_removed_reports_gone_from_registry 守著，不在本檔重複一份。
 
     def test_publication_trend_reads_announcement_year(self) -> None:
         """授權公告趨勢要讀中文欄位「授權公告年」，不得沿用代表日期 publication_year。"""

@@ -1,6 +1,17 @@
 """lifecycle 改版「專利狀態分析」（2026-08-07 使用者定案，openspec improve-report-professionalism）。
 
-## 定案
+## 🔴 2026-08-09 現況：`lifecycle` 報表已由使用者裁決刪除
+
+registry、SECTION_SPECS、CHART_FILE_REPORTS、讀圖說明、母體登記與前端項目均已移除。
+本檔仍然成立的部分是**與該報表無關的共用零件**：`transforms/legal_status` 的狀態桶
+（`country_distribution` 仍在用）與 `render_matrix_chart`（公司×國家矩陣仍在用）。
+
+⚠ 待使用者裁決：`chart_runner._build_lifecycle_section` 與 `lifecycle_status_pivot`
+沒有任何 SectionSpec 指得到，已是死程式；下方 `LifecycleSectionTests` 與
+`LifecycleBuilderIntegrationTests` 因此守著一條永遠不會執行的路徑。要一併刪就連同
+這兩個 class 移除，不要只留測試綠著。
+
+## 定案（2026-08-07，已於 2026-08-09 被刪除決策取代）
 
 1. 「lifecycle 改成專利狀態分析」——report key **沿用** `lifecycle`（前端／PPT／
    artifact 對照鍵不連動），內容由「件數×家數散點」改為**狀態組成**。
@@ -88,23 +99,26 @@ class StatusBucketTests(unittest.TestCase):
 
 
 class LifecycleDefinitionTests(unittest.TestCase):
-    """報表定義改版：展開 VIEW、申請人×狀態聚合、label 改名。"""
+    """🔴 2026-08-09 契約變更：`lifecycle` 報表由使用者裁決**刪除**。
 
-    def test_definition_reshaped(self):
-        from backend.app.reports.report_definitions import REPORT_DEFINITIONS
+    原因：申請人×法律狀態交叉後每格件數極少，圖上讀不出模式；法律狀態的判讀
+    改由 `country_distribution`（國別×法律狀態）承接。
 
-        d = REPORT_DEFINITIONS["lifecycle"]
-        self.assertEqual(d.label_zh, "專利狀態分析")
-        self.assertEqual(d.source_table, "derived_layer.report_patent_applicant_expanded")
-        self.assertEqual(d.group_by, ("applicant_display_name", "legal_status"))
+    ⚠ 原 `test_definition_reshaped` 隨之裁撤——registry 已無此鍵，
+    「確實移除」由 tests/test_report_catalog_and_population.py 統一守著，
+    本檔不重複第二份。前端項目移除則保留下方測試把關。
+    """
 
-    def test_frontend_label_updated(self):
+    def test_frontend_report_item_removed(self):
         from pathlib import Path
 
         html = (Path(__file__).resolve().parents[1] / "backend" / "app" / "static"
                 / "index.html").read_text(encoding="utf-8")
-        self.assertIn("'lifecycle', '專利狀態分析'", html.replace('"', "'"))
+        flat = html.replace('"', "'")
+        self.assertNotIn("'lifecycle'", flat, "前端仍列著已刪除的 lifecycle 報表")
+        # 舊名反向鎖照留：改名後不得又冒出來（2026-08-07 起）。
         self.assertNotIn("專利生命週期", html)
+        self.assertNotIn("專利狀態分析", html)
 
 
 class LifecycleSectionTests(unittest.TestCase):
@@ -142,11 +156,10 @@ class LifecycleSectionTests(unittest.TestCase):
         self.assertEqual(b["未知"], 4)
         self.assertEqual(b["patent_count"], 23)
 
-    def test_over_counting_note_applies(self):
-        """展開口徑 → 母體註記「含共同申請」（同 applicant_ranking）。"""
-        from backend.app.reports.population import OVER_COUNTING_REPORTS
-
-        self.assertIn("lifecycle", OVER_COUNTING_REPORTS)
+    # 🔴 test_over_counting_note_applies 已裁撤（2026-08-09）：報表刪除後
+    # `lifecycle` 已從 population.OVER_COUNTING_REPORTS 移除；「死條目要一併清掉」
+    # 改由 test_report_catalog_and_population.py 的
+    # test_removed_reports_gone_from_population_registry 守著。
 
 
 class StatusMatrixSvgTests(unittest.TestCase):

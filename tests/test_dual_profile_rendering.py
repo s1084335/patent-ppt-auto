@@ -168,7 +168,10 @@ class WebAssetsStayOutOfPptIndexTests(unittest.TestCase):
     """
 
     def test_web_variants_map_to_no_report(self):
-        for name in ("annual_trend.web.svg", "lifecycle.web.svg",
+        # ⚠ 2026-08-09 契約變更：取樣檔名由 `lifecycle.web.svg` 換成
+        # `applicant_ranking.web.svg`——`lifecycle` 報表已由使用者裁決刪除，
+        # 連帶從 CHART_FILE_REPORTS 移除，拿它當對照組會兩邊都回空、驗不到東西。
+        for name in ("annual_trend.web.svg", "applicant_ranking.web.svg",
                      "opportunity_quadrant_tech.web.svg",
                      "cluster_topic_table_effect.web.svg"):
             with self.subTest(name=name):
@@ -179,7 +182,8 @@ class WebAssetsStayOutOfPptIndexTests(unittest.TestCase):
         """⚠ 對照組：原檔名的對應不得因此被改壞。"""
         self.assertEqual(cr.report_names_for_artifact("opportunity_quadrant_tech.svg"),
                          ["opportunity_quadrant"])
-        self.assertEqual(cr.report_names_for_artifact("lifecycle.svg"), ["lifecycle"])
+        self.assertEqual(cr.report_names_for_artifact("applicant_ranking.svg"),
+                         ["applicant_ranking"])
 
 
 class ViewBoxTests(unittest.TestCase):

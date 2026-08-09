@@ -41,9 +41,8 @@ EXPANDED_REPORTS = frozenset({
     "applicant_ranking",
     "applicant_country_distribution",
     "applicant_year_matrix",
-    # lifecycle（專利狀態分析）2026-08-07 起走展開口徑（前十大申請人×狀態桶，
-    # 含共同申請；過計數註記由 population.OVER_COUNTING_REPORTS 承接）。
-    "lifecycle",
+    # ⚠ 2026-08-09 契約變更：`lifecycle`（專利狀態分析）曾於 2026-08-07 加入本集合，
+    # 該報表已由使用者裁決刪除，registry 內不存在——留著會以 KeyError 假紅。
 })
 
 

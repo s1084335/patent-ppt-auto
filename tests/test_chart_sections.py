@@ -97,8 +97,11 @@ class SectionRegistryTests(unittest.TestCase):
         self.assertEqual(chart_runner.resolve_sections(None), chart_runner.SECTION_SPECS)
 
     def test_resolve_subset_keeps_registry_order(self):
-        specs = chart_runner.resolve_sections(["lifecycle", "country_distribution"])
-        self.assertEqual([spec.key for spec in specs], ["country_map", "lifecycle"])
+        # ⚠ 2026-08-09 契約變更：原本用 `lifecycle` 當「登記序在後」的那一張，
+        # 該報表已由使用者裁決刪除、SectionSpec 一併移除，改用 applicant_ranking。
+        # 驗的性質不變：輸入順序被登記序覆蓋（這裡刻意反著傳）。
+        specs = chart_runner.resolve_sections(["applicant_ranking", "country_distribution"])
+        self.assertEqual([spec.key for spec in specs], ["country_map", "applicant_ranking"])
 
     def test_application_growth_section_removed(self):
         """年增率 section 已移除（2026-08-02 使用者定案）。
@@ -1298,20 +1301,10 @@ class EncodingNoteAccuracyTests(unittest.TestCase):
             note = chart_runner.CHART_ENCODING_NOTES[key]
             self.assertNotIn("左右", note, f"{key} 的編碼說明仍描述並排版型")
 
-    def test_lifecycle_note_matches_how_chart_is_drawn(self):
-        """🔴 生命週期是**依年份**連線，不是「同一技術群」。
-
-        同檔 `render_lifecycle_chart` 的 docstring 與 SVG 副題（connected by year）
-        都寫著依年份，說明卻寫成技術群——2026-08-02 使用者當場抓到。
-        """
-        # 🔴 2026-08-07 契約變更：lifecycle 改版「專利狀態分析」（堆疊長條），
-        # 「依年份連線」的散點編碼已不存在——本測試改守新編碼三要素。
-        # 二改（2026-08-07 使用者：「不要做 bar，像公司×國家交叉表」）：堆疊→矩陣。
-        note = chart_runner.CHART_ENCODING_NOTES["lifecycle"]
-        self.assertIn("狀態桶", note)
-        self.assertIn("格值", note)
-        self.assertIn("含共同申請", note)
-        self.assertNotIn("技術群", note)
+    # 🔴 test_lifecycle_note_matches_how_chart_is_drawn 已裁撤（2026-08-09）：
+    # `lifecycle` 報表由使用者裁決刪除，CHART_ENCODING_NOTES 已無此鍵，
+    # 「讀圖說明要與畫法一致」這條守則本身仍由同 class 其餘各報表的測試守著。
+    # ⚠ 法律狀態的判讀改由 country_distribution 承接，其讀圖說明另有測試。
 
 
 class BubbleLegendSpanTests(unittest.TestCase):
