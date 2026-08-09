@@ -52,6 +52,25 @@ class ReaderGuideReachesCliTests(unittest.TestCase):
             self.assertTrue(block.get("title"), f"缺標題：{block}")
             self.assertTrue(block.get("body"), f"缺內文：{block}")
 
+    def test_content_standard_keeps_the_four_bias_angles(self):
+        """判讀說明頁的四個偏差角度必須留在內容標準裡（從滑雪機 V2 p11 反解）。
+
+        ⚠ 角度固定、內容依 workspace 換。這四條是範例可信度的來源；被刪掉或
+        簡化成「說明資料限制」這種空話，CLI 就會退回寫模板句。
+        """
+        text = (SKILL_DIR / "content_standard.md").read_text(encoding="utf-8")
+        for angle in ("資料涵蓋邊界", "同族放大效應", "小樣本不等於不重要",
+                      "低密度要外部校正"):
+            self.assertIn(angle, text, f"content_standard 缺偏差角度：{angle}")
+
+    def test_content_standard_separates_caliber_from_bias(self):
+        """必須寫明「口徑定義 ≠ 可觀測性偏差」——否則兩者會被互相頂替。"""
+        text = (SKILL_DIR / "content_standard.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "不得拿它們去頂替", text,
+            "content_standard 需明說口徑定義不能頂替可觀測性偏差四條",
+        )
+
     def test_skill_docs_point_cli_at_the_engine_output(self):
         """skill 必須明寫「照抄引擎輸出」——只在程式裡輸出、文件沒講，CLI 仍會自己編。
 
