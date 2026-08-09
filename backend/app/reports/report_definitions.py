@@ -293,8 +293,11 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
     "applicant_strength_profile": ReportDefinition(
         name="applicant_strength_profile",
         report_type="cluster",
-        label="Applicant Strength Profile",
-        label_zh="申請人四面向",
+        label="Key Players Competitive Position",
+        # ⚠ 2026-08-10 改名：原「申請人四面向」與實際畫出來的**泡泡象限圖**名實不符。
+        # 2026-08-07 定案原文：「四面向就是這張圖的座標」——四面向是資料維度，
+        # 圖本身是範例（滑雪機 V2 p7）的「Key Players 競爭定位」。
+        label_zh="Key Players 競爭定位",
         source_table="",
         columns=(),
         supports_patent_ids=False,
