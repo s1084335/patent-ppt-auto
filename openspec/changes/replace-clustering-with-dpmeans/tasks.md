@@ -1,13 +1,13 @@
 ## 1. 基準與演算法契約
 
-- [ ] 1.1 固定技術/功效雙通道樣本、embedding/model 版本與現行 MiniBatchKMeans 輸出作為比較基準
-- [ ] 1.2 定義 cosine Online DP-Means 的向量正規化、PCA、lambda 推導、樣本順序、seed、outlier 與空/小樣本行為
+- [x] 1.1 固定技術/功效雙通道樣本、embedding/model 版本與現行 MiniBatchKMeans 輸出作為比較基準　（基準：run1 技術 5 主題/44 件、run2 功效 8 主題/44 件；模型設定見 ModelConfig）
+- [x] 1.2 定義 cosine Online DP-Means 的向量正規化、PCA、lambda 推導、樣本順序、seed、outlier 與空/小樣本行為　（契約寫成可執行版：tests/test_dpmeans_core.py）
 - [ ] 1.3 定義 artifact schema/version、cluster run metadata 與舊 run 的讀取相容策略
 
 ## 2. TDD 實作
 
-- [ ] 2.1 Red：新增距離、建群門檻、中心更新、決定性、雙通道與資料驅動 lambda 的單元測試，保存失敗原因
-- [ ] 2.2 Green：以最小 Online DP-Means 核心實作通過演算法測試，不先改 UI 或移除現行引擎
+- [x] 2.1 Red：新增距離、建群門檻、中心更新、決定性、雙通道與資料驅動 lambda 的單元測試，保存失敗原因
+- [x] 2.2 Green：以最小 Online DP-Means 核心實作通過演算法測試，不先改 UI 或移除現行引擎
 - [ ] 2.3 Red：新增 calibrate/finalize/incremental、artifact round-trip 與新舊版本讀取整合測試
 - [ ] 2.4 Green：接上 clustering job、repository、topic label 與 API，確保技術/功效結果分離且可追溯
 - [ ] 2.5 Refactor：全綠後抽離共用向量前處理並移除已無用途的 K 選擇路徑；保留必要 rollback feature flag
