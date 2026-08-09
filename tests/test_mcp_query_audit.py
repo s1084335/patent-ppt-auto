@@ -141,3 +141,39 @@ class AuditReachesRunnerTests(unittest.TestCase):
         finally:
             os.environ.pop(rr.AUDIT_PATH_ENV, None)
         self.assertTrue(catalog, "查詢本身必須照常回傳")
+
+
+class ReadOnlyEnforcementTests(unittest.TestCase):
+    """唯讀必須綁在**交易**上，不能靠連線字串的 startup options。
+
+    🔴 2026-08-09（A6 實測）：本專案 DSN 走 Supabase transaction pooler（6543），
+    它**忽略** `-c default_transaction_read_only=on` 這類 startup options——
+    實測繞過語法檢查後 UPDATE／CREATE／DELETE **全部成功**、statement_timeout
+    也沒作用。也就是說「連線層強制唯讀」在那之前只是註解，實際只有語法前置
+    檢查一道防線。
+
+    ⚠ 這支測試不連 DB（那需要真實環境），它守的是**不要退回去用 options**。
+    """
+
+    SOURCES = [
+        Path(__file__).resolve().parents[1] / "backend" / "app" / "mcp_server" / "report_research.py",
+        Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt" / "scripts" / "query_patents.py",
+    ]
+
+    def test_no_startup_options_for_readonly(self):
+        """⚠ 檢查**實際的連線呼叫**，不是全文搜尋——說明段落會提到這個參數名
+        （記錄它為何被推翻），全文搜尋會把文件本身當成違規。"""
+        for path in self.SOURCES:
+            source = path.read_text(encoding="utf-8")
+            with self.subTest(file=path.name):
+                for pattern in ('options=f"-c default_transaction_read_only',
+                                'options="-c default_transaction_read_only'):
+                    self.assertNotIn(pattern, source,
+                                     "pooler 會忽略 startup options，唯讀要綁交易")
+
+    def test_transaction_level_readonly_present(self):
+        for path in self.SOURCES:
+            source = path.read_text(encoding="utf-8")
+            with self.subTest(file=path.name):
+                self.assertIn("SET TRANSACTION READ ONLY", source)
+                self.assertIn("SET LOCAL statement_timeout", source)

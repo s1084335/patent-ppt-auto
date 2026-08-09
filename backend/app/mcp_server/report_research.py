@@ -369,14 +369,20 @@ def query_database(sql: str, limit: int = SQL_DEFAULT_ROWS) -> dict[str, Any]:
 
     from backend.app.db.connection import get_database_url
 
-    with psycopg.connect(
-        get_database_url(),
-        autocommit=True,
-        options=f"-c default_transaction_read_only=on -c statement_timeout={_SQL_TIMEOUT_MS}",
-    ) as conn, conn.cursor() as cur:
+    # 🔴 2026-08-09（A6 實測）：唯讀**不能**靠連線字串的 startup options。
+    # 本專案的 DSN 走 Supabase transaction pooler（6543），它會**忽略** `-c`
+    # 參數——實測 UPDATE／CREATE／DELETE 全部成功、statement_timeout 也沒作用。
+    # 也就是說「連線層強制唯讀」在那之前只是註解，實際只有語法前置檢查一道。
+    #
+    # 改為綁在**交易**上：`SET TRANSACTION READ ONLY` 與 `SET LOCAL` 由後端
+    # 在該筆交易內強制，pooler 換後端連線也帶得過去。
+    with psycopg.connect(get_database_url()) as conn, conn.cursor() as cur:
+        cur.execute("SET TRANSACTION READ ONLY")
+        cur.execute(f"SET LOCAL statement_timeout = {_SQL_TIMEOUT_MS}")
         cur.execute(text)
         columns = [d.name for d in cur.description] if cur.description else []
         rows = cur.fetchmany(limit + 1)
+        conn.rollback()   # 唯讀交易，不需要 commit
     truncated = len(rows) > limit
     rows = rows[:limit]
     _audit("query_database", snapshot_id=None, sql=text[:200],
