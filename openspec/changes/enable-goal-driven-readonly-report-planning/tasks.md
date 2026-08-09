@@ -2,7 +2,7 @@
 
 - [ ] 1.1 固定代表性 workspace、analysis snapshot、使用者選圖集合、兩份參考範例、現行 `report_data/narratives/PPTX` 與全頁 PNG 基準　（未做：無重產前基準——goal-driven 產出在此之前不存在）
 - [x] 1.2 定義 `ReportBrief`、`SelectedChartBundle`、`ReportStrategy`、`SlidePlan`、`EvidenceManifest`、tool audit 與 manifest JSON schema，包含版本、checksum、容量與錯誤契約
-- [ ] 1.3 定義 `PptQualityReport`、`RenderedPngManifest`、`RegenerationPlan` 與 scope lock JSON schema，包含 warning 對應、decision enum、retry 上限與 blocked defect 分類
+- [x] 1.3 定義 `PptQualityReport`、`RenderedPngManifest`、`RegenerationPlan` 與 scope lock JSON schema，包含 warning 對應、decision enum、retry 上限與 blocked defect 分類
 - [ ] 1.4 建立與 `improve-report-professionalism`、`complete-export-report-editing`、`harden-runtime-security-and-configuration` 的實作順序表，確認固定頁序／固定 slots 不會先被實作後再拆除　（未做：實作順序表；實際順序已由本輪 commit 序決定）
 
 ## 2. TDD：選圖資料包與最大目標
@@ -38,8 +38,8 @@
 
 ## 6. TDD：產後品質 gate 與局部重產
 
-- [ ] 6.1 Red：新增 manifest warnings 到 quality decision 的契約測試，涵蓋 `narrative_missing`、`narrative_fallback`、`chart_missing_degraded`、`artifact_manifest_missing`、`missing_slots`、`text_overflow_estimated`、`text_overlap`、`out_of_bounds`、PNG render 失敗與頁數不符
-- [ ] 6.2 Green：完成 `PptQualityReport` 產生器，彙整 PPTX manifest、RenderedPngManifest、選圖覆蓋、evidence coverage、必要 slot 與版面 warnings
+- [x] 6.1 Red：新增 manifest warnings 到 quality decision 的契約測試，涵蓋 `narrative_missing`、`narrative_fallback`、`chart_missing_degraded`、`artifact_manifest_missing`、`missing_slots`、`text_overflow_estimated`、`text_overlap`、`out_of_bounds`、PNG render 失敗與頁數不符
+- [x] 6.2 Green：完成 `PptQualityReport` 產生器，彙整 PPTX manifest、RenderedPngManifest、選圖覆蓋、evidence coverage、必要 slot 與版面 warnings
 - [ ] 6.3 Red：新增 `RegenerationPlan` scope lock 測試，確認 CLI 只可回傳指定 targets，改動 locked slide、chart identity、未標記 narrative 或未選圖表時必須拒收
 - [ ] 6.4 Green：完成局部重產 runner 接線，保留未標記 narratives/slides，保存 replacement audit，並在重產後重新 build、轉 PNG、跑 quality report
 - [ ] 6.5 Red：新增同一 target 超過兩輪仍 fail 的測試，確認停止自動重產並標示 `blocked_content_defect` 或 `blocked_layout_defect`

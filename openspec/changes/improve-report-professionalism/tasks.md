@@ -14,7 +14,7 @@
 
 ## 3. 驗證與輸出
 
-- [ ] 3.1 執行 report/transform/renderer/narrative 目標測試、相關模組回歸與 `scripts/verify_module.py`
+- [x] 3.1 執行 report/transform/renderer/narrative 目標測試、相關模組回歸與 `scripts/verify_module.py`
 - [ ] 3.2 產生 HTML、goal-driven PPTX、manifest/metadata 與 narratives/evidence artifact，核對檔案存在、選圖／章節、dataset id 與 checksum；不以固定頁數判定成功
 - [ ] 3.3 以桌面與行動視窗檢查 HTML，渲染 PPTX 全頁縮圖並檢查截字、重疊、空白圖、圖例與中文字型
 - [ ] 3.4 保存前後對照、已知限制與未測項目，由使用者逐項確認內容與視覺品質後才 archive
