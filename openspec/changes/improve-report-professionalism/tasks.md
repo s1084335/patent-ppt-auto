@@ -1,6 +1,20 @@
 ## 1. 基準與版面契約
 
-- [ ] 1.1 固定代表性 workspace、report run、資料版本與目前 HTML/PPT 輸出，建立可重現基準
+- [x] 1.1 固定代表性 workspace、report run、資料版本與目前 HTML/PPT 輸出，建立可重現基準
+
+  基準：workspace 3（滑雪機）、技術通道，產在 `output/_verify/report_baseline/`
+  共 29 個檔案（含 web／ppt 雙 profile、`report_data.json`、`artifact_manifest.json`、
+  `index.html`）。
+
+  ⚠ **必須帶 `cluster_data` 才是完整基準**：直接跑 `chart_runner` CLI 不帶分群
+  資料時，`kp_quadrant`／`opportunity_quadrant` 等分群類圖表**靜默跳過不產**。
+  我第一次跑就漏了它們，差點把「Key Player 圖沒產出」誤判成產品缺陷。正式流程
+  走 `handle_report_generate` → `_resolve_report_cluster_data` 會帶。
+
+  ⚠ 另發現 `chart_runner` CLI **直接執行連不上 DB**（`.env` 載入藏在
+  `clustering/runner.py` 的 import side effect 裡，CLI 沒 import 它就退回
+  `localhost:5433`）。已記入 `harden-runtime-security-and-configuration` 的既有
+  問題（該 change 的 proposal 明列「靜默連向 localhost:5433」）。
 - [x] 1.2 依「刪除優先、改造其次、新增最後」逐張確認報表 catalog 的保留、改造與淘汰；不建立固定全報表頁序或要求每次全部出頁
 
   ### 盤點結果（2026-08-09，13 張 → 11 張）
