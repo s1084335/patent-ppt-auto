@@ -1,8 +1,76 @@
 ## 1. 基準與版面契約
 
 - [ ] 1.1 固定代表性 workspace、report run、資料版本與目前 HTML/PPT 輸出，建立可重現基準
-- [ ] 1.2 依「刪除優先、改造其次、新增最後」逐張確認報表 catalog 的保留、改造與淘汰；不建立固定全報表頁序或要求每次全部出頁
-- [ ] 1.3 確認單位、分母、時間粒度、申請/公開/核准漏斗、技術/功效雙通道、family ID 與標籤長度契約
+- [x] 1.2 依「刪除優先、改造其次、新增最後」逐張確認報表 catalog 的保留、改造與淘汰；不建立固定全報表頁序或要求每次全部出頁
+
+  ### 盤點結果（2026-08-09，13 張 → 11 張）
+
+  | 線 | 報表 | 回答的問題 | 處置 |
+  |---|---|---|---|
+  | 時間 | `application_trend`（件數＋家族數） | 何時投入、是真爆發還是同族延伸 | 留 |
+  | 時間 | `publication_trend` | 何時獲證 | 留 |
+  | 國別 | `country_distribution`（國別×法律狀態） | 各國保護還有效嗎 | 留 |
+  | 國別 | `family_country_layout`（同族×申請國） | 保護範圍涵蓋哪些國家 | 留 |
+  | 國別 | `applicant_country_distribution`（公司×國家） | 誰在哪些國家布局 | 留（⚠ 使用者明示不動） |
+  | 分類 | `ipc_main_distribution` | 技術領域分布 | 留 |
+  | 分類 | `cpc_main_distribution` | 技術領域細分 | 留 |
+  | 申請人 | `applicant_ranking` | 誰是主要玩家 | 留 |
+  | 申請人 | `applicant_year_matrix` | 誰在何時投入 | 留 |
+  | 申請人 | `lifecycle`（申請人×法律狀態） | — | **刪** |
+  | 申請人 | `applicant_strength_profile`（雷達圖） | — | **刪** |
+  | 主題 | `cluster_topic_table` | 有哪些技術主題 | 留 |
+  | 主題 | `opportunity_quadrant` | 主題的機會定位 | 留 |
+
+  ### 刪除理由（AGENTS.md 要求留痕）
+
+  **`lifecycle`（申請人×法律狀態）**：兩個維度分別已由 `country_distribution`
+  （法律狀態）與 `applicant_ranking`（申請人）回答。⚠ 交叉之後每格件數極少
+  （本樣本 60 件、十餘家申請人），圖上看不出任何模式。它原本要回答的
+  「誰的專利還有效」，改由 `applicant_ranking` 加註有效件數承接。
+
+  **`applicant_strength_profile`（雷達圖）**：三維強度已在先前收斂（「權利範圍」
+  該維度已否決）。⚠ 申請人少於 5 個時雷達圖讀不出東西，而本專案的典型
+  workspace 就是這個規模。它要回答的「誰比較強」由 `applicant_ranking` 的
+  排序與 `applicant_year_matrix` 的時間分布共同承接。
+
+  ### 國別線為何三張全留（2026-08-09 使用者裁決：照既有測試結論）
+
+  ⚠ 我原本提議合併 `country_distribution` 與 `family_country_layout`——**那是錯的**。
+  查 `decisions.md`（2026-07-14／07-15）後確認兩者**單位不同**：前者是專利件數×
+  法律狀態，後者是**同族數**×申請國（`decisions.md:2779` 明載「性質不同——換單位
+  而非排除」）。合併會把兩種單位混在一張圖上，那比多一張圖更糟。
+
+  ### 先例
+
+  `family_quality_detail` 已於先前用同樣標準刪除（「資料品質稽核不給決策者看，
+  家族完整性併入國家佈局頁註記」），本次沿用同一判準：**這張圖是否在回答決策者
+  的問題**。
+- [x] 1.3 確認單位、分母、時間粒度、申請/公開/核准漏斗、技術/功效雙通道、family ID 與標籤長度契約
+
+  ### 已有唯一定義處（沿用，不重新定義）
+
+  | 口徑 | 定義處 | 定案 |
+  |---|---|---|
+  | 單位 | `reports/population.py` | 同族合併後仍是「件」（2026-08-05）——⚠ 不寫「家族 48 個」，避免同頁兩種單位 |
+  | 分母／母體 | `reports/population.py`（**唯一定義處**） | 每張報表的 rows 已帶 `patent_count`，加總即母體，零額外查詢 |
+  | 三層漏斗 | `build_ppt._funnel_*`（Q3，2026-08-05） | 原始 → 同族合併 → 技術主題，封面併 1 格 |
+  | 雙通道 | `clustering/sources.SOURCE_SEGMENT_SLUGS` | 技術（獨立項）／功效（效果摘要）各自母體 |
+  | 重複計數標示 | `population.OVER_COUNTING_REPORTS` | 申請人報表走展開 VIEW，總和大於件數是刻意的，必須加註 |
+
+  ### ⚠ 本次查出的三個缺口（2.x 要修）
+
+  1. **`publication_trend` 母體必然小於總數但無登記原因**——未授權公告的專利
+     沒有公告年。讀者看到「母體 40/55 件」卻沒有解釋，只會認為資料錯誤
+     （這正是 A3 母體對帳器當初要解決的問題本身）。要補
+     `POPULATION_REASONS` 條目。
+  2. **`opportunity_quadrant` 的單位是「主題」不是「件」**——⚠ 沿用件數句型
+     會產出「母體 7/55 件」這種**語意錯誤**的註記。需要單位分流或不印。
+  3. **`country_distribution` 未登記**——缺 `country_code` 時母體會少，同樣無解釋。
+
+  ### 連帶：1.2 刪除的影響
+
+  ⚠ `lifecycle` 目前登記在 `OVER_COUNTING_REPORTS`（2026-08-07 起走展開口徑）。
+  刪除該報表時必須一併清掉這筆登記，否則會留下指向不存在報表的死條目。
 
 ## 2. TDD 實作
 
