@@ -10,6 +10,7 @@
 - CLI 可透過獨立唯讀 report-research MCP 工具補查敘述證據；不得取得 DB credential、執行任意 SQL、刷新 derived data、建立工作或寫入任何資料。
 - 每個敘述與建議必須引用選定圖表數據或唯讀查詢的 evidence reference；平台在組版前驗證證據、snapshot、選圖完整性與容量。
 - 保留 deterministic builder：CLI 規劃內容與版型意圖，程式從核准版型中解析實際幾何並組成 PPTX。
+- 新增產後品質驗證：builder manifest、PowerPoint COM 全頁 PNG 與 evidence/coverage 檢查必須彙整為 `PptQualityReport`；未通過時 runner 產生結構化 `RegenerationPlan`，只允許 CLI 重產被標記的 narrative、slide narrative 或 evidence，不得擴大修改已鎖定內容。
 
 ## Capabilities
 
@@ -35,6 +36,7 @@
 - 不讓 CLI 輸出任意 PowerPoint 座標、字級、色彩或繞過 deterministic builder。
 - 不恢復市場資料線、痛點板或已否決的技術×功效矩陣。
 - 不把兩份既有範例逐頁複製為固定產品模板；它們只保留為品質與風格參考。
+- 不讓 CLI 直接判定 PPT 可交付；交付與是否需要局部重產由 runner 的 schema、scope、evidence、chart coverage 與產後 quality gate 決定。
 
 ## Impact
 
@@ -51,4 +53,4 @@
 
 ## Acceptance Gate
 
-以一個固定 analysis snapshot、使用者選定圖表與最大目標完成真實 CLI run；證明全部選圖都進 payload 且出現在 PPT、CLI 可唯讀補證據、所有數字可追溯、任何寫入／任意 SQL 均被工具層與 DB 層拒絕。最後產生完整 PPTX、manifest、evidence map、工具呼叫 audit 與全頁 PNG，由使用者逐頁接受後才可 archive。
+以一個固定 analysis snapshot、使用者選定圖表與最大目標完成真實 CLI run；證明全部選圖都進 payload 且出現在 PPT、CLI 可唯讀補證據、所有數字可追溯、任何寫入／任意 SQL 均被工具層與 DB 層拒絕。最後產生完整 PPTX、manifest、evidence map、工具呼叫 audit、全頁 PNG、`PptQualityReport` 與必要時的 `RegenerationPlan`；quality gate 通過且使用者逐頁接受後才可 archive。

@@ -3,9 +3,7 @@
 ## Purpose
 
 定義 WIPS 專利檔案從上傳、解析、正規化、去重到核心資料與後續工作的現行契約，涵蓋來源追蹤、識別碼合併、原始值保存與錯誤輸出，並維持 importer、schema、derived 及報表之間的欄位一致性。
-
 ## Requirements
-
 ### Requirement: ING-001 匯入格式與入口白名單
 
 系統 SHALL 允許 Web 匯入 `.xlsx`、`.csv`、`.txt`、`.xml`，並拒絕路徑穿越、空檔名、非白名單副檔名與超過大小上限的請求。
@@ -91,3 +89,20 @@
 - **THEN** 系統 SHALL 批次 upsert 現有資料
 - **AND** 不建立重複 pair
 - **AND** 不以逐筆寫入造成 N+1
+
+### Requirement: ING-011 TW 人工狀態不受空來源覆蓋
+
+WIPS 匯入的狀態來源不涵蓋 TW 時，系統 SHALL 將 incoming 空狀態視為無更新，MUST NOT 清除已存在的人工 `legal_status`，且 MUST NOT 將人工值或人工歷程回寫至 raw source。
+
+#### Scenario: 重匯 TW 空狀態保留人工值
+- **GIVEN** 一件 TW 專利已有人工登錄的 `legal_status`
+- **AND** 新匯入列的狀態為 NULL、空字串或只含空白
+- **WHEN** importer 命中該既有專利
+- **THEN** 既有 `legal_status` SHALL 保持不變
+- **AND** `legal_status_history` SHALL 不新增匯入事件
+
+#### Scenario: Raw source 保持來源原貌
+- **WHEN** 使用者完成人工狀態登錄
+- **THEN** `raw_layer.raw_records` SHALL 保持原始 WIPS 狀態值
+- **AND** 人工狀態與歷程 SHALL 只存在 core layer
+

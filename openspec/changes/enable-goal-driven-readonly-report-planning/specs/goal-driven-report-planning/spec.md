@@ -68,3 +68,20 @@ CLI SHALL 只回傳結構化 `ReportStrategy`、`SlidePlan`、`EvidenceManifest`
 - **WHEN** CLI 呼叫寫入、刷新、建 job 或治理工具
 - **THEN** 工具層 SHALL 拒絕該呼叫並令工作失敗
 - **AND** 正式資料與 latest pointer SHALL 維持不變
+
+### Requirement: GRP-007 局部重產只能處理指定 target
+
+當 runner 依 `PptQualityReport` 發出 `RegenerationPlan` 時，CLI SHALL 只重產 plan 中列出的 targets；未列入 target 的 narrative、slide purpose、chart identities、evidence references 與已通過內容 MUST 視為 locked reference，不得被重寫、刪除或擴大調整。
+
+#### Scenario: 重產 narrative 時保留其他報表
+
+- **GIVEN** regeneration plan 只標記 `applicant_ranking` 的 narrative
+- **WHEN** CLI 回傳重產結果
+- **THEN** 輸出 SHALL 只包含該 target 的 replacement
+- **AND** runner SHALL 保留既有 `narratives.json` 中其他 report keys
+
+#### Scenario: 重產任務需要更多資料
+
+- **WHEN** CLI 判斷指定 target 需要額外證據
+- **THEN** CLI MAY 使用唯讀 evidence tool 查詢同一 snapshot
+- **AND** 不得因此新增未選圖表或修改 locked slide

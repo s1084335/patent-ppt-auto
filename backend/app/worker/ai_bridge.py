@@ -604,7 +604,7 @@ def _run_ai_report_plan_job(payload: dict[str, Any], context: JobContext) -> dic
     bundles = build_selected_bundles(
         run_dir, list(payload.get("selected_charts") or []), work_dir)
 
-    # 單一入口（EXP-018）：目標選填——沒填就用預設策略，品質標準不降低。
+    # 單一入口（EXP-020）：目標選填——沒填就用預設策略，品質標準不降低。
     from backend.app.reports.planning_defaults import build_brief
 
     brief = build_brief(
