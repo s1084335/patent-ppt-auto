@@ -271,7 +271,22 @@ MAX_STABILITY_SPREAD = 1           # 換順序群數變動；大代表 lambda �
 #: 寫死 0.5–1.1 這種區間，換一批分布不同的資料就整段落在區間外。
 SWEEP_QUANTILE_LOW = 0.10
 SWEEP_QUANTILE_HIGH = 0.60
-SWEEP_STEPS = 18
+
+#: 掃描點數。⚠ 2026-08-09 由 18 改為 24——**原值 18 是我憑感覺定的，沒有依據**，
+#: 實測發現它取樣不足：
+#:
+#: | 點數 | 技術群數 | 功效群數 |
+#: |---|---|---|
+#: | 6／9／12 | 5／6／7 | 5／5／5 |
+#: | 18 | 7 | **5** |
+#: | 24／36／60 | 7／7／7 | **6／6／6** |
+#:
+#: 功效通道在 18→24 時從 5 群跳到 6 群，而 24 以上一致——代表 18 點的結果不是
+#: 收斂值。24 是群數開始穩定的起點，成本也還可接受（n=35 約 6 秒、n=44 約 1 秒）。
+#:
+#: ⚠ 這個值仍只在滑雪機兩通道 + 合成資料上驗過收斂性。換一批資料若群數隨點數
+#: 持續變動，要再往上調——判準是「**群數在點數增加時是否穩定**」，不是某個定值。
+SWEEP_STEPS = 24
 
 #: 穩定度重跑次數。⚠ 只對通過前三項的 lambda 才跑——每次都跑會讓校準變慢
 #: 一個數量級，而大部分 lambda 在前三項就被刷掉了。
@@ -347,6 +362,33 @@ def select_lambda(vectors: list[list[float]], *, documents: list[str]) -> Lambda
         sample_size=len(points),
         sweep=rows,
     )
+
+
+#: 精簡掃描表時，非選中列保留的欄位。
+#: ⚠ `failed` 不能省——沒有它就看不出選中點是不是剛好卡在通過區間的邊緣。
+COMPACT_SWEEP_FIELDS = ("lambda", "topic_count", "failed")
+
+
+def compact_sweep(sweep: list[dict[str, Any]], *,
+                  chosen_lambda: float | None) -> list[dict[str, Any]]:
+    """把掃描表精簡成適合長期保存的形式（2026-08-09 使用者定案）。
+
+    實測：18 列完整掃描表 4,410 bytes，與同一個 run 的 topics（4,220 bytes）
+    同量級——等於讓 `topic_state_json` 翻倍。而被刷掉的列，品質指標本來就是
+    `None`（三層漏斗根本沒算它們）。
+
+    ⚠ **掃描是決定性的**：同一批資料重跑必得同一張表（n=44 約 6 秒）。所以
+    沒必要全存，需要完整指標時重算即可。
+
+    保留原則：選中那列完整（回答「為什麼是這個 λ」），其餘只留形狀與淘汰原因
+    （回答「其他點為什麼不行」）。⚠ 列數與順序不變——精簡的是每列的欄位，
+    不是丟掉整列，否則看不出掃描範圍與密度。
+    """
+    return [
+        dict(row) if chosen_lambda is not None and row.get("lambda") == chosen_lambda
+        else {key: row.get(key) for key in COMPACT_SWEEP_FIELDS}
+        for row in sweep
+    ]
 
 
 def _pairwise_sorted(points: list[list[float]]) -> list[float]:
@@ -549,9 +591,11 @@ def plan_dpmeans_calibration(
             "lambda": selection.value,
             "lambda_method": selection.method,
             "lambda_version": selection.version,
-            # ⚠ 掃描表要留下：使用者才看得出「為什麼是這個 lambda」、
-            # 其他被哪一項判準刷掉。只給一個數字無從判斷可信度。
-            "lambda_sweep": selection.sweep,
+            # ⚠ 掃描表要留下：使用者才看得出「為什麼是這個 lambda」、其他被哪
+            # 一項判準刷掉。只給一個數字無從判斷可信度。
+            # 寫入前精簡（見 compact_sweep）——完整表可用同一批資料重跑取得。
+            "lambda_sweep": compact_sweep(selection.sweep,
+                                          chosen_lambda=selection.value),
         },
     }
 
