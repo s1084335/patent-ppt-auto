@@ -34,6 +34,16 @@ _GEOMETRY_KEYS = ("left_in", "top_in", "width_in", "height_in", "font_pt",
 
 _NUMBER_PATTERN = re.compile(r"\d")
 
+# 要點的硬上限。⚠ 這**不是**版面容量（容量由組版端逐頁算，且隨版型而異），
+# 是防極端值的守門。
+#
+# 動因（2026-08-09 實機 p8）：CLI 在一頁寫了 4 條、每條約 40 字，組版端算出
+# 需要 12 行但該版型只有 11 行，最後一條被整條丟棄。prompt 給的是「2–4 條、
+# 每條 30 字內」的品質指引；這裡只擋明顯離譜的值——若卡在 31 字就讓整個 job
+# 失敗，使用者會什麼都看不到，那比少一條要點更糟。
+MAX_POINTS_PER_SLIDE = 5
+MAX_POINT_CHARS = 50
+
 
 def validate_chart_bundle(bundle: dict[str, Any]) -> list[str]:
     """單一選圖資料包：圖片與數據成對、identity 與版本齊備。"""
@@ -100,6 +110,17 @@ def validate_slide_plan(
         if preset not in APPROVED_LAYOUT_PRESETS:
             errors.append(f"slide {sid} layout_preset {preset!r} 不在核准版型清單")
         errors.extend(_slide_geometry_errors(slide))
+        points = slide.get("narrative") or []
+        if len(points) > MAX_POINTS_PER_SLIDE:
+            errors.append(
+                f"slide {sid} 有 {len(points)} 條要點，超過上限 {MAX_POINTS_PER_SLIDE}"
+                "——版面放不下的會被整條丟棄")
+        for point in points:
+            text = str(point.get("text") or "")
+            if len(text) > MAX_POINT_CHARS:
+                errors.append(
+                    f"slide {sid} 的要點長 {len(text)} 字，超過上限 {MAX_POINT_CHARS}："
+                    f"{text[:20]}…")
         for identity in slide.get("chart_identities") or []:
             if identity not in selected_identities:
                 errors.append(f"slide {sid} 使用未選圖表 {identity}")

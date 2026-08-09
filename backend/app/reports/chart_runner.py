@@ -2178,6 +2178,17 @@ def label_gutter(labels: list[str], *, minimum: int = 180, maximum: int = 480,
                                 widest * font_px + LABEL_GUTTER_PADDING_PX)))
 
 
+# 字寬估算係數——⚠ 與 `skills/patent-report-ppt/scripts/build_ppt.py` **必須同值**
+# （測試 test_both_implementations_stay_in_sync／test_display_width_matches_chart_runner
+# 釘住；本專案已因「兩處落點只改一邊」出過 8 次問題）。
+ALNUM_EM_WIDTH = 0.62      # 半形英數（2026-08-03 實測像素校準，0.55→0.62）
+PUNCT_EM_WIDTH = 0.5       # 全形標點（2026-08-09：字面右半是空白、排版可壓縮）
+_FULLWIDTH_PUNCT = frozenset(
+    "、。〈〉《》「」『』【】〔〕・〜（）［］｛｝！＃＄％＆＇＊，－．／：；＜＝＞？＠＼＾｀｜～"
+    "　"
+)
+
+
 def _display_width(text: str) -> float:
     """字串的顯示寬度，單位是「全形字」。
 
@@ -2190,7 +2201,12 @@ def _display_width(text: str) -> float:
     ⚠ 這是估算不是量測——SVG 沒有 text metrics，只能用係數逼近。
     因此 `LABEL_GUTTER_PADDING_PX` 要留誤差空間，兩者搭配才安全。
     """
-    return sum(0.62 if ord(ch) < 0x2E80 else 1.0 for ch in str(text))
+    return sum(
+        ALNUM_EM_WIDTH if ord(ch) < 0x2E80
+        else PUNCT_EM_WIDTH if ch in _FULLWIDTH_PUNCT
+        else 1.0
+        for ch in str(text)
+    )
 
 
 def nice_ticks(max_value: float, count: int = 5) -> list[int]:

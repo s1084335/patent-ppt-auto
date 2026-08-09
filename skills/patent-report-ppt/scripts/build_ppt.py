@@ -365,8 +365,12 @@ NARRATIVE_POINT_LINES = 2
 POINT_LABEL_COST = max(len(label) for label in ("現況", "意涵", "後續")) + 1
 
 
-def points_budget(per_line: int, max_lines: int, columns: int) -> dict[str, int]:
+def points_budget(per_line: float, max_lines: int, columns: int) -> dict[str, int]:
     """一個要點框放得下幾條、每條正文幾個字。**容量宣告的唯一公式**。
+
+    ⚠ `per_line` 收精確寬度（em）但本函式算的是**字數**，故在此取整一次——
+    2026-08-09 起 `_text_capacity` 回傳 float（容量比較要精確），若讓每個呼叫端
+    自己記得轉，漏一處就是 `"字" * 26.3` 這種 TypeError。
 
     🔴 2026-08-04：`max_chars` 必須**扣掉標籤佔的字**。
     症狀：第五輪實機丟了 5 條要點，但同一輪 narrative 的契約警告是 0
@@ -382,7 +386,7 @@ def points_budget(per_line: int, max_lines: int, columns: int) -> dict[str, int]
     lines_per_point = max(1, (max_lines * columns) // NARRATIVE_LAYERS)
     return {
         "max_points": NARRATIVE_LAYERS,
-        "max_chars": max(1, per_line * lines_per_point - POINT_LABEL_COST),
+        "max_chars": max(1, int(per_line) * lines_per_point - POINT_LABEL_COST),
     }
 
 
@@ -499,7 +503,7 @@ def narrative_capacity(theme: Theme | None = None,
             per_line, max_lines = _text_capacity(
                 theme, width_in=width_in, height_in=height_in, size_pt=size,
                 line_ratio=point_line_ratio(theme))
-            return points_budget(per_line, max_lines, columns)
+            return points_budget(int(per_line), max_lines, columns)
 
         # 🔴 I-1（2026-08-03 實機 #166）：容量必須**逐 variant** 算。
         #
@@ -607,7 +611,11 @@ def _text_capacity(theme: Theme, *, width_in: float, height_in: float, size_pt: 
     # ⚠ 加 epsilon：1.5 / (40/72*1.35) 在浮點下是 1.9999999998，直接 int() 會少算一行，
     # 讓剛好兩行的標題被誤判成裝不下而截字（封面標題被切成「…」就是這樣來的）。
     epsilon = 1e-6
-    per_line = max(1, int(width_in / char_in + epsilon))
+    # 🔴 2026-08-09（A1）：`per_line` 回傳**精確的每行寬度（em）**，不再 int()。
+    # ⚠ 向下取整等於白丟將近一個字的寬度：實機每行 25.83 em 被截成 25，一條
+    # 25.3 em 的要點就被推成兩行、整條丟棄——版面明明還有空位。
+    # 需要「幾個字」語意的呼叫端（points_budget、_fit_text）自行取整。
+    per_line = max(1.0, width_in / char_in)
     lines = max(1, int(height_in / line_in + epsilon))
     return per_line, lines
 
@@ -629,14 +637,35 @@ def _fit_text(theme: Theme, text: str, *, width_in: float, height_in: float, siz
 #: ⚠ 兩處必須同值；有測試 `test_display_width_matches_chart_runner` 釘住。
 ALNUM_EM_WIDTH = 0.62
 
+#: 全形標點的字寬（em）。
+#: 🔴 2026-08-09（A1）：原本與漢字同樣算 1 em，讓含標點的敘述行數被高估——
+#: 實機 p7「台廠雙邊布局：曾晴、祺驊各在 TW 另有 2 件，兼顧兩岸。」估 27.3 em
+#: 超過每行 25.8 em 而算成兩行，但實機只用一行。全形標點的字面右半是空白、
+#: 排版時可壓縮（標點擠壓），實際佔寬明顯不到一個漢字。
+#: ⚠ 只調標點：漢字 1.0 與英數 0.62 是 2026-08-03 以實測像素校準的，沒有新
+#: 量測就不動。⚠ 與 `chart_runner` 必須同值（見 PunctuationWidthTests）。
+PUNCT_EM_WIDTH = 0.5
+
+#: 視為「可壓縮」的全形標點（CJK 標點區＋全形 ASCII 標點區）。
+_FULLWIDTH_PUNCT = frozenset(
+    "、。〈〉《》「」『』【】〔〕・〜（）［］｛｝！＃＄％＆＇＊，－．／：；＜＝＞？＠＼＾｀｜～"
+    "　"
+)
+
 
 def _display_width(text: str) -> float:
-    """字串的顯示寬度（em）。中文、全形符號約 1 em，半形英數約 `ALNUM_EM_WIDTH`。
+    """字串的顯示寬度（em）。漢字約 1 em、半形英數約 `ALNUM_EM_WIDTH`、
+    全形標點約 `PUNCT_EM_WIDTH`。
 
     表格欄位混排 `applicant_display_name` 與中文公司名，一律當全形算會把英文
     表頭砍成一半；一律當半形算又會讓中文撐爆欄寬。
     """
-    return sum(ALNUM_EM_WIDTH if ord(ch) < 0x2E80 else 1.0 for ch in text)
+    return sum(
+        ALNUM_EM_WIDTH if ord(ch) < 0x2E80
+        else PUNCT_EM_WIDTH if ch in _FULLWIDTH_PUNCT
+        else 1.0
+        for ch in text
+    )
 
 
 #: 儲存格內視為「不可拆」的 token 分隔符。
@@ -753,8 +782,18 @@ def _truncate_to_width(text: str, width_in: float, size_pt: float) -> str:
 
 
 def _lines_needed(text: str, per_line: int) -> int:
-    """多段文字所需行數：每段至少佔一行，不足一行不合併。"""
-    return sum(max(1, math.ceil(len(line) / per_line)) for line in text.split("\n"))
+    """多段文字所需行數：每段至少佔一行，不足一行不合併。
+
+    🔴 2026-08-09（A1）：改用 `_display_width` 而不是 `len()`。中文約 1 em、
+    半形英數只有 `ALNUM_EM_WIDTH`，數字數會把中英混排的行數**高估**——實機
+    p7「美國玩家（扭矩、OXEFIT、NPD）各僅 US 1 件…」被判定放不下而整條丟棄，
+    但版面右欄其實只用了一行、下方一大片空白。
+
+    ⚠ 本檔早就有 `_display_width`（它的註解還記著「兩處落點只改了一邊」的
+    教訓），只是容量估算一直沒有消費它——正確的定義處存在，卻沒被用上。
+    """
+    return sum(max(1, math.ceil(_display_width(line) / per_line))
+               for line in text.split("\n"))
 
 
 # --------------------------------------------------------------------------
@@ -1750,7 +1789,7 @@ def _points_panel_height(
                                  line_ratio=point_line_ratio(theme))
     line_in = size_pt / 72.0 * point_line_ratio(theme)
     lines = sum(
-        max(1, math.ceil(((len(label) + 1 if label else 0) + len(text)) / per_line))
+        _lines_needed(f"{label}｜{text}" if label else text, per_line)
         for label, text, _, _ in blocks
     )
     return max(chrome + line_in, min(ceiling, chrome + lines * line_in))
@@ -1978,8 +2017,10 @@ def _trim_blocks(
         return blocks
     per_line, lines = _text_capacity(theme, width_in=width_in, height_in=height_in,
                                      size_pt=size_pt, line_ratio=point_line_ratio(theme))
+    # ⚠ 與 `_lines_needed` 用同一套寬度估算（顯示寬度，不是字數）——兩處若
+    # 一個數字數、一個算 em，同一條要點會得到兩個行數，容量判斷必然對不上。
     needs = [
-        max(1, math.ceil(((len(label) + 1 if label else 0) + len(text)) / per_line))
+        _lines_needed(f"{label}｜{text}" if label else text, per_line)
         for label, text, _, _ in blocks
     ]
     if sum(needs) <= lines:
