@@ -216,3 +216,71 @@ class ViewBoxTests(unittest.TestCase):
                 offenders.append(f"{line_no}: {tag[:70]}")
             start = idx + 1
         self.assertEqual(offenders, [], f"SVG 根標籤缺 viewBox（縮放時會被裁）：{offenders}")
+
+
+class ContentParityTests(unittest.TestCase):
+    """兩個 profile 必須畫出**同一組文字**（2026-08-09 使用者要求補的判準）。
+
+    🔴 為什麼需要這一項：P3 原本的四項判準（寬度上限、兩份齊備、checksum
+    不同、web 寬於 ppt）**全部是尺寸類**。使用者在驗收頁看到「web 版少了一整欄
+    與三列」時，四項沒有一項測得到——那次雖是顯示問題（缺 viewBox），但
+    「圖的內容是否完整」確實沒有任何自動判準守著。
+
+    profile 只准差在呈現（畫布、字級、邊距）；資料、排序、標籤一律共用，
+    所以兩份的文字節點集合**必然相同**。不同就是分流動到了不該動的東西。
+    """
+
+    import re as _re
+
+    ROWS = [
+        {"applicant_display_name": "甲公司", "granted_count": 11, "pending_count": 2,
+         "dead_count": 1, "patent_count": 14},
+        {"applicant_display_name": "乙公司", "granted_count": 3, "pending_count": 0,
+         "dead_count": 2, "patent_count": 5},
+        {"applicant_display_name": "丙公司", "granted_count": 2, "pending_count": 1,
+         "dead_count": 0, "patent_count": 3},
+    ]
+
+    def _texts(self, path: Path) -> list[str]:
+        svg = path.read_text(encoding="utf-8")
+        return sorted(self._re.findall(r"<text[^>]*>([^<]+)</text>", svg))
+
+    def _render_both(self, tmp: Path, render) -> tuple[list[str], list[str]]:
+        for profile in ("ppt", "web"):
+            with cp.profile_context(profile):
+                render(tmp / "case.svg")
+        return self._texts(tmp / "case.svg"), self._texts(tmp / "case.web.svg")
+
+    def test_bar_chart_texts_identical(self):
+        with TemporaryDirectory() as tmp:
+            ppt, web = self._render_both(Path(tmp), lambda p: cr.render_bar_chart(
+                p, "主要申請人排名", self.ROWS, "applicant_display_name"))
+        self.assertEqual(ppt, web, "兩 profile 的文字內容不一致——分流動到了資料")
+
+    # 矩陣圖吃長格式（列鍵、欄鍵、值各一欄）。
+    MATRIX_ROWS = [
+        {"applicant_display_name": n, "legal_status": s, "patent_count": v}
+        for n, pairs in (("甲公司", (("已授權", 11), ("審查中", 2), ("已失效", 1))),
+                         ("乙公司", (("已授權", 3), ("已失效", 2))),
+                         ("丙公司", (("已授權", 2), ("審查中", 1))))
+        for s, v in pairs
+    ]
+
+    def test_matrix_chart_texts_identical(self):
+        """⚠ 矩陣圖就是使用者看到疑似「少一欄三列」的那張。"""
+        with TemporaryDirectory() as tmp:
+            ppt, web = self._render_both(Path(tmp), lambda p: cr.render_matrix_chart(
+                p, "專利狀態分析", self.MATRIX_ROWS,
+                "applicant_display_name", "legal_status"))
+        self.assertEqual(ppt, web, "矩陣圖兩 profile 的欄或列數不一致")
+
+    def test_every_applicant_and_column_appears_in_both(self):
+        """每一列與每一欄都要在兩份裡出現——少一欄三列正是使用者看到的現象。"""
+        with TemporaryDirectory() as tmp:
+            ppt, web = self._render_both(Path(tmp), lambda p: cr.render_matrix_chart(
+                p, "專利狀態分析", self.MATRIX_ROWS,
+                "applicant_display_name", "legal_status"))
+        for token in ("甲公司", "乙公司", "丙公司", "已授權", "審查中", "已失效"):
+            with self.subTest(token=token):
+                self.assertIn(token, ppt)
+                self.assertIn(token, web)
