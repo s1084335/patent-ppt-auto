@@ -131,5 +131,36 @@ class SweepReportTests(unittest.TestCase):
         self.assertEqual(chosen[0]["failed"], [])
 
 
+
+class MetadataCompatibilityTests(unittest.TestCase):
+    """⚠ `LambdaSelection` 與 `dpmeans.LambdaResult` 必須能互換餵進 run metadata。
+
+    2026-08-09 實機驗收抓到：`build_run_metadata` 讀 `sample_size`，而
+    `LambdaSelection` 少了那個欄位——AttributeError 直到 finalize 才炸。
+    純函式測不出來，因為兩邊各自都是合法物件。
+    """
+
+    def test_selection_works_with_build_run_metadata(self):
+        from backend.app.clustering import artifacts
+
+        vectors, documents = _blobs(groups=3, per_group=6)
+        selection = engine.select_lambda(vectors, documents=documents)
+        meta = artifacts.build_run_metadata(
+            algorithm=artifacts.ALGORITHM_DPMEANS, lambda_result=selection,
+            pca_normalized=True, topics_before=0, topics_after=3)
+        self.assertEqual(meta["lambda"]["value"], selection.value)
+        self.assertEqual(meta["lambda"]["method"], selection.method)
+        self.assertIsInstance(meta["lambda"]["sample_size"], int)
+
+    def test_lambda_result_also_works(self):
+        """對照組：舊型別不得因為新增型別而壞掉。"""
+        from backend.app.clustering import artifacts, dpmeans as dp
+
+        result = dp.derive_lambda([[1.0, 0.0], [0.0, 1.0], [0.9, 0.1]])
+        meta = artifacts.build_run_metadata(
+            algorithm=artifacts.ALGORITHM_DPMEANS, lambda_result=result)
+        self.assertEqual(meta["lambda"]["value"], result.value)
+
+
 if __name__ == "__main__":
     unittest.main()

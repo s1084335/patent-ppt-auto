@@ -290,6 +290,10 @@ class LambdaSelection:
     value: float
     method: str
     version: str
+    #: 實際用來推導的樣本數。⚠ 欄位名與 `dpmeans.LambdaResult` 一致——
+    #: `artifacts.build_run_metadata` 兩種都要收得下，缺一個欄位就 AttributeError，
+    #: 而且是跑到 finalize 才炸（2026-08-09 實機驗收抓到）。
+    sample_size: int = 0
     sweep: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -305,7 +309,7 @@ def select_lambda(vectors: list[list[float]], *, documents: list[str]) -> Lambda
     if not distances:
         result = dpmeans.derive_lambda(vectors)
         return LambdaSelection(value=result.value, method=f"fallback:{result.method}",
-                               version=result.version)
+                               version=result.version, sample_size=result.sample_size)
 
     rows: list[dict[str, Any]] = []
     for value in _sweep_values(distances):
@@ -319,7 +323,7 @@ def select_lambda(vectors: list[list[float]], *, documents: list[str]) -> Lambda
         return LambdaSelection(
             value=result.value,
             method=f"fallback:no_lambda_passed:{result.method}",
-            version=result.version, sweep=rows)
+            version=result.version, sample_size=result.sample_size, sweep=rows)
 
     # ⚠ 用**既有候選排序的同一套加權**（model.rank_candidates）綜合四個指標，
     # 不是只看 coherence——一致性高但主題彼此重複、或件數嚴重傾斜的方案，
@@ -340,6 +344,7 @@ def select_lambda(vectors: list[list[float]], *, documents: list[str]) -> Lambda
         value=best["lambda"],
         method=f"sweep:{SWEEP_QUANTILE_LOW}-{SWEEP_QUANTILE_HIGH}:weighted_quality",
         version=dpmeans.LAMBDA_METHOD_VERSION,
+        sample_size=len(points),
         sweep=rows,
     )
 
