@@ -474,7 +474,8 @@
       "image_left_in": 0.6,
       "image_top_in": 1.9,
       "image_width_in": 12.13,
-      "image_height_in": 3.2,
+      "_image_height_comment": "2026-08-09 3.2→2.85：底部橫幅只有 1.28in、放不下 4 條要點（實機 p7 丟了 3 條）。頁尾在 6.78 故橫幅無法往下延伸，只能從圖高讓出。",
+      "image_height_in": 2.85,
       "band_gap_in": 0.22,
       "band_min_top_in": 3.5,
       "band_left_in": 0.6,
@@ -483,7 +484,7 @@
       "band_inset_in": 0.18,
       "band_header_top_offset_in": 0.1,
       "band_header_height_in": 0.26,
-      "band_text_top_offset_in": 0.42,
+      "band_text_top_offset_in": 0.36,
       "band_columns": 2,
       "band_column_gap_in": 0.3
     },

@@ -54,7 +54,12 @@ PPT = ChartSizing(
     bar_height=18,
     bubble_min_radius=14.0,
     hero_frame_in=(8.9, 5.0),
-    wide_frame_in=(12.13, 3.2),
+    # 🔴 2026-08-09 高度 3.2→2.85：底部要點橫幅只有 1.28in、放不下 3 條要點
+    # （實機 p7 丟了 2 條）。頁尾固定在 6.78 故橫幅無法往下延伸，只能從圖框
+    # 讓出 0.35in（橫幅因此得到 1.63in，+27%）。
+    # ⚠ 這個值必須與 theme.json 的 chart_wide.image_height_in 相同——
+    # test_chart_font_target.FrameConstantsMatchThemeTests 盯著，改一邊就會紅。
+    wide_frame_in=(12.13, 2.85),
     wide_aspect_min=3.5,
 )
 
