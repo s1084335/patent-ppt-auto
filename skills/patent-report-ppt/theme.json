@@ -523,7 +523,22 @@
       "conclusion_text_top_offset_in": 0.1,
       "_m4_comment": "2026-08-04 M-4：內容 16pt（K-10）後三步卡 4 行裝不下 5~6 行（每步 3 條、每條約 15-25 字換 2 行是常態）。步卡加高到 6 行（body 2.2in）、整段下移：topics 4.49、conclusion 6.09→bottom 6.69，頁尾 6.85 留清。字級不縮、資訊不截斷是硬約束，動的是版面。"
     },
-    "_max_columns_comment": "6 → 7（2026-08-03）：技術狀態在優先序第 4、代表專利第 7，維持 6 會剛好卡掉代表專利——使用者定案「兩個通道各自要做的都要能顯示，不要再被卡掉」。欄位順序由引擎的 priority_columns 決定，放不下時砍尾巴不砍中間。"
+    "_max_columns_comment": "6 → 7（2026-08-03）：技術狀態在優先序第 4、代表專利第 7，維持 6 會剛好卡掉代表專利——使用者定案「兩個通道各自要做的都要能顯示，不要再被卡掉」。欄位順序由引擎的 priority_columns 決定，放不下時砍尾巴不砍中間。",
+    "walls_gaps": {
+      "_comment": "牆 vs 空白：等寬兩欄對比（範例滑雪機 p3）。左右等寬是刻意的——兩欄的對比本身就是這頁的論述，寬度不對等會暗示某一邊比較重要。",
+      "left_col_left_in": 0.6,
+      "right_col_left_in": 6.815,
+      "col_width_in": 5.915,
+      "top_in": 1.62,
+      "height_in": 4.86,
+      "header_inset_left_in": 0.22,
+      "header_top_offset_in": 0.14,
+      "header_height_in": 0.32,
+      "row_top_offset_in": 0.72,
+      "row_step_in": 0.62,
+      "row_height_in": 0.58,
+      "row_max": 5
+    }
   },
   "_qa_comment": "產後溢出／重疊／邊距自檢的門檻。tolerance 給文字框內距與四捨五入留餘裕，不是用來吃掉真的溢出；line_height_ratio 與 cjk_char_width_ratio 用來估算文字框容量（中文字寬約等於字級），估到裝不下就寫 warning。 point_line_height_ratio（2026-08-04 使用者定案 1.65）是**要點文字專用**的行距，估算與實際段落 line_spacing 都讀它——只有要點會設段落行距，標題／表格／封面仍用 PowerPoint 預設，故不可把 line_height_ratio 全域調大。",
   "qa": {

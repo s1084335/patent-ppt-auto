@@ -850,6 +850,41 @@ class ChartIndex:
                     found.append(name)
         return tuple(found)
 
+    def files_for_identities(self, identities: tuple[str, ...]) -> tuple[str, ...]:
+        """依完整 chart_identity（`report_key:variant`）取圖檔。
+
+        🔴 2026-08-10 實機修正：SlidePlan 給的是 identity，但先前只取前段當
+        report_key 去反查——`cluster_topic_table:opportunity_effect` 於是查
+        `cluster_topic_table`，而那張圖在 manifest 的 report_name 是
+        `opportunity_quadrant`，對不上就整頁降級成 stat_callout（實測 p7 掉圖）。
+
+        ⚠ 一個 section 底下可以掛不同報表的圖（機會矩陣掛在主題表 section 下），
+        所以 identity 的 **variant 段才是指向具體那張圖的資訊**，丟掉它就只能靠
+        report_key 猜。這裡以 variant 的 slug 比對檔名，比對不到再退回 report_key
+        ——退回是為了相容既有行為，不是遮蔽問題。
+        """
+        found: list[str] = []
+        for identity in identities:
+            report_key, _, variant = str(identity).partition(":")
+            candidates = sorted(self._by_report.get(report_key, []), key=self._order_key)
+            if not candidates:
+                # section 的 report_key 與圖的 report_name 不同名（如機會矩陣）：
+                # 用 variant 直接在全部圖檔裡找檔名含該 slug 的。
+                slug = variant.split("_")[-1] if variant else ""
+                candidates = sorted(
+                    (name for names in self._by_report.values() for name in names
+                     if slug and slug in name),
+                    key=self._order_key)
+            # ⚠ `default` 不是檔名的一部分（主圖就叫 applicant_year_matrix.svg），
+            # 拿它去比對會把候選全濾掉——實測 p10 因此掉圖。只有具名 variant
+            # （tech／effect／L4／L5…）才是檔名裡真的有的字。
+            slug = variant.split("_")[-1] if variant and variant != "default" else ""
+            narrowed = [n for n in candidates if slug in n] if slug else candidates
+            for name in (narrowed or candidates):
+                if name not in found:
+                    found.append(name)
+        return tuple(found)
+
     def owners_of(self, chart_name: str, keys: tuple[str, ...]) -> tuple[str, ...]:
         """某張圖對應到候選 report_key 中的哪幾個；拆頁時用來把 report_key 一起收窄。"""
         return tuple(key for key in keys if chart_name in self._by_report.get(key, []))
@@ -2332,17 +2367,34 @@ def _render_stat_callout(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any
             break
     numeric = _numeric_column(rows)
     label_col = _label_column(rows, numeric) if numeric else ""
-    total = sum(_as_int(row.get(numeric)) for row in rows) if numeric else 0
+    # 🔴 取**最大項**不是加總（2026-08-10 實機修正）：加總只在 rows 是互斥分類時
+    # 才有意義，而主題類 rows 含技術與功效**兩個通道**——同一件專利被算兩次，
+    # 實測產出「88 件」這個不存在的數字，還標了單位「件」。
+    # ⚠ 最大項永遠有意義，而且能點名（「11 件｜風磁複合阻力裝置」），
+    # 比一個可能錯誤的總和有價值得多。
+    top_row: dict[str, Any] = {}
+    top_value = 0
+    if numeric:
+        for row in rows:
+            value = _as_int(row.get(numeric))
+            if value > top_value:
+                top_value, top_row = value, row
+    top_label = str(top_row.get(label_col, "")) if label_col else ""
 
-    _add_text(slide, theme, f"{total:,}" if total else str(len(rows)),
+    _add_text(slide, theme, f"{top_value:,}" if top_value else str(len(rows)),
               left=g["value_left_in"], top=g["value_top_in"],
               width=g["value_width_in"], height=g["value_height_in"],
               size=theme.size("callout_value_pt"), color="on_dark", bold=True)
-    _add_text(slide, theme, "件" if total else "筆",
+    _add_text(slide, theme, "件" if top_value else "筆",
               left=g["unit_left_in"], top=g["unit_top_in"],
               width=g["unit_width_in"], height=g["unit_height_in"],
               size=theme.size("callout_unit_pt"), color="accent", bold=True)
-    _add_text(slide, theme, _label_of(ctx["report_data"], report_key, spec.topic) if report_key else spec.topic,
+    # 副標點名這個數字**是誰的**——「11 件」單獨出現沒有資訊量，
+    # 「11 件｜風磁複合阻力裝置」才看得懂（2026-08-10 修）。
+    _base_label = (_label_of(ctx["report_data"], report_key, spec.topic)
+                   if report_key else spec.topic)
+    _add_text(slide, theme,
+              f"{top_label}　{_base_label}" if top_label else _base_label,
               left=g["label_left_in"], top=g["label_top_in"],
               width=g["label_width_in"], height=g["label_height_in"],
               size=theme.size("callout_label_pt"), color="on_dark_soft")
@@ -3259,9 +3311,53 @@ def _render_exec_summary(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any
         _render_points_page(slide, theme, spec, ctx)
 
 
+# 「牆」與「空白」的分欄關鍵字。⚠ 這是版面分流用的**語意判斷**，無法程式推導，
+# 故與規劃 prompt 約定前綴（「牆：」「空白：」）；認不出來的一律進左欄，
+# 不丟內容——寧可分錯欄，不可整條消失。
+_WALL_MARKERS = ("牆", "迴避", "回避", "避開", "勿踩", "高密度")
+_GAP_MARKERS = ("空白", "可切", "切入", "機會", "無主", "低密度")
+
+
 def _render_walls_gaps(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
-    """要迴避的牆 vs 可切入的空白（範例 p3／割草機 p2）：收斂成可行動清單。"""
-    _render_points_page(slide, theme, spec, ctx)
+    """要迴避的牆 vs 可切入的空白（範例 p3／割草機 p2）：**兩欄**收斂成可行動清單。
+
+    🔴 2026-08-10 實機修正：原本轉呼叫 `_render_points_page`，畫出來是**單框列點**、
+    下半頁全空，使用者指名「很醜」。範例（滑雪機 p3）是左右兩欄——
+    左「⚠ 需迴避的專利牆（高密度）」、右「建議切入的空白區（低密度）」，
+    兩欄對比本身就是這一頁的論述，攤成一串條列就失去了它。
+
+    座標沿用 `direction` 的兩欄（body 左／basis 右），不另立一套幾何。
+    """
+    _render_header(slide, theme, spec, ctx)
+    g = theme.geometry["walls_gaps"]
+    points = _points_for(spec, ctx)
+
+    walls, gaps = [], []
+    for label, text, _color, _emphasis in points:
+        joined = f"{label}{text}"
+        if any(marker in joined for marker in _GAP_MARKERS):
+            gaps.append((label, text))
+        else:
+            walls.append((label, text))
+
+    inset = g["header_inset_left_in"]
+    width = g["col_width_in"]
+    for column, (title, items, tone) in enumerate((
+            ("⚠ 需迴避的專利牆（高密度）", walls, "alert"),
+            ("建議切入的空白區（低密度）", gaps, "accent"))):
+        left = g["left_col_left_in"] if column == 0 else g["right_col_left_in"]
+        _add_band(slide, theme, left, g["top_in"], width, g["height_in"],
+                  "panel", rounded=True)
+        _add_text(slide, theme, title,
+                  left=left + inset, top=g["top_in"] + g["header_top_offset_in"],
+                  width=width - inset * 2, height=g["header_height_in"],
+                  size=theme.size("panel_header_pt"), color=tone, bold=True)
+        for index, (label, text) in enumerate(items[: int(g["row_max"])]):
+            _add_text(slide, theme, f"{label}　{text}".strip(),
+                      left=left + inset,
+                      top=g["top_in"] + g["row_top_offset_in"] + index * g["row_step_in"],
+                      width=width - inset * 2, height=g["row_height_in"],
+                      size=theme.size("body_pt"), color="on_dark")
 
 
 def _render_reading_guide(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]) -> None:
@@ -3617,8 +3713,13 @@ def page_specs_from_plan(plan: dict[str, Any],
                 f"slide {slide.get('slide_id', '?')} 的版型 {preset!r} 不在組版端支援清單")
         identities = [str(i) for i in slide.get("chart_identities") or []]
         report_keys = tuple(i.split(":", 1)[0] for i in identities)
+        # ⚠ 用**完整 identity** 反查（2026-08-10 修）：只取前段當 report_key 時，
+        # `cluster_topic_table:opportunity_effect` 會查不到圖（那張圖的 report_name
+        # 是 `opportunity_quadrant`），整頁降級成 stat_callout。variant 段才是
+        # 指向具體哪張圖的資訊。
         # ⚠ files_for 收的是 tuple；傳單一字串會被當序列逐字元迭代而全部落空。
-        files = list(charts.files_for(report_keys)) if charts is not None else []
+        files = (list(charts.files_for_identities(tuple(identities)))
+                 if charts is not None else [])
         specs.append(PageSpec(
             page=index,
             kind=preset,

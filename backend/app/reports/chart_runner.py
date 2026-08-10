@@ -2546,26 +2546,29 @@ def _section_report_name(section: dict[str, Any]) -> str:
 # `connected by year`。搬家沒讓說明變正確，只是換了個地方憑印象寫。
 # ⚠ 新增或修改任何一條前，**先去看那張圖實際怎麼畫**，不要照著鍵名想像。
 CHART_ENCODING_NOTES: dict[str, str] = {
-    "application_trend": "折線＝當年件數｜橫軸＝年份｜兩線分別為申請與授權公告",
-    "publication_trend": "折線＝當年公告件數｜橫軸＝公告年",
-    # 2026-08-07 合併頁：兩條 bar 同尺（申請件數 vs 現存有效＝已授權桶）。
-    "country_distribution": "條長＝件數（兩條同尺）｜上＝申請件數、下＝現存有效（已授權）",
-    "jurisdiction_distribution": "條長＝件數（兩條同尺）｜上＝申請件數、下＝現存有效（已授權）",
-    # ⚠ 拆頁後每頁只有一個階層，說明不得再提「左右」（階層寫在圖表標題裡）。
-    "ipc_main_distribution": "條長＝件數｜縱軸＝分類代碼｜本頁為單一階層",
-    "cpc_main_distribution": "條長＝件數｜縱軸＝分類代碼｜本頁為單一階層",
-    "opportunity_quadrant": "橫軸＝申請人家數｜縱軸＝專利件數｜點＝技術主題",
-    "cluster_topic_table": "條長＝主題件數｜家數＝投入該主題的申請人數",
-    "applicant_ranking": "條長＝件數｜排序＝件數由高至低",
-    "applicant_country_distribution": "格值＝件數｜列＝申請人、欄＝受理國",
-    "applicant_year_matrix": "泡泡大小與顏色＝件數｜列＝申請人、欄＝申請年",
-    # ⚠ 分類的推導規則必須寫出來（2026-08-10 使用者裁決）：顏色標籤沒有依據就是
-    # 視覺噪音，讀者無從判斷「全領域」憑什麼算全領域。規則見 kp_position_class，
-    # 此處是它對讀者的說法——⚠ 兩邊要同步，改規則就要改這句。
+    # 🔴 只寫「圖上看不出來的」（2026-08-10 使用者指正）：軸標題、圖例、刻度圖裡
+    # 已經有了，PPT 再寫一遍等於用一整格版面重複同一件事。實測 kp_quadrant 那頁
+    # 上下各有一段軸說明——SVG 內建一段、PPT 又加一段。
+    # ⚠ 判準：讀者看著圖能不能自己得到這個資訊？能，就不要寫。
+    # 保留的是**口徑與推導規則**：兩條是不是同尺、算的是哪個母體、顏色怎麼分類
+    # ——那些看圖看不出來，而誤讀的代價很大。
+    "application_trend": "兩線分別為申請與授權公告（同尺）",
+    "publication_trend": "以授權公告年計，非申請年",
+    "country_distribution": "上下兩條同尺｜下＝現存有效（已授權）",
+    "jurisdiction_distribution": "上下兩條同尺｜下＝現存有效（已授權）",
+    "ipc_main_distribution": "本頁為單一階層，另一階層見對頁",
+    "cpc_main_distribution": "本頁為單一階層，另一階層見對頁",
+    "opportunity_quadrant": "點＝技術主題（單位是主題不是件）",
+    "cluster_topic_table": "家數＝投入該主題的申請人數",
+    "applicant_ranking": "含共同申請，各自計數",
+    "applicant_country_distribution": "含共同申請，總和大於專利件數",
+    "applicant_year_matrix": "含共同申請，依申請年落點",
+    # ⚠ 軸與泡泡的說明 SVG 自己有，這裡只留圖上看不到的**分類推導規則**——
+    # 顏色標籤沒有依據就是視覺噪音（2026-08-10 使用者裁決）。
+    # ⚠ 與 kp_position_class 兩處要同步，改規則就要改這句。
     "applicant_strength_profile":
-        "橫軸＝布局國數、縱軸＝涉入技術主題數、泡泡＝同族件數｜"
-        "顏色分類：0 授權且有失效＝前案（多失效）；其餘依國數、主題數是否達"
-        "全體中位數分為全領域布局（皆達）、單一技術深布局（僅國數達）、利基／探索（其餘）",
+        "顏色分類：0 授權且有失效＝前案；其餘依國數、主題數是否達全體中位數，"
+        "分為全領域布局（皆達）、單一技術深布局（僅國數達）、利基／探索（其餘）",
 }
 
 
