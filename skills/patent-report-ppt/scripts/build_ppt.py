@@ -623,7 +623,11 @@ def _text_capacity(theme: Theme, *, width_in: float, height_in: float, size_pt: 
 def _fit_text(theme: Theme, text: str, *, width_in: float, height_in: float, size_pt: float) -> tuple[str, bool]:
     """把文字截到框內裝得下，超出加「…」。回傳（文字, 是否截斷）。"""
     per_line, lines = _text_capacity(theme, width_in=width_in, height_in=height_in, size_pt=size_pt)
-    budget = per_line * lines
+    # ⚠ `per_line` 刻意是浮點（見 _text_capacity：向下取整會白丟近一個字寬），
+    # 但拿來當 slice index 必須先取整——否則走到截斷分支就 TypeError。
+    # 2026-08-10 實機爆掉：KP 頁尾註記變長，第一次走到這個分支才現形，
+    # 在那之前所有文字都裝得下，`len(text) <= budget` 直接回傳。
+    budget = int(per_line * lines)
     if len(text) <= budget:
         return text, False
     return text[: max(1, budget - 1)].rstrip("，、。；：") + "…", True
