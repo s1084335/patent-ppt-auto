@@ -238,6 +238,29 @@ def _version_generated_at(name: str) -> str:
     return f"{d[:4]}-{d[4:6]}-{d[6:]}T{t[:2]}:{t[2:4]}:{t[4:]}"
 
 
+def ppt_eligible_variant_keys(section: dict) -> set[str]:
+    """這個 section 的哪些變體能上 PPT。
+
+    🔴 判準只有一條：**在 `variants` 裡的能上，`more_variants` 裡的不能**。
+    後者是網頁長尾圖（SKILL.md：`_more` 長尾圖不上 PPT），API 之所以把兩者合併
+    回傳，是因為**網頁瀏覽**要顯示它與它的解讀——那是正當用途。
+
+    ⚠ 2026-08-10 實機失敗：前端拿合併後的清單當選圖來源，送出
+    `applicant_year_matrix:more`，而 `chart_bundle._index_report_data`
+    （只讀 `variants`）不認得，使用者一按下「產生 PPT」job 就 failed。
+    根因是兩端各自從 sections 推清單而分岔。
+
+    本函式是「能不能上 PPT」的唯一判準，API 據此標 `ppt_eligible`，前端只消費
+    不推導（前端若寫死排除 `variant_key === 'more'` 就是第二個落點）。
+    與 `chart_bundle` 的一致性由 `tests/test_ppt_eligible_variants.py` 釘住。
+    """
+    return {
+        str(variant.get("variant_key", "default"))
+        for variant in (section.get("variants") or [])
+        if str(variant.get("file") or "").strip()
+    }
+
+
 def _section_report_key(section: dict) -> str:
     """卡片對應的 report key：有 report_key 用之，否則以第一個 variant 檔名去副檔名
     （與 reports/chart_runner.py 的 _section_report_name 同規則）。"""
@@ -384,9 +407,11 @@ def _report_content_payload(run_dir):
         report_key = _section_report_key(section)
         rows = _lookup_rows(report_data, report_key)
         variants_out = []
+        eligible_keys = ppt_eligible_variant_keys(section)
         for variant in list(section.get("variants") or []) + list(section.get("more_variants") or []):
             file_name = str(variant.get("file", ""))
             variant_key = variant.get("variant_key", "default")
+            ppt_eligible = variant_key in eligible_keys
             # 🔴 解讀掛點**逐變體**解析，唯一來源＝chart_runner.variant_narrative_ref。
             # 產出時已寫進 report_data.json 的 narrative_key；舊版產出沒有這欄，
             # 現算一次（同一個函式，不是第二份規則）。
@@ -417,6 +442,8 @@ def _report_content_payload(run_dir):
                 "rows": variant.get("rows", []),
                 "column_labels": _column_labels(variant.get("rows", [])),
                 "thresholds": variant.get("thresholds", {}),
+                # 這張圖能不能上 PPT（選圖清單依此過濾；見上方說明）。
+                "ppt_eligible": ppt_eligible,
             })
         sections_out.append({
             "title": section.get("title", ""),

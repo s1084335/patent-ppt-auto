@@ -5915,8 +5915,12 @@ async function loadPptChartPicker() {
   // ⚠ 只列有圖的 variant（2026-08-10）：部分 variant 的 file 是空字串——
   // 那是解讀落點（如主題統計表，表格由組版端自己畫），不是可選圖表。
   // 本清單預設全選，列進來就必然被送出，後端會直接失敗。
+  // 只列**能上 PPT** 的變體：`ppt_eligible` 由後端標（唯一判準與 chart_bundle 一致）。
+  // ⚠ 不在前端自行推導（例如寫死排除 variant_key === 'more'）——那會是第二個落點。
+  // 2026-08-10 實機失敗即因此：清單列了長尾圖 `:more`，送出後 chart_bundle 不認得。
   const sections = (exportPreview.content.sections || [])
-    .map(sec => ({ ...sec, variants: (sec.variants || []).filter(v => v.file) }))
+    .map(sec => ({ ...sec,
+                   variants: (sec.variants || []).filter(v => v.file && v.ppt_eligible) }))
     .filter(sec => sec.variants.length);
   if (!sections.length) { box.textContent = ''; return; }
   const chartCount = sections.reduce((n, sec) => n + sec.variants.length, 0);
