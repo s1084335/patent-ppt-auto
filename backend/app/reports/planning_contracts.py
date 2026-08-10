@@ -161,15 +161,32 @@ def validate_evidence(
     plan: dict[str, Any],
     manifest: dict[str, Any],
     snapshot_id: str,
+    has_narratives: bool = False,
 ) -> list[str]:
-    """EvidenceManifest：ref 可解析、snapshot 一致、帶數字的敘述必須有依據。"""
+    """EvidenceManifest：ref 可解析、snapshot 一致、帶數字的敘述必須有依據。
+
+    `has_narratives`（2026-08-10 使用者裁決）：本次有餵既有解讀當素材時，
+    要求**至少一筆** evidence 標 `source="narrative"` 並指出來源 `report_key`。
+
+    ⚠ 為什麼驗結構而不是驗內容相似度：濃縮本來就會捨棄部分對象，用「具名覆蓋率」
+    當判準等於要訂一個沒有依據的門檻。標來源驗的是「有沒有用素材」這個**事實**，
+    不需要模糊門檻，也不懲罰合理取捨。門檻刻意訂在「至少一筆」——目的是讓它從
+    「讀文字判斷」變成可查的事實，不是規定要用多少。
+    """
     errors: list[str] = []
+    sourced_from_narrative = False
     for ref, entry in manifest.items():
         entry_snapshot = str(entry.get("snapshot_id") or "")
         if entry_snapshot != snapshot_id:
             errors.append(
                 f"evidence {ref} 的 snapshot {entry_snapshot!r} 與本次 {snapshot_id!r} 不符"
                 "——過期證據不得進 manifest")
+        if str(entry.get("source") or "") == "narrative":
+            sourced_from_narrative = True
+            if not str(entry.get("report_key") or "").strip():
+                errors.append(
+                    f"evidence {ref} 標了 source=narrative 卻沒有 report_key"
+                    "——說不出來自哪一份解讀就無法追溯，等於沒標")
     for slide in plan.get("slides") or []:
         sid = slide.get("slide_id") or "?"
         for point in slide.get("narrative") or []:
@@ -181,4 +198,8 @@ def validate_evidence(
                 errors.append(
                     f"slide {sid} 有數字的敘述沒有 evidence_ref：{text[:20]!r}"
                     "——數字一律要能追到來源")
+    if has_narratives and not sourced_from_narrative:
+        errors.append(
+            "本次已提供既有逐報表解讀當素材，但沒有任何 evidence 標 source=narrative"
+            "——要點應該是從解讀**濃縮**而來，不是重新編寫。至少要有一筆能溯源。")
     return errors

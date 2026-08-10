@@ -96,6 +96,10 @@ def build_prompt(brief: dict[str, Any]) -> str:
             "（「法蘭擋板＋電磁鐵解鎖」而非「電機化」）都必須留著——那正是深度所在，\n"
             "丟掉它們就只剩下從聚合數字也能寫出來的空話。\n"
             "要砍的是重複、鋪陳與轉折語，不是資訊。\n\n"
+            "🔴 **用到解讀就要標來源**：該要點的 evidence 填\n"
+            '`{"source": "narrative", "report_key": "<上列的 report_key>", '
+            '"snapshot_id": "…"}`。\n'
+            "⚠ 完全沒有任何一筆 narrative 來源＝判定為重寫而非濃縮，整份退回。\n\n"
             f"{existing}\n\n") if existing else "")
         + "## 🔴 必須實際查證（不查就不合格，會被退回）\n"
         "選圖數據只是**起點**，不是全部。你的職責是看著這些圖表與數據，判斷\n"
@@ -115,8 +119,9 @@ def build_prompt(brief: dict[str, Any]) -> str:
         ' "slides": [{"slide_id": "s1", "layout_preset": "<上列其一>",\n'
         '   "purpose": "這頁要回答什麼", "chart_identities": ["..."],\n'
         '   "narrative": [{"text": "...", "evidence_ref": "e1"}]}],\n'
-        ' "evidence": {"e1": {"source": "selected_chart|tool_query",\n'
-        '   "chart_identity": "...", "snapshot_id": "..."}}}\n\n'
+        ' "evidence": {"e1": {"source": "selected_chart|tool_query|narrative",\n'
+        '   "chart_identity": "...", "report_key": "...", "snapshot_id": "..."}}}\n'
+        '（`chart_identity` 給 selected_chart 用；`report_key` 給 narrative 用）\n\n'
         "規則：\n"
         "- **帶數字的敘述一律要有 evidence_ref**，數字只能來自選圖數據或查證工具。\n"
         "- 只給版型意圖，**不要輸出座標、字級、顏色**——排版由程式決定。\n"
@@ -169,7 +174,8 @@ def run_report_planning(
 
     _tick("驗證規劃", 70)
     errors = validate_slide_plan(plan, identities, page_budget=brief.get("page_budget"))
-    errors += validate_evidence(plan, evidence, snapshot_id=brief["snapshot_id"])
+    errors += validate_evidence(plan, evidence, snapshot_id=brief["snapshot_id"],
+                                has_narratives=bool(brief.get("narratives")))
     # 🔴 不查資料庫就不准寫（2026-08-10 使用者定案）：CLI 的職責是依選圖內容判斷
     # 要找什麼證據並實際查。原本 query_audit 只被記錄、不被檢查，等於允許只讀
     # 聚合數字就編出整份敘述。
