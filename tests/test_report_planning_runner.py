@@ -133,12 +133,17 @@ class ValidationTests(unittest.TestCase):
             _run(json.dumps(reply, ensure_ascii=False))
         self.assertIn("幾何", str(ctx.exception))
 
-    def test_number_without_evidence_rejected(self):
+    def test_number_without_evidence_is_not_rejected(self):
+        """帶數字但沒 evidence_ref → **不擋**（2026-08-10 契約變更）。
+
+        🔴 原本擋。判斷「有沒有數字」用的是 `\\d` 正規表示式，**年份也算**——
+        實跑 job 270 被「2025後回落多屬公開遲延、非真衰退」擋下，而那是判讀句。
+        誤擋的代價是整份規劃失敗；防造假改由 narrative 溯源與 query_audit 承擔。
+        """
         reply = json.loads(_good_reply())
         reply["slides"][0]["narrative"][0].pop("evidence_ref")
-        with self.assertRaises(rp.ReportPlanningError) as ctx:
-            _run(json.dumps(reply, ensure_ascii=False))
-        self.assertIn("數字", str(ctx.exception))
+        result, _ = _run(json.dumps(reply, ensure_ascii=False))
+        self.assertTrue(result["slides"], "不得因缺 evidence_ref 而整份失敗")
 
     def test_stale_snapshot_evidence_rejected(self):
         reply = json.loads(_good_reply())

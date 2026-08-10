@@ -635,10 +635,11 @@ def validate_evidence(
             text = str(point.get("text") or "")
             if ref and ref not in manifest:
                 errors.append(f"slide {sid} 的 evidence_ref {ref!r} 在 manifest 找不到")
-            if not ref and _NUMBER_PATTERN.search(text):
-                errors.append(
-                    f"slide {sid} 有數字的敘述沒有 evidence_ref：{text[:20]!r}"
-                    "——數字一律要能追到來源")
+            # ⚠ 2026-08-10 降為不阻擋：`_NUMBER_PATTERN` 是「任何數字」，
+            # 連年份都算——「2025後回落多屬公開遲延、非真衰退」這種**判讀句**
+            # 因為含 2025 就被擋，而它根本不是統計主張。要精準區分「統計數字」與
+            # 「年份／序號」需要語意判斷，不是正規表示式做得到的。
+            # 真正防造假的是 evidence 的 source 標記與 query_audit 可追溯性（仍硬擋）。
     if has_narratives and not sourced_from_narrative:
         errors.append(
             "本次已提供既有逐報表解讀當素材，但沒有任何 evidence 標 source=narrative"

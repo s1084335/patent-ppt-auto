@@ -139,14 +139,24 @@ class EvidenceManifestTests(unittest.TestCase):
             {"plan_id": "p", "slides": []}, self.MANIFEST, snapshot_id="other_snapshot")
         self.assertTrue(any("snapshot" in e for e in errors))
 
-    def test_numeric_claim_needs_evidence(self):
-        """帶數字的敘述一定要有 evidence_ref（不得憑空生數字）。"""
+    def test_numeric_claim_without_evidence_is_not_blocked(self):
+        """帶數字的敘述沒有 evidence_ref → **不阻擋**（2026-08-10 契約變更）。
+
+        🔴 原本擋。`_NUMBER_PATTERN` 是「任何數字」，**連年份都算**——實跑 job 270
+        被「2025後回落多屬公開遲延、非真衰退」擋下，而那是判讀句不是統計主張。
+
+        ⚠ 要精準區分「統計數字」與「年份／序號」需要語意判斷，正規表示式做不到；
+        誤擋的代價是整份規劃失敗、使用者完全拿不到成品，不成比例。
+
+        防造假改由仍然硬擋的兩道承擔：evidence 的 `source` 標記（narrative 溯源）
+        與 `query_audit` 的可追溯性（強制查證）。
+        """
         plan = {"plan_id": "p", "slides": [{
             "slide_id": "s1", "layout_preset": "chart_hero", "purpose": "x",
             "chart_identities": ["applicant_ranking:default"],
             "narrative": [{"text": "前二名合計 27 件"}]}]}
         errors = pc.validate_evidence(plan, self.MANIFEST, snapshot_id="report_trial_x")
-        self.assertTrue(any("數字" in e for e in errors))
+        self.assertEqual(errors, [], "帶數字但沒 ref 不得阻擋整份規劃")
 
 
 if __name__ == "__main__":
