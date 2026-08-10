@@ -73,6 +73,19 @@ Key Player 象限圖整個沒進 PPT，且**全程無錯誤訊息**。已修（`
   產出 plan（要不要重產、重產哪幾頁、哪些不准動），本項驗**執行面**：CLI 回來的
   東西有沒有守規矩。沒有這一層，scope lock 只是一份宣告。
 - [ ] 6.4 Green：完成局部重產 runner 接線，保留未標記 narratives/slides，保存 replacement audit，並在重產後重新 build、轉 PNG、跑 quality report
+
+  **核心已完成**（`e3e039a`，`backend/app/worker/regeneration_runner.py`）：
+  只換 targets 指名的頁、頁序不動、其餘原樣保留、留 replacement audit；
+  越界整份拒收不部分採用。7 支測試。
+
+  ⚠ **剩餘接線相依轉圖能力**：`build_ppt_quality_report` 的
+  `rendered_png_manifest` 是必填參數，而轉 PNG 走 PowerPoint COM
+  （`D:scode\ppt-tools\pptx_to_png.py`），只能在使用者機器上跑
+  ——與 A5 轉圖驗收是**同一批能力**，兩者一起做才不會把轉圖接兩次。
+
+  ⚠ **不新增 job type**：重產迴圈應在 `ai:report_ppt` 內部收斂
+  （使用者按一次按鈕、系統自己修到過關），不多開一個任務類型
+  ——同「不要亂增加按鈕」的原則。
 - [x] 6.5 Red：新增同一 target 超過兩輪仍 fail 的測試，確認停止自動重產並標示 `blocked_content_defect` 或 `blocked_layout_defect`
 
   沿用 Codex 定的 `PPT_QUALITY_RETRY_LIMIT`（=2），不另訂數字——那會是第二個落點。
