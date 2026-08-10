@@ -3841,6 +3841,11 @@ async function loadExportPreview(version) {
     exportPreview.edits = loadExportEdits(content.version);
     const versionSel = el('export-version-select');
     if (versionSel && exportPreview.version) versionSel.value = exportPreview.version;
+    // 選圖清單在**內容載入後**填，兩種預覽模式都會經過這裡。
+    // ⚠ 2026-08-10：一度掛在 renderExportPreview()——那支只有**編輯模式**才呼叫，
+    // 一般預覽走 loadExportPptFiles，於是選圖清單永遠空的。實際開瀏覽器點進去
+    // 才發現：測試只驗得到「有呼叫端」，驗不到「在正確時機呼叫」。
+    loadPptChartPicker();
     await loadExportPptFiles(content.version);
   } catch (e) {
     wrap.innerHTML = '<div class="hint">載入報告內容失敗（' + escHtml(e.message) + '）。</div>';
@@ -3970,9 +3975,6 @@ function renderExportPreview() {
   const wrap = el('export-preview');
   if (!wrap || !exportPreview.content) return;
   wrap.innerHTML = renderReportContentHtml(exportPreview);
-  // 選圖清單隨預覽一起填（2026-08-10 接上）：它是「產生 PPT」的輸入之一，
-  // ⚠ 原本 loadPptChartPicker 寫好了卻沒有任何呼叫端，使用者從介面選不到圖。
-  loadPptChartPicker();
 }
 
 

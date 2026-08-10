@@ -58,6 +58,25 @@ class FrontendWiringTests(unittest.TestCase):
                 f"{name} 只有定義沒有呼叫端——寫了沒接上等於沒做",
             )
 
+    def test_picker_is_called_when_content_loads_not_only_in_edit_mode(self):
+        """選圖清單要在**內容載入後**就填，不能只在編輯模式才填。
+
+        🔴 2026-08-10 實機抓到：一度把 `loadPptChartPicker()` 掛在
+        `renderExportPreview()`，而那支只有**編輯模式**才呼叫——一般預覽走
+        `loadExportPptFiles`，於是使用者點進匯出報告頁時選圖清單永遠是空的。
+
+        ⚠ 這條是上一支測試補不到的：它只驗得到「有呼叫端」，驗不到「在正確時機
+        呼叫」。開瀏覽器實際點進去才發現，勾選框數是 0。
+        """
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        start = html.index("async function loadExportPreview")
+        body = html[start:html.index("\nasync function ensurePptxRenderer", start)]
+        self.assertIn(
+            "loadPptChartPicker()", body,
+            "選圖清單要在 loadExportPreview 取得內容後就填——"
+            "掛在只有編輯模式會走的路徑上，等於一般使用者永遠看不到",
+        )
+
     def test_export_button_dispatches_report_plan(self):
         """按鈕要派 `ai:report_plan`（goal-driven 的入口），不是直接跳到組版。"""
         body = _request_export_ppt()
