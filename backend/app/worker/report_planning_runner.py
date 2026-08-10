@@ -124,6 +124,10 @@ def build_prompt(brief: dict[str, Any]) -> str:
         '（`chart_identity` 給 selected_chart 用；`report_key` 給 narrative 用）\n\n'
         "規則：\n"
         "- **帶數字的敘述一律要有 evidence_ref**，數字只能來自選圖數據或查證工具。\n"
+        "- **沒有依據的敘述就不要建 evidence 項目**，也不要用 `e_na` 之類的佔位鍵\n"
+        "  ——那一條要點直接不填 evidence_ref 即可（不帶數字的敘述本來就不需要）。\n"
+        "- `snapshot_id` 不用你填，系統會補；但 `source` 與對應的 `report_key`／\n"
+        "  `chart_identity` **必須**填，那是追溯的唯一依據。\n"
         "- **直接引用的數字要在 evidence 填 `value`**（例：「風磁 11 件」→ `value: 11`）\n"
         "  ——程式會拿去對照引擎數據，對不上就整份退回。\n"
         "- **衍生數字**（比例、成長率、佔比等由多個數算出來的）填 `derived: true`，\n"
@@ -174,6 +178,12 @@ def run_report_planning(
         "slides": reply.get("slides") or [],
     }
     evidence = reply.get("evidence") or {}
+    # snapshot_id 是 runner 本來就知道的值——要求 CLI 每筆 evidence 重複填只是增加
+    # 出錯機會（2026-08-10 實跑：CLI 漏填導致整份規劃被擋）。未填就補上；
+    # ⚠ 填了但不符仍然擋——那才是「過期證據不得進 manifest」要防的情形。
+    for entry in evidence.values():
+        if isinstance(entry, dict) and not str(entry.get("snapshot_id") or "").strip():
+            entry["snapshot_id"] = brief["snapshot_id"]
     identities = {b["chart_identity"] for b in brief["selected_charts"]}
 
     _tick("驗證規劃", 70)
