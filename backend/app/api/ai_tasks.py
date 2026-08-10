@@ -70,11 +70,23 @@ class CreateAiTaskRequest(BaseModel):
         return self
 
     def to_payload(self) -> dict[str, Any]:
-        """組出交給 worker 的 payload：泛型 params 打底，具名欄位覆蓋其上。"""
+        """組出交給 worker 的 payload：泛型 params 打底，**實際填寫過的**具名欄位覆蓋其上。
+
+        🔴 2026-08-10 修：原本用 `model_dump(exclude_none=True)`，但那**只排除 None**
+        ——`then_export_ppt: bool = False` 這種有非 None 預設值的欄位一律會被輸出，
+        於是把 params 裡填的 `True` **蓋回 False**。
+
+        實測 job 281：前端送 `params.then_export_ppt=True`（泛型形狀），到 worker
+        變成 False，規劃完成後不接續組版，使用者按了「產生 PPT」卻只拿到 plan。
+        ⚠ 全程沒有錯誤訊息——job succeeded、畫面顯示成功，PPT 就是沒出來。
+
+        改用 `exclude_unset`：只有**呼叫端真的送了**的具名欄位才覆蓋 params。
+        """
         payload: dict[str, Any] = dict(self.params)
         named = self.model_dump(
             exclude={"task_type", "params", "workspace_id", "idempotency_key"},
             exclude_none=True,
+            exclude_unset=True,
         )
         payload.update(named)
         return payload
