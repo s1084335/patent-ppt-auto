@@ -89,14 +89,35 @@ class EvidenceValueTests(unittest.TestCase):
             [],
         )
 
-    def test_unknown_report_key_is_reported(self):
-        """引用了 report_data 裡沒有的報表 → 擋（指向不存在的來源等於沒來源）。"""
+    def test_unknown_report_key_is_not_blocked(self):
+        """指向沒選的報表 → **不擋**（2026-08-10 第二輪修正）。
+
+        🔴 原本擋，實跑三次全卡在這裡：CLI 有權經 report-research MCP 查證未選的
+        報表與 DB，那些數字**合法但不在選圖對照表裡**。原實作把「數字必須來自引擎」
+        縮限成「必須在選圖的 data_rows 裡」，等於把合法查證判成造假。
+
+        ⚠ 擋掉一筆可能標錯來源的 evidence，代價是整份規劃失敗、使用者拿不到成品
+        ——不成比例。查證來的數字改由 evidence 的 source 與 query_audit 追溯。
+        """
         manifest = {"e1": {"source": "selected_chart", "snapshot_id": SNAP,
                            "chart_identity": "not_a_report:default", "value": 11}}
-        errors = validate_evidence(_plan(), manifest, snapshot_id=SNAP,
-                                   report_data=REPORT_DATA)
-        self.assertTrue(errors)
-        self.assertIn("not_a_report", errors[0])
+        self.assertEqual(
+            validate_evidence(_plan(), manifest, snapshot_id=SNAP,
+                              report_data=REPORT_DATA),
+            [],
+        )
+
+    def test_non_selected_chart_source_is_not_checked(self):
+        """`tool_query`／`narrative` 來源不做數值比對——它們的值不在 report_data。"""
+        for source in ("tool_query", "narrative"):
+            with self.subTest(source=source):
+                manifest = {"e1": {"source": source, "snapshot_id": SNAP,
+                                   "report_key": "applicant_ranking", "value": 999}}
+                self.assertEqual(
+                    validate_evidence(_plan(), manifest, snapshot_id=SNAP,
+                                      report_data=REPORT_DATA),
+                    [],
+                )
 
     def test_float_and_string_values_compare_loosely(self):
         """11 / 11.0 / "11" 視為同一個值——型別差異不是數字錯誤。"""

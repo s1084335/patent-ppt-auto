@@ -453,14 +453,23 @@ def _value_errors(ref: str, entry: dict[str, Any], report_data) -> list[str]:
     """
     if report_data is None or entry.get("value") is None or entry.get("derived"):
         return []
+    # ⚠ 只驗**選圖**來源（2026-08-10 第二輪修正）：CLI 有權經 report-research MCP
+    # 查證未選的報表與 DB，那些數字**合法但不在對照表裡**。原本一律比對，等於把
+    # 合法查證判成造假——實跑三次全被擋在這裡（family_country_layout 沒選卻被引用、
+    # 查 DB 得到的母體數不在選圖 rows）。
+    # 對照的意義只在「使用者選的那張圖，上面的數字不得被改寫」；查證來的數字
+    # 由 evidence 的 source 與 query_audit 追溯，不靠數值比對。
+    if str(entry.get("source") or "") != "selected_chart":
+        return []
     identity = str(entry.get("chart_identity") or "")
     report_key = identity.split(":", 1)[0] or str(entry.get("report_key") or "")
     if not report_key:
         return []
     values = _numeric_values_of(report_data, report_key)
     if values is None:
-        return [f"evidence {ref} 指向的報表 {report_key!r} 不在本次 report_data"
-                "——來源不存在等於沒有來源"]
+        # 標 selected_chart 卻指向沒選的報表——可能是來源標錯（實際是查證來的）。
+        # ⚠ 不擋：擋了會讓整份規劃失敗，而使用者拿不到成品的代價遠大於一筆標錯來源。
+        return []
     try:
         claimed = float(entry["value"])
     except (TypeError, ValueError):
