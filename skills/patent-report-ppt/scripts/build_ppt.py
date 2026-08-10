@@ -3295,12 +3295,30 @@ def _render_points_page(slide, theme: Theme, spec: PageSpec, ctx: dict[str, Any]
     blocks = _points_for(spec, ctx)
     if not blocks:
         blocks = [(label, text, "ink", False) for label, text in _row_highlights(spec, ctx)]
-    _add_number_bold_text(
-        slide, theme,
-        _trim_blocks(theme, blocks, width_in=text_width, height_in=text_height, size_pt=size),
-        left=left + g["body_text_inset_left_in"],
-        top=g["body_top_in"] + g["body_text_top_offset_in"],
-        width=text_width, height=text_height, size=size)
+
+    # 🔴 條數多就分欄（2026-08-10）：整頁單欄只放得下 3 條，而無圖頁需要 6 個以上
+    # 內容單元才寫得到範例的密度（範例 15–25 個文字塊 vs 系統原本 5 個）。
+    # ⚠ 範例的無圖頁本來就不是「一串條列」，是分欄分卡的結構——單欄列點的版面
+    # 天生只能放 3 條，把上限調高只會讓多的被組版靜默丟棄，比擋下來更糟。
+    # 實測容量：1 欄 3 條／2 欄 6 條／3 欄 9 條（每條字數隨欄寬遞減）。
+    per_line, lines = _text_capacity(theme, width_in=text_width,
+                                     height_in=text_height, size_pt=size)
+    single_cap = points_budget(per_line, lines, columns=1)["max_points"]
+    columns = 2 if len(blocks) > single_cap else 1
+    gap_in = theme.geometry.get("column_gap_in", 0.4)
+    col_width = (text_width - gap_in * (columns - 1)) / columns
+    per_col = -(-len(blocks) // columns)  # 向上取整，左欄先填滿
+    for index in range(columns):
+        chunk = blocks[index * per_col:(index + 1) * per_col]
+        if not chunk:
+            continue
+        _add_number_bold_text(
+            slide, theme,
+            _trim_blocks(theme, chunk, width_in=col_width,
+                         height_in=text_height, size_pt=size),
+            left=left + g["body_text_inset_left_in"] + index * (col_width + gap_in),
+            top=g["body_top_in"] + g["body_text_top_offset_in"],
+            width=col_width, height=text_height, size=size)
     _render_footnote(slide, theme, spec, ctx)
 
 
