@@ -131,6 +131,57 @@ def validate_slide_plan(
     return errors
 
 
+def _numeric_values_of(report_data: dict[str, Any], report_key: str) -> set[float] | None:
+    """該報表所有數值欄位的值；報表不存在時回 None（與「有報表但沒數字」區分）。"""
+    rows = (report_data.get("chart_rows") or {}).get(report_key)
+    if rows is None:
+        for bucket in ("reports", "family_reports"):
+            entry = (report_data.get(bucket) or {}).get(report_key)
+            if entry is not None:
+                rows = entry.get("rows") or []
+                break
+    if rows is None:
+        return None
+    values: set[float] = set()
+    for row in rows:
+        for value in (row or {}).values():
+            try:
+                values.add(float(value))
+            except (TypeError, ValueError):
+                continue
+    return values
+
+
+def _value_errors(ref: str, entry: dict[str, Any], report_data) -> list[str]:
+    """直接引用的數字要對得上引擎數據；衍生數字不驗（2026-08-10 使用者裁決）。
+
+    ⚠ 只驗**直接引用**：`derived: true` 或沒填 `value` 一律跳過。衍生數字（比例、
+    成長率）由多個數算出，算式難以機械核對，硬擋會逼 CLI 為了過關而不敢寫比例
+    ——那反而讓簡報變淺。
+
+    ⚠ 取捨已知：CLI 可以靠標 `derived` 規避。但「刻意規避」與「寫錯數字」是不同
+    性質的問題，後者才是本檢查要解的；用一層擋不住所有事不代表這層沒有價值。
+    """
+    if report_data is None or entry.get("value") is None or entry.get("derived"):
+        return []
+    identity = str(entry.get("chart_identity") or "")
+    report_key = identity.split(":", 1)[0] or str(entry.get("report_key") or "")
+    if not report_key:
+        return []
+    values = _numeric_values_of(report_data, report_key)
+    if values is None:
+        return [f"evidence {ref} 指向的報表 {report_key!r} 不在本次 report_data"
+                "——來源不存在等於沒有來源"]
+    try:
+        claimed = float(entry["value"])
+    except (TypeError, ValueError):
+        return [f"evidence {ref} 的 value {entry['value']!r} 不是數字"]
+    if claimed not in values:
+        return [f"evidence {ref} 宣稱的值 {entry['value']} 在報表 {report_key} 的數據中"
+                "找不到——數字必須來自引擎，不得自行重算後改寫（衍生數字請標 derived）"]
+    return []
+
+
 def validate_research_effort(query_audit: list[dict[str, Any]]) -> list[str]:
     """規劃必須實際查證過，不得只憑選圖數據就寫（2026-08-10 使用者定案）。
 
@@ -162,6 +213,7 @@ def validate_evidence(
     manifest: dict[str, Any],
     snapshot_id: str,
     has_narratives: bool = False,
+    report_data: dict[str, Any] | None = None,
 ) -> list[str]:
     """EvidenceManifest：ref 可解析、snapshot 一致、帶數字的敘述必須有依據。
 
@@ -187,6 +239,7 @@ def validate_evidence(
                 errors.append(
                     f"evidence {ref} 標了 source=narrative 卻沒有 report_key"
                     "——說不出來自哪一份解讀就無法追溯，等於沒標")
+        errors.extend(_value_errors(ref, entry, report_data))
     for slide in plan.get("slides") or []:
         sid = slide.get("slide_id") or "?"
         for point in slide.get("narrative") or []:

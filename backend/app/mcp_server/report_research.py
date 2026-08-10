@@ -159,6 +159,21 @@ def read_query_audit(path: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def rows_fingerprint(rows: list[dict[str, Any]]) -> str:
+    """查詢結果的指紋（2026-08-10）：讓「資料有沒有變」可查，而不必把結果存一遍。
+
+    ⚠ 為什麼不存結果：typed 工具查的是 snapshot，同一個 snapshot_id 重跑必得同樣
+    結果——存下來只是把 report_data 複製一份。只有 `query_database` 查的是即時 DB
+    才有「當時查到什麼」的問題，而那用**指紋**就足夠：日後重跑若 hash 相同即證明
+    資料未變、結論仍成立；不同則明確知道要重新檢視。
+
+    指紋大小固定，不隨結果列數膨脹——否則就變回「把結果存一遍」了。
+    欄位順序不影響結果（sort_keys）：欄序不同不算資料不同。
+    """
+    payload = json.dumps(rows, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _audit(tool: str, **fields: Any) -> None:
     entry = {"tool": tool, **fields}
     _QUERY_AUDIT.append(entry)
@@ -406,8 +421,8 @@ def query_database(sql: str, limit: int = SQL_DEFAULT_ROWS) -> dict[str, Any]:
             raise ReportResearchError(f"limit 超過上限 {SQL_MAX_ROWS}")
         text = validate_sql(sql)
     except ReportResearchError as exc:
-        _audit("query_database", snapshot_id=None, sql=str(sql)[:200],
-               rows=0, truncated=False, error=str(exc))
+        _audit("query_database", snapshot_id=None, sql=str(sql),
+               rows=0, truncated=False, error=str(exc), row_hash=None)
         raise
 
     import psycopg
@@ -430,8 +445,9 @@ def query_database(sql: str, limit: int = SQL_DEFAULT_ROWS) -> dict[str, Any]:
         conn.rollback()   # 唯讀交易，不需要 commit
     truncated = len(rows) > limit
     rows = rows[:limit]
-    _audit("query_database", snapshot_id=None, sql=text[:200],
-           rows=len(rows), truncated=truncated, error=None)
+    _audit("query_database", snapshot_id=None, sql=text,
+           rows=len(rows), truncated=truncated, error=None,
+           row_hash=rows_fingerprint(rows))
     return {
         "columns": columns,
         "rows": [[_jsonable(v) for v in row] for row in rows],

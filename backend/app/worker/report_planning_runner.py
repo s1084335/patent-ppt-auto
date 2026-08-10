@@ -124,6 +124,10 @@ def build_prompt(brief: dict[str, Any]) -> str:
         '（`chart_identity` 給 selected_chart 用；`report_key` 給 narrative 用）\n\n'
         "規則：\n"
         "- **帶數字的敘述一律要有 evidence_ref**，數字只能來自選圖數據或查證工具。\n"
+        "- **直接引用的數字要在 evidence 填 `value`**（例：「風磁 11 件」→ `value: 11`）\n"
+        "  ——程式會拿去對照引擎數據，對不上就整份退回。\n"
+        "- **衍生數字**（比例、成長率、佔比等由多個數算出來的）填 `derived: true`，\n"
+        "  這類不對照。⚠ 但不得用 derived 規避：能直接引用的就要填 value。\n"
         "- 只給版型意圖，**不要輸出座標、字級、顏色**——排版由程式決定。\n"
         "- 每一張選圖至少要出現在一頁；沒有內容支撐的版型就不要用。\n"
     )
@@ -174,8 +178,13 @@ def run_report_planning(
 
     _tick("驗證規劃", 70)
     errors = validate_slide_plan(plan, identities, page_budget=brief.get("page_budget"))
+    # 數字對照表：選圖 bundle 自帶的 data_rows 就是該報表的 rows，直接組成
+    # report_data 形狀餵給驗證——不必多傳參數，也不必再讀一次檔。
+    evidence_data = {"chart_rows": {b["report_key"]: b.get("data_rows") or []
+                                    for b in brief["selected_charts"]}}
     errors += validate_evidence(plan, evidence, snapshot_id=brief["snapshot_id"],
-                                has_narratives=bool(brief.get("narratives")))
+                                has_narratives=bool(brief.get("narratives")),
+                                report_data=evidence_data)
     # 🔴 不查資料庫就不准寫（2026-08-10 使用者定案）：CLI 的職責是依選圖內容判斷
     # 要找什麼證據並實際查。原本 query_audit 只被記錄、不被檢查，等於允許只讀
     # 聚合數字就編出整份敘述。
