@@ -19,6 +19,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import backend.app.reports.planning_contracts as pc
 from backend.app.reports.planning_contracts import (
     MAX_POINT_CHARS,
     MAX_POINTS_PER_SLIDE,
@@ -48,17 +49,30 @@ def _slide(points: list[dict], preset: str = "exec_summary") -> dict:
 
 
 class PointGuardTests(unittest.TestCase):
-    """要點守門：條數與字數超限要現形。"""
+    """要點容量：超限要**現形但不阻擋**（2026-08-10 契約變更）。
 
-    def test_too_many_points_reported(self):
+    🔴 原本是 errors（整份規劃失敗）。連續三次實測（job 278／279／280）都卡在這，
+    而且每次都是同一種自相矛盾：prompt 要求寫深寫滿（無圖頁至少 6 個單元、
+    direction 頁「方向｜依據｜行動」三段），守門卻按舊尺度打回。
+
+    改為警告的三個理由：
+    ① 組版端 `_trim_blocks` 依實際容量自動截斷，超標不會爆版；
+    ② 代價不成比例——擋下來＝整份 PPT 產不出來，不擋＝某條要點被截短；
+    ③ 上限本來就是**建議值**，真正的容量由版型決定（同一份 plan 放進不同版型
+       容量差好幾倍），在規劃階段用單一數字硬擋本來就不精確。
+    """
+
+    def test_too_many_points_warned_not_blocked(self):
         plan = _slide([{"text": "短"}] * (MAX_POINTS_PER_SLIDE + 1))
-        errors = validate_slide_plan(plan, set())
-        self.assertTrue(any("條要點" in e for e in errors), errors)
+        self.assertEqual(validate_slide_plan(plan, set()), [],
+                         "條數超標不得阻擋整份規劃")
+        self.assertTrue(any("條要點" in w for w in pc.slide_plan_capacity_warnings(plan)))
 
-    def test_too_long_point_reported(self):
+    def test_too_long_point_warned_not_blocked(self):
         plan = _slide([{"text": "長" * (MAX_POINT_CHARS + 1)}])
-        errors = validate_slide_plan(plan, set())
-        self.assertTrue(any("超過上限" in e for e in errors), errors)
+        self.assertEqual(validate_slide_plan(plan, set()), [],
+                         "字數超標不得阻擋整份規劃")
+        self.assertTrue(any("字" in w for w in pc.slide_plan_capacity_warnings(plan)))
 
     def test_within_limits_passes(self):
         """⚠ 對照組：剛好在上限內不得誤報（守門太緊會讓 job 整個失敗）。"""

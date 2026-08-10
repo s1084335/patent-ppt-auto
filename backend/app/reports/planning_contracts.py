@@ -420,17 +420,18 @@ def validate_slide_plan(
         if preset not in APPROVED_LAYOUT_PRESETS:
             errors.append(f"slide {sid} layout_preset {preset!r} 不在核准版型清單")
         errors.extend(_slide_geometry_errors(slide))
+        # 🔴 2026-08-10：容量超標**不再阻擋**（連續三次實測 278／279／280 都卡在這）。
+        #
+        # 三個理由：
+        # ① 組版端 `_trim_blocks` 本來就依實際容量自動截斷，超標不會爆版；
+        # ② 代價不成比例——擋下來＝整份 PPT 產不出來，不擋＝某條要點被截短；
+        # ③ 內容量是**我們自己要求的**：prompt 鼓勵寫深寫滿（無圖頁至少 6 個單元、
+        #    direction 頁要「方向｜依據｜行動」三段），守門卻按舊尺度打回，
+        #    等於規則自相矛盾。
+        #
+        # ⚠ 上限仍寫在 prompt 當品質指引，也仍是 `slide_plan_capacity_warnings`
+        # 的判準——訊號沒有消失，只是不再讓整份規劃失敗。
         points = slide.get("narrative") or []
-        if len(points) > MAX_POINTS_PER_SLIDE:
-            errors.append(
-                f"slide {sid} 有 {len(points)} 條要點，超過上限 {MAX_POINTS_PER_SLIDE}"
-                "——版面放不下的會被整條丟棄")
-        for point in points:
-            text = str(point.get("text") or "")
-            if len(text) > MAX_POINT_CHARS:
-                errors.append(
-                    f"slide {sid} 的要點長 {len(text)} 字，超過上限 {MAX_POINT_CHARS}："
-                    f"{text[:20]}…")
         for identity in slide.get("chart_identities") or []:
             if identity not in selected_identities:
                 errors.append(f"slide {sid} 使用未選圖表 {identity}")
@@ -527,6 +528,30 @@ def _value_errors(ref: str, entry: dict[str, Any], report_data) -> list[str]:
         return [f"evidence {ref} 宣稱的值 {entry['value']} 在報表 {report_key} 的數據中"
                 "找不到——數字必須來自引擎，不得自行重算後改寫（衍生數字請標 derived）"]
     return []
+
+
+def slide_plan_capacity_warnings(plan: dict[str, Any]) -> list[str]:
+    """要點條數／字數超出建議值——**只警告不阻擋**（2026-08-10）。
+
+    ⚠ 為什麼不擋：組版端 `_trim_blocks` 依實際容量自動截斷，超標不會爆版；
+    而擋下來的代價是整份 PPT 產不出來。連續三次實測（job 278／279／280）都卡在
+    這裡，且每次都是「prompt 要求寫深、守門按舊尺度打回」的自相矛盾。
+
+    訊號進 job 結果，人工複核時看得到「這幾頁可能被截短」。
+    """
+    out: list[str] = []
+    for slide in plan.get("slides") or []:
+        sid = slide.get("slide_id") or "?"
+        points = slide.get("narrative") or []
+        if len(points) > MAX_POINTS_PER_SLIDE:
+            out.append(f"slide {sid} 有 {len(points)} 條要點（建議 ≤{MAX_POINTS_PER_SLIDE}）"
+                       "——組版會依版面截斷，尾端可能被丟")
+        for point in points:
+            text = str(point.get("text") or "")
+            if len(text) > MAX_POINT_CHARS:
+                out.append(f"slide {sid} 有要點長 {len(text)} 字"
+                           f"（建議 ≤{MAX_POINT_CHARS}）：{text[:20]}…")
+    return out
 
 
 def validate_regeneration_response(
