@@ -41,7 +41,7 @@ from pathlib import Path
 
 # ⚠ Windows 主控台預設 cp950，含 ≥／≤ 這類符號會 UnicodeEncodeError 而中斷輸出
 # ——本專案既有的坑（見 work-log 2026-08-04）。輸出一律轉 UTF-8。
-if hasattr(sys.stdout, "buffer"):
+if "pytest" not in sys.modules and hasattr(sys.stdout, "buffer"):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 SEP = chr(92)
@@ -177,6 +177,59 @@ DB_DEPENDENT_TESTS = (
 )
 DB_DEPENDENT_DESELECT = ("tests/test_per_channel_topic_labels.py",)
 
+VERIFY_PRESETS: dict[str, dict[str, list[str] | str]] = {
+    "report-professionalism": {
+        "groups": ["report", "transform", "renderer", "narrative"],
+        "tests": [
+            "tests/test_report_catalog_removals.py",
+            "tests/test_annual_trend_four_columns.py",
+            "tests/test_report_quality_and_ipc_filter.py",
+            "tests/test_cluster_reports_and_narrative.py",
+            "tests/test_ppt_reader_facing_output.py",
+            "tests/test_ppt_layout_contract.py",
+            "tests/test_narrative_contract_v4.py",
+            "tests/test_narrative_named_subjects.py",
+            "tests/test_narrative_capacity_is_honest.py",
+        ],
+        "paths": ["backend/app", "skills/patent-report-ppt/scripts"],
+        "source": ["backend.app", "skills/patent-report-ppt/scripts"],
+        "regression_filter": "report or transform or renderer or narrative",
+    },
+}
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """解析 preset 測試所需的公開 CLI 參數。"""
+    parser = argparse.ArgumentParser(description="verify_module argument parser")
+    parser.add_argument("--base", default="HEAD~1")
+    parser.add_argument("--preset", choices=sorted(VERIFY_PRESETS))
+    parser.add_argument("--tests", nargs="+")
+    parser.add_argument("--paths", nargs="+", default=["backend/app"])
+    parser.add_argument("--source", nargs="+", default=["backend.app"])
+    parser.add_argument("--regression", action="store_true")
+    parser.add_argument("-k", dest="regression_filter", default=None)
+    parser.add_argument("--skip", nargs="*", default=[])
+    args = parser.parse_args(argv)
+    if not args.tests and not args.preset:
+        parser.error("--tests or --preset is required")
+    return args
+
+
+def resolve_preset_args(args: argparse.Namespace) -> argparse.Namespace:
+    """套用 verify preset，補齊目標測試、掃描路徑與回歸 filter。"""
+    if not args.preset:
+        return args
+    preset = VERIFY_PRESETS[args.preset]
+    if not args.tests:
+        args.tests = list(preset["tests"])
+    if args.paths == ["backend/app"]:
+        args.paths = list(preset["paths"])
+    if args.source == ["backend.app"]:
+        args.source = list(preset["source"])
+    if args.regression_filter is None:
+        args.regression_filter = str(preset["regression_filter"])
+    return args
+
 
 def check_regression(tests: list[str], keyword: str | None) -> tuple[bool, str]:
     """專案標準範圍回歸（不是完整回歸——見 AGENTS.md「回歸只跑範圍」）。
@@ -264,6 +317,21 @@ def check_complexity(added: dict[str, set[int]]) -> tuple[bool, str]:
 
 
 def main() -> int:
+    if "--preset" in sys.argv[1:]:
+        preset_args = resolve_preset_args(parse_args(sys.argv[1:]))
+        rewritten = [
+            sys.argv[0],
+            "--base", preset_args.base,
+            "--tests", *preset_args.tests,
+            "--paths", *preset_args.paths,
+            "--source", *preset_args.source,
+            "-k", preset_args.regression_filter,
+        ]
+        if preset_args.regression:
+            rewritten.append("--regression")
+        if preset_args.skip:
+            rewritten.extend(["--skip", *preset_args.skip])
+        sys.argv = rewritten
     parser = argparse.ArgumentParser(description="模組驗證流程（AGENTS.md 同名章節）")
     parser.add_argument("--base", default="HEAD~1", help="比較基準（預設 HEAD~1）")
     parser.add_argument("--tests", nargs="+", required=True, help="要跑的測試檔")

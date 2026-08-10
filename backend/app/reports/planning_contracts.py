@@ -58,6 +58,295 @@ def validate_chart_bundle(bundle: dict[str, Any]) -> list[str]:
     return errors
 
 
+PPT_QUALITY_RETRY_LIMIT = 2
+PPT_QUALITY_DECISIONS = ("pass", "regenerate_partial", "regenerate_report_version", "blocked_defect")
+PPT_QUALITY_BLOCKED_DEFECT_TYPES = ("blocked_content_defect", "blocked_layout_defect")
+
+_PARTIAL_REGENERATION_WARNINGS = frozenset({
+    "narrative_missing",
+    "narrative_fallback",
+    "chart_missing_degraded",
+    "missing_slots",
+    "text_overflow_estimated",
+})
+_REPORT_VERSION_WARNINGS = frozenset({"artifact_manifest_missing"})
+_LAYOUT_BLOCKING_WARNINGS = frozenset({"text_overlap", "out_of_bounds", "margin_violation"})
+
+PPT_QUALITY_JSON_SCHEMAS: dict[str, dict[str, Any]] = {
+    "PptQualityReport": {
+        "type": "object",
+        "required": [
+            "schema_version",
+            "decision",
+            "issues",
+            "render",
+            "selected_chart_coverage",
+            "evidence_coverage",
+            "required_slot_coverage",
+        ],
+        "properties": {
+            "schema_version": {"const": "ppt-quality-report.v1"},
+            "decision": {"type": "string", "enum": list(PPT_QUALITY_DECISIONS)},
+            "blocked_defect_type": {
+                "type": ["string", "null"],
+                "enum": [*PPT_QUALITY_BLOCKED_DEFECT_TYPES, None],
+            },
+            "issues": {"type": "array", "items": {"type": "object"}},
+            "regeneration_plan": {"type": ["object", "null"]},
+            "retry_limit": {"type": "integer", "maximum": PPT_QUALITY_RETRY_LIMIT},
+        },
+    },
+    "RenderedPngManifest": {
+        "type": "object",
+        "required": ["render_success", "page_count", "pages"],
+        "properties": {
+            "render_success": {"type": "boolean"},
+            "page_count": {"type": "integer", "minimum": 0},
+            "pages": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["page", "png_path", "rendered"],
+                    "properties": {
+                        "page": {"type": "integer", "minimum": 1},
+                        "png_path": {"type": "string"},
+                        "sha256": {"type": "string"},
+                        "rendered": {"type": "boolean"},
+                    },
+                },
+            },
+        },
+    },
+    "RegenerationPlan": {
+        "type": "object",
+        "required": ["decision", "retry_limit", "targets", "locked"],
+        "properties": {
+            "decision": {
+                "type": "string",
+                "enum": ["regenerate_partial", "regenerate_report_version", "blocked_defect"],
+            },
+            "retry_limit": {"type": "integer", "minimum": 0, "maximum": PPT_QUALITY_RETRY_LIMIT},
+            "targets": {"type": "array", "items": {"type": "object"}},
+            "locked": {"$ref": "#/$defs/ScopeLock"},
+            "blocked_defect_type": {"type": "string", "enum": list(PPT_QUALITY_BLOCKED_DEFECT_TYPES)},
+        },
+    },
+    "ScopeLock": {
+        "type": "object",
+        "required": ["slide_ids", "chart_identities", "narrative_keys", "evidence_refs"],
+        "properties": {
+            "slide_ids": {"type": "array", "items": {"type": "string"}},
+            "chart_identities": {"type": "array", "items": {"type": "string"}},
+            "narrative_keys": {"type": "array", "items": {"type": "string"}},
+            "evidence_refs": {"type": "array", "items": {"type": "string"}},
+        },
+    },
+}
+
+
+def _warning_type(warning: dict[str, Any]) -> str:
+    """取出 manifest warning 的穩定型別欄位。"""
+    return str(warning.get("type") or warning.get("warning_type") or "").strip()
+
+
+def _target_key(issue: dict[str, Any]) -> str:
+    """產生 retry 計數使用的 target key。"""
+    slide_id = issue.get("slide_id") or issue.get("page") or issue.get("report_key") or "report"
+    return f"{slide_id}:{issue['type']}"
+
+
+def _issue_from_warning(warning: dict[str, Any]) -> dict[str, Any]:
+    """把 builder manifest warning 正規化成 quality issue。"""
+    issue = dict(warning)
+    issue["type"] = _warning_type(warning)
+    issue.setdefault("severity", "fail")
+    return issue
+
+
+def _slide_values(slides: list[dict[str, Any]], key: str) -> set[str]:
+    """收集 slide manifest 內的列表欄位值。"""
+    values: set[str] = set()
+    for slide in slides:
+        values.update(str(value) for value in (slide.get(key) or []) if str(value).strip())
+    return values
+
+
+def _collect_missing_slots(slides: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """找出每頁 required_slots 中尚未填入的 slot。"""
+    missing: dict[str, list[str]] = {}
+    for slide in slides:
+        slide_id = str(slide.get("slide_id") or "?")
+        required = {str(value) for value in (slide.get("required_slots") or []) if str(value).strip()}
+        filled = {str(value) for value in (slide.get("filled_slots") or []) if str(value).strip()}
+        gaps = sorted(required - filled)
+        if gaps:
+            missing[slide_id] = gaps
+    return missing
+
+
+def _scope_lock(slides: list[dict[str, Any]], selected_chart_identities: set[str]) -> dict[str, list[str]]:
+    """建立局部重產時不可被 CLI 擴大修改的範圍鎖。"""
+    narrative_keys = {
+        str(value)
+        for slide in slides
+        for value in (slide.get("narrative_keys") or [])
+        if str(value).strip()
+    }
+    return {
+        "slide_ids": sorted(str(slide.get("slide_id")) for slide in slides if str(slide.get("slide_id") or "").strip()),
+        "chart_identities": sorted(selected_chart_identities | _slide_values(slides, "chart_identities")),
+        "narrative_keys": sorted(narrative_keys),
+        "evidence_refs": sorted(_slide_values(slides, "evidence_refs")),
+    }
+
+
+def _target_for_issue(issue: dict[str, Any], *, retry_counts: dict[str, int]) -> dict[str, Any] | None:
+    """依 warning 類型建立 regeneration target；blocked 類型不交給 CLI。"""
+    warning_type = issue["type"]
+    if warning_type in _LAYOUT_BLOCKING_WARNINGS:
+        return None
+    if warning_type in _REPORT_VERSION_WARNINGS:
+        return {"scope": "report_version", "warning_type": warning_type}
+    if warning_type == "text_overflow_estimated" and retry_counts.get(_target_key(issue), 0) >= PPT_QUALITY_RETRY_LIMIT:
+        return None
+    if warning_type in _PARTIAL_REGENERATION_WARNINGS:
+        return {
+            "scope": "partial",
+            "warning_type": warning_type,
+            "slide_id": issue.get("slide_id"),
+            "report_key": issue.get("report_key"),
+            "variant_key": issue.get("variant_key"),
+            "slot": issue.get("slot"),
+        }
+    if warning_type in {"selected_chart_missing", "unselected_chart_used", "evidence_missing"}:
+        return {"scope": "partial", "warning_type": warning_type, "slide_id": issue.get("slide_id")}
+    return None
+
+
+def _decide_quality(issues: list[dict[str, Any]], retry_counts: dict[str, int]) -> tuple[str, str | None]:
+    """以固定優先序把 quality issues 摺疊成唯一 decision。"""
+    if not issues:
+        return "pass", None
+    for issue in issues:
+        warning_type = issue["type"]
+        if warning_type in {"png_render_failed", "page_count_mismatch", "text_overlap", "out_of_bounds", "margin_violation"}:
+            return "blocked_defect", "blocked_layout_defect"
+        if warning_type == "text_overflow_estimated" and retry_counts.get(_target_key(issue), 0) >= PPT_QUALITY_RETRY_LIMIT:
+            return "blocked_defect", "blocked_content_defect"
+    if any(issue["type"] in _REPORT_VERSION_WARNINGS for issue in issues):
+        return "regenerate_report_version", None
+    return "regenerate_partial", None
+
+
+def _regeneration_plan(
+    *,
+    decision: str,
+    blocked_defect_type: str | None,
+    issues: list[dict[str, Any]],
+    locked: dict[str, list[str]],
+    retry_counts: dict[str, int],
+) -> dict[str, Any] | None:
+    """依 decision 產生 runner 可持久化的 RegenerationPlan。"""
+    if decision == "pass":
+        return None
+    targets = [
+        target
+        for issue in issues
+        if (target := _target_for_issue(issue, retry_counts=retry_counts)) is not None
+    ]
+    plan: dict[str, Any] = {
+        "schema_version": "regeneration-plan.v1",
+        "decision": decision,
+        "retry_limit": PPT_QUALITY_RETRY_LIMIT,
+        "targets": targets,
+        "locked": locked,
+    }
+    if blocked_defect_type:
+        plan["blocked_defect_type"] = blocked_defect_type
+    return plan
+
+
+def build_ppt_quality_report(
+    *,
+    pptx_manifest: dict[str, Any],
+    rendered_png_manifest: dict[str, Any],
+    selected_chart_identities: list[str] | set[str] | tuple[str, ...],
+    evidence_manifest: dict[str, Any] | None = None,
+    retry_counts: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """彙整 PPTX/PNG/evidence manifest，產生交付前 quality gate 報告。"""
+    evidence_manifest = evidence_manifest or {}
+    retry_counts = retry_counts or {}
+    slides = list(pptx_manifest.get("slides") or [])
+    selected = {str(value) for value in selected_chart_identities if str(value).strip()}
+    used = _slide_values(slides, "chart_identities")
+    evidence_refs = _slide_values(slides, "evidence_refs")
+
+    issues = [_issue_from_warning(warning) for warning in (pptx_manifest.get("warnings") or [])]
+    missing_slots = _collect_missing_slots(slides)
+    for slide_id, slots in missing_slots.items():
+        for slot in slots:
+            issues.append({"type": "missing_slots", "severity": "fail", "slide_id": slide_id, "slot": slot})
+
+    missing_selected = sorted(selected - used)
+    for identity in missing_selected:
+        issues.append({"type": "selected_chart_missing", "severity": "fail", "chart_identity": identity})
+    unselected_used = sorted(used - selected)
+    for identity in unselected_used:
+        issues.append({"type": "unselected_chart_used", "severity": "fail", "chart_identity": identity})
+
+    missing_evidence = sorted(ref for ref in evidence_refs if ref not in evidence_manifest)
+    for ref in missing_evidence:
+        issues.append({"type": "evidence_missing", "severity": "fail", "evidence_ref": ref})
+
+    png_pages = rendered_png_manifest.get("pages") or []
+    failed_pages = [
+        page
+        for page in png_pages
+        if not page.get("rendered", rendered_png_manifest.get("render_success", False))
+    ]
+    if rendered_png_manifest.get("render_success") is False or failed_pages:
+        issues.append({"type": "png_render_failed", "severity": "fail", "failed_pages": failed_pages})
+    if int(pptx_manifest.get("page_count") or 0) != int(rendered_png_manifest.get("page_count") or 0):
+        issues.append({
+            "type": "page_count_mismatch",
+            "severity": "fail",
+            "pptx_page_count": int(pptx_manifest.get("page_count") or 0),
+            "rendered_page_count": int(rendered_png_manifest.get("page_count") or 0),
+        })
+
+    decision, blocked_defect_type = _decide_quality(issues, retry_counts)
+    locked = _scope_lock(slides, selected)
+    return {
+        "schema_version": "ppt-quality-report.v1",
+        "report_version_id": pptx_manifest.get("report_version_id"),
+        "decision": decision,
+        "blocked_defect_type": blocked_defect_type,
+        "retry_limit": PPT_QUALITY_RETRY_LIMIT,
+        "issues": issues,
+        "render": rendered_png_manifest,
+        "selected_chart_coverage": {
+            "selected": sorted(selected),
+            "used": sorted(used),
+            "missing": missing_selected,
+            "unselected_used": unselected_used,
+        },
+        "evidence_coverage": {
+            "referenced": sorted(evidence_refs),
+            "available": sorted(str(ref) for ref in evidence_manifest),
+            "missing": missing_evidence,
+        },
+        "required_slot_coverage": {"missing": missing_slots},
+        "regeneration_plan": _regeneration_plan(
+            decision=decision,
+            blocked_defect_type=blocked_defect_type,
+            issues=issues,
+            locked=locked,
+            retry_counts=retry_counts,
+        ),
+    }
+
+
 def validate_report_brief(brief: dict[str, Any]) -> list[str]:
     """任務輸入契約：目標、頁數預算、snapshot 與選圖集合。"""
     errors: list[str] = []

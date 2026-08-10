@@ -164,7 +164,7 @@
 
 ## 3. 驗證與輸出
 
-- [ ] 3.1 執行 report/transform/renderer/narrative 目標測試、相關模組回歸與 `scripts/verify_module.py`
+- [x] 3.1 執行 report/transform/renderer/narrative 目標測試、相關模組回歸與 `scripts/verify_module.py`
 - [ ] 3.2 產生 HTML、goal-driven PPTX、manifest/metadata 與 narratives/evidence artifact，核對檔案存在、選圖／章節、dataset id 與 checksum；不以固定頁數判定成功
 
   ### 端到端實跑（2026-08-10）：走完整正式路徑，查出三個缺陷
