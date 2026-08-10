@@ -25,7 +25,10 @@ from __future__ import annotations
 
 import unittest
 
-from backend.app.reports.planning_contracts import validate_evidence
+from backend.app.reports.planning_contracts import (
+    evidence_value_warnings,
+    validate_evidence,
+)
 
 SNAP = "v1"
 REPORT_DATA = {
@@ -59,13 +62,24 @@ class EvidenceValueTests(unittest.TestCase):
             [],
         )
 
-    def test_mismatched_value_is_rejected(self):
-        """value 對不上 → 擋。這就是「查了但數字寫錯」的攔截點。"""
-        errors = validate_evidence(_plan(), _ev(value=99), snapshot_id=SNAP,
-                                   report_data=REPORT_DATA)
-        self.assertTrue(errors)
-        self.assertIn("99", errors[0])
-        self.assertIn("applicant_ranking", errors[0])
+    def test_mismatched_value_is_warned_not_blocked(self):
+        """value 對不上 → **留下警告，不擋**（2026-08-10 第三輪重新定位）。
+
+        🔴 為什麼不擋：CLI 會用到的數字有四類，只有「單列欄位值」對得上 rows；
+        加總（母體 55 件）、比例（占 83%）、查證來的（DB）全都對不上。做成阻擋時
+        四次實跑三次誤擋，代價是使用者完全拿不到成品。
+
+        ⚠ 訊號沒有消失——警告進 job 結果，人工抽驗看得到「這幾個數字我對不上」。
+        真正防造假的是 evidence 的 source 標記與 query_audit 的可追溯性。
+        """
+        self.assertEqual(
+            validate_evidence(_plan(), _ev(value=99), snapshot_id=SNAP,
+                              report_data=REPORT_DATA),
+            [], "數字對不上不得阻擋整份規劃",
+        )
+        warnings = evidence_value_warnings(_ev(value=99), REPORT_DATA)
+        self.assertTrue(warnings, "對不上仍要留下警告")
+        self.assertIn("99", warnings[0])
 
     def test_derived_value_not_checked(self):
         """標了 derived 的衍生數字不驗——使用者定案：衍生不拿來擋。"""

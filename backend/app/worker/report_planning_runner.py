@@ -24,6 +24,7 @@ from backend.app.mcp_server.report_research import (
 from backend.app.reports.planning_contracts import (
     APPROVED_LAYOUT_PRESETS,
     validate_evidence,
+    evidence_value_warnings,
     validate_report_brief,
     validate_research_effort,
     validate_slide_plan,
@@ -193,8 +194,10 @@ def run_report_planning(
     evidence_data = {"chart_rows": {b["report_key"]: b.get("data_rows") or []
                                     for b in brief["selected_charts"]}}
     errors += validate_evidence(plan, evidence, snapshot_id=brief["snapshot_id"],
-                                has_narratives=bool(brief.get("narratives")),
-                                report_data=evidence_data)
+                                has_narratives=bool(brief.get("narratives")))
+    # 數字對照**只警告不阻擋**（2026-08-10 第三輪重新定位）：能對上 rows 的只有
+    # 「單列欄位值」，加總／比例／查證來的都對不上——做成阻擋時四次實跑三次誤擋。
+    value_warnings = evidence_value_warnings(evidence, evidence_data)
     # 🔴 不查資料庫就不准寫（2026-08-10 使用者定案）：CLI 的職責是依選圖內容判斷
     # 要找什麼證據並實際查。原本 query_audit 只被記錄、不被檢查，等於允許只讀
     # 聚合數字就編出整份敘述。
@@ -215,6 +218,8 @@ def run_report_planning(
         # 取證紀錄：查了幾次、用哪些工具、有沒有截斷或失敗。
         # ⚠ 空清單有意義——代表這次規劃**完全沒有查證**，只用了選圖數據。
         "query_audit": query_audit,
+        # 對不上引擎數據的直接引用；人工抽驗時看得到「這幾個數字我對不上」。
+        "evidence_value_warnings": value_warnings,
     }
     _tick("保存候選", 90)
     if persister is not None:

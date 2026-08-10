@@ -441,6 +441,34 @@ def _numeric_values_of(report_data: dict[str, Any], report_key: str) -> set[floa
     return values
 
 
+def evidence_value_warnings(
+    manifest: dict[str, Any],
+    report_data: dict[str, Any] | None,
+) -> list[str]:
+    """對不上引擎數據的直接引用——**只警告不阻擋**（2026-08-10 第三輪重新定位）。
+
+    🔴 為什麼從阻擋降為警告：CLI 會用到的數字有四類，只有第一類對得上 rows：
+
+    | 類型 | 例 | 對得上？ |
+    |---|---|---|
+    | 單列欄位值 | 「風磁 11 件」 | ✅ |
+    | **加總** | 「母體 55 件」 | ❌ 是 rows 的和 |
+    | **比例** | 「占 83%」 | ❌ 相除 |
+    | **查證來的** | DB 查到的家族數 | ❌ 不在 report_data |
+
+    做成阻擋時，四次實跑有三次是誤擋（未選報表、加總、查證值）。擋得住的只有
+    第一類，代價卻是整份規劃失敗、使用者拿不到成品——不成比例。
+
+    ⚠ 訊號沒有消失：警告會進 job 結果，人工抽驗時看得到「這幾個數字我對不上」。
+    真正防數字造假的是 evidence 的 source 標記與 query_audit 的可追溯性。
+    """
+    out: list[str] = []
+    for ref, entry in (manifest or {}).items():
+        if isinstance(entry, dict):
+            out.extend(_value_errors(ref, entry, report_data))
+    return out
+
+
 def _value_errors(ref: str, entry: dict[str, Any], report_data) -> list[str]:
     """直接引用的數字要對得上引擎數據；衍生數字不驗（2026-08-10 使用者裁決）。
 
@@ -600,7 +628,6 @@ def validate_evidence(
                 errors.append(
                     f"evidence {ref} 標了 source=narrative 卻沒有 report_key"
                     "——說不出來自哪一份解讀就無法追溯，等於沒標")
-        errors.extend(_value_errors(ref, entry, report_data))
     for slide in plan.get("slides") or []:
         sid = slide.get("slide_id") or "?"
         for point in slide.get("narrative") or []:
