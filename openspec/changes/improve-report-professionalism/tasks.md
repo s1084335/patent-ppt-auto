@@ -155,7 +155,7 @@
   | Key Player 內容元件可被消費 | ✅ `chart_runner.applicant_strength_rows` 呼叫 `content_blocks.key_player_profiles`（唯一定義處） |
   | reader guide 內容元件可被消費 | ✅ `3833796`——⚠ 查證發現 `reader_guide_blocks()` **全庫只有測試在呼叫**，沒有生產端消費者；已沿 `encoding_notes` 同一條通道加進 `table_display` |
   | 判讀說明頁的內容規則 | ✅ `17c4ca7`——從滑雪機 V2 p11 反解四個必填區與四個偏差角度，寫進 `content_standard.md` 5-1 |
-  | 「零上傳失敗」實跑驗證 | ⬜ 需完整 job（DB＋worker），留待第 5 輪產 PPTX 時一併驗 |
+  | 「零上傳失敗」實跑驗證 | ✅ job 251 `report_generate` succeeded，`artifacts_uploaded: 31`、`has_cluster_analytics: True`；磁碟 31 = DB 31 **雙向零差異**；`table_display.reader_guide` 4 條實際落地 |
 
   ⚠ **落點誤判已修**：一度把口徑定義（計數單位／同族合併／共同申請／分類覆蓋）
   當成範例頁上的「可觀測性偏差」。前者答「數字怎麼算」、後者答「不能怎麼推論」，
@@ -166,6 +166,97 @@
 
 - [ ] 3.1 執行 report/transform/renderer/narrative 目標測試、相關模組回歸與 `scripts/verify_module.py`
 - [ ] 3.2 產生 HTML、goal-driven PPTX、manifest/metadata 與 narratives/evidence artifact，核對檔案存在、選圖／章節、dataset id 與 checksum；不以固定頁數判定成功
+
+  ### 端到端實跑（2026-08-10）：走完整正式路徑，查出三個缺陷
+
+  資料集 workspace 3（滑雪機 55 件）。**每一段都走 job 佇列與 AI bridge，不手動繞路**
+  ——這是三個缺陷得以現形的唯一原因，前面所有單元測試都是綠的。
+
+  | 段 | job | 結果 |
+  |---|---|---|
+  | 報表產製 | 251 `report_generate` | ✅ 31 檔，磁碟＝DB |
+  | 逐報表解讀 | 252 `ai:narrative` | ✅ 15 個 variants 全數具名產出 |
+  | 目標規劃 | 253 → 254 → 256 `ai:report_plan` | 253 failed（缺陷一）、254 succeeded、256 驗回存修正 |
+  | PPT 組版 | 255 → 257 `ai:report_ppt` | 255 走成固定頁序（缺陷二）、257 驗修正 |
+
+  #### 🔴 缺陷一：無圖 variant 被選中會崩潰（阻塞正式**預設**路徑）
+
+  `cluster_topic_table` 的 `topic_table_tech`／`_effect` 兩個 variant 刻意沒有圖檔
+  （主題統計表是表格，variant 只是解讀掛點），但存在性檢查踩空：
+  `run_dir / ""` 等於 run_dir 本身，`.exists()` 回 True → `shutil.copy2` 對目錄操作
+  → `PermissionError`，訊息看不出真因。
+
+  ⚠ 前端 `loadPptChartPicker` **預設全選**，使用者按下 PPT 按鈕必然送出這兩個
+  ——也就是正式預設路徑本來就是壞的。修正 `c9e6a6a`（前端過濾＋後端明確報錯）。
+
+  #### 🔴 缺陷二：SlidePlan 沒回存 DB，goal-driven 整條路徑是斷的
+
+  `ai:report_plan` 把 plan 寫進本機 `report_data.json` 後沒有 `upload_run_dir`；
+  下游 `ai:report_ppt` 從 DB materialize，拿到沒有 plan 的版本，`resolve_layout`
+  **靜默退回固定頁序**。
+
+  | | 規劃 | 實際產出 |
+  |---|---|---|
+  | 頁數 | 11 | 14 |
+  | 版型 | cover → exec_summary → … → **kp_quadrant** → reading_guide | cover → chart_hero ×6 → … → direction → 附錄 ×3 |
+
+  且 manifest 的 `missing_reports` 含 `applicant_strength_profile`——**Key Player
+  象限圖整個沒進 PPT**。⚠ 全程沒有任何錯誤訊息：「找不到 plan 就用固定頁序」是
+  設計上的保底行為，斷鏈與「使用者根本沒規劃」在下游長得一模一樣。
+  修正 `8d20c39`。跨容器成因同 2026-07-23 定案，這是該坑的第二次出現。
+
+  #### 🔴 缺陷四：section 的 report_key 是檔名，選的圖從簡報上消失
+
+  SlidePlan 修好之後重跑，PPT 確實照規劃出 11 頁，但**兩頁降級成 `stat_callout`、
+  `charts=[]`**——使用者選的圖直接不見：
+
+      p3 stat_callout ← degraded_from=chart_with_points  report_keys=['annual_trend']
+
+  組版端取 chart_identity 前段當 report_key 去 `artifact_manifest` 反查，
+  但 manifest 用 **registry 鍵**。引擎端兩個錯法：趨勢 section **寫死檔名**
+  `annual_trend`（registry 是 `application_trend`）、IPC／CPC section **漏設**而
+  fallback 成 `ipc_main_distribution_L4`。
+
+  ⚠ **2026-07-27 就診斷過同一個問題**：`test_chart_sections` 的 docstring 明寫
+  「SVG 檔名（annual_trend…）與報表鍵（application_trend…）不同名，查找必然落空」，
+  當時也照做了「section 一律顯式帶 report_key」——**但值填成檔名**，測試再把錯值
+  釘住。錯值能存活至今是因為通則測試只要求「查找鍵能取到 rows」，而 `chart_rows`
+  裡剛好也有 `annual_trend` 這個鍵：兩支測試都綠，問題原地不動了兩週。
+
+  修正 `2595d57`。**缺陷三一併解掉**——section 的 report_key 就是 identity 前段，
+  改對之後與 `profile_manifest` 那套自然一致，不需要任何映射表，
+  `ipc_main_distribution_L4:L5` 這種自相矛盾組合也消失。
+
+  #### 🔴 缺陷五：CLI 可以不查資料庫就直接寫（使用者定案要擋）
+
+  `run_report_planning` 把 `query_audit` 放進結果並註解「空清單有意義——代表這次
+  規劃完全沒有查證」，⚠ 但**沒有任何地方會因為它是空的而失敗**，等於允許 CLI
+  只讀聚合數字就編出整份敘述。`content_standard.md` 第三節那條規則原本只寫在
+  給 AI 看的提示裡。
+
+  使用者定案：「我給他的數據報表都是一定要產的，這個就是給模組控制，CLI 是根據
+  這些內容去判斷要找啥證據來寫，所以**不能讓它可以不去查資料庫就直接寫**」。
+
+  修正 `31f8e81`：`validate_research_effort` 判準只有一條「至少一次成功查詢」
+  ——查幾次、查什麼由 CLI 依內容判斷，規則不越俎代庖；prompt 同步寫明要求
+  （只擋不說會讓 CLI 一直撞牆）。
+
+  #### 缺陷三：選圖 identity 兩套命名 → 已隨缺陷四一併解決
+
+  | 來源 | 同一張圖 |
+  |---|---|
+  | `profile_manifest.json` | `application_trend:default`（registry report key） |
+  | `report_data.sections` → `chart_bundle` → 前端 | `annual_trend:default`（section key） |
+
+  前端與 `chart_bundle` 一致，故後者是對的。⚠ 但兩份檔案**都叫 identity、都是
+  `xxx:yyy` 形狀、值卻不同**，是本專案第五次「同一份知識兩個落點」。
+  另 `cpc_main_distribution_L4:L5`（section key 已含 `_L4` 再接 variant `L5`）
+  這種自相矛盾組合也在可用清單裡。
+
+  ⚠ **本段的方法論結論**：這三個缺陷沒有一個能被單元測試抓到——它們都在
+  「兩個元件之間」而非元件內部。跨容器傳遞、預設選項、靜默降級三者共同的特徵是
+  **失敗時看起來像正常行為**。往後凡是「A 寫檔、B 讀檔」的接縫都要有一支
+  端到端測試或實跑驗證，不能只驗兩端各自的單元行為。
 - [ ] 3.3 以桌面與行動視窗檢查 HTML，渲染 PPTX 全頁縮圖並檢查截字、重疊、空白圖、圖例與中文字型
 - [ ] 3.4 保存前後對照、已知限制與未測項目，由使用者逐項確認內容與視覺品質後才 archive
 

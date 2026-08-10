@@ -38,6 +38,27 @@
 
 ## 6. TDD：產後品質 gate 與局部重產
 
+### 第 6 節的分工與相依（2026-08-10）
+
+多 agent 並行，邊界如下；⚠ **同一工作樹**，已實際互相覆蓋過三次
+（checkout、工作紀錄檔、回歸讀到改到一半的版本），交接前先確認對方停手。
+
+| 項 | 執行者 | 分支 | 狀態 |
+|---|---|---|---|
+| 1.3 schema ＋ 6.1／6.2 `PptQualityReport` | Codex | `feat/ppt-quality-report` | Red 測試已寫（`tests/test_ppt_quality_report.py`），schema 與產生器**未實作** |
+| `improve-report-professionalism` 3.1 `verify_module` preset | Codex | 同上 | Red 已寫，preset 未實作 |
+| 6.3–6.5 局部重產 ＋ scope lock | Claude | `feat/improve-report-catalog` | 🔴 **被 1.3／6.2 擋住**——要用 `RegenerationPlan`／`ScopeLock` schema，先做會做出對不上的東西 |
+| 7.5／7.6 驗收 | Claude | 同上 | 等 6.x 與 PPT 實物驗收 |
+
+⚠ **本節的前提在 2026-08-10 才剛補上**：`ai:report_plan` 產出的 SlidePlan 原本
+**沒有回存 DB**，下游 `ai:report_ppt` 從 DB materialize 拿到沒有 plan 的版本，
+`resolve_layout` 靜默退回固定頁序——實測 11 頁的規劃變成 14 頁固定頁序，
+Key Player 象限圖整個沒進 PPT，且**全程無錯誤訊息**。已修（`8d20c39`），
+契約由 `tests/test_slide_plan_reaches_ppt.py` 守。
+
+沒有這個修正，第 6 節的 quality report 會一直在評估「固定頁序的產物」，
+卻以為自己在評估 goal-driven 的產物——量到的每個數字都是對的，結論卻全錯。
+
 - [ ] 6.1 Red：新增 manifest warnings 到 quality decision 的契約測試，涵蓋 `narrative_missing`、`narrative_fallback`、`chart_missing_degraded`、`artifact_manifest_missing`、`missing_slots`、`text_overflow_estimated`、`text_overlap`、`out_of_bounds`、PNG render 失敗與頁數不符
 - [ ] 6.2 Green：完成 `PptQualityReport` 產生器，彙整 PPTX manifest、RenderedPngManifest、選圖覆蓋、evidence coverage、必要 slot 與版面 warnings
 - [ ] 6.3 Red：新增 `RegenerationPlan` scope lock 測試，確認 CLI 只可回傳指定 targets，改動 locked slide、chart identity、未標記 narrative 或未選圖表時必須拒收
