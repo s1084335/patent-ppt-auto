@@ -68,6 +68,12 @@ class PointGuardTests(unittest.TestCase):
         self.assertEqual(errors, [])
 
 
+# ⚠ 2026-08-10：稽核開檔／讀回已從 report_planning_runner 移到
+# mcp_server.report_research（AUDIT_PATH_ENV 的定義處），供解讀線與規劃線共用
+# ——複製第二份會讓兩條線的稽核格式各自演進，而不一致本身不會報錯。
+from backend.app.mcp_server import report_research as rrs  # noqa: E402
+
+
 class QueryAuditFileTests(unittest.TestCase):
     """稽核落檔 helper：環境變數設定、還原與讀不到檔的退回。"""
 
@@ -77,14 +83,14 @@ class QueryAuditFileTests(unittest.TestCase):
         from backend.app.mcp_server.report_research import AUDIT_PATH_ENV
 
         before = os.environ.get(AUDIT_PATH_ENV)
-        with rpr._query_audit_file() as path:
+        with rrs.query_audit_file() as path:
             self.assertEqual(os.environ.get(AUDIT_PATH_ENV), str(path))
             self.assertTrue(path.exists())
         self.assertEqual(os.environ.get(AUDIT_PATH_ENV), before,
                          "離開後要還原環境變數，不得污染後續任務")
 
     def test_temp_file_removed_after(self):
-        with rpr._query_audit_file() as path:
+        with rrs.query_audit_file() as path:
             recorded = path
         self.assertFalse(recorded.exists(), "暫存檔要刪掉")
 
@@ -94,18 +100,18 @@ class QueryAuditFileTests(unittest.TestCase):
             target.write_text(
                 json.dumps({"tool": "x"}) + "\n" + json.dumps({"tool": "y"}) + "\n",
                 encoding="utf-8")
-            self.assertEqual([e["tool"] for e in rpr._read_query_audit(target)], ["x", "y"])
+            self.assertEqual([e["tool"] for e in rrs.read_query_audit(target)], ["x", "y"])
 
     def test_read_skips_broken_lines(self):
         """⚠ 半行壞掉不得讓整份稽核消失。"""
         with TemporaryDirectory() as tmp:
             target = Path(tmp) / "a.jsonl"
             target.write_text('{"tool": "x"}\n{壞掉\n{"tool": "y"}\n', encoding="utf-8")
-            self.assertEqual([e["tool"] for e in rpr._read_query_audit(target)], ["x", "y"])
+            self.assertEqual([e["tool"] for e in rrs.read_query_audit(target)], ["x", "y"])
 
     def test_read_missing_file_returns_empty(self):
         """⚠ 稽核缺失不得讓規劃失敗——讀不到就回空清單。"""
-        self.assertEqual(rpr._read_query_audit(Path("Z:/nope/none.jsonl")), [])
+        self.assertEqual(rrs.read_query_audit(Path("Z:/nope/none.jsonl")), [])
 
 
 class KpPresetFallbackTests(unittest.TestCase):

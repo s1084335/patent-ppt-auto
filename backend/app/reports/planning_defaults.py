@@ -41,6 +41,7 @@ def build_brief(
     north_star_goal: str = "",
     audience: str = "",
     page_budget: int | None = None,
+    narratives: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """組 ReportBrief：使用者填了就以他的為準，沒填就用預設策略。
 
@@ -57,6 +58,10 @@ def build_brief(
         "selected_charts": selected_charts,
         "directions": list(DEFAULT_DIRECTIONS),
         "used_default_goal": used_default,
+        # 既有逐報表解讀（2026-08-10）：規劃端要**從它濃縮**，不是從頭再寫一次。
+        # ⚠ 沒有這一份時，規劃 CLI 只看得到聚合數字，寫不出機構層深度——
+        # 解讀階段查 DB 取證的產出等於整份被丟棄。可為 None（解讀尚未產出）。
+        "narratives": narratives or {},
     }
 
 

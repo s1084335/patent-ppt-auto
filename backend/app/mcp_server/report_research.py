@@ -25,9 +25,11 @@ CLI 的典型使用序：
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
+import tempfile
 import re
 from collections.abc import Callable  # noqa: F401
 from datetime import date, datetime
@@ -114,6 +116,47 @@ def get_query_audit() -> list[dict[str, Any]]:
 #: 寫 JSONL，任務結束再讀回。
 #: ⚠ 未設就只留記憶體：不該因為有人 import 這個模組就在檔案系統留下東西。
 AUDIT_PATH_ENV = "PATENT_QUERY_AUDIT_PATH"
+
+
+@contextlib.contextmanager
+def query_audit_file():
+    """為一次 AI 任務開稽核落檔，並讓 MCP server 子行程看得到路徑。
+
+    ⚠ 用暫存檔而不是固定路徑：多個任務可能並行，共用一個檔會互相污染。
+    ⚠ 落點在此（`AUDIT_PATH_ENV` 的定義處）而非各 runner：解讀線與規劃線都要用，
+    複製第二份會讓兩條線的稽核格式各自演進，而不一致本身不會報錯。
+    """
+    # ⚠ 不用 with：這個檔要活到 CLI 子行程寫完才讀，由 finally 負責刪除。
+    handle = tempfile.NamedTemporaryFile(  # noqa: SIM115
+        prefix="query_audit_", suffix=".jsonl", delete=False)
+    handle.close()
+    path = Path(handle.name)
+    previous = os.environ.get(AUDIT_PATH_ENV)
+    os.environ[AUDIT_PATH_ENV] = str(path)
+    try:
+        yield path
+    finally:
+        if previous is None:
+            os.environ.pop(AUDIT_PATH_ENV, None)
+        else:
+            os.environ[AUDIT_PATH_ENV] = previous
+        path.unlink(missing_ok=True)
+
+
+def read_query_audit(path: Path) -> list[dict[str, Any]]:
+    """讀回稽核 JSONL。⚠ 讀不到就回空清單——稽核缺失不得讓任務失敗。"""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    entries = []
+    for line in lines:
+        if line.strip():
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return entries
 
 
 def _audit(tool: str, **fields: Any) -> None:

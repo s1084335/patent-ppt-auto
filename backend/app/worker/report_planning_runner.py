@@ -13,14 +13,14 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from collections.abc import Callable
-from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 
-from backend.app.mcp_server.report_research import AUDIT_PATH_ENV, TOOL_NAMES
+from backend.app.mcp_server.report_research import (
+    TOOL_NAMES,
+    query_audit_file,
+    read_query_audit,
+)
 from backend.app.reports.planning_contracts import (
     APPROVED_LAYOUT_PRESETS,
     validate_evidence,
@@ -37,6 +37,25 @@ class ReportPlanningError(RuntimeError):
     """規劃失敗（brief 不合格、CLI 產出不合契約、驗證未過）。"""
 
 
+def _narrative_digest(narratives: dict[str, Any]) -> str:
+    """把既有逐報表解讀壓成 prompt 區塊；沒有解讀時回空字串。
+
+    ⚠ 只取 headline 與要點文字，不帶 evidence 結構——規劃端要的是**素材內容**，
+    不是解讀的內部形狀。帶太多會擠掉選圖數據的額度。
+    """
+    blocks: list[str] = []
+    for report_key, entry in (narratives.get("reports") or {}).items():
+        for variant_key, variant in (entry.get("variants") or {}).items():
+            headline = str(variant.get("headline") or "").strip()
+            points = [str(p.get("text") or "").strip()
+                      for p in (variant.get("points") or []) if p.get("text")]
+            if not headline and not points:
+                continue
+            body = "\n".join(f"  - {p}" for p in points)
+            blocks.append(f"### {report_key}:{variant_key}｜{headline}\n{body}")
+    return "\n".join(blocks)
+
+
 def build_prompt(brief: dict[str, Any]) -> str:
     """組規劃提示：目標／受眾／頁數預算＋每張選圖的圖與數據＋可用查證工具。"""
     charts = brief.get("selected_charts") or []
@@ -51,6 +70,7 @@ def build_prompt(brief: dict[str, Any]) -> str:
         )
     tools = "、".join(TOOL_NAMES)
     presets = "、".join(sorted(APPROVED_LAYOUT_PRESETS))
+    existing = _narrative_digest(brief.get("narratives") or {})
     return (
         "任務：依最大目標規劃一份專利分析簡報（系統派工、非互動、一次性）。\n\n"
         f"## 最大目標\n{brief['north_star_goal']}\n"
@@ -69,7 +89,15 @@ def build_prompt(brief: dict[str, Any]) -> str:
         f"## 頁數上限\n{brief['page_budget']} 頁（超過即不合格）\n\n"
         "## 使用者選定的圖表（**全部都要用到，且不得加入未選的圖**）\n"
         + "\n\n".join(chart_blocks) + "\n\n"
-        "## 🔴 必須實際查證（不查就不合格，會被退回）\n"
+        + (("## 🔴 既有逐報表解讀（你的**素材**——要濃縮它，不是重寫）\n"
+            "下列解讀已經過查證產出（讀過專利內容、具名到申請人與機構層）。\n"
+            "你的要點應該**從這裡濃縮**，把散在各報表的發現收斂成整份簡報的敘事線。\n\n"
+            "⚠ 濃縮**不等於刪細節**：具名對象（誰）、數字（幾件）、機構層描述\n"
+            "（「法蘭擋板＋電磁鐵解鎖」而非「電機化」）都必須留著——那正是深度所在，\n"
+            "丟掉它們就只剩下從聚合數字也能寫出來的空話。\n"
+            "要砍的是重複、鋪陳與轉折語，不是資訊。\n\n"
+            f"{existing}\n\n") if existing else "")
+        + "## 🔴 必須實際查證（不查就不合格，會被退回）\n"
         "選圖數據只是**起點**，不是全部。你的職責是看著這些圖表與數據，判斷\n"
         "「要回答最大目標，還缺哪些事實」，然後**實際去查**，再依查到的內容撰寫。\n"
         "⚠ 完全沒有查詢紀錄的規劃會被判定不合格並退回——聚合數字寫不出具名發現，\n"
@@ -107,46 +135,6 @@ def _parse_reply(raw: str) -> dict[str, Any]:
         raise ReportPlanningError(f"CLI JSON 解析失敗：{exc}") from exc
 
 
-@contextmanager
-def _query_audit_file():
-    """為本次規劃開一個稽核落檔，並讓 MCP server 子行程看得到路徑。
-
-    ⚠ 用暫存檔而不是固定路徑：多個規劃任務可能並行，共用一個檔會互相污染。
-    """
-    # ⚠ 不用 context manager：這個檔要活到 CLI 子行程寫完才讀，
-    # 由本函式的 finally 負責刪除。
-    handle = tempfile.NamedTemporaryFile(  # noqa: SIM115
-        prefix="query_audit_", suffix=".jsonl", delete=False)
-    handle.close()
-    path = Path(handle.name)
-    previous = os.environ.get(AUDIT_PATH_ENV)
-    os.environ[AUDIT_PATH_ENV] = str(path)
-    try:
-        yield path
-    finally:
-        if previous is None:
-            os.environ.pop(AUDIT_PATH_ENV, None)
-        else:
-            os.environ[AUDIT_PATH_ENV] = previous
-        path.unlink(missing_ok=True)
-
-
-def _read_query_audit(path: Path) -> list[dict[str, Any]]:
-    """讀回稽核 JSONL。⚠ 讀不到就回空清單——稽核缺失不得讓規劃失敗。"""
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    entries = []
-    for line in lines:
-        if line.strip():
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return entries
-
-
 def run_report_planning(
     brief: dict[str, Any],
     cli_runner: Callable[..., str],
@@ -167,10 +155,10 @@ def run_report_planning(
     # 取證稽核（A7）：指定落檔路徑，MCP server 子行程繼承後逐筆寫入，
     # 任務結束讀回。⚠ 這是唯一能證明「CLI 到底查了沒有」的系統內紀錄——
     # 在此之前只能事後翻開發機上的 CLI transcript。
-    with _query_audit_file() as audit_path:
+    with query_audit_file() as audit_path:
         reply = _parse_reply(
             cli_runner(build_prompt(brief), timeout_seconds=timeout_seconds))
-        query_audit = _read_query_audit(audit_path)
+        query_audit = read_query_audit(audit_path)
 
     plan = {
         "plan_id": reply.get("plan_id") or f"plan-{brief['snapshot_id']}",

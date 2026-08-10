@@ -639,7 +639,15 @@ def run_narrative(
     prompt = build_prompt(run_dir, version, skill_path=skill_path,
                           instruction=instruction, report_keys=report_keys)
     argv = build_cli_command(cli_kind, prompt, model=model)
-    cli_result = runner(argv, timeout_seconds)
+    # 取證稽核（2026-08-10）：解讀線有 RESEARCH_TOOLS 可查 DB，但原本沒有任何紀錄
+    # ——它可以完全不查就寫出簡報每一頁的要點，而我們無從得知。落檔路徑由環境變數
+    # 傳給 MCP server 子行程，任務結束讀回。⚠ 工具與 report_planning_runner 共用
+    # 同一份實作（`report_research`），不複製第二份稽核格式。
+    from backend.app.mcp_server.report_research import query_audit_file, read_query_audit
+
+    with query_audit_file() as audit_path:
+        cli_result = runner(argv, timeout_seconds)
+        query_audit = read_query_audit(audit_path)
     parse_cli_result(cli_result)  # 退出碼／JSON 檢查；不硬用其內容，narratives.json 才是產物
     if progress is not None:
         progress("cli_running", 85)
@@ -737,4 +745,10 @@ def run_narrative(
         "pending": refresh.get("pending", []),
         "narratives_expired": refresh.get("narratives_expired", False),
         "contract_warnings": contract_warnings,
+        # 取證紀錄：這次解讀查了幾次、用哪些工具、有沒有失敗。
+        # ⚠ 空清單＝**完全沒查證**，只用了 report_data 的聚合數字寫要點。
+        # 目前只回報不阻擋（解讀是逐報表的，部分報表確實可能不需要額外查證）；
+        # 是否升級成硬性要求，等實跑數據看清楚分布再定。
+        "query_audit": query_audit,
+        "query_count": len(query_audit),
     }

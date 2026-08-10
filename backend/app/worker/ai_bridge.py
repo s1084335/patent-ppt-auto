@@ -607,6 +607,21 @@ def _run_ai_report_plan_job(payload: dict[str, Any], context: JobContext) -> dic
     # 單一入口（EXP-020）：目標選填——沒填就用預設策略，品質標準不降低。
     from backend.app.reports.planning_defaults import build_brief
 
+    # 既有逐報表解讀（2026-08-10）：規劃要**從它濃縮**，不是從頭再寫。
+    # ⚠ 不餵的話，解讀階段查 DB 取證的產出整份被丟棄，規劃 CLI 只看得到聚合數字，
+    # 寫不出機構層深度。解讀尚未產出時為 None，規劃照常進行（向後相容）。
+    import json as _json_narr
+
+    narratives_path = run_dir / "narratives.json"
+    existing_narratives = None
+    if narratives_path.exists():
+        try:
+            existing_narratives = _json_narr.loads(
+                narratives_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # 解讀讀不回來不該讓規劃失敗——它是素材，不是前置條件。
+            existing_narratives = None
+
     brief = build_brief(
         snapshot_id=snapshot_id,
         workspace_id=int(payload.get("workspace_id") or 0),
@@ -614,6 +629,7 @@ def _run_ai_report_plan_job(payload: dict[str, Any], context: JobContext) -> dic
         north_star_goal=str(payload.get("north_star_goal") or ""),
         audience=str(payload.get("audience") or ""),
         page_budget=payload.get("page_budget"),
+        narratives=existing_narratives,
     )
 
     cli = payload.get("_cli_runner")
