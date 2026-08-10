@@ -53,14 +53,41 @@ def _good_reply() -> str:
     }, ensure_ascii=False)
 
 
-def _run(reply: str, brief: dict[str, Any] | None = None):
-    calls: list[str] = []
+def _cli_with_audit(reply: str, calls: list[str] | None = None):
+    """回傳一個 fake cli_runner，並在被呼叫時寫一筆查詢稽核。
+
+    ⚠ 2026-08-10 契約新增：`validate_research_effort` 要求規劃**必須實際查證過**
+    （使用者定案「不能讓它可以不去查資料庫就直接寫」）。真實 CLI 經 report-research
+    MCP 查詢時會把每次查詢寫進稽核 JSONL，runner 讀回來驗證；fake runner 不寫就會被
+    當成「完全沒查」而擋下。
+
+    這不是為了讓測試變綠而放寬斷言——是**補上 fake 缺少的真實行為**：原本的 fake
+    只模擬了「CLI 會回一段 JSON」，沒模擬「CLI 會查資料庫」。新契約要求後者，
+    fake 就得跟上。
+    """
+    import os
+    from pathlib import Path
+
+    from backend.app.mcp_server.report_research import AUDIT_PATH_ENV
 
     def cli(prompt: str, **kwargs):
-        calls.append(prompt)
+        if calls is not None:
+            calls.append(prompt)
+        audit_path = os.environ.get(AUDIT_PATH_ENV)
+        if audit_path:
+            with Path(audit_path).open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(
+                    {"tool": "query_patents", "status": "ok", "rows": 3},
+                    ensure_ascii=False) + "\n")
         return reply
 
-    result = rp.run_report_planning(brief=brief or BRIEF, cli_runner=cli)
+    return cli
+
+
+def _run(reply: str, brief: dict[str, Any] | None = None):
+    calls: list[str] = []
+    result = rp.run_report_planning(
+        brief=brief or BRIEF, cli_runner=_cli_with_audit(reply, calls))
     return result, calls
 
 
@@ -138,7 +165,7 @@ class NoWriteCapabilityTests(unittest.TestCase):
     def test_runner_is_sole_persister(self):
         """CLI 沒有寫入工具：runner 才呼叫 persister，且只在驗證通過後。"""
         saved: list[dict[str, Any]] = []
-        rp.run_report_planning(brief=BRIEF, cli_runner=lambda p, **k: _good_reply(),
+        rp.run_report_planning(brief=BRIEF, cli_runner=_cli_with_audit(_good_reply()),
                                persister=lambda payload: saved.append(payload))
         self.assertEqual(len(saved), 1)
         self.assertIn("plan", saved[0])

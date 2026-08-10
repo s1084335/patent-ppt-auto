@@ -131,6 +131,32 @@ def validate_slide_plan(
     return errors
 
 
+def validate_research_effort(query_audit: list[dict[str, Any]]) -> list[str]:
+    """規劃必須實際查證過，不得只憑選圖數據就寫（2026-08-10 使用者定案）。
+
+    分工：使用者選的圖表**一定要產、一定要進 PPT**（由 `validate_slide_plan` 的
+    「選了但未使用」守）；CLI 的職責是看著這些圖表與數據判斷要查什麼證據、**實際查**，
+    再依查到的內容寫。
+
+    ⚠ 原本 `query_audit` 只是被放進結果並註解「空清單有意義」——但沒有任何地方會因為
+    它是空的而失敗，等於允許 CLI 只讀聚合數字就編出整份敘述。本函式把
+    `content_standard.md` 第三節（專利層事實必須查回來直接引用）從提示變成檢查。
+
+    判準刻意只有一條：**至少有一次成功查詢**。查幾次、查什麼由 CLI 依內容自行判斷，
+    規則不越俎代庖。缺 `status` 欄視為成功——本檢查要擋的是「完全沒查」，
+    不是當稽核格式的糾察隊。
+    """
+    successful = [
+        entry for entry in query_audit
+        if str(entry.get("status", "ok")).lower() not in {"error", "failed", "failure"}
+    ]
+    if successful:
+        return []
+    if query_audit:
+        return ["所有查證都失敗，敘述沒有依據——請修正查詢後重跑，不得只憑選圖數據撰寫"]
+    return ["本次規劃完全沒有查證紀錄——CLI 必須實際查資料庫取證，不得只憑選圖數據撰寫"]
+
+
 def validate_evidence(
     plan: dict[str, Any],
     manifest: dict[str, Any],

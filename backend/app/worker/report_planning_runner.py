@@ -25,6 +25,7 @@ from backend.app.reports.planning_contracts import (
     APPROVED_LAYOUT_PRESETS,
     validate_evidence,
     validate_report_brief,
+    validate_research_effort,
     validate_slide_plan,
 )
 
@@ -68,6 +69,12 @@ def build_prompt(brief: dict[str, Any]) -> str:
         f"## 頁數上限\n{brief['page_budget']} 頁（超過即不合格）\n\n"
         "## 使用者選定的圖表（**全部都要用到，且不得加入未選的圖**）\n"
         + "\n\n".join(chart_blocks) + "\n\n"
+        "## 🔴 必須實際查證（不查就不合格，會被退回）\n"
+        "選圖數據只是**起點**，不是全部。你的職責是看著這些圖表與數據，判斷\n"
+        "「要回答最大目標，還缺哪些事實」，然後**實際去查**，再依查到的內容撰寫。\n"
+        "⚠ 完全沒有查詢紀錄的規劃會被判定不合格並退回——聚合數字寫不出具名發現，\n"
+        "  也寫不出「這家在做什麼技術」這種必要的深度。\n"
+        "查什麼、查幾次由你依內容判斷，規則不代你決定。\n\n"
         "## 可用的唯讀查證工具（要補證據就呼叫，不得自行編數字）\n"
         f"{tools}\n"
         f"（快照型查詢一律帶 snapshot_id=\"{brief['snapshot_id']}\"，收 typed 參數不吃 SQL；\n"
@@ -175,6 +182,10 @@ def run_report_planning(
     _tick("驗證規劃", 70)
     errors = validate_slide_plan(plan, identities, page_budget=brief.get("page_budget"))
     errors += validate_evidence(plan, evidence, snapshot_id=brief["snapshot_id"])
+    # 🔴 不查資料庫就不准寫（2026-08-10 使用者定案）：CLI 的職責是依選圖內容判斷
+    # 要找什麼證據並實際查。原本 query_audit 只被記錄、不被檢查，等於允許只讀
+    # 聚合數字就編出整份敘述。
+    errors += validate_research_effort(query_audit)
     if errors:
         # ⚠ 失敗不落檔：留下未通過的候選會讓人誤以為可交付。
         raise ReportPlanningError(f"規劃驗證未過：{errors}")
