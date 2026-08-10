@@ -66,9 +66,16 @@ Key Player 象限圖整個沒進 PPT，且**全程無錯誤訊息**。已修（`
 
 - [x] 6.1 Red：新增 manifest warnings 到 quality decision 的契約測試，涵蓋 `narrative_missing`、`narrative_fallback`、`chart_missing_degraded`、`artifact_manifest_missing`、`missing_slots`、`text_overflow_estimated`、`text_overlap`、`out_of_bounds`、PNG render 失敗與頁數不符
 - [x] 6.2 Green：完成 `PptQualityReport` 產生器，彙整 PPTX manifest、RenderedPngManifest、選圖覆蓋、evidence coverage、必要 slot 與版面 warnings
-- [ ] 6.3 Red：新增 `RegenerationPlan` scope lock 測試，確認 CLI 只可回傳指定 targets，改動 locked slide、chart identity、未標記 narrative 或未選圖表時必須拒收
+- [x] 6.3 Red：新增 `RegenerationPlan` scope lock 測試，確認 CLI 只可回傳指定 targets，改動 locked slide、chart identity、未標記 narrative 或未選圖表時必須拒收
+
+  `tests/test_regeneration_scope_lock.py`：越界四種情形（改未指定頁、加頁、換圖、
+  引用鎖外 evidence）逐項拒收；空回應也擋。⚠ 分工——Codex 的 `build_ppt_quality_report`
+  產出 plan（要不要重產、重產哪幾頁、哪些不准動），本項驗**執行面**：CLI 回來的
+  東西有沒有守規矩。沒有這一層，scope lock 只是一份宣告。
 - [ ] 6.4 Green：完成局部重產 runner 接線，保留未標記 narratives/slides，保存 replacement audit，並在重產後重新 build、轉 PNG、跑 quality report
-- [ ] 6.5 Red：新增同一 target 超過兩輪仍 fail 的測試，確認停止自動重產並標示 `blocked_content_defect` 或 `blocked_layout_defect`
+- [x] 6.5 Red：新增同一 target 超過兩輪仍 fail 的測試，確認停止自動重產並標示 `blocked_content_defect` 或 `blocked_layout_defect`
+
+  沿用 Codex 定的 `PPT_QUALITY_RETRY_LIMIT`（=2），不另訂數字——那會是第二個落點。
 - [ ] 6.6 Refactor：共用既有 PPT manifest warning 與 narrative 單報表重產規則，避免在 runner 與 skill 文件複製兩份不一致 mapping
 
 ## 7. 整合、實物與安全驗收

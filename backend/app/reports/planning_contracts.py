@@ -471,6 +471,66 @@ def _value_errors(ref: str, entry: dict[str, Any], report_data) -> list[str]:
     return []
 
 
+def validate_regeneration_response(
+    plan: dict[str, Any],
+    response: dict[str, Any],
+    attempt: int = 1,
+) -> list[str]:
+    """局部重產的執行面：CLI 回傳的內容不得越出 `RegenerationPlan` 的授權範圍。
+
+    `build_ppt_quality_report` 產出 plan（要不要重產、重產哪幾頁、哪些不准動）；
+    本函式驗 CLI 依 plan 回來的東西有沒有守規矩。⚠ 沒有這一層，scope lock 只是
+    一份宣告——CLI 大可回一份全新的 SlidePlan 而我們照單全收。
+
+    🔴 為什麼越界要擋而不是靜默採用：局部重產的前提是「其餘內容已驗收過」。
+    CLI 若順手改了沒被指定的頁，那些頁**跳過驗收**卻出現在成品裡——使用者以為
+    只重產了第 5 頁，實際上第 3 頁的數字也被改過。這與本專案反覆出現的靜默退化
+    同型：失敗時看起來像正常行為。
+
+    `attempt` 超過 `PPT_QUALITY_RETRY_LIMIT` 即擋下並要求標記 blocked：連續失敗
+    多半代表根因判斷錯了，繼續自動重產只是燒 token（同全域規則「同一問題最多修
+    五輪」的精神）。
+    """
+    errors: list[str] = []
+    if attempt > PPT_QUALITY_RETRY_LIMIT:
+        errors.append(
+            f"同一目標已重產 {attempt} 次（上限 {PPT_QUALITY_RETRY_LIMIT}）——"
+            f"停止自動重產並標記 blocked（{'／'.join(PPT_QUALITY_BLOCKED_DEFECT_TYPES)}），"
+            "改由人工判定根因")
+        return errors
+
+    locked = plan.get("locked") or {}
+    targets = {str(t.get("slide_id") or "") for t in (plan.get("targets") or [])}
+    slides = response.get("slides") or []
+    if not slides:
+        errors.append("重產回應沒有任何 slide——一頁都沒回等於沒有重產，不得視為成功")
+
+    allowed_ids = set(locked.get("slide_ids") or [])
+    allowed_charts = set(locked.get("chart_identities") or [])
+    allowed_refs = set(locked.get("evidence_refs") or [])
+    for slide in slides:
+        sid = str(slide.get("slide_id") or "")
+        if sid not in allowed_ids:
+            errors.append(f"重產回應含鎖定清單外的 slide {sid!r}——不得自行加頁")
+            continue
+        if sid not in targets:
+            errors.append(
+                f"重產回應改動了未指定的 slide {sid!r}——該頁已驗收過，"
+                "只准回傳 targets 指名的頁")
+        for identity in slide.get("chart_identities") or []:
+            if str(identity) not in allowed_charts:
+                errors.append(
+                    f"slide {sid} 換了圖 {identity!r}——選圖是使用者決定的，"
+                    "不在重產授權範圍內")
+        for point in slide.get("narrative") or []:
+            ref = str(point.get("evidence_ref") or "")
+            if ref and ref not in allowed_refs:
+                errors.append(
+                    f"slide {sid} 引用了鎖定清單外的 evidence {ref!r}"
+                    "——重產不得引進未經驗證的來源")
+    return errors
+
+
 def validate_research_effort(query_audit: list[dict[str, Any]]) -> list[str]:
     """規劃必須實際查證過，不得只憑選圖數據就寫（2026-08-10 使用者定案）。
 
