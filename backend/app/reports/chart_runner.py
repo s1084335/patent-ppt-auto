@@ -3052,7 +3052,11 @@ def _build_trend_section(ctx: ChartContext) -> None:
     # 圖檔仍由 application_trend + publication_trend 兩份報表共同產生。
     ctx.sections.append({
         "title": trend_title,
-        "report_key": "annual_trend",
+        # ⚠ 是 registry 鍵不是檔名（2026-08-10 修）：圖檔叫 annual_trend.svg，
+        # 但一張圖同時服務申請與公告兩個報表，檔名與報表名本來就不同名。
+        # 這裡原本寫死檔名，導致組版端拿 identity 前段去 artifact_manifest
+        # （用 registry 鍵）反查落空 → 判定找不到圖 → 整頁降級成 stat_callout。
+        "report_key": "application_trend",
         "variants": [{"label": "Trend", "file": "annual_trend.svg", "variant_key": "default"}],
     })
 
@@ -3202,6 +3206,10 @@ def _build_classification_section(
         variants.append({"label": f"{level} 階 · {level_label.split('(')[-1].rstrip(')')}", "file": filename, "variant_key": f"L{level}"})
     ctx.sections.append({
         "title": report["label_zh"],
+        # ⚠ 顯式帶 registry 鍵（2026-08-10 修）：漏設時 `_section_report_name` 會
+        # fallback 成第一個 variant 的檔名 `ipc_main_distribution_L4`——多了 `_L4`
+        # 就查不到圖，還會組出 `ipc_main_distribution_L4:L5` 這種自相矛盾的 identity。
+        "report_key": report_key,
         "variants": variants,
         "note": "4 階=subclass 總覽，5 階=main group 細分；可用切換鈕對照，每階各取前 20。",
     })

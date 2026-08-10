@@ -1233,10 +1233,24 @@ class SectionReportKeyTests(unittest.TestCase):
         return rd, index_html
 
     def test_four_cards_declare_matching_report_key(self):
-        """四張卡的 report_key 必須是報表引擎的鍵，不得退回檔名 fallback。"""
+        """四張卡的 report_key 必須是報表引擎的鍵，不得退回檔名 fallback。
+
+        🔴 2026-08-10 修正期望值：趨勢卡原本釘 `annual_trend`——那是**檔名**，
+        不是 registry 鍵。本檔 docstring 自己就寫著「SVG 檔名（annual_trend…）與
+        報表鍵（application_trend…）不同名，查找必然落空」，但 2026-07-27 修的時候
+        雖然照做「顯式宣告 report_key」，值卻填成了檔名，本測再把錯值釘住。
+
+        ⚠ 這不是為了讓實作變綠而放寬斷言——是**守門的釘錯了位置**。錯值能存活至今
+        是因為下方通則測試只要求「查找鍵能取到 rows」，而 `chart_rows` 裡剛好也有
+        `annual_trend` 這個鍵，於是兩支測試都綠、問題卻一直在。
+
+        代價在 2026-08-10 的 goal-driven 實跑現形：組版端拿 identity 前段
+        （`annual_trend`）去 `artifact_manifest`（用 registry 鍵）反查落空，
+        整頁降級成 stat_callout，**使用者選的圖直接從簡報上消失**。
+        """
         # 🔴 2026-08-07：國家佈局（現有保護）獨立卡已刪——併入受理局合併頁。
         expected = {
-            "專利申請趨勢與專利授權公告趨勢": "annual_trend",
+            "專利申請趨勢與專利授權公告趨勢": "application_trend",
             "專利受理局分布": "country_distribution",
             "公司×國家交叉表": "applicant_country_distribution",
         }
