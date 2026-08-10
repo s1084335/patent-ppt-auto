@@ -3970,6 +3970,9 @@ function renderExportPreview() {
   const wrap = el('export-preview');
   if (!wrap || !exportPreview.content) return;
   wrap.innerHTML = renderReportContentHtml(exportPreview);
+  // 選圖清單隨預覽一起填（2026-08-10 接上）：它是「產生 PPT」的輸入之一，
+  // ⚠ 原本 loadPptChartPicker 寫好了卻沒有任何呼叫端，使用者從介面選不到圖。
+  loadPptChartPicker();
 }
 
 
@@ -4878,15 +4881,26 @@ async function requestExportPpt(options) {
     // ⚠ 三種人工覆寫**只走 approval_overrides 一包**（派工端 _run_ai_report_ppt_job
     // 只讀這個 key）。曾同時在頂層又送 slots／layout_overrides／position_overrides，
     // 派工端不讀＝死參數，徒留「看起來有傳」的誤導（2026-07-29 移除）。
+    // 🔴 goal-driven 唯一入口（EXP-018）：先派規劃、由 worker 接續組版。
+    // ⚠ 這裡原本直接派 ai:report_ppt——選圖與最大目標都沒送出，於是每次都退回
+    // 固定頁序，使用者從介面**無法**觸發目標規劃（2026-08-10 查出）。
+    // ⚠ 接續交給 worker（then_export_ppt），不由前端輪詢後再送第二個任務：
+    // 前端輪詢會在關分頁／電腦睡著時斷鏈，且斷得「看起來成功」
+    // （見 handlers._enqueue_chained_report_ppt 的實測教訓）。
+    const brief = collectPptPlanBrief();
     const params = {
+      snapshot_id: exportPreview.content.version,
       based_on_version: exportPreview.content.version,
+      selected_charts: brief.selected_charts,
+      north_star_goal: brief.north_star_goal,
+      then_export_ppt: true,
       approval_overrides: exportPptApprovalOverrides(),
     };
     if (state.workspaceId) params.workspace_id = state.workspaceId;
     const created = await getJson(API + '/ai-tasks', {
       method: 'POST',
       headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ task_type: 'ai:report_ppt', params: params }),
+      body: JSON.stringify({ task_type: 'ai:report_plan', params: params }),
     });
     if (wrap) wrap.innerHTML = '<div class="hint">已送出輸出 PPT 任務（run '
       + escHtml(created.run_id) + '）；完成後於此顯示下載連結。</div>';
@@ -5893,11 +5907,13 @@ async function approveTopicBackfill() {
 // ⚠ 不做「固定架構／依目標規劃」兩顆按鈕——那是把系統的不確定推給使用者選。
 async function loadPptChartPicker() {
   const box = el('ppt-chart-picker');
-  if (!box || !exportPreview || !exportPreview.data) return;
+  // ⚠ 讀 content 不是 data（2026-08-10 修）：`exportPreview.data` 全庫**從未被賦值**，
+  // 本函式於是永遠在這一行 return，選圖清單一直是空的——而且沒有任何錯誤訊息。
+  if (!box || !exportPreview || !exportPreview.content) return;
   // ⚠ 只列有圖的 variant（2026-08-10）：部分 variant 的 file 是空字串——
   // 那是解讀落點（如主題統計表，表格由組版端自己畫），不是可選圖表。
   // 本清單預設全選，列進來就必然被送出，後端會直接失敗。
-  const sections = (exportPreview.data.sections || [])
+  const sections = (exportPreview.content.sections || [])
     .map(sec => ({ ...sec, variants: (sec.variants || []).filter(v => v.file) }))
     .filter(sec => sec.variants.length);
   if (!sections.length) { box.textContent = ''; return; }

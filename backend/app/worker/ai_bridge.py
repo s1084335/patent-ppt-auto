@@ -680,6 +680,24 @@ def _run_ai_report_plan_job(payload: dict[str, Any], context: JobContext) -> dic
     context.heartbeat("保存規劃結果", 95)
     result["artifacts_uploaded"] = report_artifact_store.upload_run_dir(run_dir)
 
+    # 🔴 接續組版由 worker 端負責（沿 handlers._enqueue_chained_report_ppt 的實測
+    # 教訓）：這一步若寫在前端輪詢，使用者關分頁／切走／電腦睡著鏈就斷在規劃完成，
+    # PPT 任務**從來沒被建立**，而畫面顯示規劃 succeeded——「看起來成功的靜默停止」。
+    # ⚠ 失敗隔離：規劃本體已成功回存，接續派工的任何例外只記 log、不 raise。
+    if payload.get("then_export_ppt"):
+        try:
+            from backend.app.db import job_repository as jr
+
+            chained = jr.create_job(
+                "ai:report_ppt",
+                {"based_on_version": snapshot_id,
+                 "cli_kind": str(payload.get("cli_kind") or "claude")},
+                workspace_id=payload.get("workspace_id"),
+            )
+            result["chained_ppt_job_id"] = chained.job_id
+        except Exception:  # noqa: BLE001 - 規劃已成功，接續失敗不得倒扣
+            LOGGER.exception("chained report_ppt enqueue failed after report_plan")
+
     context.heartbeat("規劃完成（已寫入報表版本）", 100)
     return result
 
