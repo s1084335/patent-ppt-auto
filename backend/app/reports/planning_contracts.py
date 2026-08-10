@@ -194,13 +194,16 @@ def validate_research_effort(query_audit: list[dict[str, Any]]) -> list[str]:
     `content_standard.md` 第三節（專利層事實必須查回來直接引用）從提示變成檢查。
 
     判準刻意只有一條：**至少有一次成功查詢**。查幾次、查什麼由 CLI 依內容自行判斷，
-    規則不越俎代庖。缺 `status` 欄視為成功——本檢查要擋的是「完全沒查」，
-    不是當稽核格式的糾察隊。
+    規則不越俎代庖。
+
+    ⚠ 失敗的判準是稽核的 `error` 欄（`report_research._audit` 的唯一定義）。
+    2026-08-10 修正：本函式原本看 `status`，而稽核從來沒寫過那個欄位——
+    `entry.get("status", "ok")` 於是永遠回 "ok"，「查了但全部失敗」那個分支
+    **一次都不會觸發**。這正是「同一份知識兩個落點」：稽核格式與消費端的欄位
+    認知各自演進，而不一致本身不會報錯。
+    ⚠ 稽核已精簡成「值為 None 不寫」，所以成功的紀錄根本沒有 `error` 鍵。
     """
-    successful = [
-        entry for entry in query_audit
-        if str(entry.get("status", "ok")).lower() not in {"error", "failed", "failure"}
-    ]
+    successful = [entry for entry in query_audit if not entry.get("error")]
     if successful:
         return []
     if query_audit:

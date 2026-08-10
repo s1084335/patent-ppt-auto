@@ -175,7 +175,16 @@ def rows_fingerprint(rows: list[dict[str, Any]]) -> str:
 
 
 def _audit(tool: str, **fields: Any) -> None:
-    entry = {"tool": tool, **fields}
+    """記一筆取證紀錄。
+
+    ⚠ 只記有資訊量的欄位（2026-08-10 使用者定案「紀錄的欄位盡量精簡」）：
+    值為 None 的一律不寫——`snapshot_id=None`（非快照工具）、`error=None`（成功）
+    這類預設值佔位沒有意義，只讓每筆紀錄變胖。
+    ⚠ 也不記時間：稽核要回答的是「查了什麼」，時間由 job 本身的紀錄承擔。
+    ⚠ 不記查詢結果：typed 工具的結果可由 snapshot 重現，`query_database` 則以
+    完整 SQL ＋ `row_hash` 重現與驗證——稽核不該變成資料副本。
+    """
+    entry = {"tool": tool, **{k: v for k, v in fields.items() if v is not None}}
     _QUERY_AUDIT.append(entry)
     target = os.environ.get(AUDIT_PATH_ENV)
     if not target:

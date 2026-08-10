@@ -39,7 +39,7 @@ class ResearchEffortTests(unittest.TestCase):
     def test_successful_query_passes(self):
         """有成功查詢即通過——不規定要查幾次或查什麼，那是 CLI 依內容判斷的。"""
         self.assertEqual(
-            validate_research_effort([{"tool": "query_patents", "status": "ok", "rows": 12}]),
+            validate_research_effort([{"tool": "query_report_evidence", "rows": 12}]),
             [],
         )
 
@@ -49,8 +49,8 @@ class ResearchEffortTests(unittest.TestCase):
         ⚠ 這種情形最容易被誤判成「有查」：audit 非空，但每一筆都是錯誤。
         """
         errors = validate_research_effort([
-            {"tool": "query_patents", "status": "error", "message": "syntax error"},
-            {"tool": "query_patents", "status": "error", "message": "timeout"},
+            {"tool": "query_database", "error": "syntax error"},
+            {"tool": "query_database", "error": "timeout"},
         ])
         self.assertTrue(errors, "全部查詢都失敗時必須報錯")
 
@@ -58,16 +58,19 @@ class ResearchEffortTests(unittest.TestCase):
         """部分失敗但有成功 → 通過。查錯再重查是正常的探索過程，不該懲罰。"""
         self.assertEqual(
             validate_research_effort([
-                {"tool": "query_patents", "status": "error", "message": "syntax error"},
-                {"tool": "query_patents", "status": "ok", "rows": 3},
+                {"tool": "query_database", "error": "syntax error"},
+                {"tool": "query_database", "rows": 3},
             ]),
             [],
         )
 
-    def test_missing_status_treated_as_success(self):
-        """稽核缺 status 欄時當成功——寧可放行，不可因稽核格式變動而擋掉正常規劃。
+    def test_entry_without_error_key_is_success(self):
+        """沒有 `error` 鍵＝成功。
 
-        ⚠ 這條是刻意的鬆綁：本檢查的目的是擋「完全沒查」，不是當格式糾察隊。
+        ⚠ 2026-08-10 契約修正：本檢查原本看 `status`，但稽核（`_audit` 唯一定義處）
+        從來沒寫過那個欄位，`entry.get("status", "ok")` 於是永遠回 "ok"，
+        「查了但全部失敗」那個分支一次都不會觸發。改為以稽核實際寫的 `error` 判斷。
+        ⚠ 稽核已精簡成「值為 None 不寫」，成功的紀錄本來就沒有 `error` 鍵。
         """
         self.assertEqual(validate_research_effort([{"tool": "list_report_catalog"}]), [])
 
