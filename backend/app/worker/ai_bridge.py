@@ -695,7 +695,9 @@ def _run_ai_report_plan_job(payload: dict[str, Any], context: JobContext) -> dic
                 workspace_id=payload.get("workspace_id"),
             )
             result["chained_ppt_job_id"] = chained.job_id
-        except Exception:  # noqa: BLE001 - 規劃已成功，接續失敗不得倒扣
+        except Exception:
+            # ⚠ 規劃已成功回存，接續派工失敗不得倒扣——只記 log 不 raise。
+            # （BLE001 在此不觸發：有 logging 的寬捕捉不算 blind except。）
             LOGGER.exception("chained report_ppt enqueue failed after report_plan")
 
     context.heartbeat("規劃完成（已寫入報表版本）", 100)
