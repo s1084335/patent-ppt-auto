@@ -326,6 +326,10 @@ CHART_FILE_REPORTS: dict[str, list[str]] = {
     # 三個分群 artifact 各自對回自己的報表名（供 manifest／解讀查找定位到正確報表）。
     "cluster_topic_table.html": ["cluster_topic_table"],
     "opportunity_quadrant.svg": ["opportunity_quadrant"],
+    # 主題 × 時間（2026-08-10 新增）：對回主題表，因為它畫的就是主題的早晚期分布。
+    # ⚠ 一定要登記——沒登記的圖 build_ppt 的 ChartIndex 反查不到，會被當成缺圖而
+    # 整頁降級（本輪已為 opportunity_quadrant 踩過一次）。
+    "topic_timeline.svg": ["cluster_topic_table"],
 }
 
 
@@ -359,6 +363,10 @@ def report_names_for_artifact(filename: str) -> list[str]:
                       ("cluster_topic_table", ".html")):
         if filename.startswith(f"{base}_") and filename.endswith(ext):
             return [base]
+    # 主題 × 時間也帶 slug 後綴（topic_timeline_tech.svg），但它對回的是主題表
+    # ——檔名前綴與報表名不同名，故不能併進上面那個「前綴即報表名」的迴圈。
+    if filename.startswith("topic_timeline") and filename.endswith(".svg"):
+        return ["cluster_topic_table"]
     return []
 
 
@@ -805,6 +813,39 @@ def render_paired_bar_chart(
         max_value=max_value, label_px=label_px))
     svg.append("</svg>")
     _write_svg(path, svg)
+
+
+def render_topic_timeline_chart(
+    path: Path,
+    title: str,
+    rows: list[dict[str, Any]],
+    limit: int = 20,
+) -> None:
+    """主題 × 時間：早期 vs 近期雙條，看技術重心往哪裡移動（2026-08-10 定案）。
+
+    🔴 為什麼要這張圖：`cluster_topic_table` 每列早就帶 `early_count`／
+    `recent_count`／`status`，但埋在表格欄位裡——讀者要心算才看得出
+    「立柱滑輪 5→2 在退、馬達自鎖 0→6 是全新戰場」。使用者原話：
+    「如果時間和主題能用圖呈現，為何要一直用表格？」
+
+    ⚠ 依「刪 > 改版 > 新增」查過現有圖都承載不了：`opportunity_quadrant` 沒有
+    時間軸、`annual_trend` 沒有主題維度、`applicant_year_matrix` 主體是申請人。
+    主題 × 時間確實沒有任何圖，才新增。
+
+    ⚠ 繪圖**複用 `render_paired_bar_chart`**（同樣是每列兩條同尺 bar），
+    本函式只做這張圖特有的兩件事：依近期件數排序（讀者關心「現在誰在跑」）、
+    把 `status` 併進標籤（退潮主題要一眼可辨）。
+    """
+    ranked = sorted(rows, key=lambda r: int(r.get("recent_count") or 0), reverse=True)
+    prepared = [
+        {**row,
+         # 狀態併進標籤：圖上直接看得到「申請下降」，不必回頭查表。
+         "_topic_label": f"{row.get('label') or ''}　{row.get('status') or ''}".strip()}
+        for row in ranked
+    ]
+    render_paired_bar_chart(
+        path, title, prepared, label_key="_topic_label",
+        series=(("早期", "early_count"), ("近期", "recent_count")), limit=limit)
 
 
 def ranking_segments(row: dict[str, Any]) -> dict[str, int]:
@@ -2560,6 +2601,8 @@ CHART_ENCODING_NOTES: dict[str, str] = {
     "cpc_main_distribution": "本頁為單一階層，另一階層見對頁",
     "opportunity_quadrant": "點＝技術主題（單位是主題不是件）",
     "cluster_topic_table": "家數＝投入該主題的申請人數",
+    # 主題 × 時間：兩條同尺才比得出移動方向；狀態已標在主題名旁。
+    "topic_timeline": "上下兩條同尺｜上＝早期窗、下＝近期窗",
     "applicant_ranking": "含共同申請，各自計數",
     "applicant_country_distribution": "含共同申請，總和大於專利件數",
     "applicant_year_matrix": "含共同申請，依申請年落點",
@@ -4003,6 +4046,24 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
             "thresholds": opp_thresholds,
         })
         ctx.chart_rows[f"opportunity_quadrant{suffix}"] = {**opp_matrix, "rows": opp_rows}
+
+        # 主題 × 時間（2026-08-10 定案）：早期 vs 近期雙條，看技術重心往哪移動。
+        # ⚠ 資料早就在 topic_rows 的 early_count／recent_count／status 裡，先前只被
+        # 埋在表格欄位——讀者要心算才看得出「立柱滑輪 5→2 在退、馬達自鎖 0→6 是
+        # 全新戰場」。使用者：「如果時間和主題能用圖呈現，為何要一直用表格？」
+        timeline_rows = [r for r in topic_rows if str(r.get("source_field")) == sf]
+        if timeline_rows:
+            timeline_file = f"topic_timeline{suffix}.svg"
+            render_topic_timeline_chart(
+                ctx.run_dir / timeline_file,
+                f"主題演進——{segment_label}（早期 vs 近期）", timeline_rows)
+            variants.append({
+                "label": f"主題演進{tab_suffix}",
+                "file": timeline_file,
+                "variant_key": f"timeline{suffix}",
+                "rows": timeline_rows,
+            })
+            ctx.chart_rows[f"topic_timeline{suffix}"] = timeline_rows
         # 🔴 痛點板已整個刪除（2026-08-04 使用者定案；07-29 起本就停產）。
 
     note = (

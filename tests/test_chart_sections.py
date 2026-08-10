@@ -271,9 +271,10 @@ class DisplaySpecTests(unittest.TestCase):
                 files,
                 # ⚠ 2026-07-30：variants[0]＝主題統計表的解讀掛點（無圖檔），
                 # 見 TopicTableNarrativeTests——沒 variant 就掛不了 narrative。
-                ["", "opportunity_quadrant.svg"],
-                "⚠ 2026-07-29：統計表改走數據表、痛點板停產（市場線未實作），只剩機會板")
-            self.assertEqual(labels, ["主題統計表", "機會矩陣"])
+                # 🔴 2026-08-10 新增主題 × 時間圖（見 TopicSegmentTests 的說明）。
+                ["", "opportunity_quadrant.svg", "topic_timeline.svg"],
+                "⚠ 2026-07-29：統計表改走數據表、痛點板停產；2026-08-10 加主題演進圖")
+            self.assertEqual(labels, ["主題統計表", "機會矩陣", "主題演進"])
         # 龍頭欄不顯示；統計表以主題標籤、專利件數、申請人家數、集中度與前三大申請人為主。
         self.assertIn("top_applicants", ctx.chart_rows["cluster_topic_table"][0],
                       "統計列應保留前三大申請人")
@@ -592,7 +593,12 @@ class TopicSegmentTests(unittest.TestCase):
         # 拆成兩頁，只有一份解讀時兩頁會印出一模一樣的標題與要點。
         # ⚠ 單通道時仍只產一個掛點（chart_runner 以實際存在的通道判斷），
         # 由 test_single_source_keeps_filenames_and_single_segment 守住。
-        self.assertEqual(len(files), 4, "統計表解讀掛點 2（雙通道）+ 每來源機會板 2")
+        # 🔴 2026-08-10 契約變更：每個來源多一張**主題 × 時間**圖
+        # （topic_timeline_tech／_effect）。使用者定案：「如果時間和主題能用圖呈現，
+        # 為何要一直用表格？」——early_count／recent_count 早就在資料裡，
+        # 先前只埋在表格欄位，讀者要心算才看得出哪個主題在起、哪個在退。
+        self.assertEqual(len(files), 6,
+                         "統計表解讀掛點 2（雙通道）+ 每來源機會板 2 + 每來源主題演進 2")
         self.assertEqual(files[:2], ["", ""], "前兩個應為主題統計表掛點（無圖檔）")
         for f in ("opportunity_quadrant_tech.svg", "opportunity_quadrant_effect.svg"):
             self.assertIn(f, files)
@@ -643,8 +649,8 @@ class TopicSegmentTests(unittest.TestCase):
             rows = ctx.sections[0].get("rows") or []
             opp = (Path(tmp) / "opportunity_quadrant.svg").read_text(encoding="utf-8")
         # ⚠ 2026-07-29 統計表不再是變體；單一來源維持原檔名的契約只剩兩張圖。
-        self.assertEqual(files, ["", "opportunity_quadrant.svg"],
-                         "單一來源維持原檔名（統計表改走數據表、痛點板已停產）")
+        self.assertEqual(files, ["", "opportunity_quadrant.svg", "topic_timeline.svg"],
+                         "單一來源維持原檔名；2026-08-10 起多一張主題演進圖")
         self.assertEqual({r.get("source_field") for r in rows}, {"wips_independent_claims"},
                          "只有一種來源時只出現該段的列")
         self.assertIn("機會四象限分析——技術主題", opp, "板標題帶來源段名")
