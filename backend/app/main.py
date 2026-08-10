@@ -253,7 +253,15 @@ def ppt_eligible_variant_keys(section: dict) -> set[str]:
     本函式是「能不能上 PPT」的唯一判準，API 據此標 `ppt_eligible`，前端只消費
     不推導（前端若寫死排除 `variant_key === 'more'` 就是第二個落點）。
     與 `chart_bundle` 的一致性由 `tests/test_ppt_eligible_variants.py` 釘住。
+
+    🔴 第二條判準（2026-08-10）：section 帶 `ppt_excluded_reason` 時整個 section
+    都不能上——目前唯一來源是 IPC/CPC 的 4 階出頁門檻。判定由 `chart_runner`
+    產生端算好標上，本函式只讀不推導。
+    ⚠ 實機失敗：門檻只在組版的固定頁路徑生效，前端仍把圖列進可選清單、CLI 選了它，
+    低於門檻的 IPC 照樣進了簡報。把判準收進本函式後，前端清單與 CLI 可選集同時擋掉。
     """
+    if str(section.get("ppt_excluded_reason") or "").strip():
+        return set()
     return {
         str(variant.get("variant_key", "default"))
         for variant in (section.get("variants") or [])

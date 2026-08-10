@@ -17,6 +17,7 @@ p9（CPC L4）整頁只有一根 5 件的長條，正是這條規則要消滅的
 """
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import sys
 import unittest
@@ -145,6 +146,158 @@ class PptThresholdSkipTests(unittest.TestCase):
         keys = self._page_keys(rd)
         self.assertIn("ipc_main_distribution", keys)
         self.assertEqual(self.bp.threshold_skips(rd), [])
+
+
+class PlanPathThresholdTests(unittest.TestCase):
+    """🔴 SlidePlan 路徑也要受門檻管（2026-08-10 實機失敗）。
+
+    本類上方的 `PptThresholdSkipTests` 只驗 `_expand_page_layout`——那是**組版自己
+    排頁**的路徑。頁序改由 CLI 規劃後，`page_specs_from_plan` 直接把 plan 指定的圖
+    轉成 PageSpec，整條路徑不經過 `_report_key_has_data`，門檻形同虛設。
+
+    實機：`below_threshold=True`、manifest 也記了 `below_threshold_skipped: 2`，
+    但成品 p5 照樣是 IPC 主分類，貼著 L4/L5 兩張圖。
+    ⚠ manifest 記了「skipped」反而讓人以為擋掉了——判定算對、警告發了、
+    沒有人據以行動，是這類缺陷的共同特徵。
+
+    ⚠ 只補這裡不夠：舊測試把「單一路徑生效」釘成了正確行為，才讓缺陷有地方躲。
+    """
+
+    def setUp(self):
+        self.bp = _load_build_ppt()
+
+    def _report_data(self):
+        return {
+            "parameters": {"version": "t"},
+            "reports": {
+                "ipc_main_distribution": {"label_zh": "IPC 主分類分布",
+                                          "rows": _rows(["A63B-069/18", "F03G-005/00"])},
+                # ⚠ 對照組要有真資料：`_report_key_has_data` 對「report_data 裡根本沒有
+                # 這個 key」也回 False，少放這筆會讓兩種剔除原因混在一起分不出來。
+                "application_trend": {"label_zh": "專利申請趨勢",
+                                      "rows": [{"application_year": 2024, "patent_count": 5}]},
+            },
+            "classification_thresholds": {
+                "ipc_main_distribution": {
+                    "below_threshold": True, "distinct_level4": 2,
+                    "min_distinct_level4": 3, "reason": "4 階 subclass 僅 2 種（門檻 3）",
+                },
+            },
+        }
+
+    def test_plan_specified_page_is_dropped(self):
+        """CLI 規劃了 IPC 頁 → 低於門檻時整頁不得進成品。"""
+        specs = [
+            self.bp.PageSpec(page=1, kind="chart_with_points", title="技術分類",
+                             topic="技術分類", report_keys=("ipc_main_distribution",),
+                             charts=("ipc_main_distribution_L4.svg",)),
+            self.bp.PageSpec(page=2, kind="chart_with_points", title="申請趨勢",
+                             topic="申請趨勢", report_keys=("application_trend",),
+                             charts=("application_trend.svg",)),
+        ]
+        kept = self.bp.drop_below_threshold_pages(specs, self._report_data())
+        self.assertEqual([s.report_keys for s in kept], [("application_trend",)],
+                         "plan 指定的 IPC 頁沒被門檻擋下")
+
+    def test_pages_without_report_keys_survive(self):
+        """封面、判讀說明這類沒有 report_key 的頁不受影響。"""
+        specs = [self.bp.PageSpec(page=1, kind="cover", title="封面", topic="封面",
+                                  report_keys=(), charts=())]
+        self.assertEqual(len(self.bp.drop_below_threshold_pages(specs, self._report_data())), 1)
+
+    def test_mixed_page_survives_if_any_key_has_data(self):
+        """一頁掛兩個報表、只有一個低於門檻 → 頁留著（另一個仍有判讀價值）。"""
+        specs = [self.bp.PageSpec(page=1, kind="comparison", title="混合", topic="混合",
+                                  report_keys=("ipc_main_distribution", "application_trend"),
+                                  charts=("a.svg", "b.svg"))]
+        self.assertEqual(len(self.bp.drop_below_threshold_pages(specs, self._report_data())), 1)
+
+    def test_uses_the_same_single_judgement(self):
+        """⚠ 判準只能有一個入口：本函式必須走 `_report_key_has_data`，不得自立第二套。
+
+        用 mock 確認真的呼叫了它——否則日後有人在這裡寫死
+        `thresholds[key]['below_threshold']`，兩處就會各自演進。
+        """
+        specs = [self.bp.PageSpec(page=1, kind="chart_with_points", title="t", topic="t",
+                                  report_keys=("ipc_main_distribution",), charts=("a.svg",))]
+        with mock.patch.object(self.bp, "_report_key_has_data",
+                               return_value=True) as spy:
+            kept = self.bp.drop_below_threshold_pages(specs, self._report_data())
+        self.assertTrue(spy.called, "沒有走 _report_key_has_data，判準被複製了第二份")
+        self.assertEqual(len(kept), 1)
+
+
+class EligibilityGateTests(unittest.TestCase):
+    """後端可選清單：低於門檻的 section 一張圖都不給。
+
+    ⚠ 這是門檻的**第一道**——CLI 拿不到圖就不會規劃那頁。組版端的
+    `drop_below_threshold_pages` 是第二道，因為 skill 是獨立部署單元，
+    不能假設上游一定過濾過。
+    """
+
+    def test_excluded_section_yields_no_eligible_variants(self):
+        from backend.app.main import ppt_eligible_variant_keys
+        section = {
+            "report_key": "ipc_main_distribution",
+            "ppt_excluded_reason": "4 階 subclass 僅 2 種（門檻 3）",
+            "variants": [
+                {"label": "L4", "file": "ipc_main_distribution_L4.svg", "variant_key": "L4"},
+                {"label": "L5", "file": "ipc_main_distribution_L5.svg", "variant_key": "L5"},
+            ],
+        }
+        self.assertEqual(ppt_eligible_variant_keys(section), set(),
+                         "低於門檻的 section 不得有任何可選變體")
+
+    def test_l5_cannot_survive_without_l4(self):
+        """定案「4 階沒出現，5 階就不會有」——兩階同屬一個 report_key，
+        門檻對 report_key 判定，所以這是結構保證而非另一條規則。"""
+        from backend.app.main import ppt_eligible_variant_keys
+        section = {"report_key": "cpc_main_distribution",
+                   "ppt_excluded_reason": "4 階 subclass 僅 1 種（門檻 3）",
+                   "variants": [{"file": "cpc_main_distribution_L5.svg", "variant_key": "L5"}]}
+        self.assertNotIn("L5", ppt_eligible_variant_keys(section))
+
+    def test_normal_section_unaffected(self):
+        from backend.app.main import ppt_eligible_variant_keys
+        section = {"report_key": "applicant_ranking",
+                   "variants": [{"file": "applicant_ranking.svg", "variant_key": "default"}]}
+        self.assertEqual(ppt_eligible_variant_keys(section), {"default"})
+
+    def test_empty_reason_is_not_exclusion(self):
+        """空字串／None 不算排除——避免把「有這個鍵」誤當「被排除」。"""
+        from backend.app.main import ppt_eligible_variant_keys
+        for value in (None, "", "   "):
+            section = {"ppt_excluded_reason": value,
+                       "variants": [{"file": "x.svg", "variant_key": "default"}]}
+            self.assertEqual(ppt_eligible_variant_keys(section), {"default"}, f"reason={value!r}")
+
+
+class ThresholdOverrideTests(unittest.TestCase):
+    """門檻值可由 `PPT_CLASSIFICATION_MIN_L4` 覆寫，供驗收暫時停用。
+
+    2026-08-10 使用者定案：「篩選機制暫時不用有，因為要確定 IPC/CPC 也是 OK 的，
+    但實機部署篩選機制要能生效」。實機部署不設此變數 → 維持預設 3。
+    """
+
+    def _reload_with(self, value: str | None):
+        import os
+
+        env = {k: v for k, v in os.environ.items() if k != "PPT_CLASSIFICATION_MIN_L4"}
+        if value is not None:
+            env["PPT_CLASSIFICATION_MIN_L4"] = value
+        with mock.patch.dict("os.environ", env, clear=True):
+            import backend.app.reports.chart_runner as cr
+            return importlib.reload(cr)
+
+    def test_default_is_three(self):
+        self.assertEqual(self._reload_with(None).CLASSIFICATION_MIN_DISTINCT_L4, 3)
+
+    def test_zero_disables_the_gate(self):
+        """🔴 設 0 → distinct 數不可能小於 0，等於不篩。"""
+        self.assertEqual(self._reload_with("0").CLASSIFICATION_MIN_DISTINCT_L4, 0)
+
+    def tearDown(self):
+        self._reload_with(None)  # 還原模組層常數，避免污染後續測試
 
 
 if __name__ == "__main__":

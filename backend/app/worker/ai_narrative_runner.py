@@ -142,6 +142,24 @@ NARRATIVE_CONTRAST_WITH = {"cpc_main_distribution": "IPC"}
 # 「寫得夠不夠」是內容問題，不是字數問題——用字數當代理指標就會逼出灌水。
 
 
+def _point_text(point: Any) -> str:
+    """取一條要點的文字，**任何形狀都不崩潰**。
+
+    🔴 2026-08-10 實機 job 284：CLI 回了 `["文字", …]` 而非契約的 `[{"text": …}]`，
+    原本四處都寫 `(point or {}).get("text")`——`or {}` 只防 None 與空值，
+    對**非空字串**回傳字串本身，`.get` 直接 AttributeError。
+    878 秒的解讀連同 CLI 成本一起丟掉，使用者只看到一行 traceback。
+
+    ⚠ 四處各自修等於留四個會再漂移的落點；取文字的規則收斂到本函式，
+    形狀是否合契約由 `validate_narrative_contract` 主迴圈**發一次**警告。
+    """
+    if isinstance(point, dict):
+        return str(point.get("text") or "")
+    if isinstance(point, str):
+        return point
+    return ""
+
+
 def validate_narrative_contract(
     narratives: dict[str, Any],
     capacity: dict[str, dict[str, int]] | None = None,
@@ -191,7 +209,20 @@ def validate_narrative_contract(
                     f"（該頁版面容量）")
             body = str(entry.get("text") or "")
             for i, point in enumerate(points):
-                text = str((point or {}).get("text") or "")
+                # 🔴 2026-08-10 實機 job 284：CLI 回了字串陣列 `["文字", …]` 而非
+                # 契約的物件陣列，`(point or {}).get` 對**非空字串**直接 AttributeError
+                # ——878 秒的解讀連同 CLI 成本一起丟掉，使用者只看到一行 traceback。
+                # ⚠ 本函式的職責是「把不合契約處列成 warnings」，不該用崩潰回應
+                # 不合契約的輸入。形狀不符要**現形並繼續量**，不是中止。
+                # ⚠ `(x or {}).get(...)` 只防 None 與空值，防不了型別——同型寫法要一起看。
+                text = _point_text(point)
+                if isinstance(point, str):
+                    warnings.append(
+                        f"{where} points[{i}] 是字串，契約要求 {{\"text\": …}} 物件"
+                        "（已當作 text 續驗，PPT 端消費前需確認形狀）")
+                elif not isinstance(point, dict):
+                    warnings.append(
+                        f"{where} points[{i}] 型別異常（{type(point).__name__}），無法取文字")
                 if len(text) > max_chars:
                     warnings.append(
                         f"{where} points[{i}] 超限（{len(text)} 字 > {max_chars}）")
@@ -230,7 +261,7 @@ def validate_narrative_contract(
             # 同段內重講是鎖一（一條只講一個論點）的範疇，不在此自指誤報。
             seen_numbers: dict[str, int] = {}
             for i, point in enumerate(points):
-                text_i = str((point or {}).get("text") or "")
+                text_i = _point_text(point)
                 for number in dict.fromkeys(_STAT_NUMBER_PATTERN.findall(text_i)):
                     if number in seen_numbers and seen_numbers[number] != i:
                         warnings.append(
@@ -240,7 +271,7 @@ def validate_narrative_contract(
                         seen_numbers.setdefault(number, i)
             # 鎖四（2026-08-07 頁級版）·至少一條帶統計數字——標籤沒了，
             # 「數據依據」的要求不跟著消失；整頁零數字＝只剩形容詞。
-            all_texts = [str((p or {}).get("text") or "") for p in points]
+            all_texts = [_point_text(p) for p in points]
             if points and not any(_NUMBER_PATTERN.search(t) for t in all_texts):
                 warnings.append(
                     f"{where} 整頁沒有任何數字——要點必須有數據依據")
@@ -262,7 +293,7 @@ def validate_narrative_contract(
             # 鎖六·該對照的要對照著講（CPC vs IPC）。
             counterpart = NARRATIVE_CONTRAST_WITH.get(report_key)
             if counterpart:
-                joined = " ".join(str((p or {}).get("text") or "") for p in points) + body
+                joined = " ".join(_point_text(p) for p in points) + body
                 if counterpart not in joined:
                     warnings.append(
                         f"{where} 未與 {counterpart} 對照——這一頁要講的是與 {counterpart} 的"
@@ -542,7 +573,7 @@ def build_prompt(
         "   ⚠ 同一件事的多個面向**合併在同一條**講完——目標是濃縮，不是少講。\n"
         "   ⚠ 每段 text 不得超過下方列出的該頁字數上限，且**至多 3 句**\n"
         "   ——句子再多就變字牆，讀者一眼抓不到重點。\n"
-        "   ⚠ 公司名第一次寫全名，之後用短稱（「廈門帝瑪斯健康科技」→「帝瑪斯」）；\n"
+        "   ⚠ 公司名第一次寫全名，之後用短稱（「〈城市〉〈字號〉〈業別〉公司」→「〈字號〉」）；\n"
         "   不要用「遙遙領先」「僅」「多為」這類程度副詞，直接給數字。\n"
         "   🔴 **敘述口吻一律客觀（2026-08-04 使用者定案）**：\n"
         "   - 只說專利資料能證明的：件數、家數、分類分布、年度變化、權利歸屬。\n"

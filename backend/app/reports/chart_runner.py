@@ -5,6 +5,7 @@ import hashlib
 import html
 import json
 import math
+import os
 import statistics
 import sys
 from dataclasses import dataclass, field
@@ -628,7 +629,20 @@ def render_line_chart(
     _write_svg(path, svg)
 
 
-def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_key: str, value_key: str = "patent_count", limit: int = 20) -> None:
+# 🔴 排名的兩端上限（2026-08-04 使用者定案）：**網頁端前 20、簡報端（圖）前 10**。
+# 都是天花板——資料不足不補（2026-08-10 使用者確認：「母體不到的當然不強制，
+# 超過 10 個的，PPT 就是呈現 10 個」）。網頁 20 由 main.py 的 _limit_rows_per_source
+# 執行；圖是進簡報的 artifact，取本值。
+#
+# ⚠ 定義位置在**所有出圖函式之前**：它是那些函式的預設值，定義在後面就只能各自
+# 寫死 20，那正是 2026-08-10 查出的三處漂移——`CHART_ROW_LIMIT=10` 是後來改的，
+# 改的人沒動 `render_bar_chart(limit=20)` 與 CLI 的 `--ranking-limit 20`，
+# 結果同一份報表裡申請人排名 20 根、年度矩陣 10 根。
+# ⚠ 附錄2（完整名單）已定案移除，被截的部分改由網頁報表承接，註記同步改寫。
+CHART_ROW_LIMIT = 10
+
+
+def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_key: str, value_key: str = "patent_count", limit: int = CHART_ROW_LIMIT) -> None:
     data = rows[:limit]
     width = _sizing_value("canvas_width")
     top = 68
@@ -758,7 +772,7 @@ def render_paired_bar_chart(
     rows: list[dict[str, Any]],
     label_key: str,
     series: tuple[tuple[str, str], ...],
-    limit: int = 20,
+    limit: int = CHART_ROW_LIMIT,
 ) -> None:
     """每列兩條 bar 的分組長條圖（2026-08-07 受理局「申請 vs 現存有效」合併頁）。
 
@@ -819,7 +833,7 @@ def render_topic_timeline_chart(
     path: Path,
     title: str,
     rows: list[dict[str, Any]],
-    limit: int = 20,
+    limit: int = CHART_ROW_LIMIT,
 ) -> None:
     """主題 × 時間：早期 vs 近期雙條，看技術重心往哪裡移動（2026-08-10 定案）。
 
@@ -948,7 +962,7 @@ def render_segmented_bar_chart(
     structure_labels: tuple[str, str] = ("單獨申請", "共同申請"),
     hatch_label: str | None = "已轉讓",
     co_label: str = "共同申請",
-    limit: int = 20,
+    limit: int = CHART_ROW_LIMIT,
 ) -> None:
     """分段長條圖：總長代表 total_key，著色區段代表 segment_key。
 
@@ -1518,7 +1532,7 @@ def render_matrix_chart(
     row_key: str,
     col_key: str,
     value_key: str = "patent_count",
-    row_limit: int = 20,
+    row_limit: int = CHART_ROW_LIMIT,
     col_order: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """二維交叉矩陣（如 公司×國家）：一列＝一個 row_key 值，儲存格＝該列×該欄的量。
@@ -1645,7 +1659,7 @@ def year_bubble_matrix_layout(
     row_key: str,
     year_key: str = "application_year",
     value_key: str = "patent_count",
-    row_limit: int = 20,
+    row_limit: int = CHART_ROW_LIMIT,
     col_order: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """年度矩陣泡泡圖版面資料：依公司總量取前 20，缺值視為 0。"""
@@ -2957,11 +2971,8 @@ CLASSIFICATION_LEVEL_LABELS = {4: "Level 4 (Subclass)", 5: "Level 5 (Main Group)
 # 排名類報表出圖時套 ranking_limit（其餘報表用各自定義的預設列數）。
 RANKING_LIMIT_REPORTS = ("applicant_ranking",)
 
-# 🔴 排名的兩端上限（2026-08-04 使用者定案）：**網頁端前 20、簡報端（圖）前 10**。
-# 都是天花板——資料不足不補。網頁 20 由 main.py 的 _limit_rows_per_source 執行；
-# 圖是進簡報的 artifact，取 10。
-# ⚠ 附錄2（完整名單）已定案移除，被截的部分改由網頁報表承接，註記同步改寫。
-CHART_ROW_LIMIT = 10
+# CHART_ROW_LIMIT 已移到檔案前段（出圖函式之前）——它是那些函式的預設值，
+# 定義在後面就只能各自寫死數字，正是 2026-08-10 三處漂移的成因。
 
 # ---------------------------------------------------------------------------
 # 入庫截取（2026-07-21 定案修正）：排名類「保存」也只留前 20、年度序列只留最新
@@ -3212,7 +3223,14 @@ def family_quality_note(quality_rows: list[dict[str, Any]]) -> str:
 # 提醒（RPT-011 定案）降為該頁註記。report 定義保留給 Web 報表種類。
 
 # IPC/CPC 出頁門檻：4 階（subclass）distinct 種類數低於此值＝該報表不進簡報。
-CLASSIFICATION_MIN_DISTINCT_L4 = 3
+# ⚠ 4 階與 5 階是同一個 report_key 的兩個 variant，門檻對 report_key 判定，
+# 因此「4 階沒出現，5 階就不會有」是結構保證，不是另外寫的規則。
+#
+# 可用環境變數 `PPT_CLASSIFICATION_MIN_L4` 覆寫（設 0 等於不篩）。
+# 用途：驗收時要先確認 IPC/CPC 版面本身正確，才判斷該不該篩掉
+# （2026-08-10 使用者定案「篩選機制暫時不用有，但實機部署要能生效」）。
+# 實機部署不設此變數，維持預設 3。
+CLASSIFICATION_MIN_DISTINCT_L4 = int(os.getenv("PPT_CLASSIFICATION_MIN_L4", "3") or 3)
 
 
 def _build_classification_section(
@@ -3231,9 +3249,12 @@ def _build_classification_section(
         "distinct_level4": distinct_l4,
         "min_distinct_level4": CLASSIFICATION_MIN_DISTINCT_L4,
         "below_threshold": distinct_l4 < CLASSIFICATION_MIN_DISTINCT_L4,
+        # ⚠ 只有真的低於門檻才寫原因：不排除時仍掛著「無判讀價值」會誤導看 manifest
+        # 的人以為這張被擋了（門檻停用時尤其明顯——寫著「門檻 0」卻照樣出頁）。
         "reason": (f"4 階 subclass 僅 {distinct_l4} 種"
                    f"（門檻 {CLASSIFICATION_MIN_DISTINCT_L4}）——分類近乎單一，"
-                   "整頁只會是一兩根長條，無判讀價值"),
+                   "整頁只會是一兩根長條，無判讀價值")
+                  if distinct_l4 < CLASSIFICATION_MIN_DISTINCT_L4 else "",
     }
     variants: list[dict[str, str]] = []
     for level in levels:
@@ -3242,7 +3263,9 @@ def _build_classification_section(
         ctx.chart_rows[chart_key] = rows
         filename = f"{chart_key}.svg"
         level_label = CLASSIFICATION_LEVEL_LABELS.get(level, f"Level {level}")
-        # 排名全域規則＝前 20 名（render_bar_chart 預設 limit=20）
+        # 排名全域規則＝前 CHART_ROW_LIMIT 名（render_bar_chart 的預設就是它）
+        # ⚠ 這句原本寫「前 20 名」，與常數的 10 打架了整整六天——註解也是知識落點，
+        #    改常數沒改註解，下一個人會照註解寫死數字。
         render_bar_chart(
             ctx.run_dir / filename,
             f'{report["label_zh"]} - {level_label}',
@@ -3257,6 +3280,15 @@ def _build_classification_section(
         # 就查不到圖，還會組出 `ipc_main_distribution_L4:L5` 這種自相矛盾的 identity。
         "report_key": report_key,
         "variants": variants,
+        # 🔴 出頁門檻標在 section 上（2026-08-10）：**產生端算一次、消費端只讀**。
+        # 消費者有三個（前端選圖清單、`ppt_eligible_variant_keys`、組版 `_below_threshold`），
+        # 若各自從 `classification_thresholds` 推導就是三個落點。
+        # ⚠ 實機失敗：前端把 IPC 圖列進可選清單、CLI 選了它，組版的 `_report_key_has_data`
+        # 只守固定頁與動態插頁，plan 指定的圖繞過門檻——低於門檻的 IPC 照樣上了 p5。
+        "ppt_excluded_reason": (
+            ctx.meta["classification_thresholds"][report_key]["reason"]
+            if distinct_l4 < CLASSIFICATION_MIN_DISTINCT_L4 else None
+        ),
         "note": "4 階=subclass 總覽，5 階=main group 細分；可用切換鈕對照，每階各取前 20。",
     })
 
@@ -4196,7 +4228,7 @@ def build_report_parameters(*, cluster_data: dict[str, Any] | None) -> dict[str,
 
 def run_chart_trial(
     output_dir: Path = DEFAULT_OUTPUT_DIR,
-    ranking_limit: int = 20,
+    ranking_limit: int = CHART_ROW_LIMIT,
     ipc_levels: tuple[int, ...] = (4, 5),
     cpc_levels: tuple[int, ...] = (4, 5),
     analysis_id: int | None = None,
@@ -4460,7 +4492,7 @@ def render_jurisdiction_map(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render first-pass report charts into output directory.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--ranking-limit", type=int, default=20, help="Top N limit for applicant and current assignee ranking charts.")
+    parser.add_argument("--ranking-limit", type=int, default=CHART_ROW_LIMIT, help="Top N limit for applicant and current assignee ranking charts.")
     parser.add_argument("--ipc-levels", type=int, nargs="+", choices=(4, 5), default=[4, 5], help="IPC classification levels to render (4=subclass, 5=main group). Defaults to both.")
     parser.add_argument("--cpc-levels", type=int, nargs="+", choices=(4, 5), default=[4, 5], help="CPC classification levels to render (4=subclass, 5=main group). Defaults to both.")
     parser.add_argument("--analysis-id", type=int, help="Bind charts to an app_layer analysis: use its patent snapshot and record files into export_runs.")

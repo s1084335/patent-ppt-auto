@@ -1339,19 +1339,36 @@ def _derive_headline(points: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _normalize_point(point: Any) -> dict[str, Any] | None:
+    """把一條要點正規化成 `{label, text, emphasis}`；沒有文字回 None。
+
+    🔴 2026-08-10 實機：解讀 CLI 回了 `["文字", …]` 而非契約的 `[{"text": …}]`。
+    原本這裡用 `isinstance(p, dict)` 過濾，字串形狀會被**整批丟掉**再靜默
+    fallback 成長文切段——不會崩潰，但整頁要點消失，看起來像「CLI 沒寫」。
+    ⚠ 這是本專案反覆出現的靜默降級：失敗時看起來像正常行為。
+    """
+    if isinstance(point, str):
+        text = point.strip()
+        return {"label": "", "text": text, "emphasis": False} if text else None
+    if not isinstance(point, dict):
+        return None
+    text = str(point.get("text") or "").strip()
+    if not text:
+        return None
+    return {
+        "label": str(point.get("label") or "").strip(),
+        "text": text,
+        "emphasis": bool(point.get("emphasis")),
+    }
+
+
 def _normalize_narrative(variant: dict[str, Any]) -> tuple[str, list[dict[str, Any]], bool]:
     """回傳（headline, points, 是否走 fallback）。缺 headline 不自行編造。"""
     headline = str(variant.get("headline") or "").strip()
     raw_points = variant.get("points")
     if isinstance(raw_points, list) and raw_points:
         points = [
-            {
-                "label": str(p.get("label") or "").strip(),
-                "text": str(p.get("text") or "").strip(),
-                "emphasis": bool(p.get("emphasis")),
-            }
-            for p in raw_points
-            if isinstance(p, dict) and str(p.get("text") or "").strip()
+            item for item in (_normalize_point(p) for p in raw_points) if item
         ]
         if points:
             return headline, points, False
@@ -3792,6 +3809,9 @@ def resolve_layout(report_data: dict[str, Any], charts: ChartIndex,
     plan = (report_data.get("slide_plan") or {}) if isinstance(report_data, dict) else {}
     if plan.get("slides"):
         layout = page_specs_from_plan(plan, charts)
+        # 🔴 plan 路徑補上出頁門檻（2026-08-10）：`_expand_page_layout` 內建這道，
+        # plan 路徑原本整條繞過去，低於門檻的 IPC 照樣進成品。判準共用同一個函式。
+        layout = drop_below_threshold_pages(layout, report_data)
     else:
         layout = _expand_page_layout(report_data, charts, theme)
     layout = _apply_layout_overrides(layout, overrides, charts)
@@ -3821,6 +3841,32 @@ def _apply_layout_overrides(
         else:
             result.append(target)
     return [_spec_with(spec, page=index) for index, spec in enumerate(result, start=1)]
+
+
+def drop_below_threshold_pages(
+    layout: list[PageSpec], report_data: dict[str, Any]
+) -> list[PageSpec]:
+    """剔除「所有 report_key 都無資料／低於門檻」的頁——**SlidePlan 路徑的門檻閘門**。
+
+    🔴 2026-08-10 實機失敗：`_report_key_has_data` 的註解宣稱自己是「唯一接縫
+    （固定頁、動態插頁、拆頁全走本函式）」，那在頁序由組版自己排的年代是對的。
+    改由 CLI 規劃後，`page_specs_from_plan` 直接把 plan 指定的圖轉成 PageSpec，
+    **整條路徑不經過那個接縫**——低於門檻的 IPC 照樣進了成品 p5。
+    ⚠ manifest 還如實記了 `below_threshold_skipped: 2`，反而讓人以為擋掉了。
+
+    判準仍是 `_report_key_has_data`，本函式只負責把它套到 plan 路徑上；
+    不得在這裡改讀 `classification_thresholds`，那會變成第二份判準。
+
+    保留規則：沒有 report_key 的頁（封面、判讀說明、建議）一律留；
+    一頁掛多個報表時只要**還有一個有料**就留（另一個仍有判讀價值）。
+    """
+    kept: list[PageSpec] = []
+    for spec in layout:
+        if not spec.report_keys or any(
+            _report_key_has_data(report_data, key) for key in spec.report_keys
+        ):
+            kept.append(spec)
+    return [_spec_with(spec, page=index) for index, spec in enumerate(kept, start=1)]
 
 
 def _apply_chart_degradation(layout: list[PageSpec], charts: ChartIndex) -> list[PageSpec]:
