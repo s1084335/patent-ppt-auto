@@ -391,40 +391,9 @@ def _run_ai_company_zh_name_job(payload: dict[str, Any], context: JobContext) ->
 
 # 🔴 2026-08-04：市場線整個移除（使用者定案，含資料表）。
 
-def _run_ai_report_ppt_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
-    """執行報告 PPT 產製任務：AI 產各頁確認槽文案 → 寫 approvals.json → CLI 順手呼
-    deterministic 的 build_ppt.py 組 .pptx → 進 report_artifacts。
-
-    payload：based_on_version（可選，不給＝最新 report_trial_）、workspace_id（可選，
-    全庫也能產、不擋）、cli_kind／model／cli_timeout_seconds（沿 ai:narrative 慣例）。
-
-    ⚠ 分工：AI 只產文案 slots（不碰排版、不碰數字）；組版一律 deterministic build_ppt。
-    ⚠ slot 命名／組版沿用既有 build_ppt.py（PAGE_LAYOUT 唯一來源），runner 不重寫。
-    進度：runner 內部 0→100 緩進，直接轉成 heartbeat。
-    """
-    from . import ai_report_ppt_runner
-
-    context.heartbeat("開始產生報告 PPT", 1)
-
-    def _progress(stage: str, percent: int) -> None:
-        """把 runner 的進度轉成 worker heartbeat（繁中階段文字直接沿用）。"""
-        context.heartbeat(stage, percent)
-
-    workspace_id = payload.get("workspace_id")
-    return ai_report_ppt_runner.run_report_ppt(
-        based_on_version=payload.get("based_on_version") or None,
-        workspace_id=int(workspace_id) if workspace_id is not None else None,
-        cli_kind=str(payload.get("cli_kind") or "claude"),
-        model=payload.get("model") or None,
-        # _cli_runner 供測試／Companion 注入假或替代執行器；正式跑真實 subprocess。
-        cli_runner=payload.get("_cli_runner"),
-        timeout_seconds=float(
-            payload.get("cli_timeout_seconds")
-            or ai_report_ppt_runner.DEFAULT_CLI_TIMEOUT_SECONDS
-        ),
-        approval_overrides=payload.get("approval_overrides") or None,
-        progress=_progress,
-    )
+# 🔴 2026-08-10：PPT 交付線整個移除（使用者定案，change：remove-ppt-delivery-line）。
+# `ai:report_ppt`／`ai:report_plan` 的 runner 與派工一併拔除；交付物改為
+# 解讀完成的 HTML 報表（report_generate → ai:narrative → refresh_index）。
 
 
 # job_type → 執行函式。值存「函式名」而非函式物件，讓 execute_ai_job 在呼叫當下才解析到
@@ -583,136 +552,15 @@ def _run_ai_topic_backfill_job(payload: dict[str, Any], context: JobContext) -> 
     return result
 
 
-def _run_ai_report_plan_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
-    """目標驅動報告規劃（P2）：brief＋選圖包 → CLI → 驗證後的候選 SlidePlan。
-
-    payload：workspace_id／snapshot_id／north_star_goal／audience／page_budget／
-    selected_charts（identity 清單）。選圖包由 runner 端 materialize——CLI 只看得到
-    列入 manifest 的檔案，且**沒有任何寫入工具**。
-    """
-    from pathlib import Path
-
-    from backend.app.reports.chart_bundle import build_selected_bundles
-    from backend.app.reports.chart_runner import DEFAULT_OUTPUT_DIR
-
-    from . import report_planning_runner as rp
-
-    context.heartbeat("準備選圖資料包", 10)
-    snapshot_id = str(payload.get("snapshot_id") or "")
-    run_dir = Path(DEFAULT_OUTPUT_DIR) / snapshot_id
-    work_dir = Path(DEFAULT_OUTPUT_DIR) / snapshot_id / "_planning"
-    bundles = build_selected_bundles(
-        run_dir, list(payload.get("selected_charts") or []), work_dir)
-
-    # 單一入口（EXP-020）：目標選填——沒填就用預設策略，品質標準不降低。
-    from backend.app.reports.planning_defaults import build_brief
-
-    # 既有逐報表解讀（2026-08-10）：規劃要**從它濃縮**，不是從頭再寫。
-    # ⚠ 不餵的話，解讀階段查 DB 取證的產出整份被丟棄，規劃 CLI 只看得到聚合數字，
-    # 寫不出機構層深度。解讀尚未產出時為 None，規劃照常進行（向後相容）。
-    import json as _json_narr
-
-    narratives_path = run_dir / "narratives.json"
-    existing_narratives = None
-    if narratives_path.exists():
-        try:
-            existing_narratives = _json_narr.loads(
-                narratives_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            # 解讀讀不回來不該讓規劃失敗——它是素材，不是前置條件。
-            existing_narratives = None
-
-    brief = build_brief(
-        snapshot_id=snapshot_id,
-        workspace_id=int(payload.get("workspace_id") or 0),
-        selected_charts=bundles,
-        north_star_goal=str(payload.get("north_star_goal") or ""),
-        audience=str(payload.get("audience") or ""),
-        page_budget=payload.get("page_budget"),
-        narratives=existing_narratives,
-    )
-
-    cli = payload.get("_cli_runner")
-    if cli is None:
-        from .ai_narrative_runner import (
-            _subprocess_cli_runner,
-            build_cli_command,
-            parse_cli_result,
-        )
-
-        cli_kind = str(payload.get("cli_kind") or "claude")
-        model = payload.get("model") or None
-
-        def cli(prompt: str, *, timeout_seconds: float) -> str:
-            argv = build_cli_command(cli_kind, prompt, model=model)
-            parsed = parse_cli_result(_subprocess_cli_runner(argv, timeout_seconds))
-            return str(parsed.get("result") or "")
-
-    result = rp.run_report_planning(
-        brief=brief, cli_runner=cli,
-        progress=lambda stage, pct: context.heartbeat(stage, pct))
-
-    # 🔴 串接（EXP-015／018）：把通過驗證的 plan 落進該版本的 report_data.json，
-    # deterministic builder 才讀得到（resolve_layout 有 slide_plan 就依它出頁，
-    # 沒有才退回固定頁序保底）。⚠ 只寫 slide_plan 這個鍵，不動報表數據本身。
-    import json as _json
-
-    data_path = run_dir / "report_data.json"
-    report_data = _json.loads(data_path.read_text(encoding="utf-8"))
-    report_data["slide_plan"] = {
-        "plan_id": result["plan_id"],
-        "slides": result["slides"],
-        "strategy": result.get("strategy") or {},
-        "evidence": result.get("evidence") or {},
-        "used_default_goal": brief.get("used_default_goal", False),
-        "north_star_goal": brief["north_star_goal"],
-    }
-    data_path.write_text(_json.dumps(report_data, ensure_ascii=False), encoding="utf-8")
-
-    # 🔴 回存 DB（2026-08-10 實測斷鏈）：只寫本機檔案時，下游 `ai:report_ppt` 走
-    # `resolve_run_dir` 從 `report_artifacts` materialize，拿到的是**沒有 slide_plan
-    # 的舊 report_data.json**，`resolve_layout` 找不到 plan 就靜默退回固定頁序
-    # ——實測 11 頁的規劃變成 14 頁固定頁序，Key Player 象限圖整個沒進 PPT，
-    # 且沒有任何錯誤訊息（保底行為與「使用者沒規劃」在下游長得一模一樣）。
-    # 跨容器成因同 2026-07-23 定案；沿用唯一寫入入口，不另開存取層。
-    from backend.app.db import report_artifact_store
-
-    context.heartbeat("保存規劃結果", 95)
-    result["artifacts_uploaded"] = report_artifact_store.upload_run_dir(run_dir)
-
-    # 🔴 接續組版由 worker 端負責（沿 handlers._enqueue_chained_report_ppt 的實測
-    # 教訓）：這一步若寫在前端輪詢，使用者關分頁／切走／電腦睡著鏈就斷在規劃完成，
-    # PPT 任務**從來沒被建立**，而畫面顯示規劃 succeeded——「看起來成功的靜默停止」。
-    # ⚠ 失敗隔離：規劃本體已成功回存，接續派工的任何例外只記 log、不 raise。
-    if payload.get("then_export_ppt"):
-        try:
-            from backend.app.db import job_repository as jr
-
-            chained = jr.create_job(
-                "ai:report_ppt",
-                {"based_on_version": snapshot_id,
-                 "cli_kind": str(payload.get("cli_kind") or "claude")},
-                workspace_id=payload.get("workspace_id"),
-            )
-            result["chained_ppt_job_id"] = chained.job_id
-        except Exception:
-            # ⚠ 規劃已成功回存，接續派工失敗不得倒扣——只記 log 不 raise。
-            # （BLE001 在此不觸發：有 logging 的寬捕捉不算 blind except。）
-            LOGGER.exception("chained report_ppt enqueue failed after report_plan")
-
-    context.heartbeat("規劃完成（已寫入報表版本）", 100)
-    return result
-
 
 _AI_JOB_RUNNERS: dict[str, str] = {
+    # ⚠ ai:report_plan／ai:report_ppt 已隨 PPT 交付線移除（2026-08-10）。
     "ai:narrative": "_run_ai_narrative_job",
     "ai:topic_backfill": "_run_ai_topic_backfill_job",
-    "ai:report_plan": "_run_ai_report_plan_job",
     "ai:topic_label": "_run_ai_topic_label_job",
     "ai:patent_note": "_run_ai_patent_note_job",
     "ai:candidate_explanation": "_run_ai_candidate_explanation_job",
     "ai:company_zh_name": "_run_ai_company_zh_name_job",
-    "ai:report_ppt": "_run_ai_report_ppt_job",
     "ai:irrelevant_filter": "_run_ai_irrelevant_filter_job",
 }
 

@@ -29,7 +29,9 @@ from pathlib import Path
 
 from backend.app.worker import ai_narrative_runner as runner
 
-SKILL_MD = Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt" / "report-narrative-flow.md"
+# 2026-08-10 PPT 線移除：解讀契約檔遷至 backend/app/worker/prompts/（隨 backend 出貨）。
+SKILL_MD = (Path(__file__).resolve().parents[1] / "backend" / "app" / "worker"
+            / "prompts" / "report-narrative-flow.md")
 
 
 def _entry(headline="布局集中於 A63B", points=None, text=None):

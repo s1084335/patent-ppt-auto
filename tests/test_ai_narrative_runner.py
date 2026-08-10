@@ -36,13 +36,17 @@ class ResolveSkillPathTests(unittest.TestCase):
                 self.assertEqual(runner._resolve_skill_path(), rules_path.resolve())
 
     def test_skill_path_does_not_fallback_to_agents_directory(self):
-        """不能掃祖先 .agents；本機舊規格不得掩蓋正式部署缺 repo 檔。"""
+        """不能掃祖先 .agents；本機舊規格不得掩蓋正式部署缺 repo 檔。
+
+        2026-08-10 遷移後預設路徑=模組同層 prompts/（隨 backend 出貨），
+        與 PROJECT_ROOT 無關——改動 PROJECT_ROOT 也不得影響解析結果。
+        """
+        expected = Path(runner.__file__).resolve().parent / "prompts" / "report-narrative-flow.md"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "repo"
             agents_path = root.parent / ".agents" / "skills" / "report-narrative-flow.md"
             agents_path.parent.mkdir(parents=True)
             agents_path.write_text("# stale", encoding="utf-8")
-            expected = root / "skills" / "patent-report-ppt" / "report-narrative-flow.md"
             with mock.patch.object(runner, "PROJECT_ROOT", root):
                 with mock.patch.dict("os.environ", {}, clear=True):
                     self.assertEqual(runner._resolve_skill_path(), expected)
@@ -64,12 +68,12 @@ class ResolveSkillPathTests(unittest.TestCase):
 
     def test_default_skill_path_exists_in_repo(self):
         """預設 narrative 規格檔必須隨 repo/Docker image 出貨，不依賴本機 .agents。"""
-        path = runner.PROJECT_ROOT / "skills" / "patent-report-ppt" / "report-narrative-flow.md"
+        path = Path(runner.__file__).resolve().parent / "prompts" / "report-narrative-flow.md"
         self.assertTrue(path.exists(), f"missing repo narrative spec: {path}")
 
     def test_default_skill_path_contains_narrative_quality_rules(self):
         """narrative 規格必須保留各報表解讀重點、口徑守則、主題代碼不入文。"""
-        path = runner.PROJECT_ROOT / "skills" / "patent-report-ppt" / "report-narrative-flow.md"
+        path = Path(runner.__file__).resolve().parent / "prompts" / "report-narrative-flow.md"
         text = path.read_text(encoding="utf-8")
         for expected in (
             "各報表解讀重點",
@@ -83,7 +87,7 @@ class ResolveSkillPathTests(unittest.TestCase):
 
     def test_default_skill_path_contains_specific_report_interpretation_rules(self):
         """narrative 規格必須鎖住特定報表的解讀口徑，避免 AI 超譯或重複。"""
-        path = runner.PROJECT_ROOT / "skills" / "patent-report-ppt" / "report-narrative-flow.md"
+        path = Path(runner.__file__).resolve().parent / "prompts" / "report-narrative-flow.md"
         text = path.read_text(encoding="utf-8")
         for expected in (
             "L4/L5 兩變體各自成段",

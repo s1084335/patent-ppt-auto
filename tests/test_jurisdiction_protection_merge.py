@@ -98,36 +98,7 @@ class PairedBarChartTests(unittest.TestCase):
         self.assertIn("現存有效", svg)
 
 
-class BuilderIntegrationTests(unittest.TestCase):
-    def test_country_map_section_note_defines_calibers(self):
-        """備註要寫清楚定義（使用者原話）＋未知件數點名＋家族一行註記。"""
-        src = Path("backend/app/reports/chart_runner.py").read_text(encoding="utf-8")
-        start = src.index("def _build_country_map_section")
-        end = src.index("def ", start + 10)
-        body = src[start:end]
-        for required in ("已授權", "含死案", "未知", "家族"):
-            self.assertIn(required, body, f"合併頁 note 缺定義關鍵字：{required}")
-
-    def test_family_layout_section_removed_from_ppt_flow(self):
-        """🔴 刪頁：family 卡不再出（報表定義保留給 Web）。"""
-        specs = [s.key for s in chart_runner.SECTION_SPECS]
-        self.assertNotIn("family_layout", specs)
-        self.assertIn("country_map", specs)
-        self.assertIn("family_country_layout", REPORT_DEFINITIONS)
-
-    def test_family_layout_excluded_from_ppt_dynamic_pages(self):
-        """🔴 實物抓漏（2026-08-07 首次組版 p12 殘留）：合併頁註記要用 family
-        報表資料，引擎會把它寫進 report_data——動態插頁不擋就會再出一頁
-        stat_callout。EVIDENCE_ORDER 拿掉不夠，必須進 EXCLUDED_FROM_PPT。"""
-        import sys
-        from pathlib import Path
-
-        skill = Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt" / "scripts"
-        sys.path.insert(0, str(skill))
-        import build_ppt as bp
-
-        self.assertIn("family_country_layout", bp.EXCLUDED_FROM_PPT)
-        self.assertNotIn("family_country_layout", bp.EVIDENCE_ORDER)
+# ⚠ BuilderIntegrationTests 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
 
 
 if __name__ == "__main__":

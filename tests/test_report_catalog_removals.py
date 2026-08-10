@@ -82,41 +82,7 @@ class EngineRemovalTests(unittest.TestCase):
                                  f"chart_runner 仍有 {name} 的執行碼：{hits[:3]}")
 
 
-class PptRemovalTests(unittest.TestCase):
-    def test_build_ppt_no_removed_reports(self):
-        """PPT 端不得再排版三張報表。
-
-        ⚠ 例外：`EXCLUDED_FROM_PPT` **必須**保留 `family_quality_detail`——
-        舊報表版本的 report_data 還帶著這鍵，拿掉這行它會被「動態插頁」撿回簡報。
-        這不是殘留，是向後相容的守門；等舊版本全數過期才可清。
-        """
-        src = (PROJECT_ROOT / "skills" / "patent-report-ppt" / "scripts"
-               / "build_ppt.py").read_text(encoding="utf-8")
-        for name in REMOVED:
-            with self.subTest(report=name):
-                hits = [
-                    line for line in src.splitlines()
-                    if re.search(rf'"{name}"', line)
-                    and not line.strip().startswith("#")
-                    and "EXCLUDED_FROM_PPT" not in line
-                ]
-                self.assertEqual(hits, [],
-                                 f"build_ppt 仍引用 {name}：{hits[:3]}")
-
-    def test_excluded_from_ppt_keeps_family_quality_guard(self):
-        """🔴 反向鎖：EXCLUDED_FROM_PPT 的 family_quality_detail 不得被「順手清掉」。"""
-        import importlib.util
-        import sys
-
-        path = (PROJECT_ROOT / "skills" / "patent-report-ppt" / "scripts" / "build_ppt.py")
-        if "build_ppt_for_removals" not in sys.modules:
-            spec = importlib.util.spec_from_file_location("build_ppt_for_removals", path)
-            module = importlib.util.module_from_spec(spec)
-            sys.modules["build_ppt_for_removals"] = module
-            spec.loader.exec_module(module)
-        bp = sys.modules["build_ppt_for_removals"]
-        self.assertIn("family_quality_detail", bp.EXCLUDED_FROM_PPT,
-                      "舊報表版本會把家族品質明細當動態插頁撿回簡報")
+# ⚠ PptRemovalTests 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
 
 
 if __name__ == "__main__":

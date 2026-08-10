@@ -238,35 +238,7 @@ def _version_generated_at(name: str) -> str:
     return f"{d[:4]}-{d[4:6]}-{d[6:]}T{t[:2]}:{t[2:4]}:{t[4:]}"
 
 
-def ppt_eligible_variant_keys(section: dict) -> set[str]:
-    """這個 section 的哪些變體能上 PPT。
-
-    🔴 判準只有一條：**在 `variants` 裡的能上，`more_variants` 裡的不能**。
-    後者是網頁長尾圖（SKILL.md：`_more` 長尾圖不上 PPT），API 之所以把兩者合併
-    回傳，是因為**網頁瀏覽**要顯示它與它的解讀——那是正當用途。
-
-    ⚠ 2026-08-10 實機失敗：前端拿合併後的清單當選圖來源，送出
-    `applicant_year_matrix:more`，而 `chart_bundle._index_report_data`
-    （只讀 `variants`）不認得，使用者一按下「產生 PPT」job 就 failed。
-    根因是兩端各自從 sections 推清單而分岔。
-
-    本函式是「能不能上 PPT」的唯一判準，API 據此標 `ppt_eligible`，前端只消費
-    不推導（前端若寫死排除 `variant_key === 'more'` 就是第二個落點）。
-    與 `chart_bundle` 的一致性由 `tests/test_ppt_eligible_variants.py` 釘住。
-
-    🔴 第二條判準（2026-08-10）：section 帶 `ppt_excluded_reason` 時整個 section
-    都不能上——目前唯一來源是 IPC/CPC 的 4 階出頁門檻。判定由 `chart_runner`
-    產生端算好標上，本函式只讀不推導。
-    ⚠ 實機失敗：門檻只在組版的固定頁路徑生效，前端仍把圖列進可選清單、CLI 選了它，
-    低於門檻的 IPC 照樣進了簡報。把判準收進本函式後，前端清單與 CLI 可選集同時擋掉。
-    """
-    if str(section.get("ppt_excluded_reason") or "").strip():
-        return set()
-    return {
-        str(variant.get("variant_key", "default"))
-        for variant in (section.get("variants") or [])
-        if str(variant.get("file") or "").strip()
-    }
+# ⚠ ppt_eligible_variant_keys 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
 
 
 def _section_report_key(section: dict) -> str:
@@ -415,11 +387,9 @@ def _report_content_payload(run_dir):
         report_key = _section_report_key(section)
         rows = _lookup_rows(report_data, report_key)
         variants_out = []
-        eligible_keys = ppt_eligible_variant_keys(section)
         for variant in list(section.get("variants") or []) + list(section.get("more_variants") or []):
             file_name = str(variant.get("file", ""))
             variant_key = variant.get("variant_key", "default")
-            ppt_eligible = variant_key in eligible_keys
             # 🔴 解讀掛點**逐變體**解析，唯一來源＝chart_runner.variant_narrative_ref。
             # 產出時已寫進 report_data.json 的 narrative_key；舊版產出沒有這欄，
             # 現算一次（同一個函式，不是第二份規則）。
@@ -450,8 +420,6 @@ def _report_content_payload(run_dir):
                 "rows": variant.get("rows", []),
                 "column_labels": _column_labels(variant.get("rows", [])),
                 "thresholds": variant.get("thresholds", {}),
-                # 這張圖能不能上 PPT（選圖清單依此過濾；見上方說明）。
-                "ppt_eligible": ppt_eligible,
             })
         sections_out.append({
             "title": section.get("title", ""),
@@ -501,80 +469,8 @@ def serve_latest_report_content():
     return _report_content_payload(run_dir)
 
 
-def _pages_for_report_data(report_data: dict, builder=None) -> list[dict]:
-    """以 build_ppt 的 `_expand_page_layout` 把 report_data 轉成前端頁面 JSON。
-
-    ⚠ 頁面展開的**唯一實作**＝build_ppt（產檔時真正用的那一份）。原本 API 端
-    自有一套展開（reports.py，甚至同檔兩份），與 build_ppt 三個維度全不一致：
-    動態頁來源（全部報表定義 vs 該版實際產出）、插入錨點（標題關鍵字 vs page>=8）、
-    順序（定義 dict 序 vs report_data 條目序）。而版型／座標覆寫都以**頁碼**為 key
-    ——預覽頁碼 ≠ 產檔頁碼時，使用者在預覽第 N 頁拖的元件會套到成品另一頁上，
-    且預覽會列出一堆該版根本沒產的空頁讓人白編輯。（2026-07-29 全線體檢定案）
-    """
-    if builder is None:
-        from backend.app.worker import ai_report_ppt_runner
-
-        builder = ai_report_ppt_runner._load_builder()
-    return [
-        {
-            "page": int(spec.page),
-            "kind": str(spec.kind),
-            "title": str(spec.title),
-            "subtitle": str(spec.subtitle or ""),
-            "report_keys": list(spec.report_keys),
-            "charts": list(spec.charts),
-            "slots": list(spec.slots),
-        }
-        for spec in builder._expand_page_layout(report_data)
-    ]
-
-
-@report_versions_router.get("/reports/ppt-layout")
-def get_report_ppt_layout(version: str | None = None):
-    """PPT 預覽版型：theme ＋ 依該版 report_data 展開的頁面（未給 version＝最新版）。
-
-    掛在 report_versions_router：這組路由會被搬到 app.routes 最前，天然避開
-    `/reports/{job_id}` 把 `ppt-layout` 吃成 int 的 422——不再靠註解提醒宣告順序
-    （舊實作在 reports.py 內就是靠註解，且重複兩份，已於 2026-07-29 移除）。
-
-    kinds 回 build_ppt 的全部 renderer（換版型下拉的合法值域），不是「已用到的
-    kind 集合」——否則使用者永遠換不到當前沒用的版型。
-
-    503＝部署環境缺 skill 檔案（build_ppt.py／theme.json 不在容器 image 內）：
-    明確報錯勝過默默壞掉——本機開發時祖先目錄的 .agents 會掩蓋此問題，
-    只有部署後才暴露（與 9d 跨容器斷鏈同類）。
-    """
-    import json as _json
-
-    from backend.app.worker import ai_report_ppt_runner
-
-    source = _resolve_run_dir(version) if version else _latest_run_dir()
-    if source is None:
-        return JSONResponse(
-            status_code=404,
-            content={"detail": "報表版本不存在：請先於報表種類頁產製報表。"},
-        )
-    raw = source.read_bytes("report_data.json")
-    if raw is None:
-        return JSONResponse(
-            status_code=404,
-            content={"detail": f"版本 {source.name} 缺 report_data.json"},
-        )
-    try:
-        builder = ai_report_ppt_runner._load_builder()
-        theme = _json.loads(ai_report_ppt_runner.THEME_PATH.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001 - 部署缺檔要給可行動的錯誤，不吐 500 追蹤
-        return JSONResponse(
-            status_code=503,
-            content={"detail": f"PPT 版型資源不可用（部署環境缺 skill 檔案？）：{exc}"},
-        )
-    report_data = _json.loads(raw.decode("utf-8"))
-    return {
-        "version": source.name,
-        "theme": theme,
-        "pages": _pages_for_report_data(report_data, builder=builder),
-        "kinds": sorted(builder.RENDERERS),
-    }
+# ⚠ /reports/ppt-layout 與 _pages_for_report_data 已隨 PPT 交付線移除
+# （2026-08-10，remove-ppt-delivery-line）。
 
 
 def _version_workspace_id(source) -> int | None:
@@ -650,25 +546,8 @@ def serve_report_version_content(version: str):
     return _report_content_payload(run_dir)
 
 
-@report_versions_router.get("/reports/versions/{version}/ppt-files")
-def list_report_version_ppt_files(version: str):
-    """列某報表版本下已產的 .pptx 清單（#10：PPT 版本掛在報表版本下，_rN 不覆蓋）。
-
-    沿 report_artifact_store.list_ppt_files（DB 來源，只回 metadata 不撈 content）；
-    每筆補 download_url 指向既有 /report-latest/ppt/{version}/{filename} 下載端點，
-    前端可直接用。版本無 PPT 時回空清單（非 404，讓前端顯示「尚無 PPT」）。
-    """
-    files = report_artifact_store.list_ppt_files(version)
-    base = f"{settings.API_V1_PREFIX}/report-latest/ppt/{version}/"
-    ppt_files = [
-        {
-            "filename": f["filename"],
-            "byte_size": f["byte_size"],
-            "download_url": base + f["filename"],
-        }
-        for f in files
-    ]
-    return {"version": version, "ppt_files": ppt_files}
+# ⚠ /reports/versions/{version}/ppt-files 已隨 PPT 交付線移除
+# （2026-08-10，remove-ppt-delivery-line）。
 
 
 # 副檔名 → Content-Type：DB 來源沒有檔案路徑可讓 FileResponse 推斷，需明確給。
@@ -710,35 +589,8 @@ def serve_latest_report_asset(version: str, filename: str):
     return JSONResponse(status_code=404, content={"detail": "檔案不存在"})
 
 
-# 報告 PPT 的 MIME（openxml presentation）；DB 來源無檔案路徑，需明確指定。
-_PPTX_MEDIA_TYPE = (
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-)
-
-
-@app.get("/api/v1/report-latest/ppt/{version}/{filename}")
-def download_report_ppt(version: str, filename: str):
-    """下載某報表版本的 .pptx（deterministic、Web 直呼、不經 AI）。
-
-    ai:report_ppt runner 把 build_ppt.py 組出的 .pptx 一起 upload 進 report_artifacts；
-    本路由沿既有 read_file 單檔取回（不自造新表／新存取）。本機有檔就直接 serve，
-    沒有才向 DB 取（跨容器補位，同 asset 端點）。只接 .pptx、版本名防穿越；不存在回 404。
-    """
-    from pathlib import PurePosixPath
-
-    from fastapi.responses import FileResponse, JSONResponse, Response
-
-    if PurePosixPath(filename).suffix.lower() != ".pptx":
-        return JSONResponse(status_code=404, content={"detail": "不支援的檔案類型"})
-    root = REPORT_OUTPUT_ROOT.resolve()
-    target = (root / version / filename).resolve()
-    if target.is_relative_to(root) and target.is_file():
-        return FileResponse(str(target), media_type=_PPTX_MEDIA_TYPE, filename=filename)
-    if _is_safe_version(version) and PurePosixPath(filename).name == filename:
-        content = _db_read_artifact(version, filename)
-        if content is not None:
-            return Response(content=content, media_type=_PPTX_MEDIA_TYPE)
-    return JSONResponse(status_code=404, content={"detail": "PPT 不存在"})
+# ⚠ /report-latest/ppt/{version}/{filename} 已隨 PPT 交付線移除
+# （2026-08-10，remove-ppt-delivery-line）。HTML 與圖檔仍走 asset 端點。
 
 
 @app.get("/")

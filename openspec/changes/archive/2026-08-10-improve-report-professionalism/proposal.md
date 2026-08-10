@@ -1,3 +1,8 @@
+> 🔴 **2026-08-10 作廢（未完成即封存）**：使用者定案改向——PPT 交付線整體移除，
+> 交付物改為解讀完成的 HTML 報表。本 change 的主題（PPT 規劃／組版／匯出編輯）
+> 隨之失去標的。停止時做到哪、為何停，見
+> `openspec/changes/remove-ppt-delivery-line/proposal.md` 與
+> `.agents`（中央）work-log `2026-08-10.md`。程式已自 repo 移除，git 歷史可取回。
 ## Why
 
 現有報表與 PPT 已可產出，但母體口徑、兩通道論證、Key Player 深度與敘述品質仍不足以穩定支撐專利情報判讀。既有 16 問題調查已完成，需要轉成可執行、可逐項驗收的 change。

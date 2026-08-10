@@ -177,6 +177,8 @@ DB_DEPENDENT_TESTS = (
 )
 DB_DEPENDENT_DESELECT = ("tests/test_per_channel_topic_labels.py",)
 
+# ⚠ 2026-08-10 PPT 交付線移除：preset 改為 HTML 報表線（引擎＋解讀），
+# 拔掉 build_ppt 相關測試與 skills/ 掃描路徑。
 VERIFY_PRESETS: dict[str, dict[str, list[str] | str]] = {
     "report-professionalism": {
         "groups": ["report", "transform", "renderer", "narrative"],
@@ -185,14 +187,12 @@ VERIFY_PRESETS: dict[str, dict[str, list[str] | str]] = {
             "tests/test_annual_trend_four_columns.py",
             "tests/test_report_quality_and_ipc_filter.py",
             "tests/test_cluster_reports_and_narrative.py",
-            "tests/test_ppt_reader_facing_output.py",
-            "tests/test_ppt_layout_contract.py",
             "tests/test_narrative_contract_v4.py",
             "tests/test_narrative_named_subjects.py",
             "tests/test_narrative_capacity_is_honest.py",
         ],
-        "paths": ["backend/app", "skills/patent-report-ppt/scripts"],
-        "source": ["backend.app", "skills/patent-report-ppt/scripts"],
+        "paths": ["backend/app"],
+        "source": ["backend.app"],
         "regression_filter": "report or transform or renderer or narrative",
     },
 }

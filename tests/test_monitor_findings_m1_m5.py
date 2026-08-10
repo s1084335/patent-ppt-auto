@@ -35,27 +35,7 @@ def _doc(points, text="現況段。意涵段。後續段。"):
     }
 
 
-class M1StampTests(unittest.TestCase):
-    def test_stamp_overwrites_cli_copied_version(self):
-        """CLI 從 skill 範例抄來的 v7 必須被 runner 蓋成現行版本。"""
-        doc = _doc([{"label": "現況", "text": "2022年申請15件"}])
-        doc["reports"]["annual_trend"]["variants"]["default"]["prompt_version"] = "report_narrative_v7"
-        stamp_narrative_metadata(doc)
-        entry = doc["reports"]["annual_trend"]["variants"]["default"]
-        self.assertEqual(entry["prompt_version"], PROMPT_VERSION)
-
-    def test_skill_contract_example_not_hardcoded_stale(self):
-        """skill 契約範例不得寫死舊版號——要嘛佔位說明、要嘛與現行版本一致。"""
-        skill = (Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt"
-                 / "report-narrative-flow.md").read_text(encoding="utf-8")
-        import re
-
-        stale = [f"report_narrative_v{i}" for i in range(1, 20)
-                 if f"report_narrative_v{i}" != PROMPT_VERSION]
-        # ⚠ 2026-08-07：改字串邊界比對——v10 內含子字串 "…_v1"，
-        # 純 `in` 會在版本進位到兩位數時誤報舊版殘留。
-        hits = [s for s in stale if re.search(re.escape(s) + r"(?!\d)", skill)]
-        self.assertEqual(hits, [], f"skill 範例殘留舊版號 {hits}——CLI 會照抄")
+# ⚠ M1StampTests 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
 
 
 class M2ClampTests(unittest.TestCase):
@@ -106,17 +86,7 @@ class M3StatNumberTests(unittest.TestCase):
         self.assertTrue(any("重複" in w and "15" in w for w in warnings), warnings)
 
 
-class M5MissingReportsTests(unittest.TestCase):
-    def test_excluded_reports_not_reported_missing(self):
-        """刻意不進 PPT 的報表（EXCLUDED_FROM_PPT）不得列入 missing_reports。"""
-        import build_ppt as B
-
-        self.assertIn("family_quality_detail", B.EXCLUDED_FROM_PPT)
-        src = (Path(B.__file__)).read_text(encoding="utf-8")
-        # manifest 的三個集合聯集必須扣掉 EXCLUDED_FROM_PPT
-        idx = src.index('"missing_reports": sorted(')
-        self.assertIn("EXCLUDED_FROM_PPT", src[idx:idx + 500],
-                      "manifest missing_reports 沒扣除刻意排除清單——把「不放」誤報成「缺料」")
+# ⚠ M5MissingReportsTests 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
 
 
 if __name__ == "__main__":

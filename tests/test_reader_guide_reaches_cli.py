@@ -22,7 +22,8 @@ from backend.app.reports import content_blocks
 from backend.app.reports.chart_runner import table_display_spec
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SKILL_DIR = PROJECT_ROOT / "skills" / "patent-report-ppt"
+# 2026-08-10 PPT 線移除：解讀契約文件遷至 backend/app/worker/prompts/。
+SKILL_DIR = PROJECT_ROOT / "backend" / "app" / "worker" / "prompts"
 
 
 class ReaderGuideReachesCliTests(unittest.TestCase):

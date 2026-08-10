@@ -96,5 +96,61 @@ class TopicTimelineChartTests(unittest.TestCase):
         self.assertIn("馬達自鎖阻力機構", svg)
 
 
+class TopicYearRowsTests(unittest.TestCase):
+    """🔴 技術通道演進改主題×年泡泡矩陣（2026-08-10 使用者裁決）。
+
+    使用者：「技術演進做折線圖或泡泡圖會更好？」→ 裁決＝主題×年泡泡矩陣、
+    **只改技術通道**（功效通道維持早期 vs 近期雙條）。理由：每主題每年 1–5 件的
+    稀疏整數正適合泡泡（空格＝該年沒動作，進場時序、斷代一眼可見），且與
+    申請人年度矩陣同一種讀法；渲染複用 `year_bubble_matrix_layout`＋
+    `render_year_bubble_matrix_chart`，不新增第二支泡泡渲染器。
+
+    本類驗的是**聚合純函式** `topic_year_rows`：assignments×patents → 主題×年列。
+    """
+
+    TOPICS = [
+        {"topic_code": "T001", "label": "主題甲", "source_field": "tech_src"},
+        {"topic_code": "T002", "label": "主題乙", "source_field": "tech_src"},
+        {"topic_code": "T001", "label": "功效丙", "source_field": "eff_src"},
+    ]
+    ASSIGNMENTS = [
+        {"topic_code": "T001", "patent_id": 1, "source_field": "tech_src"},
+        {"topic_code": "T001", "patent_id": 2, "source_field": "tech_src"},
+        {"topic_code": "T002", "patent_id": 3, "source_field": "tech_src"},
+        # 同 code 不同通道：不得混進技術通道（兩通道各自從 T001 編號）
+        {"topic_code": "T001", "patent_id": 4, "source_field": "eff_src"},
+    ]
+    PATENTS = {1: {"application_year": 2022}, 2: {"application_year": 2022},
+               3: {"application_year": 2024}, 4: {"application_year": 2022}}
+
+    def _rows(self, **kw):
+        from backend.app.reports.chart_runner import topic_year_rows
+
+        return topic_year_rows(
+            kw.get("topics", self.TOPICS), kw.get("assignments", self.ASSIGNMENTS),
+            kw.get("patents", self.PATENTS), source_field=kw.get("source_field", "tech_src"))
+
+    def test_counts_grouped_by_topic_and_year(self):
+        rows = self._rows()
+        self.assertIn({"label": "主題甲", "application_year": 2022, "patent_count": 2}, rows)
+        self.assertIn({"label": "主題乙", "application_year": 2024, "patent_count": 1}, rows)
+
+    def test_other_channel_not_mixed_in(self):
+        """⚠ 兩通道各自從 T001 編號——功效的 T001 混進來會把主題甲灌成 3 件。"""
+        rows = self._rows()
+        total = sum(r["patent_count"] for r in rows if r["label"] == "主題甲")
+        self.assertEqual(total, 2)
+
+    def test_missing_year_is_skipped_not_crash(self):
+        """專利缺申請年（資料不全）＝略過該件，不得炸也不得記成 0 年。"""
+        patents = {**self.PATENTS, 1: {}}
+        rows = self._rows(patents=patents)
+        self.assertEqual(
+            sum(r["patent_count"] for r in rows if r["label"] == "主題甲"), 1)
+
+    def test_empty_inputs_give_empty_rows(self):
+        self.assertEqual(self._rows(assignments=[]), [])
+
+
 if __name__ == "__main__":
     unittest.main()

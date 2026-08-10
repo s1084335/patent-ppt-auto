@@ -157,65 +157,8 @@ def _load_ppt_builder():
     return module
 
 
-class PptQuadrantPageTests(unittest.TestCase):
-    """PPT 象限頁要走得到分群版型（2026-07-28 驗收 agent 4c）。
+# ⚠ PptQuadrantPageTests 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
 
-    ## 問題
-
-    `pptSectionsForPage` 以 `keys.includes(section.report_key)` 精確比對，
-    但後端只產**一個** cluster section（`report_key='cluster_topic_table'`，
-    見 `chart_runner.py`），象限的圖表是該 section 底下的 **variants**。
-
-    而 `_expand_ppt_pages_with_active_reports`（`api/reports.py`）會為
-    `opportunity_quadrant`、`pain_point_quadrant` 各建一頁、`report_keys=[name]`。
-
-    → 那兩頁 `pptSectionsForPage` 回 `[]` → `pptIsClusterPage` 為 false
-    → 不進 `pptClusterSplitSlideHtml`，退回 `pptTableSlideHtml` 且無 section。
-
-    **三個分群報表在報表頁都正常（`clusterReportViews` 從 variants 判斷），
-    PPT 只有 `cluster_topic_table` 那頁正常——兩邊行為不一致。**
-    """
-
-    # ## 2026-07-31 改寫
-    #
-    # 原測試斷言的是**前端 CSS 模擬預覽**裡的 `pptSectionsForPage`。該模擬已於
-    # `fix/remove-ppt-css-simulation` 整批移除（預覽改走真正的 pptx renderer），
-    # 函式不存在，測試恆綠不起來——是留在 repo 裡的死測試，會讓整套永遠紅一支。
-    #
-    # 但它守護的關切仍然成立，只是戰場換了：象限兩頁要各自對到自己的解讀。
-    # 這件事現在由 `build_ppt._narrative_candidates` 的候選順序決定，故改在該層釘住。
-
-    def _candidates(self, chart: str) -> tuple[str, ...]:
-        bp = _load_ppt_builder()
-        spec = bp.PageSpec(page=1, kind="chart_hero", title="機會評估", topic="機會評估",
-                           report_keys=("opportunity_quadrant",), charts=(chart,))
-        return bp._narrative_candidates(spec)
-
-    def _first_cluster_alias(self, chart: str) -> str:
-        for key in self._candidates(chart):
-            if key.startswith("cluster_topic_table:"):
-                return key
-        self.fail(f"{chart} 沒有對到任何 cluster 解讀 alias")
-
-    def test_split_quadrant_pages_resolve_distinct_narratives(self):
-        """🔴 拆頁後兩頁不得共用同一段解讀（實機 P10／P11：圖是功效、文字是技術）。
-
-        根因：拆頁時兩頁的 `report_keys` 都被收窄成同一個 `opportunity_quadrant`，
-        而該 key 的 alias 同時對到 tech 與 effect 兩個變體；alias 若依 report_key 層
-        先展開，兩頁都會命中先列的 tech。圖檔主檔名才是能區分兩頁的唯一線索。
-        """
-        tech = self._first_cluster_alias("opportunity_quadrant_tech.svg")
-        effect = self._first_cluster_alias("opportunity_quadrant_effect.svg")
-        self.assertNotEqual(tech, effect, "兩頁對到同一段解讀＝圖文不符")
-        self.assertEqual(tech, "cluster_topic_table:opportunity_tech")
-        self.assertEqual(effect, "cluster_topic_table:opportunity_effect")
-
-    def test_chart_specific_alias_precedes_report_key_alias(self):
-        """順序即修法：圖檔層 alias 必須排在 report_key 層 alias 之前。"""
-        keys = self._candidates("opportunity_quadrant_effect.svg")
-        self.assertIn("opportunity_quadrant_effect", keys)
-        self.assertLess(keys.index("opportunity_quadrant_effect"), keys.index("opportunity_quadrant"),
-                        "圖檔主檔名比 report_key 精確，必須先查")
 
 if __name__ == "__main__":
     unittest.main()

@@ -971,38 +971,8 @@ def handle_topic_unmerge(payload: dict[str, Any], context: JobContext) -> dict[s
     return _json_safe(summary)
 
 
-def _enqueue_chained_report_ppt(payload: dict[str, Any], summary: Any) -> None:
-    """解讀成功後接續派 `ai:report_ppt`（R-5，2026-08-05）。
-
-    🔴 為什麼搬到 worker 端：原本這一步寫在前端——頁面排完 narrative 後**自己輪詢**，
-    看到成功才送 PPT 任務。使用者只要關分頁／切走／電腦睡著，鏈就斷在解讀完成，
-    PPT 任務**從來沒有被建立**，而畫面與任務清單都顯示解讀 succeeded。
-    實測（2026-08-05）：#200 解讀完成後沒有 #201，重開頁面按第二次才排出來。
-    ⚠ 這是「看起來成功的靜默停止」，比明確失敗更難查——使用者只會覺得
-    「有時候生不出 PPT」，且重現時一樣沒有錯誤訊息。
-
-    前端輪詢**保留**（負責顯示進度、完成後自動載預覽），但不再是 PPT 會不會被排出來
-    的必要條件；頁面關了流程照樣走完。
-
-    ⚠ 失敗隔離（沿本檔既有 enqueue 模式）：解讀本體已成功回存，接續派工的任何例外
-    只記 log、不 raise——不得讓已完成的解讀被標成 failed。
-    """
-    if not payload.get("then_export_ppt"):
-        return
-    from backend.app.db import job_repository as jr
-
-    try:
-        version = _summary_field(summary, "based_on_version")
-        if not version:
-            return
-        jr.create_job(
-            "ai:report_ppt",
-            {"based_on_version": str(version),
-             "cli_kind": str(payload.get("cli_kind") or "claude")},
-            workspace_id=payload.get("workspace_id"),
-        )
-    except Exception:  # noqa: BLE001 - 解讀已成功，接續失敗不得倒扣
-        LOGGER.exception("chained report_ppt enqueue failed after narrative")
+# ⚠ _enqueue_chained_report_ppt（解讀後接續派 ai:report_ppt）已隨 PPT 交付線移除
+# （2026-08-10，remove-ppt-delivery-line）。
 
 
 def handle_ai_narrative(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
@@ -1047,8 +1017,6 @@ def handle_ai_narrative(payload: dict[str, Any], context: JobContext) -> dict[st
         report_keys=payload.get("report_keys"),
     )
     context.heartbeat("解讀已回存", 90)
-    # R-5：伺服器端接續派 PPT（旗標由前端「產生 PPT」帶下來），關瀏覽器不斷鏈。
-    _enqueue_chained_report_ppt(payload, summary)
     result = {
         "based_on_version": summary.get("based_on_version"),
         "variants_narrated": summary.get("narrated"),

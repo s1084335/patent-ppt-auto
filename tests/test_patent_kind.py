@@ -196,54 +196,7 @@ class SingleDefinitionTests(unittest.TestCase):
                          f"設計案判定散落在多處，改一處另一處不會報錯：{offenders}")
 
 
-class CoverDesignNoteTests(unittest.TestCase):
-    """封面 muted 小字：設計案備註由引擎產、PPT 端只消費。"""
-
-    def _load_build_ppt(self):
-        import importlib.util
-        import sys
-        from pathlib import Path
-
-        if "build_ppt_for_kind" in sys.modules:
-            return sys.modules["build_ppt_for_kind"]
-        path = (Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt"
-                / "scripts" / "build_ppt.py")
-        spec = importlib.util.spec_from_file_location("build_ppt_for_kind", path)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules["build_ppt_for_kind"] = module
-        spec.loader.exec_module(module)
-        return module
-
-    def test_cover_does_not_classify_design_itself(self):
-        """🔴 可攜 skill 不得自行判定設計案（判定在 backend 的唯一定義處）。"""
-        from pathlib import Path
-
-        source = (Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt"
-                  / "scripts" / "build_ppt.py").read_text(encoding="utf-8")
-        for marker in ("document_kind ==", "document_kind='S'", 'patent_type =='):
-            self.assertNotIn(marker, source,
-                             f"PPT 端自己判定專利種類了（{marker}）——判定只能在 backend")
-
-    def test_design_note_is_read_from_report_data(self):
-        """備註取自 `report_data["patent_kind"]["design_note"]`。"""
-        from pathlib import Path
-
-        source = (Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt"
-                  / "scripts" / "build_ppt.py").read_text(encoding="utf-8")
-        self.assertIn('"patent_kind"', source)
-        self.assertIn('"design_note"', source)
-
-    def test_note_merges_with_period_line(self):
-        """⚠ 併進統計期間那一行——另開一列要動 theme 座標，且封面沒餘裕。
-
-        也不得併進統計卡 value：四張卡同級、級數由最長值決定，會把四張一起縮小。
-        """
-        from pathlib import Path
-
-        source = (Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt"
-                  / "scripts" / "build_ppt.py").read_text(encoding="utf-8")
-        self.assertIn("subtitle = ", source, "設計案備註沒有併進副標行")
-        self.assertIn('f"統計期間 {period}"', source)
+# ⚠ CoverDesignNoteTests 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
 
 
 if __name__ == "__main__":

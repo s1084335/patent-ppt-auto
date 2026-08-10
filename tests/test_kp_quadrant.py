@@ -95,22 +95,7 @@ class QuadrantChartTests(unittest.TestCase):
             self.assertTrue(path.exists())
 
 
-class BuilderIntegrationTests(unittest.TestCase):
-    def test_kp_quadrant_preset_is_approved(self):
-        from backend.app.reports.planning_contracts import APPROVED_LAYOUT_PRESETS
-
-        self.assertIn("kp_quadrant", APPROVED_LAYOUT_PRESETS)
-
-    def test_builder_registers_kp_renderers(self):
-        import sys
-        from pathlib import Path as P
-
-        sys.path.insert(0, str(P(__file__).resolve().parents[1] / "skills"
-                                / "patent-report-ppt" / "scripts"))
-        import build_ppt as bp
-
-        for kind in ("kp_quadrant", "kp_deepdive", "kp_cards"):
-            self.assertIn(kind, bp.RENDERERS, f"組版端缺 {kind} 版型")
+# ⚠ BuilderIntegrationTests 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
 
 
 if __name__ == "__main__":

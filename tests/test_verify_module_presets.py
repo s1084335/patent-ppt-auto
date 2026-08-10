@@ -14,8 +14,11 @@ class VerifyModulePresetTests(unittest.TestCase):
         self.assertEqual(set(preset["groups"]), {"report", "transform", "renderer", "narrative"})
         self.assertIn("tests/test_report_catalog_removals.py", preset["tests"])
         self.assertIn("tests/test_annual_trend_four_columns.py", preset["tests"])
-        self.assertIn("tests/test_ppt_reader_facing_output.py", preset["tests"])
+        # 2026-08-10 契約變更：PPT 交付線移除，preset 不再接 build_ppt 面向的測試
+        # （test_ppt_reader_facing_output 等已刪），renderer 面向由引擎圖表測試涵蓋。
         self.assertIn("tests/test_narrative_contract_v4.py", preset["tests"])
+        for name in preset["tests"]:
+            self.assertNotIn("test_ppt_", name, f"preset 仍接著已刪的 PPT 測試：{name}")
 
     def test_resolve_preset_args_fills_missing_cli_targets(self):
         args = verify_module.parse_args(["--preset", "report-professionalism"])

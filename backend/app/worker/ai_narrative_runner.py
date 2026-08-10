@@ -30,14 +30,15 @@ FULL_REPORT_LATEST = PROJECT_ROOT / "output" / "full_report_latest"
 def _resolve_skill_path() -> Path:
     """解讀規格來源（prompt 模板、narratives.json 契約、based_on_version 規則）。
 
-    預設只取專案 repo 內 `skills/patent-report-ppt/report-narrative-flow.md`。正式部署若把
-    規格掛載到其他位置，可用 `REPORT_NARRATIVE_FLOW_PATH` 覆寫。不得 fallback 到本機
-    `.agents`；舊規格檔會掩蓋 Docker／公司伺服器缺檔問題。
+    預設取 `backend/app/worker/prompts/report-narrative-flow.md`——2026-08-10 PPT 交付線
+    移除後自 `skills/patent-report-ppt/` 遷入；解讀契約隨 backend 部署，不再屬 Installer
+    打包的 skill。正式部署若把規格掛載到其他位置，可用 `REPORT_NARRATIVE_FLOW_PATH`
+    覆寫。不得 fallback 到本機 `.agents`；舊規格檔會掩蓋 Docker／公司伺服器缺檔問題。
     """
     configured = os.environ.get("REPORT_NARRATIVE_FLOW_PATH")
     if configured:
         return Path(configured).expanduser().resolve()
-    return PROJECT_ROOT / "skills" / "patent-report-ppt" / "report-narrative-flow.md"
+    return Path(__file__).resolve().parent / "prompts" / "report-narrative-flow.md"
 
 
 SKILL_PATH = _resolve_skill_path()
@@ -447,32 +448,15 @@ def load_narrative_subjects(run_dir: Path | None = None) -> dict[str, list[str]]
 
 
 def load_narrative_capacity(run_dir: Path | None = None) -> dict[str, dict[str, int]]:
-    """各報表要點區的實際版面容量；取不到回空 dict。
+    """逐報表容量：**恆回空 dict＝全域上限**（2026-08-10 PPT 線移除後）。
 
-    ⚠ 延後匯入 `ai_report_ppt_runner`：那支模組在 import 期就從本模組取東西，
-    寫成模組層 import 會循環。
-    ⚠ 失敗只降級不中斷：容量是「讓 CLI 寫得剛好」的優化，拿不到就退回全域上限，
-    不該讓整個解讀任務產不出來。
+    原本從 `build_ppt.narrative_capacity()` 逐頁算 PPT 版面容量；PPT 交付線移除後
+    解讀的消費者只剩 HTML 報表卡，沒有版面裁切，全域上限（4–7 條 × ≤55 字）
+    守的是密度不是版面。⚠ 保留函式殼而不是刪掉：`validate_narrative_contract` 的
+    `capacity` 參數契約本來就定義「沒給就退回全域上限」，呼叫端與測試不用改。
     """
-    try:
-        from .ai_report_ppt_runner import _load_builder
-
-        builder = _load_builder()
-        if run_dir is None:
-            return builder.narrative_capacity()
-        # 帶 run_dir 才算得出扁圖頁的真實容量（版型依圖的長寬比在執行時決定）。
-        import json as _json
-
-        manifest_path = run_dir / "artifact_manifest.json"
-        manifest = _json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
-        theme = builder.Theme.load()
-        charts = builder.ChartIndex(run_dir, run_dir / ".cache", manifest, theme)
-        # K-1：帶 report_data 讓動態插頁也拿到容量（見 build_ppt.narrative_capacity）。
-        rd_path = run_dir / "report_data.json"
-        report_data = _json.loads(rd_path.read_text(encoding="utf-8")) if rd_path.exists() else None
-        return builder.narrative_capacity(theme, charts, report_data)
-    except Exception:
-        return {}
+    del run_dir  # 介面相容；容量不再依 run_dir 而變
+    return {}
 
 
 def build_prompt(
@@ -672,7 +656,7 @@ def run_narrative(
     argv = build_cli_command(cli_kind, prompt, model=model)
     # 取證稽核（2026-08-10）：解讀線有 RESEARCH_TOOLS 可查 DB，但原本沒有任何紀錄
     # ——它可以完全不查就寫出簡報每一頁的要點，而我們無從得知。落檔路徑由環境變數
-    # 傳給 MCP server 子行程，任務結束讀回。⚠ 工具與 report_planning_runner 共用
+    # 傳給 MCP server 子行程，任務結束讀回。⚠ 工具走 cli_gateway 的 RESEARCH_TOOLS
     # 同一份實作（`report_research`），不複製第二份稽核格式。
     from backend.app.mcp_server.report_research import query_audit_file, read_query_audit
 

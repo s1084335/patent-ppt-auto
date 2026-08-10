@@ -3650,7 +3650,14 @@ async function loadReportVersionContent(version) {
     // R9（2026-07-27）：報表種類頁改「選單選一份、只顯示那一份」。版本區不再把整份
     // 報告全列出來——那正是使用者說的「不同報表混在一起」。這裡只放 PPT 清單，
     // 報表本體交給上方選單驅動的 #report-inline-view（見 renderReportViewer）。
-    body.innerHTML = '<div class="report-ppt-list" id="report-ppt-list-' + safe + '"></div>';
+    // 🔴 HTML 匯出入口（2026-08-10 使用者定案：交付物＝解讀完成的 HTML 報表；
+    //   PPT 清單已隨 PPT 交付線移除）。連結走 asset 端點，圖檔相對路徑同端點可解。
+    body.innerHTML = '<div class="report-ppt-list">'
+      + '<a class="btn btn-primary btn-sm" target="_blank" rel="noopener" href="'
+      + escHtml(API + '/report-latest/asset/' + encodeURIComponent(version) + '/index.html')
+      + '">開啟 HTML 報表（新分頁）</a>'
+      + '<span class="hint" style="margin-left:.6rem">含圖表與 AI 解讀；解讀未產出時卡片會標示待產生。</span>'
+      + '</div>';
     // 🔴 展開哪一版就顯示哪一版的報表（2026-07-30 使用者實機回報
     // 「我重產報告後，舊的報表無法再出現」「報表要能跟隨這裡收起來或出現」）。
     //
@@ -3663,43 +3670,13 @@ async function loadReportVersionContent(version) {
     // toggleReportVersion 會先收合其他版本，故這裡直接餵不會造成兩份並存。
     fillReportViewSelect(content);
     reportVersions.loaded[version] = content;
-    loadReportVersionPptFiles(version);   // 非阻塞：報表內容先顯示，PPT 清單隨後填
   } catch (e) {
     body.innerHTML = '<div class="hint">載入報表內容失敗（' + escHtml(e.message) + '）。</div>';
   }
 }
 
-// 載某報表版本的 PPT 版本清單（#10 R10-3）：列該版所有 .pptx（含 _rN 序號），各版可下載。
-// 沿 GET /reports/versions/{v}/ppt-files（DB 來源、只回 metadata），download_url 直接可用。
-async function loadReportVersionPptFiles(version) {
-  const safe = cssSafeVersion(version);
-  const box = el('report-ppt-list-' + safe);
-  if (!box) return;
-  try {
-    const url = API + '/reports/versions/' + encodeURIComponent(version) + '/ppt-files';
-    const data = await getJson(url);
-    const files = data.ppt_files || [];
-    if (files.length === 0) {
-      box.innerHTML = '<div class="report-ppt-head">PPT 版本</div>'
-        + '<div class="hint">此報表版本尚未產出 PPT。</div>';
-      return;
-    }
-    const rows = files.map(function (f, idx) {
-      const kb = f.byte_size ? (f.byte_size / 1024).toFixed(1) + ' KB' : '';
-      const latest = (idx === files.length - 1) ? '<span class="ver-badge">最新</span>' : '';
-      return '<div class="report-ppt-row">'
-        + '<span class="ppt-name">' + escHtml(f.filename) + '</span>'
-        + latest
-        + '<span class="ppt-size">' + kb + '</span>'
-        + '<a class="btn btn-outline btn-sm" href="' + escHtml(f.download_url) + '" download>下載</a>'
-        + '</div>';
-    }).join('');
-    box.innerHTML = '<div class="report-ppt-head">PPT 版本（' + files.length + '）</div>' + rows;
-  } catch (e) {
-    box.innerHTML = '<div class="report-ppt-head">PPT 版本</div>'
-      + '<div class="hint">載入 PPT 清單失敗（' + escHtml(e.message) + '）。</div>';
-  }
-}
+// ⚠ loadReportVersionPptFiles（PPT 版本清單）已隨 PPT 交付線移除
+//   （2026-08-10，remove-ppt-delivery-line）；版本區改放「開啟 HTML 報表」入口。
 
 // 統一進度卡（job dict：status/progress_percent/current_stage）＋已耗時。
 function jobProgressCardHtml(j, startedMs) {
@@ -3726,9 +3703,10 @@ function fmtElapsed(startedMs) {
 function renderExport() {
   const m = el('main-panel');
   m.innerHTML = '<h2 class="panel-title">匯出報告</h2>'
-    + '<p class="hint" style="padding:0 0 0.7rem">預覽整份報告 → 開編輯模式修改 → 單頁 HTML 預覽（新分頁過目，分頁內可下載或列印成 PDF）。</p>'
+    // ⚠ 編輯模式已移除（2026-08-10 使用者定案，change：remove-ppt-delivery-line）；
+    //   HTML 匯出入口併進「報表種類」頁，本區塊先保留其餘按鈕。
+    + '<p class="hint" style="padding:0 0 0.7rem">預覽整份報告 → 單頁 HTML 預覽（新分頁過目，分頁內可下載或列印成 PDF）。</p>'
     + '<div class="export-toolbar">'
-    + '<label class="switch"><input type="checkbox" id="export-edit-toggle" onchange="toggleExportEditMode()"> 編輯模式</label>'
     + '<select id="export-version-select" class="ppt-layout-select" onchange="loadExportPreview(this.value)"></select>'
     + '<button class="btn btn-outline" id="btn-reload-preview" onclick="loadExportPreview(exportPreview.version)">重新載入預覽</button>'
     + '<button class="btn btn-outline" id="btn-export" onclick="triggerExport()">重新產製報表資料</button>'
@@ -3846,7 +3824,9 @@ async function loadExportPreview(version) {
     // 一般預覽走 loadExportPptFiles，於是選圖清單永遠空的。實際開瀏覽器點進去
     // 才發現：測試只驗得到「有呼叫端」，驗不到「在正確時機呼叫」。
     loadPptChartPicker();
-    await loadExportPptFiles(content.version);
+    // ⚠ 2026-08-10 PPT 交付線移除：預覽不再走 .pptx 渲染（端點已拔），
+    //   改顯示唯讀內容視圖（與報表種類頁共用同一組渲染函式）。
+    wrap.innerHTML = renderReportContentHtml(readOnlyReportView(content));
   } catch (e) {
     wrap.innerHTML = '<div class="hint">載入報告內容失敗（' + escHtml(e.message) + '）。</div>';
   }
@@ -3932,17 +3912,8 @@ async function renderRealPptPreview(file) {
 }
 
 
-function toggleExportEditMode() {
-  const box = el('export-edit-toggle');
-  exportPreview.editMode = !!(box && box.checked);
-  // 編輯模式＝可編輯的內容視圖（renderReportContentHtml）；關閉＝回到真實 .pptx 預覽。
-  // ⚠ 2026-07-30 起不再有 CSS 模擬投影片——編輯的是「內容」，PPT 長相看真實渲染。
-  if (exportPreview.editMode) {
-    renderExportPreview();
-  } else if (exportPreview.version) {
-    loadExportPptFiles(exportPreview.version);
-  }
-}
+// ⚠ toggleExportEditMode（編輯模式開關）已移除（2026-08-10 使用者定案）；
+//   editMode 恆為 false，編輯分支成為不可達路徑，待匯出報告區塊整體收斂時一併清。
 
 // 唯讀 view：給不需編輯的呈現場合（報表種類頁內嵌顯示）用，與工作台共用同一組
 // 渲染函式。edits 全空＝不套人工稿、editMode false＝不出編輯控件。

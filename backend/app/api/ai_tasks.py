@@ -55,9 +55,7 @@ class CreateAiTaskRequest(BaseModel):
     # 本專案同型錯誤已犯兩次（前次：前端送 aliases、後端欄位是 variants），
     # 故 test_per_report_narrative_rerun.NarrativeChainWiringTests 逐段驗整條線。
     report_keys: list[str] | None = None
-    # 解讀成功後由 worker 接續派 ai:report_ppt（R-5，2026-08-05）。
-    # ⚠ 同上：未宣告的欄位 Pydantic 靜默忽略——旗標傳不到 worker，鏈一樣是斷的。
-    then_export_ppt: bool = False
+    # ⚠ then_export_ppt（解讀後接續派 PPT）已隨 PPT 交付線移除（2026-08-10）。
     model: str | None = None
     cli_timeout_seconds: float | None = Field(default=None, gt=0)
     idempotency_key: str | None = None

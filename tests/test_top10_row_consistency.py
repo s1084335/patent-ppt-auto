@@ -140,14 +140,18 @@ class DefaultLimitSingleSourceTests(unittest.TestCase):
                       f"CLI 預設沒讀常數，寫死了數字：{line.strip()}")
 
     def test_no_hardcoded_twenty_left(self):
-        """守住「別再長回來」——六處寫死的 20 是分批加進來的，每處單看都合理。"""
+        """守住「別再長回來」——只掃**函式簽名的預設值**。
+
+        ⚠ 呼叫端顯式傳 `row_limit=20` 不算違規：「網頁端前 20」是另一條定案
+        （2026-08-04；例：年度矩陣主圖 10＋`_more` 長尾 11–20），顯式傳值是
+        呼叫端自己的語意宣告。會漂移的是**預設值**——呼叫端沒傳時吃到誰。
+        """
         source = Path(cr.__file__).read_text(encoding="utf-8")
         offenders = [
             ln.strip() for ln in source.splitlines()
-            if ("limit: int = 20" in ln or "limit=20" in ln.replace(" ", ""))
-            and not ln.strip().startswith("#")
+            if "limit: int = 20" in ln and not ln.strip().startswith("#")
         ]
-        self.assertEqual(offenders, [], f"仍有寫死的 20：{offenders}")
+        self.assertEqual(offenders, [], f"仍有寫死 20 的預設值：{offenders}")
 
 
 class DefaultTruncationBehaviourTests(unittest.TestCase):

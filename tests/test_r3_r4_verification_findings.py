@@ -20,36 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills" / "patent-report-ppt" / "scripts"))
 
 
-class R3ImageFrameClearsFooterTests(unittest.TestCase):
-    """圖框不得延伸進頁尾帶——高度受限的圖會撐滿框高，底注就會壓到頁尾。"""
-
-    def setUp(self):
-        import build_ppt as B
-
-        self.B = B
-        self.theme = B.Theme.load()
-
-    def test_hero_image_frame_stops_above_footnote(self):
-        hero = self.theme.geometry["chart_hero"]
-        foot = self.theme.geometry["footnote"]
-        bottom = self.B.image_frame_height(
-            self.theme, hero["image_top_in"], hero["image_height_in"]) + hero["image_top_in"]
-        self.assertLessEqual(
-            bottom, foot["top_in"],
-            f"圖框底緣 {bottom:.2f}in 進到頁尾帶 {foot['top_in']}in——長圖的底注會壓住資料來源")
-
-    def test_clamp_only_bites_when_needed(self):
-        """夾限只在超出時作用：宣告高度本來就在頁尾之上時原樣回傳。"""
-        h = self.B.image_frame_height(self.theme, 1.0, 2.0)
-        self.assertEqual(h, 2.0)
-
-    def test_wide_charts_unaffected(self):
-        """寬度受限的圖（長條 949x453）實際高度遠小於框高，夾限不影響它。"""
-        hero = self.theme.geometry["chart_hero"]
-        capped = self.B.image_frame_height(
-            self.theme, hero["image_top_in"], hero["image_height_in"])
-        _w, h = self.B._fitted_size_from_px(949, 453, hero["image_width_in"], capped)
-        self.assertAlmostEqual(h, hero["image_width_in"] * 453 / 949, places=2)
+# ⚠ R3ImageFrameClearsFooterTests 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
 
 
 class R4ApplicantUnionTests(unittest.TestCase):

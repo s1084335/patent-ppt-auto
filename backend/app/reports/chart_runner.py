@@ -862,6 +862,46 @@ def render_topic_timeline_chart(
         series=(("早期", "early_count"), ("近期", "recent_count")), limit=limit)
 
 
+def topic_year_rows(
+    topics: list[dict[str, Any]],
+    assignments: list[dict[str, Any]],
+    patents: dict[int, dict[str, Any]],
+    *,
+    source_field: str,
+) -> list[dict[str, Any]]:
+    """主題 × 申請年聚合列（供技術通道演進泡泡矩陣，2026-08-10 使用者裁決）。
+
+    使用者：「技術演進做折線圖或泡泡圖會更好？」→ 定案主題×年**泡泡矩陣**、
+    只改技術通道：每主題每年 1–5 件的稀疏整數正適合泡泡（空格＝該年沒動作，
+    進場時序與斷代一眼可見），並與申請人年度矩陣同一種讀法。
+    渲染端複用 `year_bubble_matrix_layout`＋`render_year_bubble_matrix_chart`，
+    本函式只做聚合——輸出形狀即 layout 函式吃的 rows。
+
+    ⚠ 通道要用 `source_field` 嚴格過濾：兩通道各自從 T001 編號、共用命名空間
+    （2026-07-28 實機教訓），只憑 topic_code 歸戶會把功效的 T001 灌進技術的 T001。
+    ⚠ 專利缺申請年＝略過該件（不記成 0 年——0 會變成圖上的假年份）。
+    """
+    label_by_code = {
+        str(t.get("topic_code")): str(t.get("label") or t.get("topic_code") or "")
+        for t in topics if str(t.get("source_field") or "") == source_field
+    }
+    counts: dict[tuple[str, int], int] = {}
+    for a in assignments:
+        if str(a.get("source_field") or "") != source_field:
+            continue
+        label = label_by_code.get(str(a.get("topic_code", a.get("topic_key", "")) or ""))
+        if not label:
+            continue
+        year = (patents.get(int(a["patent_id"])) or {}).get("application_year")
+        if not year:
+            continue
+        counts[(label, int(year))] = counts.get((label, int(year)), 0) + 1
+    return [
+        {"label": label, "application_year": year, "patent_count": n}
+        for (label, year), n in sorted(counts.items())
+    ]
+
+
 def ranking_segments(row: dict[str, Any]) -> dict[str, int]:
     """把一列排名資料換算成兩段長度與各段的斜紋長度（#3，2026-08-05 定案）。
 
@@ -2616,7 +2656,8 @@ CHART_ENCODING_NOTES: dict[str, str] = {
     "opportunity_quadrant": "點＝技術主題（單位是主題不是件）",
     "cluster_topic_table": "家數＝投入該主題的申請人數",
     # 主題 × 時間：兩條同尺才比得出移動方向；狀態已標在主題名旁。
-    "topic_timeline": "上下兩條同尺｜上＝早期窗、下＝近期窗",
+    # 2026-08-10 使用者裁決：技術通道改主題×年泡泡矩陣，功效通道維持雙條。
+    "topic_timeline": "技術＝主題×年泡泡（空格＝該年無申請）；功效＝上下兩條同尺（上早期、下近期）",
     "applicant_ranking": "含共同申請，各自計數",
     "applicant_country_distribution": "含共同申請，總和大於專利件數",
     "applicant_year_matrix": "含共同申請，依申請年落點",
@@ -3355,7 +3396,11 @@ def shared_matrix_max(ctx: ChartContext, *report_names: str) -> int | None:
 def _build_applicant_year_matrix_section(ctx: ChartContext) -> None:
     """申請人 × 申請年份泡泡矩陣。"""
     report = ctx.report("applicant_year_matrix")
-    layout = year_bubble_matrix_layout(report["rows"], "applicant_display_name")
+    # ⚠ 這裡明確要 20：主圖取前 10（簡報端上限），11–20 名進 `_more` 網頁長尾
+    # ——「網頁端前 20、簡報端前 10」是兩條各自的定案（2026-08-04／08-10）。
+    # 預設 row_limit 收斂成 10 之後，靠預設值拿不到長尾的料。
+    layout = year_bubble_matrix_layout(
+        report["rows"], "applicant_display_name", row_limit=20)
     top_rows = layout["top_rows"]
     render_year_bubble_matrix_chart(
         ctx.run_dir / "applicant_year_matrix.svg",
@@ -4086,9 +4131,25 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
         timeline_rows = [r for r in topic_rows if str(r.get("source_field")) == sf]
         if timeline_rows:
             timeline_file = f"topic_timeline{suffix}.svg"
-            render_topic_timeline_chart(
-                ctx.run_dir / timeline_file,
-                f"主題演進——{segment_label}（早期 vs 近期）", timeline_rows)
+            # 🔴 技術通道改主題×年泡泡矩陣（2026-08-10 使用者裁決「只改技術通道」）：
+            # 稀疏小整數用泡泡（空格＝該年沒動作，進場時序與斷代一眼可見），
+            # 與申請人年度矩陣同一種讀法；渲染複用同一支泡泡渲染器，不另寫。
+            # 功效通道維持早期 vs 近期雙條（功效主展示是機會四象限）。
+            from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL
+
+            ty_rows = (topic_year_rows(
+                data["topics"], data["assignments"], data.get("patents") or {},
+                source_field=sf) if sf == SOURCE_FIELD_TECHNICAL else [])
+            if ty_rows:
+                layout = year_bubble_matrix_layout(ty_rows, row_key="label")
+                render_year_bubble_matrix_chart(
+                    ctx.run_dir / timeline_file,
+                    f"主題演進——{segment_label}（主題 × 申請年）",
+                    layout, layout["top_rows"])
+            else:
+                render_topic_timeline_chart(
+                    ctx.run_dir / timeline_file,
+                    f"主題演進——{segment_label}（早期 vs 近期）", timeline_rows)
             variants.append({
                 "label": f"主題演進{tab_suffix}",
                 "file": timeline_file,

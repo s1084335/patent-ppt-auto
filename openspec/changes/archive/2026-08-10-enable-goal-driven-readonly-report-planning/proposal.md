@@ -1,3 +1,8 @@
+> 🔴 **2026-08-10 作廢（未完成即封存）**：使用者定案改向——PPT 交付線整體移除，
+> 交付物改為解讀完成的 HTML 報表。本 change 的主題（PPT 規劃／組版／匯出編輯）
+> 隨之失去標的。停止時做到哪、為何停，見
+> `openspec/changes/remove-ppt-delivery-line/proposal.md` 與
+> `.agents`（中央）work-log `2026-08-10.md`。程式已自 repo 移除，git 歷史可取回。
 ## Why
 
 現行 `ai:report_ppt` 只能消費 runner 預先整理的固定 `report_data.json`、`narratives.json` 與 page slots，無法依使用者的最大目標自行安排論證，也不能在撰寫敘述時補取必要證據。需要把 CLI 升級為受控的報告規劃代理，同時以工具面與資料庫權限強制維持唯讀。

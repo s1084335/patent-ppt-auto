@@ -37,8 +37,9 @@ FORBIDDEN_TERMS = (
     "反向捲繞", "渦電流",
 )
 
-# CLI 會讀的 skill 文件（版型庫、內容標準、資料取用、解讀流程）
-SKILL_DIR = PROJECT_ROOT / "skills" / "patent-report-ppt"
+# CLI 會讀的解讀契約文件（2026-08-10 PPT 線移除後遷至 backend/app/worker/prompts/：
+# 解讀流程、內容標準節錄、資料取用地圖）
+SKILL_DIR = PROJECT_ROOT / "backend" / "app" / "worker" / "prompts"
 SKILL_DOCS = sorted(SKILL_DIR.glob("*.md"))
 
 
@@ -65,27 +66,7 @@ class SkillDocsTests(unittest.TestCase):
 class PromptTests(unittest.TestCase):
     """兩個 runner 實際組出的 prompt——這才是 CLI 眼睛真正看到的字串。"""
 
-    def test_planning_prompt_clean(self):
-        """規劃 prompt（無解讀的路徑）不得含任何 workspace 詞。
-
-        ⚠ 只驗**規則文字**：不帶 narratives——實際跑時解讀素材裡出現公司名
-        是正常的（那是查證產物），規則自帶名詞才是缺陷。
-        """
-        from backend.app.reports.planning_defaults import build_brief
-        from backend.app.worker.report_planning_runner import build_prompt
-
-        brief = build_brief(
-            snapshot_id="v1", workspace_id=3, north_star_goal="找空白區",
-            audience="研發主管", page_budget=11,
-            selected_charts=[{
-                "chart_identity": "applicant_strength_profile:default",
-                "title": "Key Players", "image_path": "kp.svg",
-                "data_rows": [{"applicant_display_name": "甲", "patent_count": 9}],
-                "population_note": "", "version": "v1", "checksum": "abc",
-            }],
-        )
-        found = _violations(build_prompt(brief), "planning_prompt")
-        self.assertEqual(found, [], "\n".join(found))
+    # 規劃 prompt 的檢查已隨 PPT 交付線移除（2026-08-10，change：remove-ppt-delivery-line）。
 
     def test_narrative_prompt_clean(self):
         """解讀 prompt 同樣不得含 workspace 詞。

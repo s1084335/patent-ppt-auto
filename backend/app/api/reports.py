@@ -134,36 +134,5 @@ def get_report(job_id: int) -> dict[str, Any]:
     return job_to_dict(job)
 
 
-# ══ 目標驅動規劃（P2）══════════════════════════════════════════════
-# 前端送 ReportBrief（最大目標＋選圖 identity），後端排 ai:report_plan job；
-# ⚠ 契約驗證在 runner（planning_contracts 唯一定義處），此處只做形狀轉換。
-
-
-class ReportPlanRequest(BaseModel):
-    """ReportBrief 的前端形狀（選圖以 identity 字串傳，bundle 由 runner materialize）。"""
-
-    north_star_goal: str = Field(..., min_length=1)
-    audience: str = ""
-    page_budget: int = Field(default=12, ge=1, le=30)
-    snapshot_id: str = Field(..., min_length=1)
-    selected_charts: list[str] = Field(default_factory=list)
-
-
-@router.post("/workspaces/{workspace_id}/report-plan")
-def create_report_plan_job(workspace_id: int, request: ReportPlanRequest) -> dict[str, Any]:
-    """排一筆目標驅動規劃任務（走 Companion／headless CLI）。"""
-    if not request.selected_charts:
-        raise HTTPException(status_code=422, detail="至少要選一張圖表；未選圖不得自動進 PPT")
-    job = job_repository.create_job(
-        "ai:report_plan",
-        {
-            "workspace_id": workspace_id,
-            "north_star_goal": request.north_star_goal,
-            "audience": request.audience,
-            "page_budget": request.page_budget,
-            "snapshot_id": request.snapshot_id,
-            "selected_charts": request.selected_charts,
-        },
-        workspace_id=workspace_id,
-    )
-    return {"job_id": job.job_id, "status": "queued"}
+# ⚠ /workspaces/{workspace_id}/report-plan（目標驅動規劃）已隨 PPT 交付線移除
+# （2026-08-10，remove-ppt-delivery-line）。

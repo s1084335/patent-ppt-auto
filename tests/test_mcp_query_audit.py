@@ -161,9 +161,10 @@ class ReadOnlyEnforcementTests(unittest.TestCase):
     ⚠ 這支測試不連 DB（那需要真實環境），它守的是**不要退回去用 options**。
     """
 
+    # ⚠ 原本還掃 skills/patent-report-ppt/scripts/query_patents.py（舊 Bash 取證閘道）；
+    # 該檔已隨 PPT 交付線移除（2026-08-10），取證只剩 MCP 這一條連線層。
     SOURCES = [
         Path(__file__).resolve().parents[1] / "backend" / "app" / "mcp_server" / "report_research.py",
-        Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt" / "scripts" / "query_patents.py",
     ]
 
     def test_no_startup_options_for_readonly(self):

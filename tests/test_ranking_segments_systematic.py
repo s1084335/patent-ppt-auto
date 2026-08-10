@@ -6,14 +6,14 @@
 
 - `ranking_segments`：件數 → 兩段長度與各段斜紋長度
 - `ranking_note`：列下註記字串組裝
-- `topic_version_warnings`：主題版本比對（提示不擋）
+
+（`topic_version_warnings` 的決策表已隨 PPT 交付線移除，2026-08-10。）
 """
 from __future__ import annotations
 
 import unittest
 
 from backend.app.reports.chart_runner import ranking_note, ranking_segments
-from backend.app.worker.ai_report_ppt_runner import topic_version_warnings
 
 
 class SegmentsEquivalencePartitionTests(unittest.TestCase):
@@ -133,44 +133,6 @@ class NoteDecisionTableTests(unittest.TestCase):
         note = ranking_note({"co_applicant_names": "甲; 乙", "joint_count": 2},
                             with_assignee=False)
         self.assertEqual(note, "共同申請：甲、乙 2件")
-
-
-class TopicVersionDecisionTableTests(unittest.TestCase):
-    """決策表：recorded 有／無 × current 有／無 × 相同／不同。"""
-
-    def test_both_present_and_equal(self):
-        self.assertEqual(topic_version_warnings(recorded={"a": 1}, current={"a": 1}), [])
-
-    def test_both_present_and_differ(self):
-        self.assertEqual(len(topic_version_warnings(recorded={"a": 1}, current={"a": 2})), 1)
-
-    def test_recorded_missing(self):
-        self.assertEqual(topic_version_warnings(recorded=None, current={"a": 1}), [])
-
-    def test_current_missing(self):
-        self.assertEqual(topic_version_warnings(recorded={"a": 1}, current=None), [])
-
-    def test_channel_only_in_recorded(self):
-        """報表記了某通道、現在查不到（該通道被刪或還沒跑）＝無從比對，不提示。"""
-        self.assertEqual(topic_version_warnings(recorded={"a": 1}, current={"b": 2}), [])
-
-    def test_per_channel_independent(self):
-        """雙通道一個變一個沒變時，只提示變的那一個。"""
-        warnings = topic_version_warnings(
-            recorded={"tech": 1, "effect": 5}, current={"tech": 9, "effect": 5})
-        self.assertEqual(len(warnings), 1)
-        self.assertIn("tech", warnings[0])
-
-    def test_none_values_inside_dict(self):
-        """值是 None（舊資料落過 null）不得被當成「不一致」而亂報。"""
-        self.assertEqual(topic_version_warnings(recorded={"a": None}, current={"a": 3}), [])
-        self.assertEqual(topic_version_warnings(recorded={"a": 3}, current={"a": None}), [])
-
-    def test_non_dict_inputs_are_safe(self):
-        """型別異常（字串／數字）不得炸——這條路徑在產 PPT 時會跑到。"""
-        for bad in ("x", 3, [], object()):
-            self.assertEqual(topic_version_warnings(recorded=bad, current={"a": 1}), [])
-            self.assertEqual(topic_version_warnings(recorded={"a": 1}, current=bad), [])
 
 
 if __name__ == "__main__":

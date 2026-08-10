@@ -29,32 +29,7 @@ from backend.app.reports import chart_runner as cr
 _THEME = Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt" / "theme.json"
 
 
-class FrameConstantsMatchThemeTests(unittest.TestCase):
-    """圖框尺寸在 theme.json 與 chart_runner 各有一份——必須相等。
-
-    ⚠ 這是**刻意的複製**：`chart_runner` 在後端、`theme.json` 在 skill 目錄，
-    跨模組讀不到。依「同一份知識只能有一個定義處」的規則，
-    無法 import 時要加一致性測試，讓分岔立刻紅。
-    """
-
-    def _theme_geometry(self) -> dict:
-        return json.loads(_THEME.read_text(encoding="utf-8"))["geometry"]
-
-    def test_hero_frame_matches(self):
-        g = self._theme_geometry()["chart_hero"]
-        self.assertEqual(cr.CHART_HERO_FRAME_IN,
-                         (g["image_width_in"], g["image_height_in"]))
-
-    def test_wide_frame_matches(self):
-        g = self._theme_geometry()["chart_wide"]
-        self.assertEqual(cr.CHART_WIDE_FRAME_IN,
-                         (g["image_width_in"], g["image_height_in"]))
-
-    def test_wide_aspect_threshold_matches_build_ppt(self):
-        """扁圖判定門檻也要與組版端一致，否則兩邊對這張圖會進哪個框有分歧。"""
-        source = (Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt"
-                  / "scripts" / "build_ppt.py").read_text(encoding="utf-8")
-        self.assertIn(f"WIDE_CHART_ASPECT_MIN = {cr.WIDE_CHART_ASPECT_MIN}", source)
+# ⚠ FrameConstantsMatchThemeTests 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
 
 
 class FontReachesTargetTests(unittest.TestCase):
