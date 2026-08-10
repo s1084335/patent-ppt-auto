@@ -52,10 +52,18 @@ _NUMBER_PATTERN = re.compile(r"\d")
 # 但光調高數字也不對：查組版端 `points_budget` 得知**整頁單欄只放得下 3 條**，
 # 多的會被靜默丟棄。真正的解是讓無圖頁**自動分欄**（已於 build_ppt 實作）：
 #   1 欄 3 條／2 欄 6 條／3 欄 9 條
-# 8 是「兩欄放得下、且明顯離譜之前」的界線。⚠ 日後若改版面欄數，這裡要跟著改
-# ——兩處是同一份知識（版面能放多少）的兩個落點，只能靠註解互相指認。
-MAX_POINTS_PER_SLIDE = 8
-MAX_POINT_CHARS = 50
+# ⚠ 訂 8 是錯的——雙欄實測只放得下 **6**（1 欄 3 條 × 2）。多的兩條會被組版
+# 靜默丟棄，而那比擋下來更糟。這個錯誤由 `test_limits_match_layout_capacity`
+# 當場抓到，該測把兩端的數字釘在一起（跨 repo 無法 import，只能用測試對齊）。
+MAX_POINTS_PER_SLIDE = 6
+# 🔴 2026-08-10 上調 50 → 80，同樣**對齊組版端實測容量**：
+#   無圖·單欄 267 字／無圖·雙欄 127 字／有圖頁側欄 82 字（最窄）
+# 50 是先前憑感覺訂的，比最窄的版型還嚴。實測 job 279：prompt 給的範例格式
+# 「機械傳動期 2011–2021｜拉繩、立柱滑輪為主，單點機構改良」本身就 57 字，
+# CLI 照做卻被自己的守門打回，整份規劃失敗。
+# ⚠ 80 略低於最窄版型的 82，留一點餘裕給標籤佔的字（_trim_blocks 算的是
+# `len(label) + 1 + len(text)`，見 build_ppt.points_budget 的說明）。
+MAX_POINT_CHARS = 80
 
 
 def validate_chart_bundle(bundle: dict[str, Any]) -> list[str]:

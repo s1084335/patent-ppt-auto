@@ -89,7 +89,7 @@ def build_prompt(brief: dict[str, Any]) -> str:
           "## 🔴 有圖頁與無圖頁的內容量**規則不同**（實測落差最大的一點）\n"
           "\n"
           "**有圖頁**（`chart_*`／`comparison`／`kp_quadrant`／`table_*`）：\n"
-          "圖已經佔掉大半版面，要點 **3–5 條、每條 20–35 字**。把話說準比說滿重要。\n"
+          "圖已經佔掉大半版面，要點 **3–5 條、每條 25–70 字**（側欄實測容量 82 字）。\n"
           "\n"
           "**無圖頁**（`exec_summary`／`walls_gaps`／`reading_guide`／`direction`／\n"
           "`kp_deepdive`／`kp_cards`／`kp_compare`）：\n"
