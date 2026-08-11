@@ -11,7 +11,6 @@
 """
 from __future__ import annotations
 
-import json
 import re
 import unittest
 from pathlib import Path
@@ -24,7 +23,7 @@ INDEX_HTML = (Path(__file__).resolve().parents[1] / "backend" / "app"
 
 def _extract_mapping_keys(html: str) -> set[str]:
     """抓 JOB_REFRESH_TARGETS 字面量的鍵集合（單引號鍵）。"""
-    match = re.search(r"const JOB_REFRESH_TARGETS = \{(.*?)\n\};", html, re.S)
+    match = re.search(r"const JOB_REFRESH_TARGETS = \{(.*?)\n\};", html, re.DOTALL)
     assert match, "找不到 const JOB_REFRESH_TARGETS = {...};"
     return set(re.findall(r"'([^']+)':", match.group(1)))
 
@@ -52,7 +51,7 @@ class MappingSingleSourceTests(unittest.TestCase):
         self.assertIn("const RESOURCE_REFRESHERS", self.html)
         for res in ("browsePatents", "noteCoverage", "topics", "reports", "workspaces"):
             self.assertIn("'" + res + "'", self.html, f"缺資源 {res}")
-        match = re.search(r"function scheduleResourceRefresh\(.*?\n\}", self.html, re.S)
+        match = re.search(r"function scheduleResourceRefresh\(.*?\n\}", self.html, re.DOTALL)
         self.assertIsNotNone(match, "缺 scheduleResourceRefresh")
 
     def test_import_refreshes_workspace_dropdown(self):
@@ -66,7 +65,7 @@ class EventDispatchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
-        match = re.search(r"function maybeRefreshFromEvent\(.*?\n\}", cls.html, re.S)
+        match = re.search(r"function maybeRefreshFromEvent\(.*?\n\}", cls.html, re.DOTALL)
         assert match, "缺 maybeRefreshFromEvent"
         cls.fn = match.group(0)
 
@@ -87,7 +86,7 @@ class EventDispatchTests(unittest.TestCase):
 
     def test_sse_onmessage_dispatches_to_refresh(self):
         """connectSSE 收 run 事件除任務卡外必須進刷新分派。"""
-        match = re.search(r"function connectSSE\(.*?\n\}", self.html, re.S)
+        match = re.search(r"function connectSSE\(.*?\n\}", self.html, re.DOTALL)
         self.assertIsNotNone(match)
         self.assertIn("maybeRefreshFromEvent", match.group(0))
 
@@ -106,7 +105,7 @@ class BrowsePreserveExpandedTests(unittest.TestCase):
 
     def test_browse_refresher_reopens_expanded_rows(self):
         match = re.search(
-            r"async function refreshBrowsePreservingDetails\(.*?\n\}", self.html, re.S)
+            r"async function refreshBrowsePreservingDetails\(.*?\n\}", self.html, re.DOTALL)
         self.assertIsNotNone(match, "缺 refreshBrowsePreservingDetails")
         fn = match.group(0)
         self.assertIn("data-pid", fn)
@@ -121,7 +120,7 @@ class ReconnectCompensationTests(unittest.TestCase):
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
 
     def test_reconnect_triggers_visible_refresh(self):
-        match = re.search(r"function connectSSE\(.*?\n\}", self.html, re.S)
+        match = re.search(r"function connectSSE\(.*?\n\}", self.html, re.DOTALL)
         self.assertIsNotNone(match)
         fn = match.group(0)
         self.assertIn("sseWasDown", fn, "缺斷線標記——首連與重連要能區分")
@@ -129,6 +128,17 @@ class ReconnectCompensationTests(unittest.TestCase):
 
     def test_refresh_visible_resources_exists(self):
         self.assertIn("function refreshVisibleResources", self.html)
+
+    def test_sse_actually_reconnects_after_error(self):
+        """🔴 既有實作 onerror 關掉 EventSource 後**從不重連**（connectSSE 只在
+        啟動時呼叫一次）——斷線後永遠停在 30 秒輪詢，補償刷新成死碼、
+        「即時回流」名存實亡。必須排程重連（退避上限 60s，連上重設）。"""
+        match = re.search(r"function connectSSE\(.*?\n\}", self.html, re.DOTALL)
+        fn = match.group(0)
+        self.assertIn("scheduleSseReconnect", fn, "onerror 未排程重連")
+        self.assertIn("function scheduleSseReconnect", self.html)
+        self.assertRegex(self.html, r"sseReconnectDelayMs\s*=\s*Math\.min",
+                         "重連間隔缺退避上限")
 
 
 class MappingContentTests(unittest.TestCase):

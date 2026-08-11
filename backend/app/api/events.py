@@ -28,8 +28,7 @@ from fastapi.responses import StreamingResponse
 from backend.app.api._auth import require_api_token
 from backend.app.api.jobs import job_to_dict
 from backend.app.db import job_repository as jr
-from backend.app.db.connection import get_connection_kwargs
-
+from backend.app.db.connection import get_listen_connection_kwargs
 
 router = APIRouter(tags=["events"])
 
@@ -47,7 +46,9 @@ async def sse_events(request: Request):
     """SSE endpoint — thread LISTEN patent_events、asyncio.Queue fanout、心跳 15s。"""
 
     async def event_generator():
-        kwargs = get_connection_kwargs()
+        # LISTEN 必須走 session 模式連線——transaction pooling（:6543）下
+        # NOTIFY 靜默不遞送（2026-08-11 實測根因，詳見 get_listen_connection_kwargs）。
+        kwargs = get_listen_connection_kwargs()
         loop = asyncio.get_event_loop()
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         stop = threading.Event()
@@ -57,12 +58,17 @@ async def sse_events(request: Request):
             try:
                 conn.execute("LISTEN patent_events")
                 conn.commit()
-                for notify in conn.notifies(timeout=0.5):
-                    if stop.is_set():
-                        break
-                    asyncio.run_coroutine_threadsafe(
-                        q.put(json.loads(notify.payload)), loop
-                    )
+                # ⚠ psycopg 的 notifies(timeout=X) 是「generator 總壽命 X 秒」，
+                # 不是每 X 秒輪詢——不包外圈的話執行緒 0.5 秒就自然耗盡退出，
+                # 之後所有 NOTIFY 全丟、端點只剩心跳（2026-08-11 實測根因之二）。
+                # 外圈每輪重進 generator＝真正的 0.5 秒輪詢，stop 旗標最多延遲 0.5 秒生效。
+                while not stop.is_set():
+                    for notify in conn.notifies(timeout=0.5):
+                        if stop.is_set():
+                            break
+                        asyncio.run_coroutine_threadsafe(
+                            q.put(json.loads(notify.payload)), loop
+                        )
             finally:
                 conn.close()
 
@@ -77,7 +83,7 @@ async def sse_events(request: Request):
                 try:
                     payload = await asyncio.wait_for(q.get(), timeout=15.0)
                     yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield "event: heartbeat\ndata: \n\n"
         finally:
             stop.set()

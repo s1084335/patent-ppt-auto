@@ -70,6 +70,31 @@ def get_connection_kwargs() -> dict[str, str | int]:
     return kwargs
 
 
+def get_listen_connection_kwargs() -> dict[str, str | int]:
+    """SSE LISTEN 專用連線參數——必須是 session 模式，不能走 transaction pooling。
+
+    🔴 根因（2026-08-11 實測，complete-sse-data-refresh）：DATABASE_URL 指
+    Supabase pooler :6543（transaction pooling）時，pgbouncer 不會把 NOTIFY
+    轉給 client——LISTEN **靜默失效**，SSE 一個事件都收不到，前端只剩 30 秒
+    輪詢保底。實測同一個 pg_notify：listener 掛 :6543 收不到、掛 :5432
+    （session 模式）立即收到（發送端不拘，trigger 在 DB 端執行）。
+
+    收斂規則：只換 **LISTEN 這一條常駐連線**到 :5432；一般查詢連線維持
+    transaction pooling 不動（session 連線佔 slot，僅常駐 LISTEN 值得用）。
+    可用 SSE_LISTEN_DATABASE_URL 顯式覆寫（正式部署若有直連 host 就填它）。
+    """
+    override = os.getenv("SSE_LISTEN_DATABASE_URL")
+    if override:
+        base = get_connection_kwargs()
+        base["conninfo"] = override
+        return base
+    kwargs = get_connection_kwargs()
+    conninfo = kwargs.get("conninfo")
+    if isinstance(conninfo, str) and ":6543/" in conninfo:
+        kwargs["conninfo"] = conninfo.replace(":6543/", ":5432/")
+    return kwargs
+
+
 # 連線池（lazy 單例）：高頻查詢路徑（報表引擎/前端/LLM 工具呼叫）用池借還，
 # 避免每個請求都開關連線。單次型 CLI（refresh/import）維持直連即可。
 _pool = None

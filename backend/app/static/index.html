@@ -5540,18 +5540,35 @@ function connectSSE() {
   sse.addEventListener('heartbeat', function () {});
   sse.onopen = function () {
     if (ssePollTimer) { clearInterval(ssePollTimer); ssePollTimer = null; }
+    sseReconnectDelayMs = 5000;   // 連上即重設退避
     if (sseWasDown) { sseWasDown = false; refreshVisibleResources(); }
   };
   sse.onerror = function () {
     sseWasDown = true;
     if (sse) { sse.close(); sse = null; }
     startPollFallback();
+    scheduleSseReconnect();
   };
 }
 function startPollFallback() {
   if (!ssePollTimer) {
     ssePollTimer = setInterval(fetchTasks, 30000);  // 斷線退化：30 秒輪詢保底
   }
+}
+// 斷線重連（2026-08-11 補）：原本 onerror 關掉 EventSource 後**從不重連**——
+// connectSSE 只在啟動時呼叫一次，斷過一次就永遠停在 30 秒輪詢，
+// 「job 完成即時回流」名存實亡。改為退避重連（5s 起倍增、上限 60s，連上重設）；
+// 重連成功由 onopen 的補償刷新接手（refreshVisibleResources）。
+// ⚠ 用原生 setTimeout 不用 registerTimer：SSE 連線是全域的，不得被切頁 clearAllTimers 停掉。
+let sseReconnectTimer = null;
+let sseReconnectDelayMs = 5000;
+function scheduleSseReconnect() {
+  if (sseReconnectTimer) return;
+  sseReconnectTimer = setTimeout(function () {
+    sseReconnectTimer = null;
+    connectSSE();
+  }, sseReconnectDelayMs);
+  sseReconnectDelayMs = Math.min(sseReconnectDelayMs * 2, 60000);
 }
 
 // ══════════ SSE 資料自動刷新（complete-sse-data-refresh，2026-08-11） ══════════

@@ -2,6 +2,12 @@
 
 SSE 已能更新任務卡，但文獻備註、公司名、分類與報表等資料區塊仍可能停留在舊內容，使用者需要 F5 或切頁才能看到工作結果。
 
+> ⚠ 2026-08-11 實測修正：「SSE 已能更新任務卡」**不成立**。實跑發現兩個既有斷點：
+> ① DATABASE_URL 走 Supabase pooler :6543（transaction pooling），LISTEN 靜默收不到
+> 任何 NOTIFY；② `notifies(timeout=0.5)` 語意是 generator 總壽命 0.5 秒，LISTEN
+> 執行緒開場即死。任務卡過去其實靠 30 秒輪詢與頁面級輪詢在動。兩者已於本 change
+> 修復（listen 連線改 session 模式＋外圈重進 generator），SSE 才第一次真正通。
+
 ## What Changes
 
 - 依 job type 與終結狀態刷新真正受影響的資料區塊。

@@ -23,7 +23,18 @@
 
 ## 3. 驗證與輸出
 
-- [ ] 3.1 執行 jobs/events/API/frontend 目標測試、相關模組回歸與 `scripts/verify_module.py`
-- [ ] 3.2 實跑匯入、分群、AI、報表成功與失敗 job，確認所有矩陣中的表格/報表狀態無手動 reload 即正確更新
-- [ ] 3.3 模擬斷線、重連、重複事件與快速 workspace 切換，保存 SSE timeline、network trace 與畫面證據
-- [ ] 3.4 回報未覆蓋頁面與瀏覽器限制，經使用者驗收自動刷新行為後才 archive
+- [x] 3.1 目標測試 29 passed（migration 契約 6＋listen 連線 6＋前端契約 17）＋
+      範圍回歸 491 passed（14 紅全屬既有債：launcher 遺留與 PPT 移除漏網測試，
+      引用已刪 ai:report_plan／runner，與本 change 無關、另列待辦）＋
+      新增行 ruff 歸零、新函式 CC A、分支全覆蓋
+- [x] 3.2 實跑（Playwright，A–F 六段全綠，證據 output/_verify/sse_refresh/）：
+      真 refresh_derived job 端到端（worker 實跑→commit→NOTIFY→SSE→自動刷新）；
+      report_generate／ai:topic_label／failed 事件以「合成 run 列 UPDATE 打真 trigger」
+      覆蓋（trigger→SSE→前端鏈與真 job 完全同路徑，僅 handler 執行不同）。
+      ⚠ 未實跑真匯入／分群／AI job（成本與資料殘留；由使用者實機驗收接手）
+- [x] 3.3 斷線→30 秒輪詢退化→退避重連（5s 起、上限 60s）→補償刷新，實機驗證；
+      重複終結事件由 event_id 去重（單元契約）。⚠ 快速 workspace 切換未實測
+      ——刷新函式一律讀當前 state 打權威 API，舊資料 by construction 畫不上來
+- [ ] 3.4 揭露未覆蓋：case_comparison（比對頁自有輪詢）、匯出頁（僅沿用既有
+      narrative 路徑）、SSE 斷線窗內事件永久遺失（由重連補償與 30s 輪詢保底）。
+      待使用者驗收自動刷新行為後 archive

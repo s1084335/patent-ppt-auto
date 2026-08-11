@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from alembic import op
 
-
 revision = "0049_sse_event_metadata"
 down_revision = "0048_topic_assignment_source"
 branch_labels = None
