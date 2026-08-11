@@ -2498,6 +2498,10 @@ DATA_TABLE_EXCLUDED_COLUMNS: dict[str, tuple[str, ...]] = {
         # 且帶了「是誰」這個 max_share 沒有的資訊。留資訊多的那個。
         "max_share",
     ),
+    # 🔴 patent_ids 不顯示（2026-08-11 使用者：「修掉 patent_ids」）——整串內部 id
+    # 佔一大欄卻不給讀者判斷。⚠ 只藏顯示：rows 保留，解讀 CLI 靠它逐件取證
+    # （2026-08-10「每家全取」定案），資料拿掉解讀深度就沒了。
+    "applicant_strength_profile": ("patent_ids",),
     # recent_assignee_count → 使用者：「這欄可以不用，後面欄都列出公司了」。
     # ⚠ 只排除**顯示**，資料仍在 rows——applicant_ranking 的圖表用它當
     # segment_key 畫藍色區段（轉出件數），移掉資料會讓圖表退化成單色長條。

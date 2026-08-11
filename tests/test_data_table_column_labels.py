@@ -48,6 +48,19 @@ class ColumnLabelTests(unittest.TestCase):
                 self.assertIn(key, DATA_COLUMN_LABELS,
                               f"KP 表欄 {key} 缺中文欄名，表頭會印內部欄名")
 
+    def test_patent_ids_hidden_from_kp_table(self):
+        """🔴 patent_ids 整欄不顯示（2026-08-11 使用者：「修掉 patent_ids」）。
+
+        一串內部 id 佔一大欄卻不給讀者任何判斷。⚠ 只藏**顯示**：rows 保留
+        patent_ids——解讀 CLI 靠它逐件取證（2026-08-10「每家全取」定案），
+        資料拿掉解讀深度就沒了。前端與 index 共用同一份排除表。
+        """
+        from backend.app.reports.chart_runner import DATA_TABLE_EXCLUDED_COLUMNS
+
+        self.assertIn("patent_ids",
+                      DATA_TABLE_EXCLUDED_COLUMNS.get("applicant_strength_profile", ()),
+                      "KP 表仍會印整串 patent_ids")
+
     def test_labels_are_chinese_not_identifiers(self):
         """欄名不得只是把底線換掉的英文——那還是內部欄名。"""
         for key in RANKING_COLUMNS + KP_COLUMNS:
