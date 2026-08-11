@@ -1631,7 +1631,17 @@ async function showPendingNamePatents(i) {
     if (!ids.length) { alert('查無使用「' + item.name + '」的專利。'); return; }
     state.pendingNameFilter = { name: item.name, ids: ids };
     state.browseOffset = 0;
-    navTo('browse');
+    // 2026-08-11 使用者裁決：🔍 就住在瀏覽頁的資料維護區，已在瀏覽頁時不得整頁重繪
+    // ——renderBrowse 會把資料維護／待補代碼 details 全部收合（「每次都被收起來很痛苦」）。
+    // 只重載 #browse-body 專利區塊，維護區 DOM 原封不動；再把專利表捲進視野。
+    // navTo 留作不在瀏覽頁時的 fallback（防呆，正常操作不會走到）。
+    if (state.nav === 'browse' && el('browse-body')) {
+      await loadBrowsePatents();
+      const bb = el('browse-body');
+      if (bb && bb.scrollIntoView) bb.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+      navTo('browse');
+    }
   } catch (e) {
     alert('篩選失敗：' + e.message);
   }

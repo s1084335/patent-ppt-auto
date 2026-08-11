@@ -128,9 +128,24 @@ class PendingChipFilterUiTests(unittest.TestCase):
 
         完整表格才看得到全部欄位與「詳細查看連結」——使用者靠那個連結去 WIPS
         判斷是不是同一家公司。
+        2026-08-11 契約補充：navTo 降為「不在瀏覽頁」的 fallback（🔍 本來就住在
+        瀏覽頁的資料維護區，正常路徑見下一測試），但入口必須保留。
         """
         body = self._filter_fn()
         self.assertIn("navTo(", body, "未跳頁——使用者看不到完整欄位與查看連結")
+
+    def test_reload_only_patent_block_when_on_browse(self):
+        """🔴 2026-08-11 使用者裁決：「按了搜尋鏡後不要整頁載入，就載入專利那區塊」。
+
+        原本一律 navTo('browse') → renderBrowse 整頁重繪，資料維護／待補代碼
+        details 全部收合、代碼區重載——「每次這樣都被收起來很痛苦」。
+        已在瀏覽頁時必須只重載 #browse-body（loadBrowsePatents），維護區 DOM 不動。
+        """
+        body = self._filter_fn()
+        self.assertIn("loadBrowsePatents(", body,
+                      "應直接重載專利區塊，而不是整頁重繪")
+        self.assertRegex(body, r"state\.nav\s*===\s*'browse'",
+                         "缺『已在瀏覽頁』判斷——仍會整頁重繪把維護區收合")
 
     def test_filter_state_carried(self):
         """篩選條件要帶過去，不是只跳頁然後顯示全部 60 筆。"""
