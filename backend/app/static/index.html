@@ -1155,9 +1155,28 @@ function pageBrowse(dir) {
 let companyCodeGroups = [];      // [{code, zh_name, normalized_name, variants:[...]}]
 let pendingCodeNames = [];       // 待補清單（僅供參考）
 
+// ── 重繪保留展開狀態（2026-08-12 使用者：「成功後 refresh 會整個展開的再收回去」）──
+// 「確定寫入資料庫」／標不歸戶／還原都會整區重繪，沒有這層每按一次
+// 所有 details 就回到預設收合，使用中很阻礙。鍵取 id 或 data-key（代碼組用代碼）。
+function collectOpenDetailKeys(root) {
+  if (!root) return [];
+  return Array.from(root.querySelectorAll('details[open]'))
+    .map(function (d) { return d.id || (d.dataset && d.dataset.key) || ''; })
+    .filter(Boolean);
+}
+function restoreOpenDetailKeys(root, keys) {
+  if (!root) return;
+  (keys || []).forEach(function (k) {
+    const safe = String(k).replace(/"/g, '\\"');
+    const d = root.querySelector('details[id="' + safe + '"], details[data-key="' + safe + '"]');
+    if (d) d.open = true;
+  });
+}
+
 async function renderCompanyCodeRegistry() {
   const wrap = el('company-code-registry');
   if (!wrap) return;
+  const openKeys = collectOpenDetailKeys(wrap);   // 重繪前記住誰是展開的
   if (!companyCodeGroups.length) companyCodeGroups = [blankCodeGroup()];
   wrap.innerHTML = '<details class="reports-market-details" id="company-code-details">'
     + '<summary>專利權人代碼（正規化與中文名的基礎）</summary>'
@@ -1177,6 +1196,7 @@ async function renderCompanyCodeRegistry() {
     const body = el('company-code-body');
     if (body) body.innerHTML = '<div class="task-detail-error">載入失敗：' + escHtml(e.message) + '</div>';
   }
+  restoreOpenDetailKeys(wrap, openKeys);   // 載入失敗也要回開外框，不困住使用者
 }
 
 function blankCodeGroup() { return { code: '', zh_name: '', normalized_name: '', variants: [''] }; }
@@ -1214,7 +1234,7 @@ let notGroupedNames = [];
 
 function renderNotGroupedNames() {
   if (!notGroupedNames.length) return '';
-  return '<details style="margin-top:.5rem">'
+  return '<details id="not-grouped-details" style="margin-top:.5rem">'
     + '<summary>不歸戶的名稱（' + notGroupedNames.length + ' 個）</summary>'
     + '<p class="hint" style="padding:.3rem 0 .3rem 1rem">'
     + '這些名稱不併入任何代碼組，已從待補清單移除；專利表與報表的顯示維持原樣。</p>'
@@ -1391,7 +1411,8 @@ function existingGroupHtml(g) {
   const pending = g.review_status === 'review_required';
   // 無中文名時顯示英文正式名＋「待補中文名」標記，不留空白（使用者定）。
   const shownName = g.company_name || g.normalized_name || g.code;
-  return '<details style="margin:.3rem 0 .3rem 1rem">'
+  // data-key＝代碼：重繪保留展開狀態的穩定鍵（collectOpenDetailKeys）。
+  return '<details data-key="grp-' + escHtml(g.code) + '" style="margin:.3rem 0 .3rem 1rem">'
     + '<summary>' + escHtml(g.code)
     + (g.is_temp ? ' <span class="hint">（尚無 WIPS 代碼）</span>' : '')
     + ' — ' + escHtml(shownName)
