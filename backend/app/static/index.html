@@ -1955,7 +1955,9 @@ function patentTableHtml(data, scope) {
       '<td' + cellClassAttr(c) + '>' + patentCell(p, c, 'list') + '</td>'
     ).join('')
     + '</tr>'
-    + '<tr class="patent-detail-row" id="patent-detail-' + scope + '-' + i + '" hidden>'
+    // data-pid：SSE 自動刷新重繪後依專利 id 回開已展開列（index 型 id 對不回同一件）。
+    + '<tr class="patent-detail-row" id="patent-detail-' + scope + '-' + i + '"'
+    + ' data-pid="' + escHtml(p.patent_id) + '" hidden>'
     + '<td colspan="' + listCols.length + '">' + patentDetailHtml(p, scope) + '</td></tr>'
   ).join('');
   return '<div class="table-wrap"><table class="data">'
@@ -2245,6 +2247,10 @@ async function renderTopics() {
 //
 // 逾時 30 分鐘（2026-07-27 使用者定）：Companion 沒開時 job 會一直卡在 queued，
 // 沒有上限就永遠空轉。逾時後停止輪詢並在標籤區說明，使用者可用手動鈕重試。
+//
+// ⚠ 與 SSE 自動刷新（JOB_REFRESH_TARGETS 的 topics 資源）的分工（2026-08-11）：
+// SSE 是快路徑；本輪詢是**退化保底**（SSE 斷線／事件遺失時仍收斂）＋逾時文案的
+// 唯一出口，兩者刷的都是 renderTopics（冪等），先到先畫、後到重畫，無衝突。
 const TOPICS_AUTOREFRESH_TIMEOUT_MS = 30 * 60 * 1000;
 let topicsAutoRefreshStartedAt = null;
 
@@ -5518,6 +5524,9 @@ function aiResultText(v) {
 // ══════════ SSE 訂閱（斷線退化 30 秒輪詢） ══════════
 let sse = null;
 let ssePollTimer = null;
+// 斷線標記：首連與「重連」要能區分——只有重連需要補償刷新（pg_notify 不補送歷史事件，
+// 斷線期間完成的 job 永遠收不到，見 complete-sse-data-refresh design.md 決策 3）。
+let sseWasDown = false;
 function connectSSE() {
   if (sse) sse.close();
   try { sse = new EventSource(API + '/events'); }
@@ -5525,14 +5534,16 @@ function connectSSE() {
   sse.onmessage = function (e) {
     try {
       const ev = JSON.parse(e.data);
-      if (ev.kind === 'run') updateTaskFromEvent(ev);
+      if (ev.kind === 'run') { updateTaskFromEvent(ev); maybeRefreshFromEvent(ev); }
     } catch (_) {}
   };
   sse.addEventListener('heartbeat', function () {});
   sse.onopen = function () {
     if (ssePollTimer) { clearInterval(ssePollTimer); ssePollTimer = null; }
+    if (sseWasDown) { sseWasDown = false; refreshVisibleResources(); }
   };
   sse.onerror = function () {
+    sseWasDown = true;
     if (sse) { sse.close(); sse = null; }
     startPollFallback();
   };
@@ -5541,6 +5552,122 @@ function startPollFallback() {
   if (!ssePollTimer) {
     ssePollTimer = setInterval(fetchTasks, 30000);  // 斷線退化：30 秒輪詢保底
   }
+}
+
+// ══════════ SSE 資料自動刷新（complete-sse-data-refresh，2026-08-11） ══════════
+// 事件只當「失效通知」，資料一律由權威 API 重取（design.md 決策 1）。
+//
+// job type → 受影響資源：**唯一來源**，必須涵蓋後端 JOB_TYPES 全集——
+// tests/test_sse_data_refresh_frontend.py 直接 import 後端常數跨層對帳，
+// 新增 job 型別漏接刷新時測試先紅，不是等使用者發現畫面不動。
+// 沒有可見面的型別明確給空陣列，不是省略——省略會讓對帳分不清「沒接」與「不用接」。
+const JOB_REFRESH_TARGETS = {
+  'patent_import': ['browsePatents', 'noteCoverage', 'workspaces'],
+  'refresh_derived': ['browsePatents'],
+  'ai:patent_note': ['browsePatents', 'noteCoverage'],
+  'clustering_calibrate': ['topics'],
+  'clustering_incremental': ['topics'],
+  'clustering_finalize': ['topics'],
+  'topic_merge': ['topics'],
+  'topic_unmerge': ['topics'],
+  'ai:topic_label': ['topics'],
+  'ai:topic_backfill': ['topics'],
+  'ai:candidate_explanation': ['topics'],
+  'ai:irrelevant_filter': ['topics'],
+  'report_generate': ['reports'],
+  // ai:narrative 走既有 maybeRefreshReportNarratives（帶 based_on_version 守門與
+  // job_id 去重，由 fetchTasks 觸發；updateTaskFromEvent 終結時本來就 fetchTasks）
+  // ——不重複接第二條刷新線。
+  'ai:narrative': [],
+  'embeddings': [],          // 無可見面（供之後的分群消費）
+  'ai:company_zh_name': [],  // 草稿區已移除（2026-07-29 使用者定案）
+  'case_comparison': [],     // 比對頁自有流程；本 change 未覆蓋（tasks 3.4 揭露）
+};
+
+// 資源 → { navs: 適用頁（null＝任何頁）, run: 刷新函式 }。
+// 刷新函式一律讀「當前 state」再打權威 API——workspace 切換後，舊 workspace 的事件
+// 最多造成一次多餘 fetch（有 debounce），不可能把舊資料畫上來（by construction）。
+const RESOURCE_REFRESHERS = {
+  'browsePatents': { navs: ['browse'], run: refreshBrowsePreservingDetails },
+  'noteCoverage': { navs: ['browse'], run: renderNoteCoverage },
+  'topics': { navs: ['topics'], run: renderTopics },  // 選擇存 state，重繪不失
+  'reports': { navs: ['reports'], run: refreshReportsArea },
+  'workspaces': { navs: null, run: loadWorkspaces },  // 頂列下拉；自恢復上次選定
+};
+
+const REFRESH_DEBOUNCE_MS = 1500;   // design.md「合併」：同資源事件 1.5 秒窗合併
+const SEEN_REFRESH_EVENT_CAP = 200; // 去重集合滾動上限
+const seenRefreshEvents = new Set();
+const refreshTimers = {};    // resource → timeout id（debounce 窗）
+const refreshInFlight = {};  // resource → 刷新進行中
+const refreshQueued = {};    // resource → in-flight 中又有事件，完成後補一輪
+
+// 收到 run 事件 → 決定要不要排資料刷新。只認 succeeded：failed/cancelled 只動
+// 任務卡（updateTaskFromEvent），不得拿失敗結果刷正式資料區（PRT-005）。
+function maybeRefreshFromEvent(ev) {
+  if (ev.status !== 'succeeded') return;
+  const eid = ev.event_id || (ev.run_id + ':' + ev.status);
+  if (seenRefreshEvents.has(eid)) return;   // 終結事件去重（重複遞送防護）
+  seenRefreshEvents.add(eid);
+  if (seenRefreshEvents.size > SEEN_REFRESH_EVENT_CAP) {
+    seenRefreshEvents.delete(seenRefreshEvents.values().next().value);
+  }
+  // run_type 由 0049 事件 payload 帶；migration 未套的舊 payload 退回任務快取解型別。
+  const cached = taskById[ev.run_id];
+  const jobType = ev.run_type || (cached && cached.job_type);
+  (JOB_REFRESH_TARGETS[jobType] || []).forEach(scheduleResourceRefresh);
+}
+
+// 資源級排程：頁面 gating → debounce 合併 → in-flight 合併。
+function scheduleResourceRefresh(resource) {
+  const spec = RESOURCE_REFRESHERS[resource];
+  if (!spec) return;
+  if (spec.navs && spec.navs.indexOf(state.nav) === -1) return;  // 停留無關頁不刷
+  if (refreshInFlight[resource]) { refreshQueued[resource] = true; return; }
+  if (refreshTimers[resource]) return;   // debounce 窗內的後續事件合併掉
+  refreshTimers[resource] = setTimeout(async function () {
+    refreshTimers[resource] = null;
+    if (spec.navs && spec.navs.indexOf(state.nav) === -1) return;  // 窗內切走了
+    refreshInFlight[resource] = true;
+    try { await spec.run(); }
+    catch (_) { /* 靜默保留舊資料——下一個事件或手動操作自然恢復（design.md） */ }
+    finally {
+      refreshInFlight[resource] = false;
+      if (refreshQueued[resource]) { refreshQueued[resource] = false; scheduleResourceRefresh(resource); }
+    }
+  }, REFRESH_DEBOUNCE_MS);
+}
+
+// 瀏覽表格刷新：保留已展開的詳情列（WSP-007「已展開的其他專利詳情 SHALL 保留」）。
+async function refreshBrowsePreservingDetails() {
+  const body = el('browse-body');
+  const openPids = body
+    ? Array.from(body.querySelectorAll('.patent-detail-row:not([hidden])'))
+        .map(function (r) { return r.getAttribute('data-pid'); }).filter(Boolean)
+    : [];
+  await loadBrowsePatents();
+  const after = el('browse-body');
+  if (!after || !openPids.length) return;
+  openPids.forEach(function (pid) {
+    const safe = (window.CSS && CSS.escape) ? CSS.escape(pid) : pid;
+    const row = after.querySelector('.patent-detail-row[data-pid="' + safe + '"]');
+    if (row) row.hidden = false;   // 該件已不在本頁（換頁/被濾掉）就自然略過
+  });
+}
+
+// 報表頁刷新：版本區重載（report_generate 產了新版本）＋當前檢視內容重取；
+// 兩者都保留使用者選擇（loadReportVersions 只動 #report-version-list、
+// reloadCurrentReportContentOnly 會回設選單值）。
+async function refreshReportsArea() {
+  await loadReportVersions();
+  await reloadCurrentReportContentOnly();
+}
+
+// 重連補償：對當前頁可見資源全部排一輪刷新＋重抓任務清單。
+// 不看事件（斷線期間的事件已永久遺失），直接以「可見即可能過期」處理。
+function refreshVisibleResources() {
+  Object.keys(RESOURCE_REFRESHERS).forEach(scheduleResourceRefresh);
+  fetchTasks();
 }
 
 // ══════════ 匯入專利資料（頂列匯入鈕 → 對話框 → POST /imports → 輪詢 /jobs） ══════════
