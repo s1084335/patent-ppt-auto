@@ -3652,13 +3652,11 @@ async function loadReportVersionContent(version) {
     // 報表本體交給上方選單驅動的 #report-inline-view（見 renderReportViewer）。
     // 🔴 HTML 匯出入口（2026-08-10 使用者定案：交付物＝解讀完成的 HTML 報表；
     //   PPT 清單已隨 PPT 交付線移除）。連結走 asset 端點，圖檔相對路徑同端點可解。
+    // 2026-08-11 使用者定案：版本區只留「匯出 HTML 檔」（自包單檔，SVG 內嵌
+    // data URI，離線可開）；「開啟新分頁」按鈕使用者裁示不需要（報表本體
+    // 已在頁內檢視選單顯示，開新分頁是重複入口）。
     body.innerHTML = '<div class="report-ppt-list">'
-      + '<a class="btn btn-primary btn-sm" target="_blank" rel="noopener" href="'
-      + escHtml(API + '/report-latest/asset/' + encodeURIComponent(version) + '/index.html')
-      + '">開啟 HTML 報表（新分頁）</a>'
-      // 2026-08-11 使用者定案：原匯出頁「單頁 HTML 預覽」移來此處，功能改為
-      // 匯出**自包單檔**（SVG 內嵌 data URI，離線可開、可轉寄）。
-      + ' <button class="btn btn-outline btn-sm" onclick="exportReportHtmlFile('
+      + '<button class="btn btn-primary btn-sm" onclick="exportReportHtmlFile('
       + "'" + escHtml(version) + "'" + ', this)">匯出 HTML 檔</button>'
       + '<span class="hint" style="margin-left:.6rem">含圖表與 AI 解讀；解讀未產出時卡片會標示待產生。</span>'
       + '</div>';

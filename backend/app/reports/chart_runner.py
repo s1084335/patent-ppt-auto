@@ -741,7 +741,8 @@ def _paired_legend_svg(
     for i, (name, _key) in enumerate(series):
         lx = legend_x + i * 140
         parts.append(f'<rect x="{lx}" y="{top - 26}" width="14" height="14" rx="2" fill="{colors[i]}"/>')
-        parts.append(f'<text x="{lx + 20}" y="{top - 14}" font-size="{label_px * 0.85:.1f}" fill="{COLOR_TEXT}">{xml_text(name)}</text>')
+        # 2026-08-11：圖例不再縮 0.85——使用者「圖中文字都維持在 15」。
+        parts.append(f'<text x="{lx + 20}" y="{top - 14}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{xml_text(name)}</text>')
     return parts
 
 
@@ -1120,7 +1121,9 @@ def render_segmented_bar_chart(
             # 算進去——長條佔 y+5～y+23，15px 字的上緣落在 y+20.75，必然壓上。
             # ⚠ 改為由幾何推導：長條下緣 ＋ 字身高 ＋ 最小間距。這樣改了長條高
             # 或字級都會自動跟上，不必第三次調那個數字。
-            note_font = (label_px) - 3
+            # 2026-08-11：註記不再 -3——使用者「圖中文字都維持在 15」；
+            # 註記與資料同級，靠灰色（COLOR_TEXT_SOFT）區分主從。
+            note_font = label_px
             note_y = (y + 5 + BAR_HEIGHT_PX) + note_font * TEXT_ASCENT_RATIO + LABEL_MIN_GAP_PX
             svg.append(f'<text x="{left}" y="{note_y:.1f}" font-size="{note_font}" '
                        f'fill="{COLOR_TEXT_SOFT}">{xml_text(notes[index])}</text>')
