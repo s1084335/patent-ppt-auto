@@ -829,38 +829,9 @@ def render_paired_bar_chart(
     _write_svg(path, svg)
 
 
-def render_topic_timeline_chart(
-    path: Path,
-    title: str,
-    rows: list[dict[str, Any]],
-    limit: int = CHART_ROW_LIMIT,
-) -> None:
-    """主題 × 時間：早期 vs 近期雙條，看技術重心往哪裡移動（2026-08-10 定案）。
-
-    🔴 為什麼要這張圖：`cluster_topic_table` 每列早就帶 `early_count`／
-    `recent_count`／`status`，但埋在表格欄位裡——讀者要心算才看得出
-    「立柱滑輪 5→2 在退、馬達自鎖 0→6 是全新戰場」。使用者原話：
-    「如果時間和主題能用圖呈現，為何要一直用表格？」
-
-    ⚠ 依「刪 > 改版 > 新增」查過現有圖都承載不了：`opportunity_quadrant` 沒有
-    時間軸、`annual_trend` 沒有主題維度、`applicant_year_matrix` 主體是申請人。
-    主題 × 時間確實沒有任何圖，才新增。
-
-    ⚠ 繪圖**複用 `render_paired_bar_chart`**（同樣是每列兩條同尺 bar），
-    本函式只做這張圖特有的兩件事：依近期件數排序（讀者關心「現在誰在跑」）、
-    把 `status` 併進標籤（退潮主題要一眼可辨）。
-    """
-    ranked = sorted(rows, key=lambda r: int(r.get("recent_count") or 0), reverse=True)
-    prepared = [
-        {**row,
-         # 狀態併進標籤：圖上直接看得到「申請下降」，不必回頭查表。
-         "_topic_label": f"{row.get('label') or ''}　{row.get('status') or ''}".strip()}
-        for row in ranked
-    ]
-    render_paired_bar_chart(
-        path, title, prepared, label_key="_topic_label",
-        series=(("早期", "early_count"), ("近期", "recent_count")), limit=limit)
-
+# ⚠ render_topic_timeline_chart（早期 vs 近期雙條）已退場（2026-08-11 使用者裁決
+# 「功效＝早期 vs 近期雙條不要有，主題演進就只做技術」）——主題演進只剩技術通道的
+# 主題×年泡泡矩陣（見 topic_year_rows），功效的主展示是機會四象限。
 
 def topic_year_rows(
     topics: list[dict[str, Any]],
@@ -2482,6 +2453,10 @@ DATA_TABLE_EXCLUDED_COLUMNS: dict[str, tuple[str, ...]] = {
         "share_recent", "share_early", "concentration_recent", "concentration_early",
         # 「意義」是 status 的固定對照，逐列重複一次很佔寬度；改由頁尾統一說明。
         "status_meaning",
+        # 🔴 2026-08-11 使用者裁決「主題統計表（技術／功效），時間狀態拿掉」：
+        # 演進資訊由技術通道的主題×年泡泡矩陣承載，表上再標一欄狀態是重複。
+        # ⚠ 只藏顯示：rows 仍帶 status 供下游驗證（同 recent_assignee_count 慣例）。
+        "status",
         # 🔴 2026-08-03 欄位精簡（使用者：「11 欄附錄那裡也放不下，勢必要精簡欄位」）：
         # max_share 與 top_applicants 重複——後者的第一筆就是最大一家的件數與名字，
         # 且帶了「是誰」這個 max_share 沒有的資訊。留資訊多的那個。
@@ -2499,13 +2474,13 @@ DATA_TABLE_EXCLUDED_COLUMNS: dict[str, tuple[str, ...]] = {
 # 表格欄位顯示優先序（2026-08-03）。欄位放不下時砍尾巴，不是砍中間。
 # ⚠ 上一輪 `status`（技術狀態）排在第 7 位、被 max_columns=6 擋掉——
 # 這一輪的重點功能一格都沒顯示出來。順序＝重要性，識別與量級在前、佐證在後。
+# 2026-08-11 清理：`status` 隨「時間狀態拿掉」裁決移出顯示；`tech_means` 為死鍵
+# （2026-08-10 裁決「不加欄，手段寫在解讀區」，rows 從來沒有這個鍵）。
 DATA_TABLE_PRIORITY_COLUMNS: dict[str, tuple[str, ...]] = {
     "cluster_topic_table": (
         "label",            # 這是哪個主題
         "patent_count",     # 多大
         "applicant_count",  # 多少人在做
-        "status",           # 什麼型態  ← 技術列
-        "tech_means",       # 用什麼做的 ← 功效列（與 status 互斥，各通道各有一個）
         "top3_share",       # 多集中
         "top_applicants",   # 誰在做
         "representative",   # 證據
@@ -2656,8 +2631,8 @@ CHART_ENCODING_NOTES: dict[str, str] = {
     "opportunity_quadrant": "點＝技術主題（單位是主題不是件）",
     "cluster_topic_table": "家數＝投入該主題的申請人數",
     # 主題 × 時間：兩條同尺才比得出移動方向；狀態已標在主題名旁。
-    # 2026-08-10 使用者裁決：技術通道改主題×年泡泡矩陣，功效通道維持雙條。
-    "topic_timeline": "技術＝主題×年泡泡（空格＝該年無申請）；功效＝上下兩條同尺（上早期、下近期）",
+    # 2026-08-11 使用者裁決：主題演進只做技術通道（功效雙條已移除）。
+    "topic_timeline": "主題×年泡泡矩陣（僅技術通道）｜色階＝件數、空格＝該年無申請",
     "applicant_ranking": "含共同申請，各自計數",
     "applicant_country_distribution": "含共同申請，總和大於專利件數",
     "applicant_year_matrix": "含共同申請，依申請年落點",
@@ -3330,7 +3305,8 @@ def _build_classification_section(
             ctx.meta["classification_thresholds"][report_key]["reason"]
             if distinct_l4 < CLASSIFICATION_MIN_DISTINCT_L4 else None
         ),
-        "note": "4 階=subclass 總覽，5 階=main group 細分；可用切換鈕對照，每階各取前 20。",
+        # 顯示上限跟常數走（2026-08-10 前 10 定案曾因註記寫死 20 而與圖不符）。
+        "note": f"4 階=subclass 總覽，5 階=main group 細分；可用切換鈕對照，每階各取前 {CHART_ROW_LIMIT}。",
     })
 
 
@@ -4128,35 +4104,34 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
         # ⚠ 資料早就在 topic_rows 的 early_count／recent_count／status 裡，先前只被
         # 埋在表格欄位——讀者要心算才看得出「立柱滑輪 5→2 在退、馬達自鎖 0→6 是
         # 全新戰場」。使用者：「如果時間和主題能用圖呈現，為何要一直用表格？」
-        timeline_rows = [r for r in topic_rows if str(r.get("source_field")) == sf]
-        if timeline_rows:
-            timeline_file = f"topic_timeline{suffix}.svg"
-            # 🔴 技術通道改主題×年泡泡矩陣（2026-08-10 使用者裁決「只改技術通道」）：
-            # 稀疏小整數用泡泡（空格＝該年沒動作，進場時序與斷代一眼可見），
-            # 與申請人年度矩陣同一種讀法；渲染複用同一支泡泡渲染器，不另寫。
-            # 功效通道維持早期 vs 近期雙條（功效主展示是機會四象限）。
-            from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL
+        # 🔴 主題演進**只做技術通道**（2026-08-11 使用者裁決「功效＝早期 vs 近期雙條
+        # 不要有，主題演進就只做技術」）：功效的主展示是機會四象限，再掛演進圖是
+        # 同一份資料第二種呈現。形式＝主題×年泡泡矩陣（2026-08-10 裁決）——
+        # 稀疏小整數用泡泡（空格＝該年沒動作，進場時序與斷代一眼可見），
+        # 渲染複用申請人年度矩陣同一支，不另寫。
+        # ⚠ 沒有 fallback：assignments 缺 source_field 或 patents 缺申請年（舊資料）
+        # 就不出這張圖，不退回已裁決移除的雙條形式。
+        from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL
 
-            ty_rows = (topic_year_rows(
+        if sf == SOURCE_FIELD_TECHNICAL:
+            timeline_rows = [r for r in topic_rows if str(r.get("source_field")) == sf]
+            ty_rows = topic_year_rows(
                 data["topics"], data["assignments"], data.get("patents") or {},
-                source_field=sf) if sf == SOURCE_FIELD_TECHNICAL else [])
+                source_field=sf)
             if ty_rows:
+                timeline_file = f"topic_timeline{suffix}.svg"
                 layout = year_bubble_matrix_layout(ty_rows, row_key="label")
                 render_year_bubble_matrix_chart(
                     ctx.run_dir / timeline_file,
                     f"主題演進——{segment_label}（主題 × 申請年）",
                     layout, layout["top_rows"])
-            else:
-                render_topic_timeline_chart(
-                    ctx.run_dir / timeline_file,
-                    f"主題演進——{segment_label}（早期 vs 近期）", timeline_rows)
-            variants.append({
-                "label": f"主題演進{tab_suffix}",
-                "file": timeline_file,
-                "variant_key": f"timeline{suffix}",
-                "rows": timeline_rows,
-            })
-            ctx.chart_rows[f"topic_timeline{suffix}"] = timeline_rows
+                variants.append({
+                    "label": f"主題演進{tab_suffix}",
+                    "file": timeline_file,
+                    "variant_key": f"timeline{suffix}",
+                    "rows": timeline_rows,
+                })
+                ctx.chart_rows[f"topic_timeline{suffix}"] = timeline_rows
         # 🔴 痛點板已整個刪除（2026-08-04 使用者定案；07-29 起本就停產）。
 
     note = (

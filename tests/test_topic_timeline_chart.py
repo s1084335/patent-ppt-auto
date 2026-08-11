@@ -1,111 +1,29 @@
-"""主題 × 時間圖（2026-08-10 使用者裁決新增）。
+"""主題演進圖（2026-08-11 使用者裁決版：只做技術通道、主題×年泡泡矩陣）。
 
-## 為什麼新增而不是改版
+## 沿革
 
-依「刪 > 改版 > 新增」的優先序先查過現有圖：
+- 2026-08-10：新增主題×時間圖（早期 vs 近期雙條），兩通道各一張。
+- 2026-08-10 深夜裁決：技術通道改**主題×年泡泡矩陣**（稀疏小整數泡泡最適、
+  與申請人年度矩陣同讀法），功效暫維持雙條。
+- 2026-08-11 裁決：「功效＝早期 vs 近期雙條**不要有**，主題演進就只做技術」
+  「主題統計表（技術／功效），時間狀態拿掉」。
+  → 雙條渲染函式 `render_topic_timeline_chart` 退場（唯一消費者消失）；
+  `status`（技術狀態）自統計表顯示欄移除（功效的主展示是機會四象限，
+  演進資訊由技術通道的泡泡矩陣承載）。
 
-| 圖 | 軸 | 能不能承載主題×時間 |
-|---|---|---|
-| `opportunity_quadrant` | 申請人家數 × 件數 | ❌ 沒有時間軸 |
-| `annual_trend` | 年份 × 件數 | ❌ 沒有主題維度 |
-| `applicant_year_matrix` | 申請人 × 年份 | ❌ 主體是申請人不是主題 |
-
-**主題 × 時間目前沒有任何圖**，資料卻早就備齊——`cluster_topic_table` 每列都帶
-`early_count`／`recent_count`／`status`，只是被埋在表格欄位裡，讀者要心算才看得出
-「哪個主題在起、哪個在退」。
-
-使用者原話：「如果時間和主題能用圖呈現，為何要一直用表格？」
-
-## 這張圖要回答什麼
-
-```
-馬達自鎖   早 0 → 近 6   全新戰場
-風磁複合   早 2 → 近 9   加速中
-立柱滑輪   早 5 → 近 2   ⚠ 唯一退潮
-```
-
-一眼看出技術重心的**移動方向**——那是表格看不出來的。
+本檔守兩件事：聚合純函式 `topic_year_rows` 的正確性、
+「雙條已死、狀態欄已藏」的契約不復活。
 """
 from __future__ import annotations
 
-import tempfile
 import unittest
-from pathlib import Path
-
-from backend.app.reports.chart_runner import render_topic_timeline_chart
-
-ROWS = [
-    {"label": "拉繩滑雪模擬機構", "patent_count": 10, "early_count": 2,
-     "recent_count": 7, "status": "申請成長"},
-    {"label": "風磁複合阻力裝置", "patent_count": 11, "early_count": 2,
-     "recent_count": 9, "status": "申請成長"},
-    {"label": "立柱滑輪訓練機構", "patent_count": 7, "early_count": 5,
-     "recent_count": 2, "status": "申請下降"},
-    {"label": "馬達自鎖阻力機構", "patent_count": 6, "early_count": 0,
-     "recent_count": 6, "status": "申請成長"},
-]
-
-
-class TopicTimelineChartTests(unittest.TestCase):
-    """早期 vs 近期雙條，狀態用顏色編碼。"""
-
-    def _svg(self, rows=None):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "topic_timeline.svg"
-            render_topic_timeline_chart(path, "技術主題演進", rows or ROWS)
-            return path.read_text(encoding="utf-8")
-
-    def test_every_topic_appears(self):
-        """每個主題都要出現——漏一個就是漏掉一個技術方向。"""
-        svg = self._svg()
-        for row in ROWS:
-            self.assertIn(row["label"], svg, f"缺主題 {row['label']}")
-
-    def test_both_periods_are_drawn(self):
-        """早期與近期都要畫——只畫一邊就看不出移動方向。"""
-        svg = self._svg()
-        self.assertIn("早期", svg)
-        self.assertIn("近期", svg)
-
-    def test_declining_topic_is_visually_distinct(self):
-        """退潮主題要與成長主題視覺可分——那正是這張圖最該講的事。
-
-        ⚠ 立柱滑輪 5→2 是唯一退潮者，讀者一眼要看得出來。
-        """
-        svg = self._svg()
-        self.assertIn("申請下降", svg, "狀態要標示在圖上，不能只留在資料裡")
-
-    def test_sorted_by_recent_activity(self):
-        """依近期件數排序——讀者關心的是「現在誰在跑」。"""
-        svg = self._svg()
-        pos = [svg.index(r["label"]) for r in
-               sorted(ROWS, key=lambda r: r["recent_count"], reverse=True)]
-        self.assertEqual(pos, sorted(pos), "主題未依近期件數由多到少排列")
-
-    def test_empty_rows_still_renders(self):
-        """沒有資料時畫出空圖而非爆掉——分群未完成時也要能出檔。"""
-        svg = self._svg([])
-        self.assertIn("<svg", svg)
-
-    def test_zero_early_count_is_drawn(self):
-        """早期為 0 的主題（全新戰場）不得被當成缺資料而略過。
-
-        ⚠ 馬達自鎖 0→6 是最重要的訊號之一：全新戰場。
-        """
-        svg = self._svg()
-        self.assertIn("馬達自鎖阻力機構", svg)
 
 
 class TopicYearRowsTests(unittest.TestCase):
-    """🔴 技術通道演進改主題×年泡泡矩陣（2026-08-10 使用者裁決）。
+    """技術通道演進泡泡矩陣的**聚合純函式**：assignments×patents → 主題×年列。
 
-    使用者：「技術演進做折線圖或泡泡圖會更好？」→ 裁決＝主題×年泡泡矩陣、
-    **只改技術通道**（功效通道維持早期 vs 近期雙條）。理由：每主題每年 1–5 件的
-    稀疏整數正適合泡泡（空格＝該年沒動作，進場時序、斷代一眼可見），且與
-    申請人年度矩陣同一種讀法；渲染複用 `year_bubble_matrix_layout`＋
-    `render_year_bubble_matrix_chart`，不新增第二支泡泡渲染器。
-
-    本類驗的是**聚合純函式** `topic_year_rows`：assignments×patents → 主題×年列。
+    渲染複用 `year_bubble_matrix_layout`＋`render_year_bubble_matrix_chart`
+    （申請人年度矩陣同一支），不另寫泡泡渲染器。
     """
 
     TOPICS = [
@@ -150,6 +68,35 @@ class TopicYearRowsTests(unittest.TestCase):
 
     def test_empty_inputs_give_empty_rows(self):
         self.assertEqual(self._rows(assignments=[]), [])
+
+
+class RetiredContractTests(unittest.TestCase):
+    """🔴 2026-08-11 裁決的兩條「不復活」契約。"""
+
+    def test_paired_timeline_renderer_is_gone(self):
+        """雙條演進渲染器已退場——留著就是沒有消費者的死碼，會與泡泡版各自演進。"""
+        from backend.app.reports import chart_runner
+
+        self.assertFalse(hasattr(chart_runner, "render_topic_timeline_chart"),
+                         "render_topic_timeline_chart 應隨「演進只做技術（泡泡）」退場")
+
+    def test_status_column_hidden_from_topic_table(self):
+        """「時間狀態拿掉」＝status 進顯示排除欄、不再佔顯示優先序。
+
+        ⚠ 只藏**顯示**：rows 仍帶 status 供下游驗證（同 recent_assignee_count 慣例）。
+        """
+        from backend.app.reports.chart_runner import (
+            DATA_TABLE_EXCLUDED_COLUMNS,
+            DATA_TABLE_PRIORITY_COLUMNS,
+        )
+
+        excluded = DATA_TABLE_EXCLUDED_COLUMNS["cluster_topic_table"]
+        self.assertIn("status", excluded, "技術狀態欄應自統計表顯示移除")
+        priority = DATA_TABLE_PRIORITY_COLUMNS["cluster_topic_table"]
+        self.assertNotIn("status", priority)
+        # tech_means 同場清理：2026-08-10 裁決「不加欄，手段寫在解讀區」——
+        # rows 從來沒有這個鍵，留在優先序是死鍵。
+        self.assertNotIn("tech_means", priority)
 
 
 if __name__ == "__main__":

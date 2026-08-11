@@ -253,8 +253,10 @@ class DisplaySpecTests(unittest.TestCase):
         cluster 卡片＝三 tabs（主題統計表＋機會矩陣＋痛點矩陣）；topic rows 仍帶主要申請人涉入。"""
         data = {
             "topics": [{"topic_code": "T01", "label": "散熱防塵", "source_field": "wips_independent_claims"}],
-            "assignments": [{"topic_code": "T01", "patent_id": 1}],
+            "assignments": [{"topic_code": "T01", "patent_id": 1,
+                             "source_field": "wips_independent_claims"}],
             "normalized_applicants": [{"patent_id": 1, "applicant_name": "TSMC"}],
+            "patents": {1: {"application_year": 2022}},
             "top_applicants_ws": ["TSMC"],
         }
         with tempfile.TemporaryDirectory() as tmp:
@@ -295,9 +297,13 @@ class DisplaySpecTests(unittest.TestCase):
             svg_l5 = (Path(tmp) / "ipc_main_distribution_L5.svg").read_text(encoding="utf-8")
         self.assertFalse(section.get("stacked"), "stacked 取消：恢復 toggle 切換")
         self.assertEqual(len(section["variants"]), 2, "L4/L5 兩 variants＝render_index 出切換鈕")
+        # 🔴 2026-08-10 契約變更（使用者：「各種排名都是 10 個」）：圖一律截前
+        # CHART_ROW_LIMIT（10），不再各自 20——同一定案曾三處落點漂移，
+        # 故此處直接引用常數而非寫死數字。
         for level, svg in (("L4", svg_l4), ("L5", svg_l5)):
             drawn = svg.count('rx="2"')  # 每列一個 bar rect
-            self.assertEqual(drawn, 20, f"IPC/CPC {level} 應截前 20 名，實得 {drawn}")
+            self.assertEqual(drawn, chart_runner.CHART_ROW_LIMIT,
+                             f"IPC/CPC {level} 應截前 {chart_runner.CHART_ROW_LIMIT} 名，實得 {drawn}")
 
     def test_year_matrix_expand_label_wips_style(self):
         rows = [{"applicant_display_name": f"Co{i:02d}", "application_year": 2020, "patent_count": 30 - i}
@@ -310,12 +316,18 @@ class DisplaySpecTests(unittest.TestCase):
         self.assertTrue(str(section.get("more_label", "")).startswith("＋查看全部"),
                         f"收合鈕應為 WIPS 式「＋查看全部」，實得 {section.get('more_label')!r}")
 
-    def test_ranking_limit_default_20(self):
+    def test_ranking_limit_default_follows_chart_row_limit(self):
+        """🔴 2026-08-10 契約變更：ranking_limit 預設收斂到 CHART_ROW_LIMIT（10）。
+
+        原契約「預設前 20」正是三處落點漂移的其中一處（常數 10 vs 預設 20），
+        使用者定案「各種排名都是 10 個」後統一；預設值唯一來源另由
+        test_top10_row_consistency.DefaultLimitSingleSourceTests 守。
+        """
         import inspect
 
         sig = inspect.signature(chart_runner.run_chart_trial)
-        self.assertEqual(sig.parameters["ranking_limit"].default, 20,
-                         "排名數據輸出預設應為前 20 名")
+        self.assertEqual(sig.parameters["ranking_limit"].default,
+                         chart_runner.CHART_ROW_LIMIT)
 
     def test_year_axis_capped_25(self):
         rows = [{"applicant_display_name": "Co", "application_year": 1990 + i, "patent_count": 1}
@@ -535,16 +547,20 @@ class TopicSegmentTests(unittest.TestCase):
             {"topic_code": "T002", "label": "速度控制", "source_field": "wips_independent_claims"},
             {"topic_code": "E001", "label": "降噪效果", "source_field": "effect_summary"},
         ],
+        # ⚠ assignments 帶 source_field（0048 起的真實形狀）＋patents 帶申請年：
+        # 主題演進泡泡矩陣（僅技術通道）靠這兩者聚合，缺任一就不出圖。
         "assignments": [
-            {"topic_code": "T001", "patent_id": 1},
-            {"topic_code": "T002", "patent_id": 2},
-            {"topic_code": "E001", "patent_id": 3},
+            {"topic_code": "T001", "patent_id": 1, "source_field": "wips_independent_claims"},
+            {"topic_code": "T002", "patent_id": 2, "source_field": "wips_independent_claims"},
+            {"topic_code": "E001", "patent_id": 3, "source_field": "effect_summary"},
         ],
         "normalized_applicants": [
             {"patent_id": 1, "applicant_name": "TSMC"},
             {"patent_id": 2, "applicant_name": "UMC"},
             {"patent_id": 3, "applicant_name": "TSMC"},
         ],
+        "patents": {1: {"application_year": 2022}, 2: {"application_year": 2024},
+                    3: {"application_year": 2023}},
         "top_applicants_ws": ["TSMC"],
     }
 
@@ -593,15 +609,18 @@ class TopicSegmentTests(unittest.TestCase):
         # 拆成兩頁，只有一份解讀時兩頁會印出一模一樣的標題與要點。
         # ⚠ 單通道時仍只產一個掛點（chart_runner 以實際存在的通道判斷），
         # 由 test_single_source_keeps_filenames_and_single_segment 守住。
-        # 🔴 2026-08-10 契約變更：每個來源多一張**主題 × 時間**圖
-        # （topic_timeline_tech／_effect）。使用者定案：「如果時間和主題能用圖呈現，
-        # 為何要一直用表格？」——early_count／recent_count 早就在資料裡，
-        # 先前只埋在表格欄位，讀者要心算才看得出哪個主題在起、哪個在退。
-        self.assertEqual(len(files), 6,
-                         "統計表解讀掛點 2（雙通道）+ 每來源機會板 2 + 每來源主題演進 2")
+        # 🔴 2026-08-11 契約變更（使用者定案「主題演進就只做技術」）：
+        # 主題演進只有技術通道一張（主題×年泡泡矩陣）；功效通道的
+        # 早期 vs 近期雙條**不再產**——功效的主展示是機會四象限，
+        # 再掛一張演進圖是同一份資料第二種呈現。
+        self.assertEqual(len(files), 5,
+                         "統計表掛點 2（雙通道）+ 機會板 2 + 主題演進 1（僅技術）")
         self.assertEqual(files[:2], ["", ""], "前兩個應為主題統計表掛點（無圖檔）")
-        for f in ("opportunity_quadrant_tech.svg", "opportunity_quadrant_effect.svg"):
+        for f in ("opportunity_quadrant_tech.svg", "opportunity_quadrant_effect.svg",
+                  "topic_timeline_tech.svg"):
             self.assertIn(f, files)
+        self.assertNotIn("topic_timeline_effect.svg", files,
+                         "功效通道不得再產主題演進圖（2026-08-11 使用者定案）")
         self.assertIn("機會四象限分析——技術主題", tech_opp)
         self.assertIn("機會四象限分析——功效分類", effect_opp)
 
@@ -637,8 +656,10 @@ class TopicSegmentTests(unittest.TestCase):
     def test_single_source_keeps_filenames_and_single_segment(self):
         data = {
             "topics": [{"topic_code": "T001", "label": "散熱防塵", "source_field": "wips_independent_claims"}],
-            "assignments": [{"topic_code": "T001", "patent_id": 1}],
+            "assignments": [{"topic_code": "T001", "patent_id": 1,
+                             "source_field": "wips_independent_claims"}],
             "normalized_applicants": [{"patent_id": 1, "applicant_name": "TSMC"}],
+            "patents": {1: {"application_year": 2022}},
             "top_applicants_ws": ["TSMC"],
         }
         with tempfile.TemporaryDirectory() as tmp:
@@ -1754,10 +1775,15 @@ class TablePriorityColumnsTests(unittest.TestCase):
     def test_priority_list_exists_for_topic_table(self):
         self.assertIn("cluster_topic_table", chart_runner.DATA_TABLE_PRIORITY_COLUMNS)
 
-    def test_status_is_in_the_inner_page_selection(self):
-        """🔴 技術狀態沒進精選＝這一輪的重點功能在簡報上看不到。"""
+    def test_status_not_in_priority_after_2026_08_11(self):
+        """🔴 契約反轉（2026-08-11 使用者裁決「主題統計表，時間狀態拿掉」）。
+
+        原契約（2026-08-03「技術狀態沒進精選＝重點功能看不到」）成立於狀態只能
+        靠表格欄呈現的年代；主題×年泡泡矩陣上線後，演進資訊由圖承載，
+        表上再標一欄狀態是同一份資訊第二個落點。
+        """
         priority = chart_runner.DATA_TABLE_PRIORITY_COLUMNS["cluster_topic_table"]
-        self.assertIn("status", priority[:6])
+        self.assertNotIn("status", priority)
 
     def test_label_and_count_come_first(self):
         """主題名與件數是識別與量級，排最前面。"""
@@ -1913,11 +1939,15 @@ class TopicStatusDisplayTests(unittest.TestCase):
                     "share_recent", "share_early", "concentration_recent", "concentration_early"):
             self.assertIn(key, excluded, f"中間計算欄 {key} 會被印給讀者看")
 
-    def test_status_itself_is_not_hidden(self):
+    def test_status_hidden_after_2026_08_11(self):
+        """🔴 契約反轉（2026-08-11「時間狀態拿掉」）：status 進顯示排除欄。
+
+        ⚠ 只藏顯示——rows 仍帶 status 供下游驗證；演進資訊由技術通道的
+        主題×年泡泡矩陣承載（見 test_topic_timeline_chart.RetiredContractTests）。
+        """
         excluded = chart_runner.DATA_TABLE_EXCLUDED_COLUMNS["cluster_topic_table"]
-        self.assertNotIn("status", excluded)
-        # ⚠ status_meaning 刻意排除：它是 status 的固定對照，逐列重複很佔寬度，
-        # 改由頁尾統一說明（2026-08-03 使用者：欄位不要那麼多）。
+        self.assertIn("status", excluded)
+        # ⚠ status_meaning 亦排除：它是 status 的固定對照，逐列重複很佔寬度。
 
 
 class QuadrantWordingTests(unittest.TestCase):
