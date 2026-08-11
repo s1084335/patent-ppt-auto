@@ -2389,6 +2389,21 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     # 2026-08-11 補：內部欄名不得上表頭（受理局交叉表首欄）。
     "country_code": "受理局",
     "legal_status": "法律狀態",
+    # 2026-08-11 使用者指示修正：排名／KP 表的內部欄名表頭。
+    # ⚠ 缺鍵不報錯、表頭原樣印出（靜默），清單由
+    # test_data_table_column_labels 釘住這兩張表的全部欄。
+    "joint_count": "共同申請件數",
+    "joint_transferred_count": "共同申請已轉讓",
+    "solo_transferred_count": "單獨申請已轉讓",
+    "co_applicant_names": "共同申請人",
+    "recent_assignee_count": "受讓取得",
+    "country_count": "布局國數",
+    "ipc_subclass_count": "IPC 類數（4階）",
+    "patent_ids": "專利 ID（供查證）",
+    "granted_count": "已授權",
+    "pending_count": "審查中",
+    "dead_count": "已失效",
+    "kind_summary": "種類組成",
     # 年度四欄（問題 9）
     "family_count": "家族數",
     "topic_count": "涉及技術群",
