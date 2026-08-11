@@ -201,7 +201,15 @@ def chart_scale(width_px: float, height_px: float) -> float:
 
     ⚠ 縮放比由畫布尺寸決定——這正是「同一個字級在不同頁面變成不同大小」的原因。
     組版端 `_add_picture_fitted` 是等比縮放到框內，故取寬高兩個比例的較小者。
+
+    🔴 web profile 恆回 1.0（2026-08-11 使用者定案「圖中文字都維持在 15」）：
+    網頁沒有圖框、SVG 以原生尺寸顯示，沿用 PPT 補償會讓小畫布的圖字被放大
+    ——「有些圖超大，很清楚但很突兀」。不補償後所有 web 圖字級＝target 同高。
     """
+    from backend.app.reports.chart_profiles import active_profile_name
+
+    if active_profile_name() == "web":
+        return 1.0
     w_in = width_px / PX_PER_INCH
     h_in = height_px / PX_PER_INCH
     if h_in <= 0 or w_in <= 0:
@@ -270,10 +278,11 @@ COLOR_BAR = "#006DF5"
 # 實機 p13 兩個圖例是同一個橘——`0A3A80`（總長條）與 `006DF5`（區段）
 # 在 chart_recolor 都對到 `FFB74D`。⚠ 我加排名色階時沒檢查目標色是否已被占用。
 # ⚠ 不改 `COLOR_APPLICATION`：它同時是趨勢圖的申請年線，動它會波及另一張圖。
-# 區段是**另一個資料維度**（有／無受讓人），該用不同**色相**而非同系深淺：
-# 白底青 `0891B2`（對白底 3.68），深底對照 `2F9FD8`（對背景 5.39、
-# 對排名主色對比 1.72、色相差 165°）。
-COLOR_SEGMENT = "#0891B2"
+# 區段是**另一個資料維度**（有／無受讓人），該用不同**色相**而非同系深淺。
+# 🔴 2026-08-11 使用者實機回報「三段顏色太相近」：原青 `0891B2` 與藍段同屬
+# 冷色系、明度相近，排名圖上單獨／共同幾乎分不開。改**藍橙對比**
+# （色盲安全的標準配對）：橙 `D97706` 對白底 3.32、與藍段色相差 ~180°。
+COLOR_SEGMENT = "#D97706"
 COLOR_BAR_ALT = "#C99A5B"       # 次要長條（暖中性，與資料暖色系一致）
 COLOR_MAP = "#F8FAFC"
 COLOR_GRID = "#DCE3F2"          # theme bar_track：格線
@@ -2866,9 +2875,19 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
                 return f'<div class="explanation"><p>{xml_text(text)}</p></div>'
             return '<div class="explanation pending">⏳ 待解讀</div>'
 
+        # 🔴 2026-08-11：index 改嵌 **web profile** 圖檔（`.web.svg` 存在就用）。
+        # 原本嵌 PPT 版——PPT 版字級為補償圖框縮放而逐圖不同，在網頁原尺寸顯示
+        # 就是使用者說的「有些圖超大，很清楚但很突兀」。web 版統一 15px。
+        # 舊版本沒有 `.web.svg` 時 resolve 會退回原檔（不退回＝舊版本整頁空圖）。
+        from backend.app.reports.chart_profiles import resolve_web_asset
+
+        def _embed(file: str) -> str:
+            return render_chart_embed(
+                resolve_web_asset(file, lambda f: (run_dir / f).exists()) if file else file)
+
         panels = "".join(
             f'<div class="chart-panel" id="{group_id}-{v_i}"{"" if v_i == 0 else " hidden"}>'
-            f'{render_chart_embed(variant["file"])}'
+            f'{_embed(variant["file"])}'
             f'{_panel_narrative(variant)}</div>'
             for v_i, variant in enumerate(variants)
         )
@@ -2877,7 +2896,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
         if more_variants:
             more_panels = "".join(
                 f'<div class="chart-panel" id="{group_id}-more-{v_i}">'
-                f'{render_chart_embed(variant["file"])}'
+                f'{_embed(variant["file"])}'
                 f'{_panel_narrative(variant)}</div>'
                 for v_i, variant in enumerate(more_variants)
             )
@@ -2930,7 +2949,8 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     .section-link:hover {{ text-decoration: underline; }}
     .section-note {{ color: #6B7280; font-size: 13px; margin: 0 0 12px; }}
     .data-table-wrap {{ overflow-x: auto; margin: 0 0 14px; }}
-    .data-table-wrap table {{ border-collapse: collapse; font-size: 12px; width: 100%; }}
+    /* 2026-08-11 使用者定案：表格文字維持 15（與圖表文字同高，整頁一致）。 */
+    .data-table-wrap table {{ border-collapse: collapse; font-size: 15px; width: 100%; }}
     .data-table-wrap th {{ background: #F1F5F9; padding: 6px 8px; text-align: left; font-weight: 600; white-space: nowrap; border: 1px solid #E2E8F0; }}
     .data-table-wrap td {{ padding: 4px 8px; border: 1px solid #F1F5F9; white-space: nowrap; }}
     .data-table-wrap td.totals-cell {{ border-top: 2px solid #CBD5E1; font-weight: 600; background: #F8FAFC; }}

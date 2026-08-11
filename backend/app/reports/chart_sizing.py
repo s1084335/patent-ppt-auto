@@ -67,13 +67,16 @@ PPT = ChartSizing(
 #: 🔴 只改**尺寸與字級**：排序、配色、註記內容、版面邏輯一律與 PPT 共用
 #: （separate-web-and-ppt-chart-profiles 的 Non-goals 明列不建第二套 engine）。
 #: - 畫布更寬：網頁沒有 4.32in 圖框限制，同樣列數更不擠
-#: - 目標字級略低：網頁只縮一次（PPT 縮兩次），12pt 在螢幕上已清楚
 #: - 列高略增：滑鼠瞄準與可讀性優先，不必為頁高妥協
+#: 🔴 2026-08-11 使用者定案「HTML 的圖中文字和表格文字都維持在 15」：
+#:   web 的字級解算**不再補償 PPT 圖框縮放**（chart_scale 對 web 恆 1.0——
+#:   原本沿用 PPT 補償，畫布小的圖字被放大到「很清楚但很突兀」），
+#:   target 15px＝11.25pt，資料與註記同級，全部圖表在頁面上同一字高。
 WEB = replace(
     PPT,
     canvas_width=1180,
     canvas_max_height=560,
-    data_target_pt=12.0,
-    note_target_pt=10.5,
+    data_target_pt=11.25,   # 15px @96dpi
+    note_target_pt=11.25,   # 使用者「都維持在 15」——註記不再小一級
     row_height=32,
 )

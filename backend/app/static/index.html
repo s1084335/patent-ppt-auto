@@ -3656,6 +3656,10 @@ async function loadReportVersionContent(version) {
       + '<a class="btn btn-primary btn-sm" target="_blank" rel="noopener" href="'
       + escHtml(API + '/report-latest/asset/' + encodeURIComponent(version) + '/index.html')
       + '">開啟 HTML 報表（新分頁）</a>'
+      // 2026-08-11 使用者定案：原匯出頁「單頁 HTML 預覽」移來此處，功能改為
+      // 匯出**自包單檔**（SVG 內嵌 data URI，離線可開、可轉寄）。
+      + ' <button class="btn btn-outline btn-sm" onclick="exportReportHtmlFile('
+      + "'" + escHtml(version) + "'" + ', this)">匯出 HTML 檔</button>'
       + '<span class="hint" style="margin-left:.6rem">含圖表與 AI 解讀；解讀未產出時卡片會標示待產生。</span>'
       + '</div>';
     // 🔴 展開哪一版就顯示哪一版的報表（2026-07-30 使用者實機回報
@@ -3677,6 +3681,39 @@ async function loadReportVersionContent(version) {
 
 // ⚠ loadReportVersionPptFiles（PPT 版本清單）已隨 PPT 交付線移除
 //   （2026-08-10，remove-ppt-delivery-line）；版本區改放「開啟 HTML 報表」入口。
+
+// 匯出自包單檔 HTML（2026-08-11 使用者定案：原匯出頁「單頁 HTML 預覽」移來，
+// 功能改為下載檔案）。把 index.html 裡引用的 SVG 逐一抓回內嵌成 data URI——
+// 產出離線可開、可轉寄的單一 .html；抓不到的圖略過（該圖顯示為缺圖，不整包失敗）。
+async function exportReportHtmlFile(version, btn) {
+  const base = API + '/report-latest/asset/' + encodeURIComponent(version) + '/';
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '打包中…'; }
+  try {
+    const resp = await fetch(base + 'index.html');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    let html = await resp.text();
+    const files = [...new Set([...html.matchAll(/src="([^"]+\.svg)"/g)].map(m => m[1]))];
+    for (const f of files) {
+      try {
+        const r = await fetch(base + encodeURIComponent(f));
+        if (!r.ok) continue;
+        const uri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(await r.text());
+        html = html.split('src="' + f + '"').join('src="' + uri + '"');
+      } catch (_) { /* 單圖失敗不擋整包 */ }
+    }
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = version + '.html';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(a.href);
+  } catch (e) {
+    alert('匯出 HTML 失敗：' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
+}
 
 // 統一進度卡（job dict：status/progress_percent/current_stage）＋已耗時。
 function jobProgressCardHtml(j, startedMs) {
@@ -3713,7 +3750,8 @@ function renderExport() {
     // R-2：明示這次產製的範圍——送錯 workspace 時要看得出來，不能靜默。
     + '<span style="font-size:0.82rem;color:var(--text-muted)">範圍：' + escHtml(currentWorkspaceLabel()) + '</span>'
     + '<span style="flex:1"></span>'
-    + '<button class="btn btn-outline" id="btn-export-html" onclick="reviewExportOutput()">單頁 HTML 預覽</button>'
+    // ⚠ 「單頁 HTML 預覽」已移至報表種類頁版本區並改為「匯出 HTML 檔」
+    //   （2026-08-11 使用者定案）。
     + '<button class="btn btn-primary" id="btn-export-ppt" onclick="requestExportPpt()">產生 PPT</button>'
     + '</div>'
     // 🔴 EXP-018（2026-08-09 使用者定案）：PPT **只有一個入口**，目標選填。
