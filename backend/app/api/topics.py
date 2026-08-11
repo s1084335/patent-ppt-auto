@@ -33,7 +33,9 @@ from backend.app.repositories.topic_repository import (
     ListTopicsResult,
     ListMergeSuggestionsResult,
     MergeQueueResult,
-    MergeHistoryItem,
+    # ⚠ 不 import repository 的 MergeHistoryItem（TypedDict）：本檔另有同名
+    # pydantic 回應模型（見下），先前 import 被遮蔽成死名——類別順序一動，
+    # response_model 就會靜默換成 repo 形狀（2026-08-11 三區稽核 F3）。
     UnmergeQueueResult,
     RenameResult,
     get_topic_repository,
@@ -179,7 +181,11 @@ class MergeQueueResponse(BaseModel):
 
 
 class MergeHistoryItem(BaseModel):
-    """合併歷史項目。"""
+    """合併歷史項目（API 回應模型）。
+
+    ⚠ 與 repository 的同名 TypedDict 是**刻意的兩個型別**（HTTP 契約 vs 資料層
+    形狀），endpoint 逐欄轉換；不得 import repo 版進本檔——會遮蔽成死名。
+    """
 
     merge_run_id: int
     source_topics: list[str]
