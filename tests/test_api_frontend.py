@@ -746,11 +746,14 @@ class FrontendSkeletonTests(unittest.TestCase):
             with self.subTest(cls_name=cls_name):
                 self.assertIn(cls_name, self.html)
 
-    def test_export_has_edit_mode_toggle(self):
-        """編輯模式開關：關＝純預覽、開＝可編輯。"""
-        for needle in ("export-edit-toggle", "toggleExportEditMode", "編輯模式"):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, self.html)
+    def test_export_edit_mode_removed(self):
+        """🔴 契約反轉（2026-08-10 使用者：「編輯模式也不用留」）：開關與切換函式退場。
+
+        原契約（編輯模式開關存在）隨 PPT 交付線移除作廢；編輯用 render 分支
+        暫留為不可達路徑，但**入口不得存在**——入口在就會被按。
+        """
+        self.assertNotIn("export-edit-toggle", self.html)
+        self.assertNotIn('onchange="toggleExportEditMode', self.html)
 
     def test_export_edit_three_editable_kinds(self):
         """可編輯三類掛點：解讀文案／封面資訊／自由段落。"""
@@ -774,16 +777,14 @@ class FrontendSkeletonTests(unittest.TestCase):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.html)
 
-    def test_export_preview_tab_before_download(self):
-        """匯出前先過目（2026-07-31 改分頁預覽：按下開新分頁看完整報告，
-        分頁內才有下載——取代舊確認框摘要）。細部契約見 test_export_html_preview_tab.py。"""
-        for needle in (
-            "btn-export-html",       # 預覽鈕
-            "reviewExportOutput",    # 開分頁預覽
-            "injectExportToolbar",   # 分頁內下載／列印工具列
-        ):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, self.html)
+    def test_export_html_entry_moved_to_reports_page(self):
+        """🔴 契約改版（2026-08-11 使用者：「單頁 HTML 預覽移去報表種類，
+        按下去匯出 HTML 檔」）：匯出工作台不再有 btn-export-html 預覽鈕，
+        入口＝報表種類版本區的 exportReportHtmlFile（自包單檔下載）。"""
+        self.assertNotIn('id="btn-export-html"', self.html, "舊預覽鈕應已移除")
+        self.assertIn("exportReportHtmlFile", self.html)
+        self.assertIn("匯出 HTML 檔", self.html)
+        self.assertIn("data:image/svg+xml", self.html, "匯出檔需內嵌 SVG（自包）")
         self.assertNotIn("confirmExportOutput", self.html, "舊確認框流程應已退場")
 
     def test_export_output_is_selfcontained_html_with_print_css(self):
@@ -797,17 +798,16 @@ class FrontendSkeletonTests(unittest.TestCase):
     # ── E2. 匯出報告：輸出 PPT（預覽閘門後送 ai:report_ppt → SSE 回流 → 下載連結） ──
 
     def test_export_has_output_ppt_button(self):
-        """匯出工作台除既有「匯出報告」（單頁 HTML）外，新增「輸出 PPT」鈕。
+        """「產生 PPT」鈕**過渡保留**（2026-08-10 使用者：「按鈕先留」）。
 
-        接線非重寫：既有 reviewExportOutput()／單頁 HTML 保留；PPT 是新增分支。
+        ⚠ 後端 PPT 端點已隨交付線移除——按下會得到明確的 unsupported task_type
+        錯誤，不是靜默；按鈕何時收斂由使用者決定。
+        單頁 HTML 鈕已移去報表種類頁（見 test_export_html_entry_moved_to_reports_page），
+        不再斷言它在工作台。
         """
         for needle in ("btn-export-ppt", "requestExportPpt"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.html)
-        # 既有單頁 HTML 匯出鈕與流程仍在（兩種都給）。
-        self.assertIn("btn-export-html", self.html)
-        self.assertIn("reviewExportOutput", self.html)
-        self.assertIn("buildExportHtml", self.html)
 
     def test_export_ppt_sends_ai_report_ppt_task(self):
         """輸出 PPT＝送 POST /ai-tasks，task_type=ai:report_ppt，帶 report version／workspace_id。
@@ -914,13 +914,9 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("renderReportContentHtml(exportPreview)", body)
         self.assertIn("export-preview", self.html)
 
-    def test_edit_mode_toggles_between_content_and_real_pptx(self):
-        """編輯模式開＝內容視圖可改；關＝回到真實 .pptx 預覽。"""
-        body = self.js_function("toggleExportEditMode")
-
-        self.assertIn("renderExportPreview", body)
-        self.assertIn("loadExportPptFiles", body,
-                      "關閉編輯模式沒回到真實 PPT 預覽")
+    # ⚠ test_edit_mode_toggles_between_content_and_real_pptx 已移除
+    #   （2026-08-11）：編輯模式與 .pptx 預覽皆隨 PPT 交付線退場，
+    #   toggleExportEditMode 不再存在（見 test_export_edit_mode_removed）。
 
     def test_ppt_theme_colors_not_hardcoded_in_frontend(self):
         """⚠ 沿用舊測試仍有效的部分：PPT 色票不得寫死在前端（防與產檔風格分叉）。"""
@@ -1127,7 +1123,9 @@ class FrontendSkeletonTests(unittest.TestCase):
         )
         self.assertIsNotNone(m, "找不到 loadReportVersionContent() 定義")
         body = m.group(0)
-        self.assertIn("report-ppt-list-", body, "版本區應只掛 PPT 清單容器")
+        # 🔴 2026-08-10/11 契約更新：PPT 清單隨交付線移除，版本區改掛
+        # 「匯出 HTML 檔」入口（自包單檔下載）；R9 的「一次顯示一份」不變。
+        self.assertIn("exportReportHtmlFile", body, "版本區應掛匯出 HTML 檔入口")
         self.assertIn("fillReportViewSelect", body, "版本內容應餵給上方選單驅動的 viewer")
         self.assertNotIn(
             "renderReportContentHtml", body,
