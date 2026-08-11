@@ -137,9 +137,14 @@ class DataTableUsesPivotTests(unittest.TestCase):
             self.assertNotIn(absent, rows[0], f"零件數的「{absent}」欄不該出現")
 
     def test_index_table_prefers_section_rows(self):
-        """index 產表：section 有 rows 就用它，不再回頭撈 reports 桶的長格式。"""
+        """index 產表：section 有 rows 就用它，不再回頭撈 reports 桶的長格式。
+
+        🔴 必須穿過 `persistable_sections`（持久化白名單）再渲染——2026-08-11 實機：
+        builder 掛了 rows、單元測試全綠，但 `SECTION_PERSIST_KEYS` 沒收 "rows"，
+        寫進 report_data.json 時被**靜默丟棄**，成品照樣長格式。
+        驗在接縫之前的測試擋不住接縫上的丟失。
+        """
         import json
-        from unittest import mock
 
         tmp = TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -147,11 +152,13 @@ class DataTableUsesPivotTests(unittest.TestCase):
         run_dir.mkdir(parents=True)
         section = self._section()
         section["variants"] = [{"label": "Bar", "file": "x.svg", "variant_key": "default"}]
+        persisted = chart_runner.persistable_sections([section])
         (run_dir / "report_data.json").write_text(json.dumps({
-            "sections": [section],
+            "sections": persisted,
             "reports": {"country_distribution": {"label_zh": "專利受理局分布", "rows": ROWS}},
         }, ensure_ascii=False), encoding="utf-8")
-        chart_runner.render_index(run_dir / "index.html", [section])
+        self.assertIn("rows", persisted[0], "持久化白名單把 section rows 丟掉了")
+        chart_runner.render_index(run_dir / "index.html", persisted)
         html = (run_dir / "index.html").read_text(encoding="utf-8")
         self.assertIn("撤回", html, "表頭應為狀態欄（交叉表）")
         self.assertNotIn("legal_status", html, "長格式的原始狀態欄不得再出現在表上")

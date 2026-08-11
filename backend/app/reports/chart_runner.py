@@ -219,7 +219,7 @@ def chart_scale(width_px: float, height_px: float) -> float:
 
 
 def solve_chart_font(width_px: float, height_for_font, *,
-                     target_pt: float = CHART_DATA_TARGET_PT) -> tuple[float, float]:
+                     target_pt: float | None = None) -> tuple[float, float]:
     """畫布高度與字級互相依賴時，迭代求出兩者，回傳 `(字級px, 畫布高px)`。
 
     🔴 為什麼需要迭代：字級大 → 列高大 → 畫布高 → 縮放小 → 字級又要更大。
@@ -230,7 +230,13 @@ def solve_chart_font(width_px: float, height_for_font, *,
     `height_for_font(font_px)` 是呼叫端提供的「這個字級下畫布要多高」。
     ⚠ 三輪內收斂——框只有兩種，最多換一次就穩定；仍不收斂時回最後一輪的值，
     不無限迴圈。
+
+    ⚠ target 預設**依 profile 解析**（2026-08-11）：原本預設綁模組層常數
+    CHART_DATA_TARGET_PT（＝PPT 14pt，import 時定死），web 產圖走到這裡
+    仍拿 14pt——實測 IPC/CPC 等經本函式的圖在網頁上 18.8px，其他 15px。
     """
+    if target_pt is None:
+        target_pt = _sizing_value("data_target_pt")   # 依 profile（P3）
     font = target_pt / PT_PER_PX          # 初值：假設不縮放
     height = height_for_font(font)
     for _ in range(3):
@@ -589,7 +595,7 @@ def render_line_chart(
     width, height = _sizing_value("canvas_width"), _sizing_value("canvas_max_height")
     # 字級由縮放反推（資料 14pt／註記 12pt）；畫布固定，不需迭代。
     label_px = chart_font_px(width, height)
-    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
+    note_px = chart_font_px(width, height, target_pt=_sizing_value("note_target_pt"))
     left, right, top, bottom = 76, 34, 64, 72
     plot_w = width - left - right
     plot_h = height - top - bottom
@@ -674,7 +680,7 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
         return top + bottom + max(1, len(data)) * _row_h(font_px)
 
     label_px, _ = solve_chart_font(width, _canvas_height)
-    note_px = chart_font_px(width, _canvas_height(label_px), target_pt=CHART_NOTE_TARGET_PT)
+    note_px = chart_font_px(width, _canvas_height(label_px), target_pt=_sizing_value("note_target_pt"))
     # 🔴 K-8（2026-08-04 實機 p9）：實際列高與縮放假設要用**同一組**字級縮放值。
     # 原本 height 用未縮放 row_h、solve 用縮放後 rh——兩套不一致，單長條頁下方留白。
     row_h = _row_h(label_px)
@@ -1026,7 +1032,7 @@ def render_segmented_bar_chart(
         return total
 
     label_px, _ = solve_chart_font(width, _canvas_height)
-    note_px = chart_font_px(width, _canvas_height(label_px), target_pt=CHART_NOTE_TARGET_PT)
+    note_px = chart_font_px(width, _canvas_height(label_px), target_pt=_sizing_value("note_target_pt"))
     row_h = int(round(label_px * CHART_ROW_HEIGHT / CHART_LABEL_PX))
     left = label_gutter([str(row.get(label_key) or "") for row in data], font_px=label_px)
 
@@ -1185,7 +1191,7 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
     width, height = 980, 540
     # 字級由縮放反推（資料 14pt／註記 12pt）；本圖畫布固定，不需迭代。
     label_px = chart_font_px(width, height)
-    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
+    note_px = chart_font_px(width, height, target_pt=_sizing_value("note_target_pt"))
     left, top = 50, 70
     map_w, map_h = 880, 390
     max_value = max([int(row["patent_count"]) for row in rows] + [1])
@@ -1319,7 +1325,7 @@ def render_kp_quadrant_chart(
     """
     width, height = _sizing_value("canvas_width"), _sizing_value("canvas_max_height")
     label_px = chart_font_px(width, height)
-    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
+    note_px = chart_font_px(width, height, target_pt=_sizing_value("note_target_pt"))
     left, right, top, bottom = 90, 210, 72, 84
     plot_w, plot_h = width - left - right, height - top - bottom
     svg = [
@@ -1477,7 +1483,7 @@ def render_bubble_chart(
     width, height = _sizing_value("canvas_width"), _sizing_value("canvas_max_height")
     # 字級由縮放反推（資料 14pt／註記 12pt）；畫布固定，不需迭代。
     label_px = chart_font_px(width, height)
-    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
+    note_px = chart_font_px(width, height, target_pt=_sizing_value("note_target_pt"))
     left, right, top, bottom = 90, 40, 64, 84
     plot_w, plot_h = width - left - right, height - top - bottom
     xs = [float(r[x_key]) for r in rows] or [0.0]
@@ -1613,7 +1619,7 @@ def render_matrix_chart(
     label_width = label_gutter([str(name) for name in top_rows], font_px=_f0 * 1.05)
     width = label_width + cell_w * max(len(cols), 1) + 24
     label_px = chart_font_px(width, height)
-    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
+    note_px = chart_font_px(width, height, target_pt=_sizing_value("note_target_pt"))
     max_value = max((cells[(r, c)] for r in top_rows for c in cols if (r, c) in cells), default=1)
 
     parts = [
@@ -1813,7 +1819,7 @@ def render_year_bubble_matrix_chart(
     width = left + max(1, len(years)) * cell_w + 34
     height = top + max(1, len(row_names)) * row_h + 34
     label_px = chart_font_px(width, height)
-    note_px = chart_font_px(width, height, target_pt=CHART_NOTE_TARGET_PT)
+    note_px = chart_font_px(width, height, target_pt=_sizing_value("note_target_pt"))
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
         '<rect width="100%" height="100%" fill="white"/>',
@@ -2692,6 +2698,10 @@ def variant_narrative_ref(report_key: str, variant_key: str) -> str:
 
 SECTION_PERSIST_KEYS = (
     "title", "report_key", "variants", "more_variants", "more_label", "note", "stacked", "links",
+    # 🔴 2026-08-11 實機：受理局交叉表掛在 section["rows"]，但本白名單沒有 "rows"
+    # ——持久化時**靜默丟棄**，index 與 API 又退回 reports 桶的長格式，單元測試
+    # 全綠（驗在持久化之前）。「section 自帶 rows＝顯示轉置」要能過這個接縫。
+    "rows",
 )
 
 
@@ -3909,7 +3919,7 @@ def render_opportunity_quadrant_svg(
         return laid, top_h, bot_h, ch["grid_top"] + top_h + cell_gap + bot_h + ch["bottom_h"]
 
     label_px, _ = solve_chart_font(width, lambda f: _layout(f)[3])
-    note_px = chart_font_px(width, _layout(label_px)[3], target_pt=CHART_NOTE_TARGET_PT)
+    note_px = chart_font_px(width, _layout(label_px)[3], target_pt=_sizing_value("note_target_pt"))
     placed, top_row_h, bot_row_h, _canvas_h = _layout(label_px)
 
     chrome = _chrome(label_px)
