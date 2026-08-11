@@ -3,9 +3,7 @@
 ## Purpose
 
 定義從報表版本、AI 文案槽、deterministic 組版、真實 PPT 預覽到 artifact 下載的現行輸出契約。
-
 ## Requirements
-
 ### Requirement: EXP-001 AI 產內容、程式負責組版
 
 系統 SHALL 只讓 AI 產生受契約約束的敘述／確認槽內容；頁面幾何、字級、圖表放置、數字與 `.pptx` 組裝由 deterministic 程式負責。
@@ -88,3 +86,24 @@
 - **THEN** 所有選定且有資料的報表 SHALL 出現在 report metadata 與 PPT
 - **AND** `.pptx`、圖表、report data 與 narratives SHALL 可由 artifact store 重新讀取
 - **AND** 全部受影響頁面 SHALL 完成逐頁檢視
+
+### Requirement: 解讀完成的 HTML 報表為交付物
+
+系統 SHALL 以「報表產製 → AI 解讀 → 解讀嵌入 `index.html`」為交付主線；
+報表種類頁版本區 SHALL 提供「匯出 HTML 檔」入口，產出**自包單檔**
+（SVG 內嵌 data URI，離線可開）。
+
+#### Scenario: 從報表種類頁匯出自包 HTML
+
+- **WHEN** 使用者於版本區按「匯出 HTML 檔」
+- **THEN** SHALL 下載該版本的單一 `.html` 檔
+- **AND** 檔內所有圖表 SHALL 為內嵌 data URI，無外部資源引用
+- **AND** 已產出的 AI 解讀 SHALL 隨卡呈現；未產出時卡片標示待產生
+
+#### Scenario: 解讀契約檔隨 backend 部署
+
+- **WHEN** `ai:narrative` 於任何部署環境執行
+- **THEN** 解讀契約（flow／content_standard 節錄／data_access）SHALL 自
+  `backend/app/worker/prompts/` 載入（可用 `REPORT_NARRATIVE_FLOW_PATH` 覆寫）
+- **AND** 不得依賴已移除的 `skills/patent-report-ppt/`
+
