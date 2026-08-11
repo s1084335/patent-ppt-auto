@@ -110,6 +110,11 @@ def normalize_legal_status(raw: str | None) -> str:
 # ⚠ 沿革：初版九項抄自「專利狀態」欄→那是人工加的草稿欄（使用者明示不作
 # 依據）；「已核准／屆滿失效」等草稿詞彙已廢，舊登錄值已遷移、normalize 容忍。
 # 到期的括號細節（Expiration／Non-payment…）不進下拉，顯示時保留原樣。
+# 🔴 2026-08-11 使用者裁決：「無效」移除——data/raw **全部** WIPS 檔實掃
+# （10 檔、含歷史批次）`状态` 欄查無此值，人工登錄也從未用過；當日實測聯集＝
+# 下列 9 個 WIPS 本體詞＋「公開」（TW 案人工登錄需要，原始欄空值）。
+# 08-07 註解「11 項＝實測全集」經複驗不成立，據實更正。
+# normalize 對「无效／無效」的容忍**保留**（未來 WIPS 若出現仍能收斂，不算自加）。
 TW_LEGAL_STATUS_ALLOWED: tuple[str, ...] = (
     "申請",
     "公開",
@@ -120,7 +125,6 @@ TW_LEGAL_STATUS_ALLOWED: tuple[str, ...] = (
     "撤回",
     "拒絕",
     "刪除",
-    "無效",
     "到期",
 )
 
@@ -179,3 +183,25 @@ def display_legal_status(raw: str | None) -> str | None:
         return None
     text = raw.strip()
     return _DISPLAY_TRADITIONAL.get(text, raw)
+
+
+def status_display_term(raw: str | None) -> str:
+    """把原始 legal_status 折疊成**顯示用本體詞**（交叉表欄名，2026-08-11）。
+
+    受理局交叉表的欄＝統一狀態詞彙（`TW_LEGAL_STATUS_ALLOWED`）：
+    - 簡繁折疊走 `display_legal_status`（唯一定義處，不另建對照）
+    - 到期的括號細節（Non-payment／Expiration／Reissued…）折進「到期」一欄
+      ——細節屬單筆顯示，欄名層級要收斂
+    - 空值／None →「未知」（僅該欄非零時現形，誠實呈現未登錄）
+    - 詞彙外的新值**原樣保留**成自己的欄——靜默併進未知會把新資料藏起來
+
+    ⚠ 與 `status_bucket`（四大分析桶）語意不同：桶回答「權利活著沒」，
+    本函式回答「表上這欄叫什麼」。兩者各自是各自消費端的唯一來源。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return "未知"
+    term = display_legal_status(text) or ""
+    if term.startswith("到期"):
+        return "到期"
+    return term

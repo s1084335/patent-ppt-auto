@@ -15,13 +15,18 @@ from backend.app.mappings import legal_status as m
 
 class AllowedListTests(unittest.TestCase):
     def test_vocabulary_is_status_column_full_set(self):
-        """🔴 2026-08-07 第三修＝最終定版：唯一真實來源＝`状态[...]` 欄實測
-        全集（「專利狀態」欄是人工草稿、使用者明示不作依據）。11 項本體轉繁，
-        貼原值不自加不省略；granted＝授權、到期在列、草稿詞彙全數退場。"""
+        """🔴 2026-08-07 第三修＋2026-08-11 修訂：「無效」移除。
+
+        使用者要求複驗「原始資料真的有這些？」→ data/raw 全部 WIPS 檔（10 檔）
+        實掃 `状态` 欄：聯集＝9 個本體詞（申請/審查中/即將授權/授權/放棄/撤回/
+        拒絕/刪除/到期），「公開」為 TW 人工登錄需要（原始欄空值）、「無效」
+        **查無憑據**——08-07 註解「11 項＝實測全集」不成立，依「不自加」原則移除。
+        normalize 對无效/無效的容忍保留（未來出現仍能收斂）。
+        """
         self.assertEqual(m.TW_LEGAL_STATUS_ALLOWED, (
             "申請", "公開", "審查中", "即將授權", "授權",
-            "放棄", "撤回", "拒絕", "刪除", "無效", "到期"))
-        for draft in ("已核准", "屆滿失效", "核駁", "已失效", "已申請", "已公開"):
+            "放棄", "撤回", "拒絕", "刪除", "到期"))
+        for draft in ("已核准", "屆滿失效", "核駁", "已失效", "已申請", "已公開", "無效"):
             self.assertNotIn(draft, m.TW_LEGAL_STATUS_ALLOWED)
 
     def test_legacy_value_still_normalizes(self):

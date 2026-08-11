@@ -385,7 +385,9 @@ def _report_content_payload(run_dir):
     sections_out = []
     for section in report_data.get("sections", []) or []:
         report_key = _section_report_key(section)
-        rows = _lookup_rows(report_data, report_key)
+        # 🔴 section 自帶 rows＝顯示用轉置，優先於 reports 桶（2026-08-11，
+        # 與 index.html 產表同一條機制；受理局交叉表靠它，不帶才回長格式）。
+        rows = section.get("rows") or _lookup_rows(report_data, report_key)
         variants_out = []
         for variant in list(section.get("variants") or []) + list(section.get("more_variants") or []):
             file_name = str(variant.get("file", ""))

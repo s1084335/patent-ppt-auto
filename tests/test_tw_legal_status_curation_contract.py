@@ -10,7 +10,9 @@ from unittest import mock
 from backend.app.mappings import legal_status
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-# 2026-08-07 定版：值域＝WIPS「專利狀態」欄實測聯集，granted＝「已核准」（曾誤改「授權」已回退）。
+# 2026-08-07 定版＋🔴 2026-08-11 修訂：「無效」移除——使用者要求複驗後，
+# data/raw 全部 WIPS 檔（10 檔）實掃 `状态` 欄查無此值、人工登錄亦未用過（自加值）。
+# 現值域＝實測 9 個 WIPS 本體詞＋「公開」（TW 人工登錄需要，原始欄為空）。
 CURATED_TW_STATUSES = (
     "\u7533\u8acb",
     "\u516c\u958b",
@@ -21,7 +23,6 @@ CURATED_TW_STATUSES = (
     "\u64a4\u56de",
     "\u62d2\u7d55",
     "\u522a\u9664",
-    "\u7121\u6548",
     "\u5230\u671f",
 )
 
@@ -41,7 +42,6 @@ class TwLegalStatusMappingContractTests(unittest.TestCase):
             "\u64a4\u56de": "dead",
             "\u62d2\u7d55": "dead",
             "\u522a\u9664": "dead",
-            "\u7121\u6548": "dead",
             "\u5230\u671f": "dead",
         }
         self.assertEqual(legal_status.TW_LEGAL_STATUS_ANALYSIS_MAP, expected)

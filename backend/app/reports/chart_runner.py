@@ -2368,6 +2368,9 @@ def tech_name(code: str) -> str:
 
 
 DATA_COLUMN_LABELS: dict[str, str] = {
+    # 2026-08-11 補：內部欄名不得上表頭（受理局交叉表首欄）。
+    "country_code": "受理局",
+    "legal_status": "法律狀態",
     # 年度四欄（問題 9）
     "family_count": "家族數",
     "topic_count": "涉及技術群",
@@ -2820,9 +2823,13 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
         report_name = _section_report_name(section)
 
         # 1. Data table
+        # 🔴 section 自帶 rows＝顯示用轉置，優先於 reports 桶的原始列（2026-08-11）。
+        # 實機：受理局卡的 pivot 早就算好（圖用它畫），但表格從 reports 桶撈長格式
+        # ——簡繁並列、三種到期各佔一列，14 列讀不動。機制與分群卡帶 rows 同一條。
+        section_rows = section.get("rows")
         report_data_json = run_dir / "report_data.json"
-        rows = []
-        if report_data_json.exists():
+        rows = list(section_rows) if section_rows else []
+        if not rows and report_data_json.exists():
             import json
             try:
                 rd = json.loads(report_data_json.read_text(encoding="utf-8"))
@@ -3174,6 +3181,9 @@ def _build_country_map_section(ctx: ChartContext) -> None:
     ctx.sections.append({
         "title": report["label_zh"],
         "report_key": "country_distribution",
+        # 🔴 數據表吃顯示用交叉表（2026-08-11 使用者：「狀態做橫向欄位、縱向放國家」）
+        # ——section 自帶 rows＝顯示轉置（分群卡既有慣例），不帶才回 reports 桶的長格式。
+        "rows": country_status_display_pivot(report["rows"]),
         "variants": [{"label": "Bar", "file": "jurisdiction_distribution.svg", "variant_key": "default"}],
         "note": " ".join(notes),
     })
@@ -3436,6 +3446,52 @@ def _build_applicant_country_section(ctx: ChartContext) -> None:
         "variants": [{"label": "Matrix", "file": "applicant_country_matrix.svg", "variant_key": "default"}],
         "note": note,
     })
+
+
+def country_status_display_pivot(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """(受理局, 原始狀態, 件數) 長格式 → 顯示用交叉表（2026-08-11 使用者裁決）。
+
+    使用者：「授權、到期、審查中做成橫向欄位，縱向放國家」「欄位用（統一詞彙）
+    這些，沒件數的當然不用出現」。
+
+    - 每國一列；首欄 country_code、次欄申請件數（各狀態加總）
+    - 狀態欄＝`status_display_term` 折疊後的本體詞（簡繁歸一、到期收括號細節），
+      **只出實際有件數的**；欄序照 `TW_LEGAL_STATUS_ALLOWED` 詞彙序，
+      詞彙外的新值列在其後、「未知」（未登錄）恆殿後
+    - 零值儲存格留空字串不是 0——0 讀起來像「查過但沒有」，空白才是「無此狀態」
+      （同 pivot_year_matrix 的取捨）
+
+    ⚠ 與 `country_status_pivot`（四大狀態桶）語意不同：桶版給圖與分析口徑
+    （「現存有效」＝已授權桶），本版給數據表顯示。欄名折疊的唯一來源在
+    `mappings.legal_status.status_display_term`，此處只消費。
+    """
+    from backend.app.mappings.legal_status import (
+        TW_LEGAL_STATUS_ALLOWED,
+        status_display_term,
+    )
+
+    by_country: dict[str, dict[str, int]] = {}
+    for row in rows:
+        country = str(row.get("country_code") or "").strip()
+        if not country:
+            continue
+        term = status_display_term(row.get("legal_status"))
+        entry = by_country.setdefault(country, {})
+        entry[term] = entry.get(term, 0) + int(row.get("patent_count") or 0)
+
+    present = {term for buckets in by_country.values() for term, n in buckets.items() if n}
+    vocab_rank = {term: i for i, term in enumerate(TW_LEGAL_STATUS_ALLOWED)}
+    ordered_terms = sorted(
+        present,
+        key=lambda t: (t == "未知", vocab_rank.get(t, len(vocab_rank)), t),
+    )
+    ranked = sorted(by_country.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))
+    return [
+        {"country_code": country,
+         "申請件數": sum(buckets.values()),
+         **{t: (buckets.get(t) or "") for t in ordered_terms}}
+        for country, buckets in ranked
+    ]
 
 
 def country_status_pivot(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
