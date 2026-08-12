@@ -31,9 +31,13 @@ ai_report_deck_runner（Companion 內，host-agnostic）
 清單（重疊、裁切、圖內字可讀、版面平衡、行首標點），發現問題**只能改
 content.json**（縮寫、改寫、拆頁、轉純文字頁——與今天人工調整的合法動作
 一致；圖表、版面引擎、字級規格照授權界線不得動），runner 重組版重截圖後
-再看。**迴圈上限沿 skill 既有規則「同一問題最多修兩輪」**，仍不過即 job
-failed 並附最後一輪的目視發現。check_content 的閘門紅走同一個迴圈，
-不另設第二條重試路。
+再看。**迴圈上限＝產線參數，不沿 skill 開發紀律**（2026-08-12 使用者定案
+「產品的不要沿用，改成產線參數」）：skill 的「同一問題最多修兩輪」是
+開發時人機協作的停損（修不動就停下來找人談），出處為專案 AGENTS.md
+「Token 節制」試行條款；產線語意不同——上限到了＝job failed＋使用者按重產，
+故改為可調參數 `DECK_VISUAL_LOOP_MAX_ROUNDS`（env／設定，**預設 2**，
+調整不改程式）。達上限即 job failed 並附最後一輪的目視發現。
+check_content 的閘門紅走同一個迴圈、吃同一個參數，不另設第二條重試路。
 
 為什麼不讓 CLI 一路跑到底：那需要給 CLI 跑任意 uv 腳本的 Bash 白名單
 ——權限面等於開發機 agent，與「CLI 只輔助、不碰執行面」的架構原則相反；
@@ -147,5 +151,6 @@ hash 校驗），**不自動下載**。此為對「backend 不經手檔案流量
 - 撰稿品質退化（headless vs 互動）：Acceptance Gate 3 的對照驗收把關；
   check_content 的措辭／字數／佔位符閘門是底線。
 - deck 一跑數分鐘：沿 narrative 的 keepalive／誠實進度模式回報 stage。
-- 兩輪修正上限：閘門紅 → runner 把 check_content 輸出回饋 CLI 重撰稿一次，
-  仍紅即 failed（同 skill「同一問題最多修兩輪」既有規則）。
+- 修正輪數上限：閘門紅 → runner 把 check_content 輸出回饋 CLI 重撰稿，
+  達 `DECK_VISUAL_LOOP_MAX_ROUNDS`（產線參數，預設 2）即 failed
+  ——上限是可調參數，不再綁 skill 開發紀律（2026-08-12 使用者定案）。
