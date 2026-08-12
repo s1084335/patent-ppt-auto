@@ -210,6 +210,87 @@ class DataTableDensityTests(unittest.TestCase):
         self.assertRegex(html, r"共\s*12\s*列|總列數\s*12", "summary 應標示總列數")
 
 
+class SourceSegmentTests(unittest.TestCase):
+    """🔴 技術主題與功效分類**分段不混表**（2026-07-21 使用者定案）。
+
+    該定案原文：「技術主題（wips_independent_claims）與功效分類（effect_summary）
+    分成兩段各自一張表，不得混在同表；Source Field 欄不顯示」，
+    `cluster_topic_table` 的 section note 也自己寫著「分段不混表」。
+
+    ⚠ 但**交付用 HTML 一直沒實作**：`source_field` 欄雖已在
+    `DATA_TABLE_EXCLUDED_COLUMNS` 隱藏，13 列（技術 5＋功效 8）卻全畫在同一張表裡
+    ——欄藏了、列沒分，讀者看到的是兩種不同單位的主題混排。
+    前端因為有變體過濾看不出來，交付檔才是使用者實際拿到的東西。
+    """
+
+    _MIXED = [
+        {"topic_code": "T001", "label": "拉繩滑雪模擬機構",
+         "source_field": "wips_independent_claims", "patent_count": 10},
+        {"topic_code": "T002", "label": "風磁複合阻力裝置",
+         "source_field": "wips_independent_claims", "patent_count": 11},
+        {"topic_code": "E001", "label": "提升操作平順",
+         "source_field": "effect_summary", "patent_count": 9},
+        {"topic_code": "E002", "label": "提升空間利用",
+         "source_field": "effect_summary", "patent_count": 7},
+    ]
+
+    def _cluster_html(self) -> str:
+        sections = [{
+            "title": "主題分析", "report_key": "cluster_topic_table",
+            "rows": self._MIXED,
+            "variants": [{"label": "主題統計表（技術）", "variant_key": "topic_table_tech",
+                          "file": "annual_trend.svg"}],
+        }]
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "report_trial_20260812_000000"
+            run_dir.mkdir()
+            (run_dir / "annual_trend.svg").write_text(
+                "<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8")
+            path = run_dir / "index.html"
+            chart_runner.render_index(path, sections, {})
+            return path.read_text(encoding="utf-8")
+
+    def test_two_channels_render_as_two_tables(self):
+        html = self._cluster_html()
+        self.assertEqual(html.count("<table>"), 2,
+                         "技術與功效必須各自一張表，不得混在同表")
+
+    def test_each_table_labelled_with_channel(self):
+        """兩張表要標明是哪個通道，否則讀者分不出上下兩塊的差別。"""
+        html = self._cluster_html()
+        for label in ("技術主題", "功效分類"):
+            with self.subTest(label=label):
+                self.assertIn(label, html)
+
+    def test_rows_do_not_cross_channels(self):
+        """每張表只含自己通道的列——混一列進去就是把兩種單位加在一起。"""
+        html = self._cluster_html()
+        tables = re.findall(r"<table>.*?</table>", html, re.S)
+        self.assertEqual(len(tables), 2)
+        tech, effect = tables
+        self.assertIn("拉繩滑雪模擬機構", tech)
+        self.assertNotIn("提升操作平順", tech)
+        self.assertIn("提升操作平順", effect)
+        self.assertNotIn("拉繩滑雪模擬機構", effect)
+
+    def test_single_channel_stays_one_table(self):
+        """只有一個通道時不得無故拆段（多一層標題只是噪音）。"""
+        sections = [{
+            "title": "主題分析", "report_key": "cluster_topic_table",
+            "rows": [r for r in self._MIXED if r["source_field"] == "effect_summary"],
+            "variants": [{"label": "x", "variant_key": "v", "file": "annual_trend.svg"}],
+        }]
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "report_trial_20260812_000000"
+            run_dir.mkdir()
+            (run_dir / "annual_trend.svg").write_text(
+                "<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8")
+            path = run_dir / "index.html"
+            chart_runner.render_index(path, sections, {})
+            html = path.read_text(encoding="utf-8")
+        self.assertEqual(html.count("<table>"), 1)
+
+
 class OfflineSelfContainedTests(unittest.TestCase):
     """離線可開：自包單檔匯出的前提，不得引用任何外部資源。"""
 

@@ -2706,6 +2706,35 @@ def _data_table_html(rows: list[dict[str, Any]], report_name: str) -> str:
     return f'<div class="data-table-wrap">{table}</div>'
 
 
+def _segmented_table_html(rows: list[dict[str, Any]], report_name: str) -> str:
+    """rows 混了多個 `source_field` 時**分段各出一張表**。
+
+    🔴 2026-07-21 使用者定案：「技術主題（wips_independent_claims）與功效分類
+    （effect_summary）分成兩段各自一張表，**不得混在同表**；Source Field 欄不顯示」。
+    `cluster_topic_table` 的 section note 也自己寫著「分段不混表」。
+
+    ⚠ 但交付用 HTML 一直沒實作：`source_field` 欄早就在
+    `DATA_TABLE_EXCLUDED_COLUMNS` 隱藏了，13 列（技術 5＋功效 8）卻仍全畫在同一張表
+    ——**欄藏了、列沒分**，讀者看到兩種不同單位的主題混排卻沒有任何提示。
+    前端因為有變體過濾（一次只顯示一個通道）看不出來，交付檔才是使用者拿到的東西
+    （2026-08-12 使用者實機指出）。
+
+    通道顯示名取自 `SOURCE_SEGMENT_LABELS`（本模組唯一來源），不另建對照。
+    只有一個通道時不拆段——多一層標題只是噪音。
+    """
+    order = list(dict.fromkeys(
+        str(row.get("source_field")) for row in rows if row.get("source_field")))
+    if len(order) <= 1:
+        return _data_table_html(rows, report_name)
+    parts: list[str] = []
+    for source_field in order:
+        segment_rows = [r for r in rows if str(r.get("source_field")) == source_field]
+        label = SOURCE_SEGMENT_LABELS.get(source_field, source_field)
+        parts.append(f'<h3 class="table-segment">{xml_text(label)}</h3>'
+                     f'{_data_table_html(segment_rows, report_name)}')
+    return "".join(parts)
+
+
 def _section_report_name(section: dict[str, Any]) -> str:
     """卡片對應的 report key（解讀 narratives 與數據 rows 查找共用）：
     有 report_key 用之，否則以第一個 variant 檔名去副檔名。"""
@@ -2958,7 +2987,8 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             except (json.JSONDecodeError, OSError):
                 rows = []
 
-        data_html = _data_table_html(rows, report_name)
+        # 混通道的 rows 分段出表（技術主題／功效分類不得混在同表，2026-07-21 定案）。
+        data_html = _segmented_table_html(rows, report_name)
 
         # 2. Chart panels + per-variant explanation
         group_id = f"sec{index}"
@@ -3157,7 +3187,12 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     .section-link {{ color: var(--brand-soft); text-decoration: none; margin-left: 12px; }}
     .section-link:hover {{ text-decoration: underline; }}
     .section-note {{ color: var(--ink-soft); font-size: 13px; margin: 0 0 14px; max-width: 78ch; }}
-    .data-table-wrap {{ overflow-x: auto; margin: 16px 0 0; }}
+    .data-table-wrap {{ overflow-x: auto; margin: 8px 0 0; }}
+    /* 分段小標（技術主題／功效分類）：兩張表之間要有明確界線，
+       否則讀者會把兩種單位的主題當成同一份清單往下讀。 */
+    .table-segment {{ font-size: 14px; font-weight: 600; color: var(--brand);
+      margin: 18px 0 0; padding-left: 10px; border-left: 3px solid var(--brand-soft); }}
+    .table-segment:first-of-type {{ margin-top: 8px; }}
     /* 表格 14px（2026-08-12 使用者指定，與正文同級；原 15px 是 08-11「與圖表同高」的定案，
        圖表字改由寬度反推後兩者不再需要同數字）。
        ⚠ 只留橫線不圍格：格線全開會讓 16 欄的年度矩陣變成一張網，數字反而讀不出來。 */
