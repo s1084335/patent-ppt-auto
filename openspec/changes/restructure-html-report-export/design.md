@@ -114,11 +114,38 @@ workspace 歸屬），缺值退回既有標題文字。⚠ 不新增查詢——
 - **相容**：拿三個時代的版本目錄各重渲染一次（`--reindex`），確認不破。
 - **回歸範圍**：`-k "chart_sizing or render_index or index_html or export"`。
 
+### 7. 🔴 匯出檔的真實來源是 **DB artifact store**，不是 `output/{version}/`
+
+驗收時實測發現（2026-08-13）：改完 `render_index`、對版本目錄跑 `--refresh-index`、
+再走前端「匯出 HTML 檔」——**下載到的仍是舊版面**。
+
+追下去的事實鏈：
+
+| 環節 | 實際行為 |
+|---|---|
+| 前端 `exportReportHtmlFile` | `fetch(/report-latest/asset/{version}/index.html)` 取 HTML，再把 SVG 換成 data URI |
+| 該端點 | 先找 `REPORT_OUTPUT_ROOT / version / filename`，⚠ 而 `REPORT_OUTPUT_ROOT = output/**full_report_latest**`——不是 `output/{version}/` |
+| 找不到時 | fallback 到 `report_artifact_store.read_file()`＝**DB** |
+| 實測 | `output/full_report_latest/` 是空的 → 匯出**一律走 DB** |
+
+**DB 那份怎麼更新**：`report_generate`（`handlers.py`）與 `ai:narrative`
+（`ai_narrative_runner.py`）兩條正式流程結束時都會 `upload_run_dir(run_dir)` 整包
+upsert；後者的註解已寫明「順帶把 refresh_index 重渲染的 index.html 一起更新」。
+
+⚠ **只有手動跑 CLI `--refresh-index` 不會上傳**——它只改本機檔案。
+所以「改了 render_index 卻匯出到舊版」是**驗證方法的陷阱，不是產品缺陷**：
+使用者在正式環境重產報表或重產解讀，就會自動得到新版面。
+
+**對驗收的意義**：驗新版面要看**本機重建的 index.html**（或重產後的 DB 版），
+驗匯出流程要看**data URI 內嵌與離線可開**（與版面無關）。兩者分開驗，
+不要用「手動 refresh 後匯出」這條路——它必然拿到舊的。
+
 ## Risks
 
 - **改的是共用渲染函式**：`--reindex`（解讀回填）與正常產製共用，任一路徑破了
   都會讓版本目錄的 index.html 壞掉。→ 契約測試涵蓋兩個呼叫點。
-- **舊版本目錄不重產**：既有 8080px 的檔案不會自動變好；使用者要新版面得重產
-  或走 `--reindex`。此為刻意取捨（不動既有產物），在驗收時明講。
+- **舊版本目錄不重產**：既有 8080px 的檔案不會自動變好；使用者要新版面得**重產報表
+  或重產解讀**（兩者都會上傳新 index.html 到 DB）。⚠ 手動 `--refresh-index` 不夠
+  ——見 §7。此為刻意取捨（不回頭改既有產物），驗收時明講。
 - **點擊放大的 JS**：單檔離線是硬需求，JS 必須內嵌無依賴；若日後有人加外部庫，
   匯出檔會在離線環境失效——測試斷言「無外部資源引用」守住。
