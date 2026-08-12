@@ -65,6 +65,12 @@ CLI 輸出：`content.json` 一檔。驗證：check_content 既有閘門（佔�
   based_on_version、pptx 相對 key、SHA-256、大小、閘門摘要、
   是否經逐頁目視）。**不進 report_artifacts**（那是版本內容資料；
   deck 是衍生交付物，混放會讓版本目錄語意變髒）。
+- **過程紀錄一併回存（2026-08-12 使用者指出規格缺口）**：narrative 線的
+  取證 audit（8 欄 JSONL）已隨 job 落 DB，deck 線比照——
+  ①**撰稿取證 audit**（同一條 MCP 通道自帶，reset-per-task）
+  ②**目視迴圈紀錄**（每輪：發現了什麼、改了 content.json 哪裡）——
+  失敗路徑本就要求「附最後一輪目視發現」，成功路徑同樣留全程，
+  「這份 deck 的每段話查了什麼、改過幾輪」才可回放。
 - 失敗不落半成品：pptx 先寫 work dir，全閘門過才搬進 ROOT。
 
 ### 4. 組版輸出層＝B 案（2026-08-12 使用者定案；借鑒 ppt-master 確定性中間層）
