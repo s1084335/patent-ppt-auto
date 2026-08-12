@@ -21,9 +21,12 @@
 - **產物回存＝DB＋NAS（2026-08-12 使用者定案）**：DB 記產製紀錄與 manifest
   （based_on_version、參數、狀態、檔名、SHA-256、**NAS 相對 key**）；pptx 本體
   寫 NAS（現階段本機目錄＋環境變數代替，沿 `MODEL_ARTIFACT_ROOT` 前例）。
-  **不做自動下載**：前端只顯示紀錄與 NAS 位置，backend 不經手檔案流量。
-- **前端**：版本區「產製簡報」按鈕＋deck 紀錄清單（時間、版本、NAS 位置、狀態）；
-  `JOB_REFRESH_TARGETS` 補 `ai:report_deck`（跨層對帳測試強制）。
+  **不自動下載，先看到再下載**（2026-08-12 使用者指定）：完成後前端先呈現
+  逐頁預覽（產線目視同一批 PNG），使用者決定何時按「下載 pptx」
+  （backend 自 NAS 按需串流）。
+- **前端**：版本區「產製簡報」按鈕＋deck 紀錄清單（時間、版本、狀態、
+  逐頁預覽、下載鈕）；`JOB_REFRESH_TARGETS` 補 `ai:report_deck`
+  （跨層對帳測試強制）。
 
 ## 已確認決策（本 change 的邊界）
 

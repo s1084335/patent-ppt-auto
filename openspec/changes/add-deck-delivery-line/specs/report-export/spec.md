@@ -16,6 +16,13 @@
   相對 key），DB SHALL 有 manifest（based_on_version、SHA-256、閘門摘要）
 - **AND** 版本區 deck 紀錄 SHALL 不需手動重新整理即出現
 
+#### Scenario: 先看到成品，使用者決定何時下載
+
+- **WHEN** deck 產製完成
+- **THEN** 前端 SHALL 先呈現**逐頁預覽**（產線目視同一批 PNG），不自動下載
+- **AND** 使用者按「下載」時 SHALL 取得 pptx 檔（backend 自 artifact root
+  串流該檔），下載與否、何時下載由使用者決定
+
 #### Scenario: 閘門未過不落成品
 
 - **WHEN** 內容閘門（check_content／組版裕度／audit）任一未通過且重撰稿一次仍未過

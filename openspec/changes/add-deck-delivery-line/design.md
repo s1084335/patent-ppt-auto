@@ -113,8 +113,14 @@ Runbook（觸發、九步、契約、閘門——供零背景 CLI／開發者照
 ### 6. 前端最小面
 
 版本區加「產製簡報」按鈕（POST /ai-tasks，task_type=ai:report_deck，
-payload=based_on_version）；版本卡下列 deck 紀錄（時間、狀態、NAS 相對
-key、閘門摘要）。`JOB_REFRESH_TARGETS['ai:report_deck']=['reports']`。
+payload=based_on_version）；版本卡下列 deck 紀錄（時間、狀態、閘門摘要）。
+`JOB_REFRESH_TARGETS['ai:report_deck']=['reports']`。
+
+**先看到、再下載（2026-08-12 使用者指定）**：完成後紀錄卡直接展示
+**逐頁預覽**（就是產線目視那批 PNG，backend 自 artifact root 供圖）；
+「下載 pptx」是使用者主動按的按鈕（backend 串流 NAS 上的檔，帶 manifest
+hash 校驗），**不自動下載**。此為對「backend 不經手檔案流量」的修正：
+不自動推送仍成立，但按需下載由 backend 供檔（NAS 掛載在伺服器上，順路）。
 
 ## Test Strategy
 
