@@ -18,9 +18,22 @@ ai_report_deck_runner（Companion 內，host-agnostic）
   2. subprocess：assemble_from_version → plan_deck →（標記則 chip 重排）→ fit
   3. build_prompt：plan.json＋report.json 素材路徑＋撰稿契約
      → headless CLI → 產 work/content.json（唯一輸出檔，同 narrative 權限面）
-  4. subprocess：check_content → make_deck → audit_deck（任一紅→job failed）
-  5. 回存：pptx 寫 <DECK_ARTIFACT_ROOT>/<version>/，manifest＋紀錄寫 DB
+  4. subprocess：check_content → 組版（B 案：SVG→量測→轉換）→ audit
+     → **逐頁截圖**
+  5. 🔁 CLI 目視迴圈（見下）：CLI 看逐頁 PNG → 有問題修 content.json
+     → runner 重跑 4 → 再看；通過或達上限為止
+  6. 回存：pptx＋逐頁 PNG 寫 <DECK_ARTIFACT_ROOT>/<version>/，manifest＋紀錄寫 DB
 ```
+
+**目視迴圈＝現行開發流的「看了回去調」原樣搬進產線，只換工具**
+（2026-08-12 使用者明示保留）：開發流是我目視 COM 轉圖後回頭調整再轉再看；
+產線由撰稿 CLI 對 Chromium 逐頁截圖做同一件事——檢查清單沿用 skill 現行目視
+清單（重疊、裁切、圖內字可讀、版面平衡、行首標點），發現問題**只能改
+content.json**（縮寫、改寫、拆頁、轉純文字頁——與今天人工調整的合法動作
+一致；圖表、版面引擎、字級規格照授權界線不得動），runner 重組版重截圖後
+再看。**迴圈上限沿 skill 既有規則「同一問題最多修兩輪」**，仍不過即 job
+failed 並附最後一輪的目視發現。check_content 的閘門紅走同一個迴圈，
+不另設第二條重試路。
 
 為什麼不讓 CLI 一路跑到底：那需要給 CLI 跑任意 uv 腳本的 Bash 白名單
 ——權限面等於開發機 agent，與「CLI 只輔助、不碰執行面」的架構原則相反；

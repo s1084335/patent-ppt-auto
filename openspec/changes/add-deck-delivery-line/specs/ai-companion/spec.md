@@ -10,13 +10,16 @@ Companion SHALL 支援 `ai:report_deck` 工作：runner 負責全部確定性步
 
 #### Scenario: CLI 撰稿權限面
 
-- **WHEN** runner 派 CLI 執行撰稿
-- **THEN** CLI SHALL 可讀撰稿素材、可經**唯讀 MCP 取證工具**查證個案
-  （與 `ai:narrative` 同一通道；含請求項原文），SHALL 只寫 `content.json`
+- **WHEN** runner 派 CLI 執行撰稿與目視
+- **THEN** CLI SHALL 可讀撰稿素材與逐頁截圖、可經**唯讀 MCP 取證工具**查證
+  個案（與 `ai:narrative` 同一通道；含請求項原文），SHALL 只寫 `content.json`
 - **AND** SHALL 不具備 shell 執行、資料庫寫入或其他檔案寫入能力
 
-#### Scenario: 撰稿未過閘門的重試上限
+#### Scenario: 目視迴圈（看了回去調）
 
-- **WHEN** 內容閘門對 CLI 輸出報紅
-- **THEN** runner SHALL 將閘門輸出回饋 CLI 重撰稿至多一次
-- **AND** 仍未通過 SHALL 標記任務 failed，不得無限重試
+- **WHEN** 組版完成產出逐頁截圖
+- **THEN** CLI SHALL 依既有目視檢查清單逐頁檢視（不得抽樣）
+- **AND** 發現問題時 SHALL 以修改 `content.json` 回應（縮寫、改寫、拆頁），
+  runner SHALL 重組版重截圖供再次檢視
+- **AND** 同一問題的修正 SHALL 以兩輪為上限，仍未通過 SHALL 標記任務
+  failed 並附最後一輪目視發現；內容閘門報紅 SHALL 走同一迴圈

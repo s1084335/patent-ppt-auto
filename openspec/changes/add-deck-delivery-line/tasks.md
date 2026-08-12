@@ -27,7 +27,8 @@
 ## 3. TDD：runner 與回存
 
 - [ ] 3.1 Red：runner 編排契約（機械步順序、任一步非零即 failed 短路、
-      閘門紅回饋 CLI 重撰稿一次仍紅即 failed）、manifest 形狀
+      **目視迴圈**：CLI 逐頁檢視→修 content.json→重組版重截圖，
+      同一問題兩輪上限，閘門紅走同一迴圈）、manifest 形狀
       （based_on_version／相對 key／SHA-256／閘門摘要）、失敗不落 ROOT
 - [ ] 3.2 Green：`ai_report_deck_runner`（materialize→機械步→CLI 撰稿
       （帶唯讀 MCP 取證，同 narrative 通道）→閘門→pptx＋逐頁 PNG 落
