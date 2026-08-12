@@ -1742,13 +1742,18 @@ def render_year_bubble_matrix_chart(
     # 靜默切掉才是不能接受的。
     years = years[-CHART_YEAR_WINDOW:]
     cell_w = max(36, grid_w // max(1, len(years)))
-    # 🔴 泡泡半徑上限由**欄寬推導**，不寫死（2026-08-03 補齊連續年度後的迴歸）。
-    # 原本固定 9+19=28：欄數 14→16 讓欄距由 43px 縮到 38px，泡泡沒跟著縮，
-    # 相鄰兩格直接撞在一起（實測 4 處、最深 5.5px）。
-    # ⚠ 半徑與欄寬是同一件事的兩個落點——各寫各的就會靜默撞上。
+    # 🔴 泡泡半徑上限由**欄寬與列距**共同推導，不寫死（2026-08-03 補欄向；
+    # 2026-08-12 補列向——使用者實機抓到殘留的另一半）。
+    # 08-03：欄數 14→16 讓欄距 43→38px，泡泡沒跟著縮，橫向相鄰互撞 4 處。
+    # 08-12：列數 10 讓列距縮到 39px，上限 28 的泡泡縱向互撞 4 對
+    # （曾晴×帝瑪斯 2020/2022/2024 等）——當年只綁了欄寬，列距漏綁。
+    # ⚠ 半徑、欄寬、**列距**是同一件事的三個落點——少綁一個就靜默撞上。
     # 下限 14 是格內兩位數（18px 字）放得下的最小值；再窄寧可讓大小差異壓縮，
-    # 也不能讓數字滿出泡泡。
-    bubble_max = max(BUBBLE_MIN_RADIUS_PX, min(28.0, (cell_w - LABEL_MIN_GAP_PX) / 2))
+    # 也不能讓數字滿出泡泡（row_h 壓到 26px 地板的極端情況允許輕微相切）。
+    bubble_max = max(BUBBLE_MIN_RADIUS_PX,
+                     min(28.0,
+                         (cell_w - LABEL_MIN_GAP_PX) / 2,
+                         (row_h - LABEL_MIN_GAP_PX) / 2))
     width = left + max(1, len(years)) * cell_w + 34
     height = top + max(1, len(row_names)) * row_h + 34
     label_px = chart_font_px(width, height)
