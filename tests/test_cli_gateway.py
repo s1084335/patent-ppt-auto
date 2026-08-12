@@ -129,18 +129,71 @@ class DatabaseEvidenceToolTests(unittest.TestCase):
             with self.subTest(sql=sql), self.assertRaises(rr.ReportResearchError):
                 rr.query_database(sql)
 
-    def test_limit_capped(self):
-        """上限對齊原查詢閘道（500 預設／2000 上限），不因換通道縮權。
+    def test_limit_not_capped_but_fused(self):
+        """🔴 2026-08-12 使用者裁決契約更新：「列數上限取消（但要避免系統效能
+        支援不了）」——原 2000 列硬上限移除（權限牆退場），效能保護改**回應量
+        保險絲**（bytes）＋逾時，兩者都是保險絲不是牆：超過明示截斷，不擋查詢。
 
-        ⚠ 用快照工具的 MAX_EVIDENCE_ROWS（200）會讓逐案清單被靜默截斷——
-        那是換通道造成的能力退步，不是安全收緊。
+        沿革：原 test_limit_capped 守「不因換通道縮權」（500/2000 對齊舊閘道）；
+        本次是使用者主動再放寬，同一精神的下一步。
         """
         from backend.app.mcp_server import report_research as rr
 
-        self.assertEqual(rr.SQL_DEFAULT_ROWS, 500)
-        self.assertEqual(rr.SQL_MAX_ROWS, 2000)
-        with self.assertRaises(rr.ReportResearchError):
-            rr.query_database("SELECT 1", limit=rr.SQL_MAX_ROWS + 1)
+        self.assertEqual(rr.SQL_DEFAULT_ROWS, 500)   # 預設分頁不變
+        self.assertFalse(hasattr(rr, "SQL_MAX_ROWS"), "硬上限應移除")
+        self.assertGreaterEqual(rr.SQL_PAYLOAD_FUSE_BYTES, 1_000_000,
+                                "保險絲小於 1MB 就變回牆了")
+
+    def test_timeout_relaxed(self):
+        """逾時放寬（2026-08-12 使用者裁決）：30s→120s，仍保留防拖垮 DB 的底。"""
+        from backend.app.mcp_server import report_research as rr
+
+        self.assertEqual(rr._SQL_TIMEOUT_MS, 120000)
+
+    def test_payload_fuse_collects_and_truncates(self):
+        """保險絲行為（純函式測，不連 DB）：容量內全收；超過即停並標 truncated。"""
+        from backend.app.mcp_server import report_research as rr
+
+        rows = [("x" * 100,) for _ in range(50)]
+        it = iter(rows)
+
+        def fetch(n):
+            out = []
+            for _ in range(n):
+                try:
+                    out.append(next(it))
+                except StopIteration:
+                    break
+            return out
+
+        got, truncated = rr._collect_rows(fetch, limit=None, fuse_bytes=10_000)
+        self.assertEqual(len(got), 50)
+        self.assertFalse(truncated)
+
+        it = iter([("y" * 1000,) for _ in range(100)])
+        got, truncated = rr._collect_rows(fetch, limit=None, fuse_bytes=5_000)
+        self.assertTrue(truncated, "超過保險絲應標 truncated")
+        self.assertLess(len(got), 100)
+        self.assertGreater(len(got), 0, "保險絲不是擋門，已收的要回傳")
+
+    def test_limit_still_paginates(self):
+        """limit 仍是呼叫端的分頁工具：給了就收到 limit 為止並標 truncated。"""
+        from backend.app.mcp_server import report_research as rr
+
+        it = iter([(i,) for i in range(30)])
+
+        def fetch(n):
+            out = []
+            for _ in range(n):
+                try:
+                    out.append(next(it))
+                except StopIteration:
+                    break
+            return out
+
+        got, truncated = rr._collect_rows(fetch, limit=10, fuse_bytes=10_000_000)
+        self.assertEqual(len(got), 10)
+        self.assertTrue(truncated)
 
 
 if __name__ == "__main__":
