@@ -7,8 +7,10 @@
 
 ## What Changes
 
-- **新 AI job 型別 `ai:report_deck`**：前端報表種類頁版本區加「產製簡報」入口
+- **新 AI job 型別 `ai:report_deck`**：前端**「匯出報告」頁**加「產製簡報」入口
   → 既有佇列 → Companion 領取 → deck runner。
+  （2026-08-12 使用者定案「匯出報告頁要接到 deck 去」：報表種類頁＝報表工作介面，
+  匯出報告頁＝交付物中心。該頁現存的 PPT 線殘骸先清空，見 design §6／tasks 0。）
 - **runner 分工（接口設計核心）**：九步中僅第 5 步撰稿是 AI 判斷——
   **runner 以 subprocess 跑全部機械步**（intake→plan→chip 重排→fit→
   check_content→make_deck→audit），**CLI 只接撰稿**（輸入 plan.json＋素材、
@@ -24,9 +26,10 @@
   **不自動下載，先看到再下載**（2026-08-12 使用者指定）：完成後前端先呈現
   逐頁預覽（產線目視同一批 PNG），使用者決定何時按「下載 pptx」
   （backend 自 NAS 按需串流）。
-- **前端**：版本區「產製簡報」按鈕＋deck 紀錄清單（時間、版本、狀態、
-  逐頁預覽、下載鈕）；`JOB_REFRESH_TARGETS` 補 `ai:report_deck`
-  （跨層對帳測試強制）。
+- **前端**：「匯出報告」頁放「產製簡報」按鈕＋deck 紀錄清單（時間、版本、狀態、
+  逐頁預覽、下載鈕）；`JOB_REFRESH_TARGETS['ai:report_deck'] = ['export']`
+  （跨層對帳測試強制）。前置＝清空該頁 PPT 線殘骸（含 1.5 MB pptx renderer
+  vendor 與必定 422 的「產生 PPT」鈕）。
 
 ## 已確認決策（本 change 的邊界）
 

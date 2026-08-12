@@ -1,7 +1,19 @@
 # Tasks — add-deck-delivery-line
 
 分支：`feat/add-deck-delivery-line`。前置：`unify-chart-source` 實作並驗收
-（intake 吃版本目錄）。流程本體（九步演算法、版面、閘門門檻）零改動。
+（intake 吃版本目錄，**2026-08-12 已完成**）。流程本體（九步演算法、版面、
+閘門門檻）零改動。
+
+## 0. 前置（獨立於本 change，先做完再填 deck 面）
+
+- [ ] 0.1 「匯出報告」頁**清空 PPT 線殘骸**（design §6）：`btn-export-ppt`
+      （打已移除的 `ai:report_plan`，必定 422）、`ppt-goal-input`、
+      `ppt-chart-picker`、`exportPreview` 的 PPT 狀態（`pptFiles`／
+      `selectedPptFile`／`pptViewer`／`editMode`／`edits`，全庫 29 處）、
+      localStorage 編輯稿孤兒（`EXPORT_EDIT_KEY_PREFIX`）、與報表種類頁重複的
+      版本下拉與整份預覽、**`static/vendor/pptx-renderer/` 1.5 MB 資產**。
+      ⚠ 頁面與導覽項**保留**（deck 要進駐），清空期間放一句「簡報產製規劃中」。
+      驗收＝殘留引用歸零＋前端契約測試綠。
 
 ## 1. skill 遷入產品 repo
 
@@ -56,8 +68,10 @@
 - [ ] 3.2 Green：`ai_report_deck_runner`（materialize→機械步→CLI 撰稿
       （帶唯讀 MCP 取證，同 narrative 通道）→閘門→pptx＋逐頁 PNG 落
       `DECK_ARTIFACT_ROOT`＋DB 紀錄）；`AI_JOB_TYPES` 收錄；ai_bridge 派工表
-- [ ] 3.3 Red→Green：前端「產製簡報」按鈕＋deck 紀錄區（含逐頁預覽）＋
-      `JOB_REFRESH_TARGETS['ai:report_deck']`（跨層對帳測試會先紅）
+- [ ] 3.3 Red→Green：**「匯出報告」頁**（design §6，非報表種類頁）填入
+      「產製簡報」按鈕＋deck 紀錄區（時間／版本／狀態／閘門摘要）＋逐頁預覽＋
+      下載 pptx；`JOB_REFRESH_TARGETS['ai:report_deck'] = ['export']`
+      （跨層對帳測試會先紅）
 - [ ] 3.4 誠實進度：runner 各階段 heartbeat stage（沿 narrative keepalive 模式）
 
 ## 3b. TDD：內容架構吸收批次（design §7）

@@ -4,19 +4,22 @@
 
 ### Requirement: 簡報（deck）產製與回存
 
-系統 SHALL 提供由報表版本產製簡報（PPTX）的能力：自報表種類頁版本區觸發、
-經佇列派工執行既有 deck 流程；產物回存 SHALL 為「DB 紀錄＋NAS 檔案」，
+系統 SHALL 提供由報表版本產製簡報（PPTX）的能力：自**交付物中心（「匯出報告」
+頁）**觸發、經佇列派工執行既有 deck 流程；產物回存 SHALL 為「DB 紀錄＋NAS 檔案」，
 不提供自動下載到使用者本機。
 
-#### Scenario: 由版本產製簡報
+⚠ 頁面分工（2026-08-12 使用者定案）：報表種類頁＝報表工作介面（產製、檢視、
+匯出 HTML 檔）；匯出報告頁＝交付物中心（簡報產製、預覽、下載）。
 
-- **WHEN** 使用者於版本區按「產製簡報」
+#### Scenario: 由報表版本產製簡報
+
+- **WHEN** 使用者於交付物中心按「產製簡報」
 - **THEN** 系統 SHALL 建立 `ai:report_deck` 任務並顯示進度
 - **AND** 完成後 pptx SHALL 位於 deck artifact root（環境變數解析，DB 只存
   相對 key），DB SHALL 有 manifest（based_on_version、SHA-256、閘門摘要）
 - **AND** 撰稿取證 audit 與目視迴圈紀錄 SHALL 隨 deck 紀錄回存
   （與 narrative 線同格式，可回放每段內容的證據鏈與修正輪次）
-- **AND** 版本區 deck 紀錄 SHALL 不需手動重新整理即出現
+- **AND** deck 紀錄 SHALL 不需手動重新整理即出現
 
 #### Scenario: 先看到成品，使用者決定何時下載
 

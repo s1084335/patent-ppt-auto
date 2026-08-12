@@ -193,17 +193,36 @@ Runbook（觸發、九步、契約、閘門——供零背景 CLI／開發者照
 ——deck runner 跑在 Companion 側（伺服器化後與 repo 同機），backend 容器
 不讀 skill 檔（舊 build_ppt 的 503 教訓不適用）。
 
-### 6. 前端最小面
+### 6. 前端落點＝「匯出報告」頁（2026-08-12 使用者定案「匯出報告頁要接到 deck 去」）
 
-版本區加「產製簡報」按鈕（POST /ai-tasks，task_type=ai:report_deck，
-payload=based_on_version）；版本卡下列 deck 紀錄（時間、狀態、閘門摘要）。
-`JOB_REFRESH_TARGETS['ai:report_deck']=['reports']`。
+🔴 **頁面分工**（本定案取代原「掛在報表種類頁版本區」的規劃）：
 
-**先看到、再下載（2026-08-12 使用者指定）**：完成後紀錄卡直接展示
-**逐頁預覽**（就是產線目視那批 PNG，backend 自 artifact root 供圖）；
-「下載 pptx」是使用者主動按的按鈕（backend 串流 NAS 上的檔，帶 manifest
-hash 校驗），**不自動下載**。此為對「backend 不經手檔案流量」的修正：
-不自動推送仍成立，但按需下載由 backend 供檔（NAS 掛載在伺服器上，順路）。
+| 頁面 | 定位 | 內容 |
+|---|---|---|
+| **報表種類**（`data-nav="reports"`） | 報表**工作介面** | 產製報表、檢視選單、版本下拉、**匯出 HTML 檔**（交付物之一） |
+| **匯出報告**（`data-nav="export"`） | **交付物中心** | 產製簡報、deck 紀錄、逐頁預覽、下載 pptx |
+
+⚠ 該頁現況是 PPT 交付線移除後的**殘骸**（實查 2026-08-12）：「產生 PPT」鈕打
+已從 `AI_JOB_TYPES` 移除的 `ai:report_plan`（**必定 422**）、`ppt-goal-input`、
+`ppt-chart-picker`、`exportPreview` 的 PPT 狀態（`pptFiles`／`pptViewer`／
+`editMode`／`edits`，全庫 29 處引用）、localStorage 人工編輯稿孤兒機制、
+與報表種類頁重複的版本下拉與整份預覽，以及 **1.5 MB 的 pptx 瀏覽器渲染器 vendor**。
+
+**處置＝清空重做**（不是整頁移除，因為 deck 要進駐）：死程式碼與 vendor 資產
+先清（獨立於本 change，見 tasks 0），本 change 再把 deck 面填進去。
+
+**本 change 要填的內容**：
+
+- 「產製簡報」按鈕（POST `/ai-tasks`，`task_type=ai:report_deck`，
+  payload 帶 `based_on_version`——版本從報表種類頁的版本選單同源取得）。
+- deck 紀錄清單（時間、based_on_version、狀態、閘門摘要）。
+- `JOB_REFRESH_TARGETS['ai:report_deck'] = ['export']`（⚠ 落點改頁後刷新目標
+  跟著改，不再是 `['reports']`）。
+- **先看到、再下載（2026-08-12 使用者指定）**：完成後紀錄卡直接展示
+  **逐頁預覽**（就是產線目視那批 PNG，backend 自 artifact root 供圖）；
+  「下載 pptx」是使用者主動按的按鈕（backend 串流 NAS 上的檔，帶 manifest
+  hash 校驗），**不自動下載**。此為對「backend 不經手檔案流量」的修正：
+  不自動推送仍成立，但按需下載由 backend 供檔（NAS 掛載在伺服器上，順路）。
 
 ### 7. 內容架構吸收批次（2026-08-12 使用者逐項裁決）
 
