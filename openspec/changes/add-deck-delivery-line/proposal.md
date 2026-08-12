@@ -27,22 +27,27 @@
 
 ## 已確認決策（本 change 的邊界）
 
-1. 流程本體不動：`plan_deck`／`fit_render_charts`／`deck_layout`／`check_content`
-   ／`make_deck`／`audit_deck` 與其閘門、授權界線（僅 chip 四象限可重排）、
-   `regression.py` 像素基準全部原樣。
+1. 流程與閘門不動、**組版輸出層改造（B 案，2026-08-12 使用者定案）**：
+   `plan_deck`／`fit_render_charts`／`check_content`／`audit_deck` 與其閘門、
+   `deck_layout` 幾何引擎、授權界線（僅 chip 四象限可重排）原樣；
+   第 7 步組版改為「**每頁先組 SVG**（文字由引擎逐行斷好）→ Chromium 量測與
+   截圖（目視內建、Linux 原生）→ **窄 SVG→DrawingML 轉換器**產原生 PPTX
+   （逐行文字定位寫死、關 wrap——PowerPoint 零重排自由）」。
+   借鑒 ppt-master 的「確定性中間層」概念；精準度**高於**現況
+   （消滅 08-02 實證的 PowerPoint 斷行漂移），且產線不需任何 Windows。
 2. 取料走 `unify-chart-source` 的版本目錄 intake（該 change 先行）。
 3. 產物 DB＋NAS、不自動下載（2026-08-12）。
 4. AI 層將移伺服器（Companion＋CLI 集中，2026-08-12）——runner 設計必須
    host-agnostic：不假設 Windows、不依賴使用者桌面。
 5. Installer 已廢止——skill 佈署屬伺服器佈署腳本範圍，不做使用者端打包。
 
-## 未決問題（規劃確認時請裁決）
+## 未決問題
 
-- **Q1 視覺驗收步的產品線定位**：`pptx_to_png`（PowerPoint COM）在 Linux
-  伺服器不可行。**建議**：產品線以確定性閘門為準（check_content＋make_deck
-  裕度 0 溢出＋audit_deck＋圖內字級門檻），COM 逐頁目視留在 skill 開發側
-  （regression 像素基準守版面回歸）；deck 紀錄標註「未經逐頁目視」。
-  替代選項：伺服器選 Windows 機（成本高）／LibreOffice 轉圖（已因保真度否決過）。
+（無——原 Q1「視覺驗收定位」已於 2026-08-12 裁決為 B 案：目視改為產線內建的
+Chromium 逐頁截圖（截 SVG＝截成品，因 PPTX 已無重排自由）；PowerPoint COM
+降為**開發期一次性映射校驗**（Windows 開發機上證明「SVG 截圖＝PowerPoint 實開」，
+逐頁型驗證後固定），不進產線。曾評估之替代案（Windows 轉圖代理／LibreOffice／
+Aspose）的取捨留 design.md 備查。）
 
 ## Capabilities
 
@@ -76,14 +81,17 @@ ai_bridge 派工表、deck artifact 落點（env root＋manifest 寫 DB）、前
 
 ## Acceptance Gate
 
-1. 前端按「產製簡報」→ job 入佇列 → Companion 領取 → runner 機械步全跑
-   → CLI 撰稿 → 閘門全綠 → pptx 落 NAS root、DB 有紀錄與 manifest
-   （hash 與檔案相符）→ 前端紀錄區自動出現（SSE）。
-2. 確定性閘門逐項：check_content 過、make_deck「溢出區域：0 個」、
-   audit_deck exit 0、單圖頁圖內字級 ≥9pt 清單列出。
-3. **系統產 vs 手工產逐頁對照一次**（同一版本各產一份）——撰稿品質不得
+1. **映射校驗（B 案的地基，開發期、Windows 開發機）**：五種頁型逐一
+   「Chromium 截 SVG vs PowerPoint COM 轉圖 vs 實機開檔」三方對照，
+   版面（含斷行）一致才算映射成立；證據入 `output/_verify/`。
+2. 前端按「產製簡報」→ job 入佇列 → Companion 領取 → runner 機械步全跑
+   → CLI 撰稿 → 閘門全綠 → pptx＋逐頁目視 PNG 落 NAS root、DB 有紀錄與
+   manifest（hash 與檔案相符）→ 前端紀錄區自動出現（SSE）＋逐頁預覽可看。
+3. 確定性閘門逐項：check_content 過、組版裕度 0 溢出、audit_deck exit 0、
+   單圖頁圖內字級 ≥9pt 清單列出。
+4. **系統產 vs 手工產逐頁對照一次**（同一版本各產一份）——撰稿品質不得
    低於手工線；差異列出交使用者判。
-4. 失敗路徑：CLI 撰稿超時／閘門紅 → job failed 帶原因，無半成品落 NAS。
-5. skill 硬規範稽核（Runbook 區零開發機路徑）＋`check_docs.py`＋
-   `regression.py` 全綠；中央舊份已刪、引用已改。
-6. 範圍回歸＋OpenSpec strict。
+5. 失敗路徑：CLI 撰稿超時／閘門紅 → job failed 帶原因，無半成品落 NAS。
+6. skill 硬規範稽核（Runbook 區零開發機路徑）＋`check_docs.py`＋
+   regression（基準改比 SVG 截圖）全綠；中央舊份已刪、引用已改。
+7. 範圍回歸＋OpenSpec strict。
