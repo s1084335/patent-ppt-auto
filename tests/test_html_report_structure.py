@@ -101,6 +101,12 @@ class ChapterNavigationTests(unittest.TestCase):
         self.assertIsNotNone(rule, "找不到 .report-section 樣式")
         self.assertIn("scroll-margin-top", rule.group(0),
                       "scroll-margin-top 必須寫在 .report-section 規則內（註解不算）")
+        # ⚠ 偏移量必須動態：導覽列高度隨章節數與視窗寬度變（chip 換行）。
+        # 章節導覽改 16px 後實測 42px → 102px，寫死 56px 就再度被蓋住。
+        self.assertIn("--nav-h", rule.group(0), "偏移量應綁動態變數而非寫死")
+        script = re.search(r"<script>.*?</script>", html, re.S).group(0)
+        self.assertIn("--nav-h", script, "JS 必須量實際導覽高度寫回變數")
+        self.assertIn("resize", script, "視窗改變寬度時導覽會換行，偏移要跟著更新")
 
 
 class ChapterOrderTests(unittest.TestCase):
@@ -156,9 +162,24 @@ class ChartAsEvidenceTests(unittest.TestCase):
         css = re.search(r"\.chart-media\s*\{[^}]*\}", html)
         self.assertIsNotNone(css, "找不到 .chart-media 樣式")
         rule = re.sub(r"\s+", " ", css.group(0))
-        self.assertRegex(rule, r"max-width:\s*720px", "圖應限寬 720px")
+        self.assertRegex(rule, r"max-width:\s*860px", "圖應限寬 860px（＝圖內字 11px）")
         self.assertRegex(rule, r"height:\s*auto", "高度必須自動，否則扁圖會被拉伸變形")
         self.assertNotRegex(rule, r"height:\s*\d+px", "不得強制固定高度")
+
+    def test_font_scale_matches_spec(self):
+        """字級（2026-08-12 使用者指定）：正文與表格 14px、章節導覽 16px。
+
+        ⚠ 圖內字（11px）不在 CSS 裡——SVG 內寫死 15.1px，顯示字級由
+        `.chart-media` 的寬度決定，見上一支測試。
+        """
+        html = _render()
+        for selector, size in (("body", "14px"), (r"\.data-table-wrap table", "14px"),
+                               (r"\.navchip", "16px")):
+            with self.subTest(selector=selector):
+                rule = re.search(selector + r"\s*\{[^}]*\}", html)
+                self.assertIsNotNone(rule, f"找不到 {selector} 樣式")
+                self.assertRegex(re.sub(r"\s+", " ", rule.group(0)),
+                                 r"font-size:\s*" + size)
 
     def test_chart_is_centered(self):
         """縮圖比版面窄，靠左會讓右側空一大塊（2026-08-12 使用者「放正中間」）。"""

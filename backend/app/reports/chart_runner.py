@@ -3122,9 +3122,12 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     * {{ box-sizing: border-box; }}
     /* Noto Sans TC 排第一（deck 字型定案，裝了就用）；未安裝時 fallback 正黑體，
        不因字型缺席而破版。 */
+    /* 字級（2026-08-12 使用者指定）：正文與表格 14px、章節導覽 16px、圖內字 11px。
+       ⚠ 圖內字不是 CSS 能直接設的——SVG 內寫死 15.1px，顯示字級＝15.1×縮放比，
+       故由 .chart-media 的寬度反推（11 ÷ 15.1 × 1180 ≈ 860px）。 */
     body {{ font-family: "Noto Sans TC", "Microsoft JhengHei", "Segoe UI", system-ui, sans-serif;
       margin: 0; padding: 0 32px 48px; color: var(--ink); background: var(--paper);
-      font-size: 16px; line-height: 1.6; }}
+      font-size: 14px; line-height: 1.65; }}
     .page {{ max-width: 1200px; margin: 0 auto; }}
     /* 報告抬頭：eyebrow 細線＋標題＋參數，一組視覺單位。 */
     .report-head {{ padding: 28px 0 20px; }}
@@ -3136,11 +3139,14 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     /* 產製參數對追溯有用、對讀者無用——放得到但不搶眼。 */
     .meta-params {{ color: #8A93A3; font-size: 12px; margin: 4px 0 0;
       font-variant-numeric: tabular-nums; }}
-    /* scroll-margin-top：錨點跳轉後把章節頂端往下推，避開常駐導覽列（實測導覽高約 41px，
-       取 56px 留餘裕）。⚠ 少了它，跳轉後章節標題會**貼在導覽下方被蓋住**。 */
+    /* scroll-margin-top：錨點跳轉後把章節頂端往下推，避開常駐導覽列。
+       🔴 **必須動態**：導覽列高度隨章節數與視窗寬度變（chip 會換行）——
+       章節導覽字級調成 16px 後實測從 42px 變 102px，寫死 56px 就再度被蓋住 46px。
+       由 JS 量實際高度寫進 --nav-h（見頁尾 script），這裡的 56px 只是 JS 未執行時的保底。 */
     .report-section {{ background: var(--card); border: 1px solid var(--line);
       border-radius: 10px; padding: 18px 24px 20px; margin: 0 0 18px;
-      box-shadow: 0 1px 2px rgba(15,52,96,.05); scroll-margin-top: 56px; }}
+      box-shadow: 0 1px 2px rgba(15,52,96,.05);
+      scroll-margin-top: calc(var(--nav-h, 48px) + 8px); }}
     .section-head {{ display: flex; align-items: baseline; justify-content: space-between;
       gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--line-soft);
       padding-bottom: 10px; margin-bottom: 12px; }}
@@ -3152,9 +3158,10 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     .section-link:hover {{ text-decoration: underline; }}
     .section-note {{ color: var(--ink-soft); font-size: 13px; margin: 0 0 14px; max-width: 78ch; }}
     .data-table-wrap {{ overflow-x: auto; margin: 16px 0 0; }}
-    /* 2026-08-11 使用者定案：表格文字維持 15（與圖表文字同高，整頁一致）。
+    /* 表格 14px（2026-08-12 使用者指定，與正文同級；原 15px 是 08-11「與圖表同高」的定案，
+       圖表字改由寬度反推後兩者不再需要同數字）。
        ⚠ 只留橫線不圍格：格線全開會讓 16 欄的年度矩陣變成一張網，數字反而讀不出來。 */
-    .data-table-wrap table {{ border-collapse: collapse; font-size: 15px; width: 100%;
+    .data-table-wrap table {{ border-collapse: collapse; font-size: 14px; width: 100%;
       font-variant-numeric: tabular-nums; }}
     .data-table-wrap th {{ background: var(--wash); padding: 7px 10px; text-align: left;
       font-weight: 600; white-space: nowrap; color: var(--brand);
@@ -3186,9 +3193,12 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
        對扁圖（IPC L4 是 1180×210）會同時觸發兩條規則而**縱向拉伸變形**
        ——實測顯示成 1490×340（比例 5.62:1 被壓成 4.38:1），而且比原尺寸**放大 26%**，
        圖內字反而變成 19.1px、比正文還大，與「圖降為證據」完全相反。
-       改為固定寬度、高度自動：所有圖同寬 → 縮放比一致 → 圖內字一律
-       約 9.2px（15.1×720/1180），扁圖高度自然變矮（不放大、不變形）。 */
-    .chart-media {{ width: 100%; max-width: 720px; height: auto; display: block;
+       改為固定寬度、高度自動：所有圖同寬 → 縮放比一致 → 圖內字一律相同。
+
+       🔴 **寬度是圖內字級的唯一旋鈕**（2026-08-12 使用者指定圖內字 11px）：
+       SVG 內字級寫死 15.1px，顯示字級＝15.1 × (顯示寬 ÷ 原始寬 1180)。
+       860px → 15.1×0.729 ≈ 11.0px。要改圖內字就改這個寬度，不要去動 SVG。 */
+    .chart-media {{ width: 100%; max-width: 860px; height: auto; display: block;
       margin: 0 auto; cursor: zoom-in;
       border: 1px solid var(--line); border-radius: 8px; background: var(--card); }}
     /* 展開＝解除寬度上限，回到 SVG 原尺寸（1180 寬，字 15.1px）；
@@ -3201,10 +3211,12 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
       border-bottom: 1px solid var(--line); padding: 9px 32px; margin: 0 -32px 4px; }}
     .chapter-nav-inner {{ max-width: 1200px; margin: 0 auto; display: flex; gap: 6px;
       flex-wrap: wrap; align-items: center; }}
-    .nav-lead {{ font-size: 12px; color: var(--ink-soft); letter-spacing: .08em;
+    .nav-lead {{ font-size: 13px; color: var(--ink-soft); letter-spacing: .08em;
       margin-right: 6px; }}
-    .navchip {{ font-size: 13px; text-decoration: none; color: var(--ink); background: var(--wash);
-      border: 1px solid transparent; border-radius: 999px; padding: 4px 12px; white-space: nowrap;
+    /* 章節導覽 16px（2026-08-12 使用者指定）——比正文大一級：它是這份報告的
+       主要操作元件，掃視與點擊都要容易。 */
+    .navchip {{ font-size: 16px; text-decoration: none; color: var(--ink); background: var(--wash);
+      border: 1px solid transparent; border-radius: 999px; padding: 5px 14px; white-space: nowrap;
       transition: color .12s, border-color .12s; }}
     .navchip:hover {{ border-color: var(--brand-soft); color: var(--brand-soft); }}
     .navchip:focus-visible {{ outline: 2px solid var(--brand-soft); outline-offset: 2px; }}
@@ -3272,6 +3284,18 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
         btn.textContent = expanded ? '收合' : btn.getAttribute('data-label');
       }});
     }});
+    // 導覽列高度 → --nav-h，供章節的 scroll-margin-top 使用。
+    // ⚠ 高度不是常數：chip 會隨視窗寬度換行（9 章 @16px 在 1600px 寬是兩排、
+    // 窄視窗更多排）。寫死偏移就會在某些寬度下讓章節標題被導覽蓋住。
+    (function () {{
+      var nav = document.querySelector('.chapter-nav');
+      if (!nav) return;
+      var sync = function () {{
+        document.documentElement.style.setProperty('--nav-h', nav.offsetHeight + 'px');
+      }};
+      sync();
+      window.addEventListener('resize', sync);
+    }})();
     document.querySelectorAll('.expand-btn').forEach(function (btn) {{
       btn.addEventListener('click', function () {{
         var target = document.getElementById(btn.getAttribute('data-expand-target'));
