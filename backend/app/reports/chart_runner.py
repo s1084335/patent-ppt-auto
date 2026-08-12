@@ -330,7 +330,8 @@ CHART_FILE_REPORTS: dict[str, list[str]] = {
     "applicant_ranking.svg": ["applicant_ranking"],
     "applicant_country_matrix.svg": ["applicant_country_distribution"],
     "applicant_year_matrix.svg": ["applicant_year_matrix"],
-    "applicant_year_matrix_more.svg": ["applicant_year_matrix"],
+    # ⚠ `applicant_year_matrix_more.svg`（第 11–20 名第二張）已於 2026-08-12 退場：
+    # 改跨度圖後 20 列進得了單一畫布，不需要拆兩張。
     # KP 競爭定位象限（值與 KP_QUADRANT_FILENAME 同源，測試 test_kp_quadrant_artifact 盯著）
     "kp_quadrant.svg": ["applicant_strength_profile"],
     # 三個分群 artifact 各自對回自己的報表名（供 manifest／解讀查找定位到正確報表）。
@@ -1705,6 +1706,119 @@ def year_bubble_color(value: int, max_value: int) -> tuple[str, str]:
     return YEAR_BUBBLE_COLOR_BANDS[-1][1], YEAR_BUBBLE_COLOR_BANDS[-1][2]
 
 
+#: 跨度圖的形狀常數。⚠ 都由畫布尺寸推導，不寫死位置（2026-08-03 三個 bug 的教訓）。
+SPAN_BAR_HEIGHT_RATIO = 0.42     # 條高佔列高的比例
+SPAN_SINGLE_YEAR_WIDTH_RATIO = 0.5   # 單點列的方塊寬佔欄寬比例（要看得見但不像跨度）
+SPAN_ACTIVE_DOT_RATIO = 0.30     # 有件年份的標點半徑佔條高比例
+
+
+def render_year_span_chart(
+    path: Path,
+    title: str,
+    layout: dict[str, Any],
+    row_names: list[str],
+) -> None:
+    """申請人 × 年度**跨度圖**：一列一條「進場→退場」的橫條，條上標出實際有件的年份。
+
+    🔴 2026-08-12 使用者定案（design 7.8b）：本圖取代原泡泡矩陣。
+    判準是**跨度本身有沒有資訊**——實測申請人 10 列跨度 0–5 年、平均只佔全軸 11%
+    （4 列單點），泡泡散在 140 格只有 25 格有值，八成版面是空的；改成跨度條後
+    「誰早誰晚、誰只打一槍、有無世代斷層」是一眼可辨的形狀。
+    ⚠ 同樣稀疏的主題演進**維持泡泡**：它跨度平均佔全軸 56%（含一條滿軸），
+    畫成跨度條會糊成等長。兩張圖各自定型，不寫「稀疏就用跨度圖」的條件規則。
+
+    🔴 **不得失真**：本專案資料填格率僅約 11%（例如 2020、2022、2024 三年有件），
+    純甘特條會把它畫成「2020→2024 連續投入」——那是系統性地把斷續說成持續。
+    故條上以圓點標出**實際有件的年份**：條表達跨度、點表達事實，兩者並存。
+
+    跨度圖丟失逐年件數，改以條末的總件數保住量級；「哪一年是高峰」由年度趨勢圖
+    回答整體。
+    """
+    years: list[int] = layout["years"]
+    values: dict[tuple[str, int], int] = layout["values"]
+    max_value = int(layout["max_value"] or 1)
+
+    _f0 = chart_font_px(_sizing_value("canvas_width"), _sizing_value("canvas_max_height"))
+    left = label_gutter([str(name) for name in row_names], font_px=_f0 * 1.05)
+    top = 96
+    usable = _sizing_value("canvas_max_height") - top - 40
+    # ⚠ 列高自適應：20 列要進單一畫布（改版前 Top10／11–20 名是兩張圖）。
+    # 下限 20px——再低則列標籤（15.1px 字）會相黏。
+    row_h = max(20, min(34, usable // max(1, len(row_names))))
+    if row_h * len(row_names) > usable:
+        row_names = row_names[:max(1, int(usable // row_h))]
+    grid_w = _sizing_value("canvas_width") - left - 40
+    years_total = len(years)
+    years = years[-CHART_YEAR_WINDOW:]
+    cell_w = max(24, grid_w // max(1, len(years)))
+    width = left + max(1, len(years)) * cell_w + 40
+    height = top + max(1, len(row_names)) * row_h + 40
+    label_px = chart_font_px(width, height)
+    note_px = chart_font_px(width, height, target_pt=_sizing_value("note_target_pt"))
+    bar_h = max(6.0, row_h * SPAN_BAR_HEIGHT_RATIO)
+    year_x = {year: left + i * cell_w + cell_w / 2 for i, year in enumerate(years)}
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
+        f' viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
+        '<rect width="100%" height="100%" fill="white"/>',
+        f'<text data-role="chart-title" x="16" y="28" font-size="{label_px:.1f}"'
+        f' font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text x="16" y="56" font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">'
+        f'橫條＝首件到末件的投入期間；條上圓點＝該年實際有申請；條末數字＝總件數</text>',
+        *([(f'<text x="{width - 40}" y="{top - 12}" text-anchor="end" font-size="{note_px:.1f}"'
+            f' fill="{COLOR_TEXT_SOFT}">僅顯示 {years[0]}–{years[-1]}（共 {years_total} 年）</text>')]
+          if years_total > len(years) else []),
+    ]
+    year_labels = [_year_axis_label(year, cell_w, label_px) for year in years]
+    if any(label.startswith("'") for label in year_labels):
+        parts.append(f'<text x="{left - 10}" y="{top - 12}" font-size="{label_px:.1f}"'
+                     f' text-anchor="end" fill="{COLOR_TEXT_SOFT}">申請年 20—</text>')
+    for col_index, label in enumerate(year_labels):
+        x = left + col_index * cell_w + cell_w / 2
+        parts.append(f'<text x="{x:.1f}" y="{top - 12}" font-size="{label_px:.1f}"'
+                     f' text-anchor="middle" fill="{COLOR_TEXT}">{label}</text>')
+        # 淡格線：沒有它，條的起訖對不回年份刻度。
+        parts.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}"'
+                     f' y2="{top + len(row_names) * row_h}" stroke="#EEF2F7" stroke-width="1"/>')
+
+    for row_index, company in enumerate(row_names):
+        y_center = top + row_index * row_h + row_h / 2
+        parts.append(
+            f'<text data-role="row-label" x="{left - 10}" y="{y_center + label_px * 0.35:.1f}"'
+            f' font-size="{label_px:.1f}" text-anchor="end" fill="{COLOR_TEXT}">'
+            f'{xml_text(company)}</text>')
+        active = [year for year in years if values.get((company, year), 0) > 0]
+        if not active:
+            continue
+        total = sum(values.get((company, year), 0) for year in active)
+        first_x, last_x = year_x[active[0]], year_x[active[-1]]
+        # 顏色沿用泡泡矩陣的色階（值大＝深），整份報表的量級語意一致。
+        fill = year_bubble_color(total, max(max_value, total))[0]
+        if len(active) == 1:
+            bar_w = cell_w * SPAN_SINGLE_YEAR_WIDTH_RATIO
+            bar_x = first_x - bar_w / 2
+        else:
+            bar_x, bar_w = first_x, last_x - first_x
+        parts.append(
+            f'<rect data-role="span-bar" x="{bar_x:.1f}" y="{y_center - bar_h / 2:.1f}"'
+            f' width="{bar_w:.1f}" height="{bar_h:.1f}" rx="{min(3.0, bar_h / 2):.1f}"'
+            f' fill="{fill}"><title>{xml_text(company)} {active[0]}–{active[-1]}'
+            f'（{total} 件）</title></rect>')
+        # 🔴 有件年份標點——沒有它，斷續投入會被讀成連續布局。
+        for year in active:
+            parts.append(
+                f'<circle data-role="active-year" cx="{year_x[year]:.1f}" cy="{y_center:.1f}"'
+                f' r="{max(2.5, bar_h * SPAN_ACTIVE_DOT_RATIO):.1f}" fill="#FFFFFF"'
+                f' stroke="{fill}" stroke-width="1.5"/>')
+        parts.append(
+            f'<text data-role="span-total" x="{last_x + cell_w * 0.4:.1f}"'
+            f' y="{y_center + label_px * 0.35:.1f}" font-size="{label_px:.1f}"'
+            f' fill="{COLOR_TEXT}">{total}</text>')
+    parts.append("</svg>")
+    _write_svg(path, parts)
+
+
 def render_year_bubble_matrix_chart(
     path: Path,
     title: str,
@@ -3007,10 +3121,13 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     .expand-btn:hover {{ background: #EFF6FF; }}
     .chart-stage {{ width: 100%; overflow-x: auto; }}
     /* 🔴 圖降為證據（2026-08-12）：原本 height:auto ＝ 原尺寸顯示（1180×560），
-       圖內字 15.1px 與正文 16px 同級，整張圖搶走版面。固定 400px 高後圖內字
-       約 10.7px（小正文一級）；要看細節點圖展開原尺寸。 */
-    .chart-media {{ height: 400px; width: auto; max-width: 100%; display: block;
-      cursor: zoom-in; border: 1px solid #E5E7EB; border-radius: 8px; background: #FFFFFF; }}
+       圖內字 15.1px 與正文 16px 同級，整張圖搶走版面。
+       ⚠ 縮圖的職責是「認出這是哪張圖、看出形狀」，不是讀細節——細節點圖展開原尺寸。
+       340px 時圖內字約 9.2px（原 15.1×340/560）：辨形足夠、讀值不足，故放大機制是必要配套。
+       置中：縮圖比版面窄，靠左會讓每章右側留一大塊空白。 */
+    .chart-media {{ height: 340px; width: auto; max-width: 100%; display: block;
+      margin: 0 auto; cursor: zoom-in;
+      border: 1px solid #E5E7EB; border-radius: 8px; background: #FFFFFF; }}
     .chart-media.zoom {{ height: auto; width: auto; cursor: zoom-out; }}
     .chart-frame {{ width: 100%; height: 620px; border: 1px solid #E5E7EB; border-radius: 8px; }}
     /* 章節導覽：常駐頂部，scroll-margin-top 讓跳轉後標題不被蓋住。 */
@@ -3484,29 +3601,23 @@ def shared_matrix_max(ctx: ChartContext, *report_names: str) -> int | None:
 
 
 def _build_applicant_year_matrix_section(ctx: ChartContext) -> None:
-    """申請人 × 申請年份泡泡矩陣。"""
+    """申請人 × 申請年份**跨度圖**（2026-08-12 起；原為泡泡矩陣）。
+
+    🔴 改版理由與失真防護見 `render_year_span_chart`。
+    ⚠ **Top 10 與第 11–20 名併成一張**：跨度條一列只佔 20–34px，20 列進得了
+    單一畫布——原本要兩張圖（主圖＋`_more`）純粹是泡泡直徑吃掉高度所致。
+    連帶：`applicant_year_matrix_more.svg` 與 `more_variants`／`more_label` 退場。
+    """
     report = ctx.report("applicant_year_matrix")
-    # ⚠ 這裡明確要 20：主圖取前 10（簡報端上限），11–20 名進 `_more` 網頁長尾
-    # ——「網頁端前 20、簡報端前 10」是兩條各自的定案（2026-08-04／08-10）。
-    # 預設 row_limit 收斂成 10 之後，靠預設值拿不到長尾的料。
     layout = year_bubble_matrix_layout(
         report["rows"], "applicant_display_name", row_limit=20)
     top_rows = layout["top_rows"]
-    render_year_bubble_matrix_chart(
+    render_year_span_chart(
         ctx.run_dir / "applicant_year_matrix.svg",
         report["label_zh"],
         layout,
-        top_rows[:10],
+        top_rows,
     )
-    more_variants = []
-    if len(top_rows) > 10:
-        render_year_bubble_matrix_chart(
-            ctx.run_dir / "applicant_year_matrix_more.svg",
-            f'{report["label_zh"]}（第 11～20 名）',
-            layout,
-            top_rows[10:20],
-        )
-        more_variants.append({"label": "11-20", "file": "applicant_year_matrix_more.svg", "variant_key": "more"})
     # 數據區改交叉表（2026-07-29 使用者定案「數據表是長格式，難讀」）：
     # 原本每列 (公司, 年份, 件數)，同一家公司的不同年份分散在不同列。
     # 🔴 2026-08-12 接縫修復（使用者實機看到仍是長格式）：pivot 原本只放
@@ -3517,10 +3628,11 @@ def _build_applicant_year_matrix_section(ctx: ChartContext) -> None:
     ctx.sections.append({
         "title": report["label_zh"],
         "rows": pivoted,
-        "variants": [{"label": "Top 10", "file": "applicant_year_matrix.svg", "variant_key": "default"}],
-        "more_variants": more_variants,
-        "more_label": "＋查看全部（第 11～20 名）",
-        "note": f"縱軸為申請人公司，橫軸為申請年份，泡泡大小＝patent_count；依公司跨年度總量排序，預設顯示前 {min(10, len(top_rows))} / {layout['rows_total']} 家。CSV/JSON 保留完整 rows。",
+        "variants": [{"label": f"Top {len(top_rows)}", "file": "applicant_year_matrix.svg",
+                      "variant_key": "default"}],
+        "note": (f"一列＝一家公司的投入期間（首件→末件），條上圓點＝該年實際有申請、"
+                 f"條末數字＝總件數；依跨年度總量排序，顯示前 {len(top_rows)} / "
+                 f"{layout['rows_total']} 家。逐年件數見下方數據表，完整 rows 在 report_data.json。"),
     })
 
 

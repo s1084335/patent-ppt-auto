@@ -145,11 +145,17 @@ class ChartAsEvidenceTests(unittest.TestCase):
     """③ 圖降為證據：固定高度縮圖＋可展開原尺寸。"""
 
     def test_chart_has_fixed_display_height(self):
+        """圖固定高度縮圖（2026-08-12 使用者「大小再小一點」：400 → 340px）。"""
         html = _render()
         css = re.search(r"\.chart-media\s*\{[^}]*\}", html)
         self.assertIsNotNone(css, "找不到 .chart-media 樣式")
-        self.assertIn("height: 400px", css.group(0).replace("height:400px", "height: 400px"),
-                      "圖應固定 400px 高（圖內字約 10.7px，小於正文一級）")
+        rule = css.group(0).replace("height:340px", "height: 340px")
+        self.assertIn("height: 340px", rule, "圖應固定 340px 高")
+
+    def test_chart_is_centered(self):
+        """縮圖比版面窄，靠左會讓右側空一大塊（2026-08-12 使用者「放正中間」）。"""
+        css = re.search(r"\.chart-media\s*\{[^}]*\}", _render())
+        self.assertRegex(css.group(0), r"margin:\s*0 auto", "縮圖應水平置中")
 
     def test_chart_can_expand_to_full_size(self):
         html = _render()
