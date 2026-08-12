@@ -467,19 +467,9 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .ppt-chart iframe { width: 100%; height: 100%; border: 0; background: var(--ppt-panel-bg); }
 #report-inline-view:not(:empty) { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.4rem 1.6rem; margin-top: 0.9rem; }
 .report-inline-head { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
-/* 報表版本清單：最新展開、舊版收合可點開。 */
-.report-version-head { display: flex; gap: 0.7rem; align-items: baseline; flex-wrap: wrap; margin: 1.1rem 0 0.6rem; }
-.report-version-item { border: 1px solid var(--border); border-radius: 0.5rem; margin-bottom: 0.55rem; background: var(--panel); overflow: hidden; }
-.report-version-item.open { border-color: var(--accent); }
-.report-version-row { display: flex; width: 100%; align-items: center; gap: 0.55rem; padding: 0.6rem 0.85rem; background: var(--panel-2); border: none; color: var(--text); font-size: 0.9rem; cursor: pointer; text-align: left; }
-.report-version-row:hover { background: var(--panel); }
-.report-version-row .ver-caret { color: var(--text-muted); width: 1em; }
-.report-version-row .ver-time { font-weight: 600; }
-.report-version-row .ver-name { color: var(--text-muted); font-size: 0.78rem; }
+/* 版本徽章（.ver-badge 另供待補中文名等處用；版本清單 UI 已改標頭下拉選單）。 */
 .ver-badge { font-size: 0.72rem; padding: 0.1rem 0.45rem; border-radius: 0.75rem; background: var(--accent); color: #fff; }
 .ver-badge-ai { background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
-.report-version-body { padding: 1.1rem 1.3rem; }
-.report-version-body[hidden] { display: none; }
 /* PPT 版本清單（掛在報表版本下，一版可多個 _rN）：#10 */
 .report-ppt-list { margin-top: 1.1rem; padding-top: 0.9rem; border-top: 1px dashed var(--border); }
 .report-ppt-head { font-weight: 600; color: var(--text); margin-bottom: 0.5rem; }
@@ -3383,6 +3373,13 @@ function renderReports() {
     + '<label class="reports-header-label" for="report-view-select">檢視</label>'
     + '<select id="report-view-select" class="select" onchange="onReportViewChange()">'
     + '<option value="">（選擇報表）</option></select>'
+    // 版本下拉（2026-08-12 使用者定案）：原「已產製的報表版本」縱向列表
+    // 佔掉上半畫面、把報表本體擠到下面，改為標頭列選單＋匯出鈕（作用於選中版本）。
+    + '<label class="reports-header-label" for="report-version-select">版本</label>'
+    + '<select id="report-version-select" class="select" onchange="onReportVersionChange(this)">'
+    + '<option value="">（載入中…）</option></select>'
+    + '<button class="btn btn-primary btn-sm" id="btn-export-report-html"'
+    + ' onclick="exportSelectedReportHtml(this)">匯出 HTML 檔</button>'
     + '<span style="flex:1"></span>'
     // 一次產全部解讀（2026-07-30 使用者定案「初次通常是一次跑全部，
     // 而重解讀是個報表獨立」）：不帶 report_keys＝整份重跑。
@@ -3408,7 +3405,6 @@ function renderReports() {
     + '</div>'
     + '</details>'
     + '<div id="report-job"></div>'
-    + '<div id="report-version-list"></div>'
     // 報表顯示區：市場側摘要（只讀已確認現行版）與專利側報表卡「同一列」左右並排，
     // 對標範例 PPT 第 9 頁版型（非上下分區）。兩者各查各的、確定性組版，AI 不融合。
     + '<div id="report-market-row">'
@@ -3540,9 +3536,8 @@ function fmtReportVersionLabel(version, generatedAt) {
 }
 
 async function loadReportVersions() {
-  const wrap = el('report-version-list');
-  if (!wrap) return;
-  wrap.innerHTML = '<div class="hint">載入報表版本中…</div>';
+  const sel = el('report-version-select');
+  if (!sel) return;
   try {
     // workspace 區隔（2026-07-31）：只列當前 workspace 產的版本；全庫也有真實 id。
     const data = await getJson(API + '/reports/versions?limit=' + reportVersions.limit
@@ -3550,84 +3545,49 @@ async function loadReportVersions() {
     reportVersions.items = data.versions || [];
     reportVersions.total = data.total || 0;
     reportVersions.loaded = {};
-    renderReportVersionList();
+    renderReportVersionSelect();
   } catch (e) {
-    wrap.innerHTML = '<div class="hint">載入報表版本失敗（' + escHtml(e.message) + '）。</div>';
+    sel.innerHTML = '<option value="">（版本載入失敗）</option>';
+    const view = el('report-inline-view');
+    if (view) view.innerHTML = '<div class="hint">載入報表版本失敗（' + escHtml(e.message) + '）。</div>';
   }
 }
 
-// 只畫外框（每個版本一列＋一個空的內容容器）；內容由展開時填。
-function renderReportVersionList() {
-  const wrap = el('report-version-list');
-  if (!wrap) return;
+// 版本下拉選單（2026-08-12 使用者定案，取代同日稍早的緊湊列表）：
+// 縱向版本列表——含改版後的緊湊列——仍把報表本體擠到畫面下方，
+// 改為標頭列下拉；「最新／含 AI 解讀」徽章併進選項文字。
+// 逐列展開／收合機制隨之退場：換版本＝換整份檢視內容，
+// 「同時只顯示一份」（R9）由 select 單選天然保證。
+function renderReportVersionSelect() {
+  const sel = el('report-version-select');
+  if (!sel) return;
   const items = reportVersions.items;
   if (items.length === 0) {
-    wrap.innerHTML = '<div class="placeholder-box">尚無報表產出：請勾選上方報表種類後按「產製選定報表」。</div>';
+    sel.innerHTML = '<option value="">（尚無版本）</option>';
+    const view = el('report-inline-view');
+    if (view) view.innerHTML = '<div class="placeholder-box">尚無報表產出：'
+      + '請勾選上方報表種類後按「產製選定報表」。</div>';
     return;
   }
-  const rows = items.map(function (v, idx) {
-    const open = idx === 0;   // 最新那筆預設展開
-    const safe = cssSafeVersion(v.version);
-    return '<div class="report-version-item' + (open ? ' open' : '') + '" id="report-version-item-' + safe + '">'
-      + '<button class="report-version-row" onclick="toggleReportVersion(\'' + escHtml(v.version) + '\')"'
-      + ' aria-expanded="' + (open ? 'true' : 'false') + '">'
-      + '<span class="ver-caret">' + (open ? '▾' : '▸') + '</span>'
-      + '<span class="ver-time">' + escHtml(fmtReportVersionLabel(v.version, v.generated_at)) + '</span>'
-      + (v.is_latest ? '<span class="ver-badge">最新</span>' : '')
-      + (v.has_narratives ? '<span class="ver-badge ver-badge-ai">含 AI 解讀</span>' : '')
-      + '<span style="flex:1"></span>'
-      + '<span class="ver-name">' + escHtml(v.version) + '</span>'
-      + '</button>'
-      + '<div class="report-version-body" id="report-version-body-' + safe + '"'
-      + (open ? '' : ' hidden') + '></div>'
-      + '</div>';
+  const opts = items.map(function (v) {
+    const marks = (v.is_latest ? '｜最新' : '') + (v.has_narratives ? '｜含 AI 解讀' : '');
+    // title 帶完整版本名（report_trial_…）——選項文字只放時間，避免選單過寬。
+    return '<option value="' + escHtml(v.version) + '" title="' + escHtml(v.version) + '">'
+      + escHtml(fmtReportVersionLabel(v.version, v.generated_at) + marks) + '</option>';
   }).join('');
-  const more = reportVersions.items.length < reportVersions.total
-    ? '<div class="toolbar" style="margin-top:.6rem">'
-      + '<button class="btn btn-outline" onclick="showMoreReportVersions()">顯示更多版本（共 '
-      + reportVersions.total + ' 個）</button></div>'
+  const more = items.length < reportVersions.total
+    ? '<option value="__more__">顯示更多版本（共 ' + reportVersions.total + ' 個）…</option>'
     : '';
-  wrap.innerHTML = '<div class="report-version-head">'
-    + '<h3 class="panel-title" style="padding:0;margin:0">已產製的報表版本</h3>'
-    + '<span class="hint" style="padding:0">最新版本已展開；舊版本點列展開檢視。</span>'
-    + '</div>' + rows + more;
-  // 最新那筆進頁即載入內容（使用者要「立刻看到上次產的報表」）。
-  if (items.length > 0) loadReportVersionContent(items[0].version);
-}
-
-// 版本名拿來當 DOM id 尾巴；只留安全字元，避免 id 被特殊字元破壞。
-function cssSafeVersion(version) {
-  return String(version).replace(/[^A-Za-z0-9_-]/g, '_');
-}
-
-// ══ 版本展開連動報表本體（2026-07-30 使用者定案「報表要能跟隨這裡收起來或出現」）══
-
-// 收合除 keepSafe 之外的所有版本（同時只顯示一份報表）。
-function closeOtherReportVersions(keepSafe) {
-  (reportVersions.items || []).forEach(function (v) {
-    const safe = cssSafeVersion(v.version);
-    if (safe === keepSafe) return;
-    const item = el('report-version-item-' + safe);
-    const body = el('report-version-body-' + safe);
-    if (!item || !body || body.hasAttribute('hidden')) return;
-    body.setAttribute('hidden', '');
-    item.classList.remove('open');
-    const caret = item.querySelector('.ver-caret');
-    if (caret) caret.textContent = '▸';
-    const row = item.querySelector('.report-version-row');
-    if (row) row.setAttribute('aria-expanded', 'false');
-  });
-}
-
-// 清空報表本體（版本收合時呼叫）。
-// ⚠ reportViewContent 一併歸零：它是「目前顯示哪一版」的狀態，
-// 留著會讓下次展開誤判成已在顯示。
-function clearReportInlineView() {
-  const view = el('report-inline-view');
-  if (view) view.innerHTML = '';
-  const sel = el('report-view-select');
-  if (sel) sel.innerHTML = '';
-  reportViewContent = null;
+  sel.innerHTML = opts + more;
+  // SSE 重載（refreshReportsArea）保留使用者選的版本；
+  // 選的版本已不在清單（或初載）才回最新並載入內容。
+  const current = reportViewContent && reportViewContent.version;
+  if (current && items.some(function (v) { return v.version === current; })) {
+    sel.value = current;
+    return;
+  }
+  sel.value = items[0].version;
+  loadReportVersionContent(items[0].version);
 }
 
 // 切回已載過的版本內容——用快取，**不重打 API**（同版本內容不會變）。
@@ -3641,76 +3601,47 @@ function showMoreReportVersions() {
   loadReportVersions();
 }
 
-// 展開／收合單一版本；第一次展開才抓該版本內容（lazy），之後只切換顯示。
-function toggleReportVersion(version) {
-  const safe = cssSafeVersion(version);
-  const item = el('report-version-item-' + safe);
-  const body = el('report-version-body-' + safe);
-  if (!item || !body) return;
-  const opening = body.hasAttribute('hidden');
-  if (opening) {
-    // ⚠ 先收合其他版本：同時展開兩版＝兩份報表混在畫面上，
-    // 正是 R9 改成選單制要解決的「不同報表混在一起」。
-    closeOtherReportVersions(safe);
-    body.removeAttribute('hidden');
-    item.classList.add('open');
-    // 已載過的版本 loadReportVersionContent 會提前 return（不重打 API），
-    // 但畫面仍需切回該版內容，故在此明確重餵一次。
-    if (reportVersions.loaded[version]) {
-      showLoadedReportVersion(version);
-    } else {
-      loadReportVersionContent(version);
-    }
-  } else {
-    body.setAttribute('hidden', '');
-    item.classList.remove('open');
-    // 收合＝報表本體跟著收起（使用者：「報表要能跟隨這裡收起來或出現」），
-    // 否則畫面會留著已收合版本的報表。
-    clearReportInlineView();
+// 版本選單切換：已載過用快取切回，沒載過才打 API（lazy，同舊展開行為）。
+function onReportVersionChange(sel) {
+  const version = sel.value;
+  if (version === '__more__') {
+    // 「顯示更多」是動作不是版本：先把選單值退回目前顯示的版本再載更多，
+    // 否則載入期間選單會停在動作項上。
+    const current = reportViewContent && reportViewContent.version;
+    if (current) sel.value = current;
+    showMoreReportVersions();
+    return;
   }
-  const caret = item.querySelector('.ver-caret');
-  if (caret) caret.textContent = opening ? '▾' : '▸';
-  const row = item.querySelector('.report-version-row');
-  if (row) row.setAttribute('aria-expanded', opening ? 'true' : 'false');
+  if (!version) return;
+  if (reportVersions.loaded[version]) {
+    showLoadedReportVersion(version);
+  } else {
+    loadReportVersionContent(version);
+  }
+}
+
+// 標頭匯出鈕：作用於版本選單目前選中的那一版。
+function exportSelectedReportHtml(btn) {
+  const sel = el('report-version-select');
+  const version = sel && sel.value;
+  if (!version || version === '__more__') { alert('請先選擇報表版本。'); return; }
+  exportReportHtmlFile(version, btn);
 }
 
 // 取指定版本內容並就地渲染；已載過就不重抓（同版本內容不會變）。
 // 複用匯出工作台的純渲染函式，唯讀 view，不套人工編輯稿。
+// 🔴 選哪一版就顯示哪一版（2026-07-30 使用者實機回報「舊的報表無法再出現」——
+// 當時原因是只有首次載入才餵選單；直接餵 fillReportViewSelect 修掉，沿用至今）。
 async function loadReportVersionContent(version) {
-  const safe = cssSafeVersion(version);
-  const body = el('report-version-body-' + safe);
-  if (!body || reportVersions.loaded[version]) return;
-  body.innerHTML = '<div class="hint">載入報表內容中…</div>';
+  if (reportVersions.loaded[version]) return;
   try {
     const url = API + '/reports/versions/' + encodeURIComponent(version) + '/content';
     const content = await getJson(url);
-    // R9（2026-07-27）：報表種類頁改「選單選一份、只顯示那一份」。版本區不再把整份
-    // 報告全列出來——那正是使用者說的「不同報表混在一起」。這裡只放 PPT 清單，
-    // 報表本體交給上方選單驅動的 #report-inline-view（見 renderReportViewer）。
-    // 🔴 HTML 匯出入口（2026-08-10 使用者定案：交付物＝解讀完成的 HTML 報表；
-    //   PPT 清單已隨 PPT 交付線移除）。連結走 asset 端點，圖檔相對路徑同端點可解。
-    // 2026-08-11 使用者定案：版本區只留「匯出 HTML 檔」（自包單檔，SVG 內嵌
-    // data URI，離線可開）；「開啟新分頁」按鈕使用者裁示不需要（報表本體
-    // 已在頁內檢視選單顯示，開新分頁是重複入口）。
-    body.innerHTML = '<div class="report-ppt-list">'
-      + '<button class="btn btn-primary btn-sm" onclick="exportReportHtmlFile('
-      + "'" + escHtml(version) + "'" + ', this)">匯出 HTML 檔</button>'
-      + '<span class="hint" style="margin-left:.6rem">含圖表與 AI 解讀；解讀未產出時卡片會標示待產生。</span>'
-      + '</div>';
-    // 🔴 展開哪一版就顯示哪一版的報表（2026-07-30 使用者實機回報
-    // 「我重產報告後，舊的報表無法再出現」「報表要能跟隨這裡收起來或出現」）。
-    //
-    // 原本是 `if (reportViewContent === null)`——**只有首次載入才餵選單**，
-    // 展開舊版刻意不搶。於是使用者點舊版：容器展開了、裡面只有 PPT 清單，
-    // 報表本體仍停在最新版，看起來就是「舊的報表出不來」。
-    // 版本列管展開、#report-inline-view 管內容，兩個落點沒連動。
-    //
-    // ⚠ 仍維持「同時只顯示一份」（R9 定案，使用者說過「不同報表混在一起」很亂）：
-    // toggleReportVersion 會先收合其他版本，故這裡直接餵不會造成兩份並存。
     fillReportViewSelect(content);
     reportVersions.loaded[version] = content;
   } catch (e) {
-    body.innerHTML = '<div class="hint">載入報表內容失敗（' + escHtml(e.message) + '）。</div>';
+    const view = el('report-inline-view');
+    if (view) view.innerHTML = '<div class="hint">載入報表內容失敗（' + escHtml(e.message) + '）。</div>';
   }
 }
 
@@ -4143,10 +4074,6 @@ function isClusterSection(section) {
     || clusterVariantMatchesReport(v, 'cluster_topic_table'));
 }
 
-function hasClusterVariant(section, reportKey) {
-  return (section.variants || []).some(v => clusterVariantMatchesReport(v, reportKey));
-}
-
 function clusterVariantMatchesReport(variant, reportKey) {
   const key = String((variant && variant.variant_key) || '');
   const file = String((variant && variant.file) || (variant && variant.chart_url) || '');
@@ -4168,8 +4095,26 @@ function buildReportViewOptions(content) {
   const options = [];
   sections.forEach(function (section, sectionIndex) {
     if (isClusterSection(section)) {
-      clusterReportViews(section).forEach(function (view) {
-        options.push(Object.assign({ sectionIndex: sectionIndex, source_field: DEFAULT_TOPIC_SOURCE_FIELD }, view));
+      // 2026-08-12 使用者定案：主題分析家族**逐 variant** 攤成五個選項
+      //（統計表技術／功效、機會矩陣技術／功效、主題演進技術），包在 optgroup 下。
+      // 🔴 舊拆法只出「統計表＋機會矩陣」兩檢視，且其變體過濾器不認
+      // timeline_*——主題演進圖資料明明在 report_data 裡，檢視頁卻
+      // **完全選不到**（使用者實機發現）。
+      (section.variants || []).forEach(function (variant, variantIndex) {
+        const key = String(variant.variant_key || '');
+        options.push({
+          sectionIndex: sectionIndex,
+          variantIndex: variantIndex,
+          group: section.title || '主題分析',
+          label: variant.label || ('變體 ' + (variantIndex + 1)),
+          // 重產解讀的落點：解讀 job 只認 cluster_topic_table／opportunity_quadrant
+          // 兩個 report_key（timeline 與統計表共用前者），不能拿 variant_key 亂打。
+          report_key: key.indexOf('opportunity') === 0
+            ? 'opportunity_quadrant' : 'cluster_topic_table',
+          // 通道已由 variant 自身編碼（*_tech／*_effect），不再靠使用者點分頁鈕。
+          source_field: key.slice(-7) === '_effect'
+            ? 'effect_summary' : DEFAULT_TOPIC_SOURCE_FIELD,
+        });
       });
       return;
     }
@@ -4185,17 +4130,6 @@ function buildReportViewOptions(content) {
   return options;
 }
 
-function clusterReportViews(section) {
-  const views = [
-    { report_key: 'cluster_topic_table', label: reportLabelForKey('cluster_topic_table') },
-    { report_key: 'opportunity_quadrant', label: reportLabelForKey('opportunity_quadrant') },
-  ];
-  return views.filter(function (view) {
-    if (view.report_key === 'cluster_topic_table') return (section.rows || []).length || hasClusterVariant(section, view.report_key);
-    return hasClusterVariant(section, view.report_key);
-  });
-}
-
 function fillReportViewSelect(content) {
   reportViewContent = content;
   const sel = el('report-view-select');
@@ -4205,9 +4139,21 @@ function fillReportViewSelect(content) {
     sel.innerHTML = '<option value="">（尚無報表內容）</option>';
     return;
   }
-  sel.innerHTML = reportViewOptions
-    .map((opt, i) => '<option value="' + i + '">' + escHtml(opt.label || ('報表 ' + (i + 1))) + '</option>')
-    .join('');
+  // 帶 group 的連續選項包進 <optgroup>（目前只有主題分析家族用到）。
+  // value 仍是攤平後的 index——renderReportViewer 靠它查 reportViewOptions，不能動。
+  let html = '';
+  let openGroup = null;
+  reportViewOptions.forEach(function (opt, i) {
+    const g = opt.group || null;
+    if (g !== openGroup) {
+      if (openGroup !== null) html += '</optgroup>';
+      if (g !== null) html += '<optgroup label="' + escHtml(g) + '">';
+      openGroup = g;
+    }
+    html += '<option value="' + i + '">' + escHtml(opt.label || ('報表 ' + (i + 1))) + '</option>';
+  });
+  if (openGroup !== null) html += '</optgroup>';
+  sel.innerHTML = html;
   sel.value = '0';
   renderReportViewer();
 }
@@ -4303,6 +4249,28 @@ function sectionForReportView(section, option, sourceField) {
     });
   }
   const reportKey = option.report_key || 'cluster_topic_table';
+  // 逐 variant 選項（2026-08-12）：選單已指定唯一 variant，直接取用，
+  // 不再走 clusterVariantMatchesReport 過濾——那條認不得 timeline_*。
+  // 數據列：圖類 variant 自帶 rows；統計表 variant 無 rows，退 section.rows
+  // 依選項編碼的通道（option.source_field）過濾。
+  if (option.variantIndex !== undefined && option.variantIndex !== null) {
+    const picked = (section.variants || [])[option.variantIndex] || null;
+    const channel = option.source_field || sourceField;
+    const channelRows = (section.rows || [])
+      .filter(row => !row.source_field || row.source_field === channel);
+    const pickedRows = (picked && Array.isArray(picked.rows) && picked.rows.length)
+      ? picked.rows : channelRows;
+    return Object.assign({}, section, {
+      title: option.label || section.title,
+      report_key: option.report_key || section.report_key,
+      rows: pickedRows,
+      column_labels: (picked && picked.column_labels
+        && Object.keys(picked.column_labels).length)
+        ? picked.column_labels : section.column_labels,
+      thresholds: picked ? (picked.thresholds || {}) : {},
+      variants: picked ? [picked] : [],
+    });
+  }
   const rows = (section.rows || []).filter(row => !row.source_field || row.source_field === sourceField);
   const variants = (section.variants || []).filter(variant =>
     clusterVariantMatchesReport(variant, reportKey) && clusterVariantMatchesSource(variant, sourceField)
@@ -4422,8 +4390,14 @@ function reportSingleHtml(section, option) {
   // clusterSourceField，這行卻拿不到，畫面重繪仍是技術。
   // ⚠ 靜默失敗：按鈕 active 樣式切了、資料沒換，比毫無反應更誤導。
   // option.source_field 降為 fallback（僅在使用者尚未點過任何通道時生效）。
-  const sourceField = exportPreview.clusterSourceField
-    || (option && option.source_field) || DEFAULT_TOPIC_SOURCE_FIELD;
+  // 逐 variant 選項（2026-08-12）例外：通道由 variant 自身編碼（*_tech／*_effect），
+  // 選項值就是定案，不能被使用者上次點的分頁蓋掉——分頁鈕在此路徑也不再顯示。
+  const hasVariantPick = option
+    && option.variantIndex !== undefined && option.variantIndex !== null;
+  const sourceField = hasVariantPick
+    ? (option.source_field || DEFAULT_TOPIC_SOURCE_FIELD)
+    : (exportPreview.clusterSourceField
+      || (option && option.source_field) || DEFAULT_TOPIC_SOURCE_FIELD);
   const viewSection = sectionForReportView(section, option || {}, sourceField);
   const rows = viewSection.rows || [];
   let dataHtml = '<p class="hint" style="padding:0.3rem 0">尚無資料。</p>';
@@ -4479,7 +4453,7 @@ function reportSingleHtml(section, option) {
   const chartOnly = reportChartOnlyLayout(viewSection);
   return '<article class="export-card">'
     + '<h3>' + escHtml(viewSection.title || '') + '</h3>'
-    + (isClusterSection(section) ? reportSourceTabsHtml(sourceField) : '')
+    + (isClusterSection(section) && !hasVariantPick ? reportSourceTabsHtml(sourceField) : '')
     + reportVariantTabsHtml(viewSection, (option && option.sectionIndex) || 0)
     // 沒有圖表時表格用整寬（2026-07-30 使用者定案「這邊沒有圖表，那表格就可以用左右邊」）：
     // 主題統計表改為純數據表後右半邊只顯示「尚無圖表」，表格卻被壓在 45% 寬、
@@ -5694,8 +5668,8 @@ async function refreshBrowsePreservingDetails() {
 }
 
 // 報表頁刷新：版本區重載（report_generate 產了新版本）＋當前檢視內容重取；
-// 兩者都保留使用者選擇（loadReportVersions 只動 #report-version-list、
-// reloadCurrentReportContentOnly 會回設選單值）。
+// 兩者都保留使用者選擇（renderReportVersionSelect 依 reportViewContent.version
+// 回設版本選單、reloadCurrentReportContentOnly 會回設檢視選單值）。
 async function refreshReportsArea() {
   await loadReportVersions();
   await reloadCurrentReportContentOnly();

@@ -152,22 +152,26 @@ COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
 # 反推：要讓縮放 ≥0.9，畫布不得超過 9.89×4.80 in ＝ 949×461 px。
 # 字級 18px（＝13.5pt）× 0.9 ＝ 12.2pt，剛好過線。
 # 🔴 尺寸與字級的唯一定義處＝chart_sizing（2026-08-03 定案：只分尺寸與字級，
-# 版面邏輯共用）。修 PPT 的尺寸改 chart_sizing.PPT；本檔常數只是綁定，不自帶數值。
-from backend.app.reports.chart_sizing import PPT as _SIZING
+# 版面邏輯共用）。本檔常數只是綁定，不自帶數值。
+# 🔴 2026-08-12（unify-chart-source）：綁定改 **WEB**——每張圖只產一份
+# WEB 尺寸的 SVG（15px 字級、1180 畫布），寫入既有原檔名；簡報端（deck）
+# 自行 refit 字級，引擎不再為 PPT 預放大。
+from backend.app.reports.chart_sizing import WEB as _SIZING
 
 
 # 🔴 P3（2026-08-07）：畫布與字級目標改**依作用中的 profile** 取值——
 # 同一支 renderer 服務 web 與 ppt，只有尺寸／字級不同（版面邏輯共用）。
 # ⚠ 保留模組層常數名不變：既有呼叫端一處不用改（介面不變的深化寫法）。
 def _sizing_value(attr: str) -> float:
-    r"""取作用中 profile 的尺寸值（唯一定義處＝chart_sizing）。
+    r"""取唯一 sizing（chart_sizing.WEB）的尺寸值。
 
+    🔴 2026-08-12（unify-chart-source）：原經 chart_profiles.active_sizing()
+    依「作用中 profile」動態取值；單一來源後值是靜態的，直接讀 _SIZING
+    ——active_sizing 轉手層依刪除測試原則併掉。
     ⚠ 畫布尺寸維持 **int**：轉成 float 會讓 SVG 屬性變成 `width="949.0"`，
     下游以 `width="(\d+)"` 解析的地方就對不上（2026-08-07 實測一支測試紅）。
     """
-    from backend.app.reports.chart_profiles import active_sizing
-
-    value = getattr(active_sizing(), attr)
+    value = getattr(_SIZING, attr)
     return int(value) if isinstance(value, int) else float(value)
 
 
@@ -197,25 +201,18 @@ WIDE_CHART_ASPECT_MIN = _SIZING.wide_aspect_min
 
 
 def chart_scale(width_px: float, height_px: float) -> float:
-    """這張畫布縮進 PPT 圖框後的縮放比。
+    """畫布縮放補償——單一來源後恆為 1.0（unify-chart-source，2026-08-12）。
 
-    ⚠ 縮放比由畫布尺寸決定——這正是「同一個字級在不同頁面變成不同大小」的原因。
-    組版端 `_add_picture_fitted` 是等比縮放到框內，故取寬高兩個比例的較小者。
+    🔴 沿革：雙 profile 時代這裡算「畫布縮進 PPT 圖框的縮放比」，讓 SVG 字級
+    預放大補償二次縮放；web 自 2026-08-11 恆 1.0（「圖中文字都維持在 15」）。
+    PPT 預放大隨單一來源退場——簡報端（deck skill）逐圖 refit 字級，
+    引擎輸出即網頁顯示尺寸，無任何圖框補償。
 
-    🔴 web profile 恆回 1.0（2026-08-11 使用者定案「圖中文字都維持在 15」）：
-    網頁沒有圖框、SVG 以原生尺寸顯示，沿用 PPT 補償會讓小畫布的圖字被放大
-    ——「有些圖超大，很清楚但很突兀」。不補償後所有 web 圖字級＝target 同高。
+    ⚠ 函式保留不刪：它是「字級 target→SVG px」換算鏈的一環
+    （chart_font_px 除以它），拆掉會讓 9 支呼叫端與測試改介面——
+    介面不變、實作縮薄，同 `_add_picture_fitted` 那次的深化寫法。
     """
-    from backend.app.reports.chart_profiles import active_profile_name
-
-    if active_profile_name() == "web":
-        return 1.0
-    w_in = width_px / PX_PER_INCH
-    h_in = height_px / PX_PER_INCH
-    if h_in <= 0 or w_in <= 0:
-        return 1.0
-    frame = CHART_WIDE_FRAME_IN if w_in / h_in >= WIDE_CHART_ASPECT_MIN else CHART_HERO_FRAME_IN
-    return min(frame[0] / w_in, frame[1] / h_in)
+    return 1.0
 
 
 def solve_chart_font(width_px: float, height_for_font, *,
@@ -386,21 +383,6 @@ def report_names_for_artifact(filename: str) -> list[str]:
     return []
 
 
-# profile 檔名規則的唯一定義處在 chart_profiles；本模組只消費，不另立一套。
-from backend.app.reports.chart_profiles import (
-    DEFAULT_PROFILE,
-    PROFILES,
-    ChartProfileError,
-    active_profile_name,
-    parse_profile_filename,
-    profile_context,
-    profile_filename,
-)
-
-# profile manifest 的檔名（前端與組版都靠它把 identity 對到實際圖檔）。
-PROFILE_MANIFEST_NAME = "profile_manifest.json"
-
-
 def _fetch_workspace_name(workspace_id: int) -> str | None:
     """由 workspace_id 取顯示名稱（封面主標用）。"""
     from backend.app.db.connection import get_pool
@@ -440,80 +422,28 @@ def build_workspace_identity(
 
 
 def _write_svg(path: Path, svg: list[str]) -> Path:
-    """SVG 的**唯一寫檔出口**；實際落點依作用中的 profile 決定。
+    """SVG 的**唯一寫檔出口**——寫入呼叫端給的原檔名。
 
-    🔴 呼叫端一律傳「原本的」路徑（`run_dir / "lifecycle.svg"`），不必知道
-    profile 這回事——web profile 會自動改寫成 `lifecycle.web.svg`。
-    ⚠ 反過來做（每個 renderer 多收一個 profile 參數）會讓 8 支 renderer 與
-    它們的每一個測試都跟著改介面，正是 AGENTS.md「入口要精簡」那條的反例。
+    🔴 2026-08-12（unify-chart-source）：單一來源後不再有 profile 中綴改寫；
+    出口函式保留（而非散回各 renderer 直寫），維持「寫檔只有一個門」。
     """
-    target = path.with_name(profile_filename(path.name, active_profile_name()))
-    target.write_text("\n".join(svg), encoding="utf-8")
-    return target
+    path.write_text("\n".join(svg), encoding="utf-8")
+    return path
 
 
-def render_sections_all_profiles(ctx: ChartContext,
-                                 specs: tuple[SectionSpec, ...]) -> None:
-    """為每個 profile 各跑一次 section builders。
+def render_sections(ctx: ChartContext, specs: tuple[SectionSpec, ...]) -> None:
+    """跑一輪 section builders——單一來源後只渲染一次（unify-chart-source）。
 
-    PPT 先跑（既有行為，且它的產出是 report_data.json 與 artifact_manifest 的
-    依據）；web 隨後只補圖。
-
-    ⚠ 第二輪要把 `sections` 還原：builder 同時負責「畫圖」與「append 卡片資料」，
-    不還原的話網頁報表會出現重複卡片。`chart_rows` 是 dict 覆寫，重跑無害。
+    🔴 沿革：雙 profile 時代這裡叫 `render_sections_all_profiles`，PPT 先跑、
+    web 第二輪補圖（還要還原 sections 防重複卡片）。2026-08-12 起每張圖
+    只產一份 WEB 尺寸的 SVG，第二輪與其還原技巧一併退場。
     """
     for spec in specs:
         spec.build(ctx)
-    first_round_sections = list(ctx.sections)
-    for profile in PROFILES:
-        if profile == DEFAULT_PROFILE:
-            continue
-        with profile_context(profile):
-            for spec in specs:
-                spec.build(ctx)
-        ctx.sections[:] = first_round_sections
 
 
-def _variant_key_of(base_name: str, report_key: str) -> str:
-    """從既有檔名推出 variant：檔名去掉 report_key 前綴後的剩餘，沒有就是 default。
-
-    `ipc_main_distribution_L4.svg` ＋ `ipc_main_distribution` → `L4`；
-    `jurisdiction_distribution.svg` ＋ `country_distribution` → `default`
-    （檔名與 report_key 不同名，本來就沒有變體後綴）。
-    """
-    stem = base_name.removesuffix(".svg")
-    if stem.startswith(f"{report_key}_"):
-        return stem[len(report_key) + 1:]
-    return "default"
-
-
-def build_profile_manifest(run_dir: Path, version: str) -> dict[str, Any]:
-    """掃描版本目錄，建立 identity → 各 profile（web／ppt）的對應與 checksum。
-
-    identity＝`report_key:variant`（與 `chart_bundle` 選圖用的一致），path 指向
-    **既有檔名**——PPT profile 沿用原名、web profile 帶 `.web` 中綴。
-
-    ⚠ 一個檔可對應多個 report_key（`annual_trend.svg` 同時是申請與公告趨勢的
-    圖），此時該檔在每個 identity 下都登記。這正是原「一檔一 identity」命名
-    契約表達不了、因而於 2026-08-09 回寫的情形。
-
-    ⚠ checksum 綁檔案內容：兩個 profile 尺寸不同故必然不同，配錯或拿到過期檔
-    時對不上。
-    """
-    charts: dict[str, dict[str, Any]] = {}
-    for path in sorted(run_dir.glob("*.svg")):
-        try:
-            base_name, profile = parse_profile_filename(path.name)
-        except ChartProfileError:
-            continue
-        for report_key in report_names_for_artifact(base_name):
-            identity = f"{report_key}:{_variant_key_of(base_name, report_key)}"
-            entry = charts.setdefault(identity, {"version": version, "profiles": {}})
-            entry["profiles"][profile] = {
-                "path": path.name,
-                "checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
-            }
-    return {"version": version, "charts": charts}
+# （build_profile_manifest／_variant_key_of 已隨雙 profile 退場，
+#   2026-08-12 unify-chart-source——identity 對應的消費者 chart_bundle 已刪。）
 
 
 def build_artifact_manifest(
@@ -1812,13 +1742,18 @@ def render_year_bubble_matrix_chart(
     # 靜默切掉才是不能接受的。
     years = years[-CHART_YEAR_WINDOW:]
     cell_w = max(36, grid_w // max(1, len(years)))
-    # 🔴 泡泡半徑上限由**欄寬推導**，不寫死（2026-08-03 補齊連續年度後的迴歸）。
-    # 原本固定 9+19=28：欄數 14→16 讓欄距由 43px 縮到 38px，泡泡沒跟著縮，
-    # 相鄰兩格直接撞在一起（實測 4 處、最深 5.5px）。
-    # ⚠ 半徑與欄寬是同一件事的兩個落點——各寫各的就會靜默撞上。
+    # 🔴 泡泡半徑上限由**欄寬與列距**共同推導，不寫死（2026-08-03 補欄向；
+    # 2026-08-12 補列向——使用者實機抓到殘留的另一半）。
+    # 08-03：欄數 14→16 讓欄距 43→38px，泡泡沒跟著縮，橫向相鄰互撞 4 處。
+    # 08-12：列數 10 讓列距縮到 39px，上限 28 的泡泡縱向互撞 4 對
+    # （曾晴×帝瑪斯 2020/2022/2024 等）——當年只綁了欄寬，列距漏綁。
+    # ⚠ 半徑、欄寬、**列距**是同一件事的三個落點——少綁一個就靜默撞上。
     # 下限 14 是格內兩位數（18px 字）放得下的最小值；再窄寧可讓大小差異壓縮，
-    # 也不能讓數字滿出泡泡。
-    bubble_max = max(BUBBLE_MIN_RADIUS_PX, min(28.0, (cell_w - LABEL_MIN_GAP_PX) / 2))
+    # 也不能讓數字滿出泡泡（row_h 壓到 26px 地板的極端情況允許輕微相切）。
+    bubble_max = max(BUBBLE_MIN_RADIUS_PX,
+                     min(28.0,
+                         (cell_w - LABEL_MIN_GAP_PX) / 2,
+                         (row_h - LABEL_MIN_GAP_PX) / 2))
     width = left + max(1, len(years)) * cell_w + 34
     height = top + max(1, len(row_names)) * row_h + 34
     label_px = chart_font_px(width, height)
@@ -2406,8 +2341,12 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "kind_summary": "種類組成",
     # 年度四欄（問題 9）
     "family_count": "家族數",
-    "topic_count": "涉及技術群",
-    "new_topic_count": "首現技術群",
+    # 🔴 2026-08-12 使用者定案術語：BERTopic 產物一律稱「技術主題」，不用「群」
+    # （IPC/CPC「主群組」是專利分類官方用語，不在此列）。
+    "topic_count": "涉及技術主題",
+    "new_topic_count": "首現技術主題",
+    # 年度矩陣交叉表的合計欄（pivot_year_matrix 產出）。
+    "total": "總件數",
     "patent_count": "專利件數",
     "year": "年份",
     "application_count": "申請件數",
@@ -3457,10 +3396,14 @@ def _build_applicant_year_matrix_section(ctx: ChartContext) -> None:
         more_variants.append({"label": "11-20", "file": "applicant_year_matrix_more.svg", "variant_key": "more"})
     # 數據區改交叉表（2026-07-29 使用者定案「數據表是長格式，難讀」）：
     # 原本每列 (公司, 年份, 件數)，同一家公司的不同年份分散在不同列。
-    # 轉置在後端做，前端不必知道差異。
-    ctx.chart_rows["applicant_year_matrix"] = pivot_year_matrix(report["rows"], "applicant_display_name")
+    # 🔴 2026-08-12 接縫修復（使用者實機看到仍是長格式）：pivot 原本只放
+    # chart_rows 桶，但顯示層 08-11 起優先吃 **section["rows"]**（受理局交叉表
+    # 機制）——沒帶就退回 reports 桶長格式。同一份轉置同時掛兩處消費點。
+    pivoted = pivot_year_matrix(report["rows"], "applicant_display_name")
+    ctx.chart_rows["applicant_year_matrix"] = pivoted
     ctx.sections.append({
         "title": report["label_zh"],
+        "rows": pivoted,
         "variants": [{"label": "Top 10", "file": "applicant_year_matrix.svg", "variant_key": "default"}],
         "more_variants": more_variants,
         "more_label": "＋查看全部（第 11～20 名）",
@@ -4269,7 +4212,8 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     # 顯示規格（2026-07-21 二次修正）：板狀佈局完成，象限圖回歸 index——
     # cluster 卡片＝主題統計表＋各來源機會矩陣 tabs。
     ctx.sections.append({
-        "title": "分群分析",
+        # 2026-08-12 使用者定案術語：卡標題改「主題分析」（BERTopic 產物稱主題不稱群）。
+        "title": "主題分析",
         "report_key": "cluster_topic_table",
         # 🔴 rows 必須帶進 section（2026-07-29 使用者實機回報「技術、功效按鈕切不了」）：
         # 原本只寫 report_key、期待前端自己從 chart_rows 取，但 API 回給前端的 section
@@ -4415,7 +4359,7 @@ def run_chart_trial(
         analysis_id=analysis_id,
         cluster_data=cluster_data,
     )
-    render_sections_all_profiles(ctx, specs)
+    render_sections(ctx, specs)
 
     fetched = ctx.fetched_reports()
     generated_at = datetime.now().isoformat(timespec="seconds")
@@ -4535,19 +4479,8 @@ def run_chart_trial(
     )
     write_json(run_dir / "artifact_manifest.json", manifest)
     files.append("artifact_manifest.json")
-    # profile manifest：identity → web／ppt 兩份圖的 path 與 checksum。
-    # ⚠ 必須在圖檔全部產完後才掃描（它是掃目錄產出的，不是累積出來的）。
-    profile_manifest = build_profile_manifest(run_dir, version)
-    write_json(run_dir / PROFILE_MANIFEST_NAME, profile_manifest)
-    # web profile 的圖要進 files——`files` 是各 builder 累積的，而 builder 只
-    # 知道自己傳進去的原路徑，不知道寫檔出口把 web 版寫到哪。以 manifest 為
-    # 單一來源補齊，不另外掃一次目錄。
-    files += sorted({
-        asset["path"]
-        for entry in profile_manifest["charts"].values()
-        for asset in entry["profiles"].values()
-    })
-    files.append(PROFILE_MANIFEST_NAME)
+    # 🔴 2026-08-12（unify-chart-source）：profile_manifest.json 隨雙 profile
+    # 退場（零讀者，實碼盤點）——圖檔就是 builder 傳的原檔名，files 已含。
     files = list(dict.fromkeys(files))
     file_metadata = {
         item["file"]: item

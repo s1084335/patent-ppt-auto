@@ -107,7 +107,7 @@ WHERE id IN (101, 205, 337)
 `is_primary`（是否第一順位）。**算「某申請人涉入哪些案」用這張**，
 ⚠ 件數加總會大於專利總數（共同申請重複計），屬預期行為、引用時要註明口徑。
 
-### 分群主題
+### 技術／功效主題
 
 `derived_layer.topic_assignments`：`run_id`／`patent_id`／`topic_key`。
 `run_id` 對應 `parameters.topic_run_id`（技術／功效兩通道各一）。

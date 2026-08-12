@@ -152,3 +152,5 @@
 | change | 結果 | 日期 |
 |---|---|---|
 | `complete-core-field-reclassification` | ✅ 使用者驗收通過後 archive；spec 增量（DAT-006／RPT-008／EXP-007）已併入主規格；隔離庫 migcheck_0046 已依裁決刪除 | 2026-08-06 |
+| `complete-sse-data-refresh` | ✅ 使用者驗收通過後 archive；PRT-005 改寫（成功終結刷新 mapping＋失敗不刷資料）與 WSP-007 新增已併入主規格；三根因（6543 pooling、notifies 壽命、前端不重連）修復合 master `970406c` | 2026-08-12 |
+| `unify-chart-source` | ✅ 使用者驗收通過後 archive（標的 report_trial_20260812_133901）；RPT-010 圖表單一來源已併入主規格；含驗收期修正（年度矩陣交叉表、術語主題化、泡泡列向守門、檢視選單五變體、版本下拉） | 2026-08-12 |

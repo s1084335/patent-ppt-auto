@@ -925,18 +925,20 @@ class FrontendSkeletonTests(unittest.TestCase):
                 self.assertNotIn(hardcoded, self.html)
 
     def test_report_viewer_splits_cluster_reports_by_user_selected_reports(self):
-        """報表檢視下拉要拆開正式報表，不可把三個分群報表都合成分群分析。"""
+        """報表檢視下拉要拆開正式報表，不可把三個分群報表都合成分群分析。
+
+        契約更新（2026-08-12 使用者定案）：分群檢視由「兩檢視」（clusterReportViews）
+        改為**逐 variant 五選項**——舊拆法認不得 timeline_*，主題演進圖在檢視頁
+        選不到。narrative 落點的兩個 report_key 改由選項自帶。
+        """
         fill_body = self.js_function("fillReportViewSelect")
         options_body = self.js_function("buildReportViewOptions")
-        cluster_views_body = self.js_function("clusterReportViews")
         render_body = self.js_function("renderReportViewer")
 
         self.assertIn("buildReportViewOptions", fill_body)
-        self.assertIn("clusterReportViews", options_body)
-        # 痛點板已刪（2026-08-04），分群檢視剩兩種。
         for key in ("cluster_topic_table", "opportunity_quadrant"):
             with self.subTest(key=key):
-                self.assertIn(key, cluster_views_body)
+                self.assertIn(key, options_body)
         self.assertIn("source_field", options_body)
         self.assertIn("reportViewOptions", render_body)
         self.assertIn("reportSingleHtml", render_body)
@@ -1076,9 +1078,13 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertNotIn("submitReports()", body.replace('onclick="submitReports()"', ""))
 
     def test_report_version_list_container_and_endpoint(self):
-        """版本列表：有掛點容器、呼叫 versions 端點、指定版本內容端點路徑片段。"""
+        """版本選單：有掛點、呼叫 versions 端點、指定版本內容端點路徑片段。
+
+        契約更新（2026-08-12 使用者定案）：版本區由縱向列表改為標頭列的
+        下拉選單（列表把報表本體擠到畫面下方）。
+        """
         for needle in (
-            "report-version-list",        # 版本列表容器掛點
+            "report-version-select",      # 版本下拉選單掛點（原 report-version-list 容器）
             "loadReportVersions",         # 載入版本清單
             "/reports/versions",          # 列版本端點
             "/content",                   # 指定版本內容端點尾段
@@ -1087,15 +1093,92 @@ class FrontendSkeletonTests(unittest.TestCase):
                 self.assertIn(needle, self.html)
 
     def test_old_versions_collapsed_and_expandable(self):
-        """最新版本預設展開、舊版本收合可點開（收合展開掛點與切換函式都在）。"""
+        """版本切換走下拉選單；換版本＝換整份檢視內容。
+
+        契約更新（2026-08-12 使用者定案）：原「最新展開、舊版收合列」改為
+        下拉選單，展開／收合機制（toggleReportVersion 等）退場。
+        """
         for needle in (
-            "toggleReportVersion",        # 展開／收合切換
-            "report-version-body-",       # 各版本內容容器 id 前綴
+            "onReportVersionChange",      # 選單切換入口
+            "__more__",                   # 分頁：選單尾端「顯示更多版本」項
         ):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.html)
-        # 以 <details>/<summary> 或 open 狀態表達最新預設展開
-        self.assertRegex(self.html, r"report-version-item|report-version-row")
+        for gone in ("toggleReportVersion", "closeOtherReportVersions",
+                     "report-version-body-"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, self.html)
+
+    def test_report_version_body_does_not_render_action_block(self):
+        m = re.search(
+            r"function loadReportVersionContent\([^)]*\)\s*\{.*?\n\}", self.html, re.S
+        )
+        self.assertIsNotNone(m, "loadReportVersionContent missing")
+        body = m.group(0)
+        self.assertNotIn("report-ppt-list", body)
+        self.assertNotIn("含圖表與 AI 解讀", body)
+
+    def test_report_versions_render_as_dropdown_in_header(self):
+        """版本選單嵌在標頭列「檢視」與「產生全部解讀」中間，旁掛匯出鈕。
+
+        契約再更新（2026-08-12 使用者定案，取代同日稍早的緊湊列表）：
+        列表仍佔縱向空間會把報表擠下去，改為下拉選單。
+        """
+        m = re.search(r"function renderReports\(\)\s*\{.*?\n\}", self.html, re.S)
+        self.assertIsNotNone(m, "renderReports missing")
+        body = m.group(0)
+        i_view = body.find("report-view-select")
+        i_ver = body.find("report-version-select")
+        i_narr = body.find("btn-run-all-narrative")
+        self.assertTrue(0 <= i_view < i_ver < i_narr,
+                        f"順序應為 檢視<版本<產生全部解讀：{i_view},{i_ver},{i_narr}")
+        self.assertIn("exportSelectedReportHtml", body, "標頭應有匯出鈕（作用於選中版本）")
+        # 舊列表機制退場
+        for gone in ("report-version-listbox", "report-version-row", "ver-export"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, self.html)
+
+    def test_report_version_select_preserves_user_choice_on_reload(self):
+        """SSE 重載版本清單時保留使用者選的版本（reportViewContent.version 比對）；
+        選的版本不在清單才回最新並載入。"""
+        m = re.search(
+            r"function renderReportVersionSelect\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
+        self.assertIsNotNone(m, "renderReportVersionSelect missing")
+        body = m.group(0)
+        self.assertIn("reportViewContent", body)
+        self.assertIn("loadReportVersionContent", body)
+
+    # ── 檢視選單：主題分析家族攤開為五變體（2026-08-12 使用者裁決）──
+    # 原 clusterReportViews 只拆統計表＋機會四象限兩個檢視，且
+    # clusterVariantMatchesReport 不認 timeline_*——**主題演進圖在檢視頁
+    # 根本選不到**（資料在 report_data 裡、前端過濾器把它丟了）。
+    # 改為：分群 section 的每個 variant 各一個選項，包在 optgroup（主題分析）下。
+
+    def test_cluster_views_flatten_per_variant(self):
+        m = re.search(
+            r"function buildReportViewOptions\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
+        self.assertIsNotNone(m, "buildReportViewOptions missing")
+        body = m.group(0)
+        self.assertIn("variantIndex", body, "分群檢視應逐 variant 出選項")
+        self.assertNotIn("clusterReportViews", body, "兩檢視的舊拆法應退場")
+
+    def test_cluster_views_grouped_in_optgroup(self):
+        m = re.search(
+            r"function fillReportViewSelect\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
+        self.assertIsNotNone(m)
+        self.assertIn("optgroup", m.group(0), "家族選項應以 optgroup 呈現")
+
+    def test_cluster_variant_option_carries_narrative_scope(self):
+        """重產解讀要打對 report_key：opportunity_* → opportunity_quadrant、
+        其餘（topic_table_*/timeline_*）→ cluster_topic_table。"""
+        self.assertIn("'opportunity_quadrant'", self.html)
+        m = re.search(
+            r"function buildReportViewOptions\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
+        self.assertIn("report_key", m.group(0))
+
+    def test_legacy_two_view_builder_removed(self):
+        self.assertNotIn("function clusterReportViews", self.html,
+                         "舊的兩檢視 builder 應刪除（無其他消費者）")
 
     def test_old_version_content_lazy_loaded(self):
         """lazy：展開舊版本才載入該版本內容，不一進頁就把所有版本載回來。"""
@@ -1124,8 +1207,10 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIsNotNone(m, "找不到 loadReportVersionContent() 定義")
         body = m.group(0)
         # 🔴 2026-08-10/11 契約更新：PPT 清單隨交付線移除，版本區改掛
-        # 「匯出 HTML 檔」入口（自包單檔下載）；R9 的「一次顯示一份」不變。
-        self.assertIn("exportReportHtmlFile", body, "版本區應掛匯出 HTML 檔入口")
+        # 「匯出 HTML 檔」入口；2026-08-12 版本區改標頭下拉後，匯出入口再搬到
+        # 標頭鈕（exportSelectedReportHtml → exportReportHtmlFile），
+        # 內容載入函式只剩「取 content 餵選單」一件事。
+        self.assertIn("exportSelectedReportHtml", self.html, "標頭應掛匯出 HTML 檔入口")
         self.assertIn("fillReportViewSelect", body, "版本內容應餵給上方選單驅動的 viewer")
         self.assertNotIn(
             "renderReportContentHtml", body,
