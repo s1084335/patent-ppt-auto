@@ -18,9 +18,9 @@ PPT 版的消費者（`build_ppt`／`chart_bundle`）已隨 2026-08-10 PPT 交�
   `resolve_ppt_asset`（死碼）、`profile_manifest.json`（死檔）。
 - **`resolve_web_asset` 保留**：舊版本目錄仍是「原檔名＝PPT 尺寸＋`.web.svg`」，
   fallback 語意讓新舊版本都顯示正確的圖，不重產舊版本。
-- **agent 端接軌（隨附工作，非產品 spec）**：`html-report-to-deck` skill 的
-  intake 從「拆 HTML」改為「讀版本目錄／asset 端點按需拉」，中間格式
-  （`report.json`＋`charts/`）與第 2 步之後全部不動。
+- ~~agent 端 deck intake 接軌~~——2026-08-12 移至 `add-deck-delivery-line`
+  task 1.4（它本來就是 deck 流程第 1 步，且 skill 將遷產品 repo）。
+  本 change 範圍收斂為**引擎端單一來源**。
 
 ## Capabilities
 
@@ -66,6 +66,6 @@ change 取代。
    `profile_manifest.json`；index.html 嵌圖正確、字級 15px。
 2. 舊版本（雙檔）網頁顯示不變（fallback 實測）。
 3. CLI 解讀端到端一次（讀單一 SVG 產 narratives）。
-4. deck skill 以新版本目錄跑通 intake→plan→fit→組版（regression.py 全綠）。
-5. 範圍回歸；幾何預設值相關測試逐一以契約變更註記更新（預期紅一批，
+4. 範圍回歸；幾何預設值相關測試逐一以契約變更註記更新（預期紅一批，
    2026-08-07 曾實測 13 支）。
+   （deck intake 驗收隨任務移至 `add-deck-delivery-line`。）

@@ -21,18 +21,11 @@
 - [ ] 2.4 Refactor：`chart_profiles` 縮編後檢查是否已成淺模組（只剩轉手就併回
       `chart_sizing`／`chart_runner`，刪除測試原則）
 
-## 3. agent 端 deck skill 接軌（中央 `.agents/skills/html-report-to-deck`）
+## 3. 組合驗收
 
-- [ ] 3.1 新 `assemble_from_version.py`（版本目錄／asset 端點 → 既有
-      `report.json`＋`charts/` 中間格式；texts←narratives.json、
-      tables/patent_ids←report_data rows、notes←encoding_notes+reader_guide、
-      report_meta←version_meta）
-- [ ] 3.2 SKILL.md 輸入契約改寫（預設版本目錄、HTML 降 fallback）；
-      跑 `check_docs.py` 與 `regression.py`
+（deck intake 接軌原列本 change，2026-08-12 移至 `add-deck-delivery-line`
+task 1.4——它本來就是 deck 流程第 1 步，且 skill 將遷產品 repo，一次到位。）
 
-## 4. 組合驗收
-
-- [ ] 4.1 OpenSpec strict、目標測試、範圍回歸（chart／report／sizing 關鍵字）
-- [ ] 4.2 實物：產一版新報表→網頁逐卡看（新舊版本各開一份對照）→CLI 解讀一輪
-      →deck skill 對新版本 intake→組版 regression 全綠
-- [ ] 4.3 使用者接受後 archive；合 master 後 Lightning 重部署生效
+- [ ] 3.1 OpenSpec strict、目標測試、範圍回歸（chart／report／sizing 關鍵字）
+- [ ] 3.2 實物：產一版新報表→網頁逐卡看（新舊版本各開一份對照）→CLI 解讀一輪
+- [ ] 3.3 使用者接受後 archive；合 master 後 Lightning 重部署生效
