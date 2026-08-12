@@ -41,4 +41,6 @@ task 1.4——它本來就是 deck 流程第 1 步，且 skill 將遷產品 repo
       （RUN#345 succeeded，based_on_version 綁對、headline＋3 points）。
       ⚠ 揭露：產版未走佇列（Lightning 容器 worker 跑舊碼會搶工），
       以 stub context 直呼同一支 handler（引擎／分群載入／上傳皆生產程式）
-- [ ] 3.3 使用者接受後 archive；合 master 後 Lightning 重部署生效
+- [x] 3.3 使用者接受後 archive；合 master 後 Lightning 重部署生效
+      （使用者 2026-08-12 驗收通過，標的 report_trial_20260812_133901，
+      含驗收期追加修正與檢視選單五變體、版本下拉）

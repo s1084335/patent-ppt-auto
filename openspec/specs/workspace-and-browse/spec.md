@@ -61,6 +61,22 @@
 - **WHEN** 呼叫者用另一 workspace ID 讀取文件
 - **THEN** 系統 SHALL 拒絕或回傳不存在
 
+### Requirement: WSP-007 自動刷新保留互動狀態
+
+系統 SHALL 在背景工作成功後刷新可見資料，但保留展開、收合、選定 workspace/topic、報表版本與編輯模式等非資料狀態。
+
+#### Scenario: 文獻備註完成
+
+- **GIVEN** 使用者停留在含該專利的瀏覽表格
+- **WHEN** `ai:patent_note` 成功完成
+- **THEN** 文獻備註 SHALL 自動出現在表格
+- **AND** 已展開的其他專利詳情 SHALL 保留
+
+#### Scenario: 使用者停留無關頁面
+
+- **WHEN** 專利備註工作完成但使用者在匯出頁
+- **THEN** 前端 SHALL 不立即重抓專利列表
+
 ### Requirement: WSP-010 全庫 Workspace 唯一呈現
 
 系統 SHALL 在 workspace API 投影每筆資料的 `is_global` 布林身分，並以該身分辨識全庫，不得依賴固定 workspace ID 或顯示名稱。
