@@ -24,13 +24,13 @@ _TARGET_PX = 15.0
 class FontIsUniformTests(unittest.TestCase):
     """不同形狀的畫布（原 PPT 時代的實測樣本）反推字級必須全部相同。"""
 
-    CANVASES = [
+    CANVASES = (
         ("一般圖", 949, 460),
         ("扁圖", 949, 214),
         ("機會象限", 1120, 629),
         ("年度矩陣", 942, 456),
         ("web 畫布", 1180, 560),
-    ]
+    )
 
     def test_data_text_is_15px_everywhere(self):
         for name, w, h in self.CANVASES:
