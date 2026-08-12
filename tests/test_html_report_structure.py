@@ -144,13 +144,21 @@ class ChapterOrderTests(unittest.TestCase):
 class ChartAsEvidenceTests(unittest.TestCase):
     """③ 圖降為證據：固定高度縮圖＋可展開原尺寸。"""
 
-    def test_chart_has_fixed_display_height(self):
-        """圖固定高度縮圖（2026-08-12 使用者「大小再小一點」：400 → 340px）。"""
+    def test_chart_is_width_capped_not_height_forced(self):
+        """🔴 圖以**固定寬度**縮圖，高度自動——不得強制高度。
+
+        first pass 用 `height:340px; max-width:100%`，實測對扁圖
+        （IPC L4 = 1180×210）兩條規則同時觸發而**縱向拉伸變形**（1490×340，
+        比例 5.62:1 壓成 4.38:1），且比原尺寸放大 26%、圖內字 19.1px 反而大於正文。
+        限寬才能讓所有圖縮放比一致、扁圖自然變矮。
+        """
         html = _render()
         css = re.search(r"\.chart-media\s*\{[^}]*\}", html)
         self.assertIsNotNone(css, "找不到 .chart-media 樣式")
-        rule = css.group(0).replace("height:340px", "height: 340px")
-        self.assertIn("height: 340px", rule, "圖應固定 340px 高")
+        rule = re.sub(r"\s+", " ", css.group(0))
+        self.assertRegex(rule, r"max-width:\s*720px", "圖應限寬 720px")
+        self.assertRegex(rule, r"height:\s*auto", "高度必須自動，否則扁圖會被拉伸變形")
+        self.assertNotRegex(rule, r"height:\s*\d+px", "不得強制固定高度")
 
     def test_chart_is_centered(self):
         """縮圖比版面窄，靠左會讓右側空一大塊（2026-08-12 使用者「放正中間」）。"""

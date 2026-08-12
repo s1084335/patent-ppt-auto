@@ -3059,21 +3059,33 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             f'</section>'
         )
 
-    meta_items = " · ".join(f"{xml_text(k)}: {xml_text(v)}" for k, v in meta.items())
-    meta_bar = f'<p class="meta-bar">{meta_items}</p>' if meta_items else ""
-
     # 🔴 標題用實際分析範圍，不是寫死英文 `Patent Report`（讀者拿到檔案分不出哪一份）。
     # 來源優先序：呼叫端 meta → 版本目錄 version_meta.json 的 workspace_name。
     # ⚠ 讀檔失敗一律退回通用標題，不讓標題把整份報表產製弄倒。
-    workspace_name = str(meta.get("workspace") or meta.get("workspace_name") or "").strip()
-    if not workspace_name:
-        try:
-            import json as _json
-            vm = _json.loads((run_dir / "version_meta.json").read_text(encoding="utf-8"))
-            workspace_name = str(vm.get("workspace_name") or "").strip()
-        except (OSError, ValueError):
-            workspace_name = ""
+    version_meta: dict[str, Any] = {}
+    try:
+        import json as _json
+        version_meta = _json.loads((run_dir / "version_meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        version_meta = {}
+    workspace_name = str(meta.get("workspace") or meta.get("workspace_name")
+                         or version_meta.get("workspace_name") or "").strip()
     page_title = f"{workspace_name} 專利分析報表" if workspace_name else "專利分析報表"
+
+    # 抬頭給讀者看的是「這是哪一份、什麼時候產的」。
+    # ⚠ 原本直接把呼叫端 meta 攤平顯示，交付檔抬頭因而印著
+    # `ranking_limit: 10 · ipc_levels: 4 5`——那是產製參數，對讀者沒有意義，
+    # 但對追溯有用，故降級為次要行、不佔主位。
+    stamp = str(version_meta.get("generated_at") or "").replace("T", " ")[:16]
+    primary = " · ".join(x for x in (
+        f"產製於 {stamp}" if stamp else "",
+        str(version_meta.get("version") or run_dir.name or ""),
+    ) if x)
+    params = " · ".join(f"{xml_text(k)}: {xml_text(v)}" for k, v in meta.items())
+    meta_bar = "".join(part for part in (
+        f'<p class="meta-bar">{xml_text(primary)}</p>' if primary else "",
+        f'<p class="meta-params">產製參數 {params}</p>' if params else "",
+    ))
 
     # 章節導覽（2026-08-12）：現行交付檔完全沒有導覽，9 章 8080px 只能一路捲。
     nav_html = ""
@@ -3082,7 +3094,8 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             f'<a class="navchip" href="#sec-{xml_text(key)}">{xml_text(name)}</a>'
             for key, name in nav_entries
         )
-        nav_html = f'<nav class="chapter-nav"><span class="nav-lead">章節</span>{chips}</nav>'
+        nav_html = (f'<nav class="chapter-nav"><div class="chapter-nav-inner">'
+                    f'<span class="nav-lead">章節</span>{chips}</div></nav>')
 
     html_text = f"""<!doctype html>
 <html lang="zh-Hant">
@@ -3091,69 +3104,142 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>專利報表</title>
   <style>
-    :root {{ color-scheme: light dark; }}
+    /* ══ 色票：沿用產品前端（backend/app/static/index.html）的 accent／text／border，
+       同一個產品不該有兩套視覺語言。淺色單一主題（使用者定案「淺色系為主」）——
+       不宣告 dark，避免瀏覽器自動反轉把圖表白底與頁面撞在一起。 */
+    :root {{
+      color-scheme: light;
+      --paper: #F4F6F9;      /* 頁面底：比純白略深，讓白卡浮起來 */
+      --card: #FFFFFF;
+      --ink: #1A1A2E;        /* 產品 --text */
+      --ink-soft: #5A6472;   /* 次要文字：比 #6C757D 深一階，小字仍讀得清 */
+      --line: #E2E6EC;       /* 產品 --border */
+      --line-soft: #EEF1F5;  /* 表格內線：只用來分列，不圍格 */
+      --brand: #0F3460;      /* 產品 --accent */
+      --brand-soft: #1A6BC4; /* 產品 --accent-2 */
+      --wash: #EDF2F9;       /* 極淺藍：chip、表頭、解讀區底 */
+    }}
     * {{ box-sizing: border-box; }}
-    body {{ font-family: "Microsoft JhengHei", "Segoe UI", Arial, sans-serif; margin: 0; padding: 32px; color: #111827; background: #F8FAFC; }}
-    h1 {{ font-size: 28px; margin: 0 0 4px; }}
-    .meta-bar {{ color: #6B7280; font-size: 13px; margin: 0 0 24px; }}
+    /* Noto Sans TC 排第一（deck 字型定案，裝了就用）；未安裝時 fallback 正黑體，
+       不因字型缺席而破版。 */
+    body {{ font-family: "Noto Sans TC", "Microsoft JhengHei", "Segoe UI", system-ui, sans-serif;
+      margin: 0; padding: 0 32px 48px; color: var(--ink); background: var(--paper);
+      font-size: 16px; line-height: 1.6; }}
+    .page {{ max-width: 1200px; margin: 0 auto; }}
+    /* 報告抬頭：eyebrow 細線＋標題＋參數，一組視覺單位。 */
+    .report-head {{ padding: 28px 0 20px; }}
+    .report-head .rule {{ width: 44px; height: 3px; background: var(--brand); border-radius: 2px; }}
+    h1 {{ font-size: 28px; line-height: 1.25; margin: 12px 0 6px; color: var(--brand);
+      letter-spacing: .01em; text-wrap: balance; }}
+    .meta-bar {{ color: var(--ink-soft); font-size: 13px; margin: 0;
+      font-variant-numeric: tabular-nums; }}
+    /* 產製參數對追溯有用、對讀者無用——放得到但不搶眼。 */
+    .meta-params {{ color: #8A93A3; font-size: 12px; margin: 4px 0 0;
+      font-variant-numeric: tabular-nums; }}
     /* scroll-margin-top：錨點跳轉後把章節頂端往下推，避開常駐導覽列（實測導覽高約 41px，
        取 56px 留餘裕）。⚠ 少了它，跳轉後章節標題會**貼在導覽下方被蓋住**。 */
-    .report-section {{ background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 12px; padding: 16px 22px; margin: 0 0 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); scroll-margin-top: 56px; }}
-    .section-head {{ display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }}
-    .report-section h2 {{ font-size: 19px; margin: 0 0 12px; }}
+    .report-section {{ background: var(--card); border: 1px solid var(--line);
+      border-radius: 10px; padding: 18px 24px 20px; margin: 0 0 18px;
+      box-shadow: 0 1px 2px rgba(15,52,96,.05); scroll-margin-top: 56px; }}
+    .section-head {{ display: flex; align-items: baseline; justify-content: space-between;
+      gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--line-soft);
+      padding-bottom: 10px; margin-bottom: 12px; }}
+    /* 標題左側 brand 短條：一眼分得出「新的一章開始了」，比純字級差異可靠。 */
+    .report-section h2 {{ font-size: 19px; margin: 0; color: var(--brand);
+      padding-left: 12px; border-left: 4px solid var(--brand); line-height: 1.3; }}
     .section-links {{ font-size: 13px; }}
-    .section-link {{ color: #2563EB; text-decoration: none; margin-left: 12px; }}
+    .section-link {{ color: var(--brand-soft); text-decoration: none; margin-left: 12px; }}
     .section-link:hover {{ text-decoration: underline; }}
-    .section-note {{ color: #6B7280; font-size: 13px; margin: 0 0 12px; }}
-    .data-table-wrap {{ overflow-x: auto; margin: 0 0 14px; }}
-    /* 2026-08-11 使用者定案：表格文字維持 15（與圖表文字同高，整頁一致）。 */
-    .data-table-wrap table {{ border-collapse: collapse; font-size: 15px; width: 100%; }}
-    .data-table-wrap th {{ background: #F1F5F9; padding: 6px 8px; text-align: left; font-weight: 600; white-space: nowrap; border: 1px solid #E2E8F0; }}
-    .data-table-wrap td {{ padding: 4px 8px; border: 1px solid #F1F5F9; white-space: nowrap; }}
-    .data-table-wrap td.totals-cell {{ border-top: 2px solid #CBD5E1; font-weight: 600; background: #F8FAFC; }}
+    .section-note {{ color: var(--ink-soft); font-size: 13px; margin: 0 0 14px; max-width: 78ch; }}
+    .data-table-wrap {{ overflow-x: auto; margin: 16px 0 0; }}
+    /* 2026-08-11 使用者定案：表格文字維持 15（與圖表文字同高，整頁一致）。
+       ⚠ 只留橫線不圍格：格線全開會讓 16 欄的年度矩陣變成一張網，數字反而讀不出來。 */
+    .data-table-wrap table {{ border-collapse: collapse; font-size: 15px; width: 100%;
+      font-variant-numeric: tabular-nums; }}
+    .data-table-wrap th {{ background: var(--wash); padding: 7px 10px; text-align: left;
+      font-weight: 600; white-space: nowrap; color: var(--brand);
+      border-bottom: 1px solid var(--line); }}
+    .data-table-wrap td {{ padding: 6px 10px; border-bottom: 1px solid var(--line-soft);
+      white-space: nowrap; }}
+    .data-table-wrap tbody tr:hover td {{ background: #F8FAFD; }}
+    .data-table-wrap td.totals-cell {{ border-top: 2px solid var(--line);
+      border-bottom: none; font-weight: 700; background: var(--wash); }}
     .data-table-wrap details {{ margin-top: 8px; }}
-    .data-table-wrap summary {{ cursor: pointer; font-size: 13px; color: #2563EB; }}
-    .toggle-bar {{ display: inline-flex; gap: 4px; padding: 4px; background: #F1F5F9; border-radius: 9px; margin: 0 0 14px; }}
-    .toggle-btn {{ border: none; background: transparent; color: #334155; font-size: 14px; font-weight: 600; padding: 7px 16px; border-radius: 7px; cursor: pointer; }}
-    .toggle-btn:hover {{ background: #E2E8F0; }}
-    .toggle-btn.active {{ background: #2563EB; color: #FFFFFF; }}
-    .expand-btn {{ border: 1px solid #CBD5E1; background: #FFFFFF; color: #2563EB; font-size: 14px; font-weight: 600; padding: 8px 14px; border-radius: 8px; cursor: pointer; margin: 12px 0; }}
-    .expand-btn:hover {{ background: #EFF6FF; }}
+    .data-table-wrap summary {{ cursor: pointer; font-size: 13px; color: var(--brand-soft); }}
+    .toggle-bar {{ display: inline-flex; gap: 4px; padding: 4px; background: var(--wash);
+      border-radius: 9px; margin: 0 0 14px; }}
+    .toggle-btn {{ border: none; background: transparent; color: var(--ink); font-size: 14px;
+      font-weight: 600; padding: 6px 15px; border-radius: 7px; cursor: pointer; }}
+    .toggle-btn:hover {{ background: #DFE8F4; }}
+    .toggle-btn.active {{ background: var(--brand); color: #FFFFFF; }}
+    .toggle-btn:focus-visible {{ outline: 2px solid var(--brand-soft); outline-offset: 2px; }}
+    .expand-btn {{ border: 1px solid var(--line); background: var(--card); color: var(--brand-soft);
+      font-size: 14px; font-weight: 600; padding: 7px 14px; border-radius: 7px;
+      cursor: pointer; margin: 12px 0; }}
+    .expand-btn:hover {{ background: var(--wash); border-color: var(--brand-soft); }}
     .chart-stage {{ width: 100%; overflow-x: auto; }}
     /* 🔴 圖降為證據（2026-08-12）：原本 height:auto ＝ 原尺寸顯示（1180×560），
        圖內字 15.1px 與正文 16px 同級，整張圖搶走版面。
        ⚠ 縮圖的職責是「認出這是哪張圖、看出形狀」，不是讀細節——細節點圖展開原尺寸。
-       340px 時圖內字約 9.2px（原 15.1×340/560）：辨形足夠、讀值不足，故放大機制是必要配套。
-       置中：縮圖比版面窄，靠左會讓每章右側留一大塊空白。 */
-    .chart-media {{ height: 340px; width: auto; max-width: 100%; display: block;
+
+       🔴 **限寬不限高**（實測修正）：first pass 用 `height:340px; max-width:100%`，
+       對扁圖（IPC L4 是 1180×210）會同時觸發兩條規則而**縱向拉伸變形**
+       ——實測顯示成 1490×340（比例 5.62:1 被壓成 4.38:1），而且比原尺寸**放大 26%**，
+       圖內字反而變成 19.1px、比正文還大，與「圖降為證據」完全相反。
+       改為固定寬度、高度自動：所有圖同寬 → 縮放比一致 → 圖內字一律
+       約 9.2px（15.1×720/1180），扁圖高度自然變矮（不放大、不變形）。 */
+    .chart-media {{ width: 100%; max-width: 720px; height: auto; display: block;
       margin: 0 auto; cursor: zoom-in;
-      border: 1px solid #E5E7EB; border-radius: 8px; background: #FFFFFF; }}
-    .chart-media.zoom {{ height: auto; width: auto; cursor: zoom-out; }}
-    .chart-frame {{ width: 100%; height: 620px; border: 1px solid #E5E7EB; border-radius: 8px; }}
+      border: 1px solid var(--line); border-radius: 8px; background: var(--card); }}
+    /* 展開＝解除寬度上限，回到 SVG 原尺寸（1180 寬，字 15.1px）；
+       超出容器時由 .chart-stage 的 overflow-x 承接。 */
+    .chart-media.zoom {{ max-width: none; cursor: zoom-out; }}
+    .chart-frame {{ width: 100%; height: 620px; border: 1px solid var(--line); border-radius: 8px; }}
     /* 章節導覽：常駐頂部，scroll-margin-top 讓跳轉後標題不被蓋住。 */
-    .chapter-nav {{ position: sticky; top: 0; z-index: 5; background: #FFFFFF;
-      border-bottom: 1px solid #E5E7EB; padding: 8px 12px; margin: 0 -32px 20px;
-      display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }}
-    .nav-lead {{ font-size: 12px; color: #6B7280; letter-spacing: .05em; margin-right: 4px; }}
-    .navchip {{ font-size: 13px; text-decoration: none; color: #334155; background: #F1F5F9;
-      border: 1px solid #E2E8F0; border-radius: 999px; padding: 3px 11px; white-space: nowrap; }}
-    .navchip:hover {{ border-color: #2563EB; color: #2563EB; }}
-    .navchip:focus-visible {{ outline: 2px solid #2563EB; outline-offset: 2px; }}
+    .chapter-nav {{ position: sticky; top: 0; z-index: 5;
+      background: rgba(255,255,255,.94); backdrop-filter: blur(6px);
+      border-bottom: 1px solid var(--line); padding: 9px 32px; margin: 0 -32px 4px; }}
+    .chapter-nav-inner {{ max-width: 1200px; margin: 0 auto; display: flex; gap: 6px;
+      flex-wrap: wrap; align-items: center; }}
+    .nav-lead {{ font-size: 12px; color: var(--ink-soft); letter-spacing: .08em;
+      margin-right: 6px; }}
+    .navchip {{ font-size: 13px; text-decoration: none; color: var(--ink); background: var(--wash);
+      border: 1px solid transparent; border-radius: 999px; padding: 4px 12px; white-space: nowrap;
+      transition: color .12s, border-color .12s; }}
+    .navchip:hover {{ border-color: var(--brand-soft); color: var(--brand-soft); }}
+    .navchip:focus-visible {{ outline: 2px solid var(--brand-soft); outline-offset: 2px; }}
     /* 數據表預設 5 列，其餘收合（展開上限仍 20 列）。 */
     tr.folded {{ display: none; }}
     .data-table-wrap.expanded tr.folded {{ display: table-row; }}
-    .table-expand {{ border: 1px solid #CBD5E1; background: #FFFFFF; color: #2563EB;
-      font-size: 13px; padding: 5px 12px; border-radius: 7px; cursor: pointer; margin-top: 8px; }}
-    .table-expand:hover {{ background: #EFF6FF; }}
-    .explanation {{ margin-top: 14px; }}
+    .table-expand {{ border: 1px solid var(--line); background: var(--card); color: var(--brand-soft);
+      font-size: 13px; padding: 5px 12px; border-radius: 7px; cursor: pointer; margin-top: 10px; }}
+    .table-expand:hover {{ background: var(--wash); border-color: var(--brand-soft); }}
+    /* 解讀＝這一章的結論，給它左側 brand 線與淺底，和上方的圖表數據分開。 */
+    .explanation {{ margin-top: 18px; padding: 12px 16px; background: var(--wash);
+      border-left: 3px solid var(--brand); border-radius: 0 6px 6px 0; max-width: 78ch; }}
+    .explanation p {{ margin: 0; }}
+    .explanation.pending, .explanation.expired {{ background: transparent;
+      border-left-color: var(--line); color: var(--ink-soft); font-size: 14px; padding: 8px 0 0 14px; }}
     [hidden] {{ display: none !important; }}
+    /* 列印／轉 PDF：導覽無用途，章節不要被切成兩頁。 */
+    @media print {{
+      body {{ background: #FFFFFF; padding: 0; }}
+      .chapter-nav, .table-expand, .expand-btn {{ display: none; }}
+      .report-section {{ break-inside: avoid; box-shadow: none; }}
+      tr.folded {{ display: table-row; }}
+    }}
   </style>
 </head>
 <body>
   {nav_html}
-  <h1>{xml_text(page_title)}</h1>
-  {meta_bar}
+  <div class="page">
+    <header class="report-head">
+      <div class="rule"></div>
+      <h1>{xml_text(page_title)}</h1>
+      {meta_bar}
+    </header>
   {"".join(blocks)}
+  </div>
   <script>
     document.querySelectorAll('.toggle-btn').forEach(function (btn) {{
       btn.addEventListener('click', function () {{
