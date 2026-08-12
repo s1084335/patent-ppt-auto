@@ -11,6 +11,12 @@
 - [ ] 1.2 開發機路徑參數化補完（`regression.py` 的 PPTX_TO_PNG）；
       跑 `check_docs.py`＋`regression.py` 確認遷移零破壞
 - [ ] 1.3 中央份刪除；`.agents/context/README.md` 路由與引用更新
+- [ ] 1.4 新 `assemble_from_version.py` intake（自 unify-chart-source 移入，
+      2026-08-12：它本來就是 deck 第 1 步）——版本目錄／asset 端點 → 既有
+      `report.json`＋`charts/` 中間格式；texts←narratives.json、
+      tables/patent_ids←report_data rows、notes←encoding_notes＋reader_guide、
+      report_meta←version_meta（含 workspace 名稱，見 design 4b）；
+      `extract_report.py` 降 HTML fallback
 
 ## 2. TDD：B 案組版輸出層（窄轉換器）
 
