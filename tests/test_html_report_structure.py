@@ -234,12 +234,13 @@ class SourceSegmentTests(unittest.TestCase):
          "source_field": "effect_summary", "patent_count": 7},
     ]
 
-    def _cluster_html(self) -> str:
+    def _cluster_html(self, variants: list[dict] | None = None) -> str:
         sections = [{
             "title": "主題分析", "report_key": "cluster_topic_table",
             "rows": self._MIXED,
-            "variants": [{"label": "主題統計表（技術）", "variant_key": "topic_table_tech",
-                          "file": "annual_trend.svg"}],
+            "variants": variants or [{"label": "主題統計表（技術）",
+                                      "variant_key": "topic_table_tech",
+                                      "file": "annual_trend.svg"}],
         }]
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "report_trial_20260812_000000"
@@ -272,6 +273,55 @@ class SourceSegmentTests(unittest.TestCase):
         self.assertNotIn("提升操作平順", tech)
         self.assertIn("提升操作平順", effect)
         self.assertNotIn("拉繩滑雪模擬機構", effect)
+
+    def test_table_follows_variant_switch(self):
+        """🔴 表格必須**跟著切換鈕**（2026-08-12 使用者：「技術主題統計表看技術主題就好，
+        功效主題統計表看功效通道的就好」）。
+
+        原本切換鈕只管圖與解讀，表格永遠攤出全部——切換鈕對表格等於沒作用。
+        變體自帶 `source_field`（產出端寫入，消費端不從 variant_key 反猜）。
+        """
+        variants = [
+            {"label": "主題統計表（技術）", "variant_key": "topic_table_tech",
+             "file": "", "source_field": "wips_independent_claims"},
+            {"label": "主題統計表（功效）", "variant_key": "topic_table_effect",
+             "file": "", "source_field": "effect_summary"},
+        ]
+        html = self._cluster_html(variants)
+        panels = re.findall(
+            r'<div class="data-panel"[^>]*id="([^"]+)"([^>]*)>(.*?)(?=<div class="data-panel"|</section>)',
+            html, re.S)
+        self.assertEqual(len(panels), 2, "兩個變體應各有一個資料面板")
+        first_id, first_attrs, first_body = panels[0]
+        second_id, second_attrs, second_body = panels[1]
+        self.assertNotIn("hidden", first_attrs, "第一個變體的表預設可見")
+        self.assertIn("hidden", second_attrs, "其餘變體的表預設隱藏，由切換鈕開啟")
+        self.assertIn("拉繩滑雪模擬機構", first_body)
+        self.assertNotIn("提升操作平順", first_body, "技術那張表不得混入功效的列")
+        self.assertIn("提升操作平順", second_body)
+        # JS 要真的切它——只產面板不切換等於永遠看第一個
+        script = re.search(r"<script>.*?</script>", html, re.S).group(0)
+        self.assertIn("data-panel", script, "切換鈕必須同時切資料面板")
+
+    def test_variants_without_own_data_share_one_table(self):
+        """⚠ 變體無法區分資料時不得逐變體出表（IPC 的 L4／L5 共用同一份明細，
+        逐變體出表只會畫兩張一模一樣的）。"""
+        variants = [
+            {"label": "4 階", "variant_key": "L4", "file": "annual_trend.svg"},
+            {"label": "5 階", "variant_key": "L5", "file": "annual_trend.svg"},
+        ]
+        sections = [{"title": "IPC 主分類分布", "report_key": "ipc_main_distribution",
+                     "rows": [{"code": "A63B", "patent_count": 5}], "variants": variants}]
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "report_trial_20260812_000000"
+            run_dir.mkdir()
+            (run_dir / "annual_trend.svg").write_text(
+                "<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8")
+            path = run_dir / "index.html"
+            chart_runner.render_index(path, sections, {})
+            html = path.read_text(encoding="utf-8")
+        self.assertEqual(html.count("<table>"), 1, "共用資料的變體只該有一張表")
+        self.assertNotIn('class="data-panel"', html)
 
     def test_single_channel_stays_one_table(self):
         """只有一個通道時不得無故拆段（多一層標題只是噪音）。"""

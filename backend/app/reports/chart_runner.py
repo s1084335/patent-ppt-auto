@@ -2706,6 +2706,27 @@ def _data_table_html(rows: list[dict[str, Any]], report_name: str) -> str:
     return f'<div class="data-table-wrap">{table}</div>'
 
 
+def _variant_table_rows(variant: dict[str, Any],
+                        section_rows: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """這個變體要顯示的資料列；`None`＝它沒有自己的資料，與其他變體共用一張表。
+
+    兩種來源，都不靠猜：
+    - 變體自帶 `rows`（機會矩陣、主題演進都有）
+    - 變體自帶 `source_field`（主題統計表的技術／功效兩個變體）→ 依它過濾 section rows
+
+    ⚠ 不從 `variant_key` 反猜通道（`key.includes('tech')` 那種）：
+    產出端知道自己分了什麼通道，讓它寫進變體即可——猜法一旦與命名脫節就靜默錯配。
+    """
+    rows = variant.get("rows")
+    if isinstance(rows, list) and rows:
+        return rows
+    source_field = variant.get("source_field")
+    if source_field:
+        return [r for r in section_rows
+                if str(r.get("source_field")) == str(source_field)]
+    return None
+
+
 def _segmented_table_html(rows: list[dict[str, Any]], report_name: str) -> str:
     """rows 混了多個 `source_field` 時**分段各出一張表**。
 
@@ -2987,11 +3008,26 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             except (json.JSONDecodeError, OSError):
                 rows = []
 
-        # 混通道的 rows 分段出表（技術主題／功效分類不得混在同表，2026-07-21 定案）。
-        data_html = _segmented_table_html(rows, report_name)
-
         # 2. Chart panels + per-variant explanation
         group_id = f"sec{index}"
+
+        # 1b. 數據表：**跟著變體切換**（2026-08-12 使用者實機指出
+        # 「技術主題統計表看技術主題就好，功效主題統計表看功效通道的就好」）。
+        # 原本切換鈕只管圖與解讀，表格永遠攤全部——等於切換鈕對表格沒作用。
+        # ⚠ 只有「變體真的能決定不同資料」時才逐變體出表：
+        # IPC 的 L4／L5 兩變體共用同一份分類明細，逐變體出表只會畫兩張一樣的。
+        per_variant_rows = [_variant_table_rows(v, rows) for v in variants]
+        if len(variants) > 1 and any(vr is not None for vr in per_variant_rows):
+            data_html = "".join(
+                f'<div class="data-panel" data-group="{group_id}" id="{group_id}-{v_i}-data"'
+                f'{"" if v_i == 0 else " hidden"}>'
+                f'{_data_table_html(vr if vr is not None else rows, report_name)}</div>'
+                for v_i, vr in enumerate(per_variant_rows)
+            )
+        else:
+            # 單變體或變體無法區分資料：一張表。混通道時仍分段（fallback，
+            # 見 _segmented_table_html 的 07-21 定案說明）。
+            data_html = _segmented_table_html(rows, report_name)
         buttons = ""
         if len(variants) > 1:
             btns = "".join(
@@ -3304,6 +3340,10 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
         // 「圖切到 L5、解讀還停在 L4」的靜默錯配。
         document.querySelectorAll('.explanation[data-group="' + group + '"]').forEach(function (exp) {{
           exp.hidden = (exp.id !== target + '-exp');
+        }});
+        // 數據表同理（2026-08-12）：切到「統計表（功效）」就該只看功效那張表。
+        document.querySelectorAll('.data-panel[data-group="' + group + '"]').forEach(function (dp) {{
+          dp.hidden = (dp.id !== target + '-data');
         }});
       }});
     }});
@@ -4497,8 +4537,12 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     present = [c for c in channels
                if any(str(r.get("source_field")) == c[0] for r in topic_rows)]
     if len(present) > 1:
-        for index, (_, variant_key, label) in enumerate(present):
-            variants.insert(index, {"label": label, "file": "", "variant_key": variant_key})
+        # ⚠ 變體**自帶 source_field**：消費端（交付 HTML 的表格切換、前端過濾）
+        # 才不必從 variant_key 反猜通道。原本 `for index, (_, ...)` 把它丟掉，
+        # 下游只好各自用 key.includes('tech') 猜——同一份知識散成多處。
+        for index, (source_field, variant_key, label) in enumerate(present):
+            variants.insert(index, {"label": label, "file": "", "variant_key": variant_key,
+                                    "source_field": source_field})
     else:
         variants.insert(0, {"label": "主題統計表", "file": "", "variant_key": "topic_table"})
 
