@@ -105,12 +105,30 @@ deck_layout 幾何引擎（原樣）→ 每頁組 SVG（文字逐行斷好、絕
 - **開發期一次性映射校驗（Windows 開發機）**：五頁型逐一
   「Chromium 截圖 vs COM 轉圖 vs 實機開檔」三方對照，映射成立後固定；
   COM 自此只是開發量尺，**不進產線**。產線（Linux）零 Windows 依賴。
-- **⚠ 字型是部署前置（2026-08-12 使用者提問後定）**：Playwright／Chromium
-  量測與截圖在 Linux 原生可用，但 `getBBox` 結果取決於**裝了什麼字型**
-  ——現行 SVG 宣告 `Segoe UI`（Windows 字），Linux 伺服器無此字會 fallback，
-  字寬、撞版判定與截圖外觀全變。deck 組版 SVG 必須宣告**定案字型**並在
-  伺服器安裝同一份（建議開源 Noto Sans TC；用微軟字型需確認授權）；
-  映射校驗以該字型為準。
+### 4c. 字型定案＝Noto Sans TC（2026-08-12 使用者定案「先用 Noto Sans TC」）
+
+⚠ 字型是 B 案的**部署前置**：Chromium 的 `getBBox` 結果取決於**機器上裝了
+什麼字型**，量錯就整套版面判定錯。
+
+**現況實查（2026-08-12）——三處字型、四處宣告，全是 Windows 專有字：**
+
+| 位置 | 現行宣告 | 字級 |
+|---|---|---|
+| PPT 組版 `deck_layout.py:42-43` | `Microsoft JhengHei` | 標題 **24pt**／內文 **16pt**（僅兩級，規格鎖死） |
+| 圖表 SVG `chart_runner.py:298` | `'Microsoft JhengHei','Segoe UI',sans-serif` | 統一 **15px（11.25pt）**，資料與註記同級（`chart_sizing.WEB`） |
+| 圖表 SVG 根元素 ×3（`1563`／`1762`／`3897`） | `Segoe UI, sans-serif`（**與上一列不一致**，中文靠 fallback） | 同上 |
+| HTML 報表頁 `chart_runner.py:2912` | `"Microsoft JhengHei","Segoe UI",Arial` | — |
+
+**定案**：全部收斂為 **`Noto Sans TC`**（開源可散布、繁中字符完整），
+伺服器與開發機安裝同一份、同版本；四處宣告改為單一常數的唯一落點
+（⚠ 目前四處各寫各的，正是「同一份知識多處落點」——收斂時一併解掉）。
+
+🔴 **換字型必須重量既有常數，不得沿用**：
+- `LS_RENDER = 1.40`（實際行高倍率）是量 Microsoft JhengHei 16pt 得到的；
+- `MIN_CHART_PT = 9.0`／`MIN_CHART_PT_MULTI = 12.0` 的可讀性門檻同樣以正黑體為準；
+- 字級（24／16／15px）本身維持不變，變的是字型與由字型推導出的**量測常數**。
+
+映射校驗（tasks 2.3）必須在 Noto Sans TC 下重跑並重建 regression 基準。
 - 目視從「開發側手動」升級為**產線內建**：每次產製都出逐頁 PNG（截 SVG＝
   截成品），兼作前端 deck 紀錄的逐頁預覽。
 - `regression.py` 像素基準改比 SVG 截圖；版面回歸在改 skill 時守，

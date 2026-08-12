@@ -24,9 +24,16 @@
       SVG→DrawingML 映射、文字逐行定位＋關 wrap、超出詞彙 fail loud
 - [ ] 2.2 Green：`deck_layout` 輸出層改組 SVG＋窄轉換器；Chromium BBox 量測
       取代 `text_h()` 估算；逐頁截圖產出（目視 PNG）
+- [ ] 2.2b 🔴 **字型收斂＝Noto Sans TC**（design 4c，前置於映射校驗）：
+      四處宣告（`deck_layout.FONT`、`chart_runner.SVG_FONT_STYLE` 與三處
+      SVG 根元素、HTML 報表頁）收斂為**單一常數唯一落點**；開發機與伺服器
+      裝同版字型（部署腳本納入）；**重量**由字型推導的常數——`LS_RENDER`
+      （現 1.40，量自正黑體 16pt）、`MIN_CHART_PT` 9.0／`MIN_CHART_PT_MULTI`
+      12.0。⚠ 字級不變（標題 24／內文 16／圖表 15px），變的是字型與量測常數
 - [ ] 2.3 🔴 映射校驗（Windows 開發機、一次性）：五頁型
-      「Chromium 截圖 vs COM 轉圖 vs 實機開檔」三方對照，證據入
-      `output/_verify/`；regression 基準改比 SVG 截圖並重建
+      「Chromium 截圖 vs COM 轉圖 vs 實機開檔」三方對照，**以 Noto Sans TC
+      為準**，證據入 `output/_verify/`；regression 基準改比 SVG 截圖並重建
+      （⚠ 舊基準算自正黑體，不得沿用）
 - [ ] 2.4 封面素材：runner 注入 workspace 名稱作封面技術名稱
       （version_meta→workspace 名；全庫退回報表標題）
 
