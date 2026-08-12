@@ -859,18 +859,16 @@ class SelectiveRenderTests(unittest.TestCase):
             # 只查趨勢 section 依賴的兩張報表（公告補齊雙線），沒有其他報表被查。
             self.assertEqual(sorted(set(fetched)), ["application_trend", "publication_trend"])
             # 產出檔只有選中 sections 的圖＋固定數檔。
-            # ⚠ 2026-08-09 契約變更（P3 雙 profile）：每張圖多產一份 web profile
-            # （`.web.svg`），並多一個 `profile_manifest.json` 記錄 identity →
-            # 兩個 profile 的 path 與 checksum。
+            # 🔴 2026-08-12 契約變更（unify-chart-source 使用者定案）：每張圖
+            # 只產**一份** WEB 尺寸的 SVG（原檔名），`.web.svg` 副本與
+            # `profile_manifest.json` 隨雙 profile 機制退場。
             self.assertEqual(
                 sorted(result["files"]),
                 sorted([
                     "annual_trend.svg",
-                    "annual_trend.web.svg",
                     "report_data.json",
                     "index.html",
                     "artifact_manifest.json",
-                    "profile_manifest.json",
                     "version_meta.json",
                 ]),
             )
@@ -1108,9 +1106,10 @@ class SelectiveRenderTests(unittest.TestCase):
             self.assertNotIn(f"/ {year} /", svg)
         # 🔴 P-2：年份多到放不下時保留最新那段，並在圖上標明範圍——
         # 少資訊可以，靜默少才不行（2026-08-03 使用者定案）。
-        # ⚠ 欄寬窄時年份印兩位數（見 test_year_axis_labels_readable）——
-        # 驗「最新年份在軸上」，不驗四位數字面。
-        self.assertIn(">'29<", svg, "最新年份必須在")
+        # 🔴 2026-08-12 契約更新（unify-chart-source）：畫布 949→1180（WEB），
+        # 同一份 30 年資料放得下 25 年、欄寬足以印**四位數**年份——
+        # 原斷言的兩位數 `'29` 是窄畫布的產物。驗的不變量仍是「最新年份在軸上」。
+        self.assertIn(">2029<", svg, "最新年份必須在")
         self.assertIn("僅顯示", svg, "砍了年份卻沒標明範圍")
         radii = [float(value) for value in re.findall(r' r="([0-9.]+)"', svg)]
         self.assertGreaterEqual(min(radii), 9.0)
@@ -1573,8 +1572,15 @@ class SparseChartFillsFrameTests(unittest.TestCase):
         仍會放大），只是上限收到 `SPARSE_ROW_CEILING_FACTOR`＝2 倍。
         剩下的留白是**內容量的問題**（CPC L4 就只有一個分類），
         要靠版型或插圖補（W-3），不是把長條拉粗。
+
+        🔴 2026-08-12 契約更新（unify-chart-source）：畫布綁 WEB 後
+        max 高 460→560（+21.7%）、列高 28→32（+14.3%）——分母長得比分子快，
+        1 列的實際佔比由 ~0.30 降為 0.279，舊下限 0.28 差線。填框**機制零改動**
+        （實測 1/2/3 列＝156/210/426px），下限依新幾何校準為 0.26/0.35/0.6
+        ——此為量測後校準，範圍在 change 事前核准的「幾何測試逐支更新」內，
+        已於完成回報揭露。
         """
-        for n, floor in ((1, 0.28), (2, 0.35), (3, 0.6)):
+        for n, floor in ((1, 0.26), (2, 0.35), (3, 0.6)):
             height = self._height(n)
             self.assertGreaterEqual(
                 height, chart_runner.CHART_CANVAS_MAX_HEIGHT * floor,

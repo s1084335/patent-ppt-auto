@@ -1,89 +1,67 @@
-"""圖表文字的**最終顯示大小**要達標（2026-08-04 使用者定案）。
+"""圖表文字的**最終顯示大小**要達標——單一來源版契約。
 
-## 為什麼需要這支
+## 沿革（本檔兩次契約變更都記在這）
 
-SVG 的字級寫死 px，圖再被縮進 PPT 圖框——**縮放比由畫布尺寸決定**，
-所以同一個 18px 在不同頁面會變成完全不同的大小。實測第五輪 PPT：
-
-| 圖 | 畫布 | 縮放 | 18px 的最終大小 |
-|---|---|---|---|
-| 一般圖 | 949×460 | 0.900 | 12.2pt |
-| 扁圖（IPC/CPC L4） | 949×214 | 1.227 | 16.6pt |
-| 機會象限 | 1120×629 | 0.763 | 10.3pt |
-| 象限板 chip（12px） | 1120×629 | 0.763 | **6.9pt** |
-
-🔴 使用者定案：**資料文字一律 14pt、註記／圖例一律 12pt**
-（「超過的降下來，不夠的要調上去」）。
-
-⚠ 所以字級不能是寫死的數字，必須由畫布尺寸**反推**：
-`SVG字級px = 目標pt ÷ 0.75 ÷ 縮放`。新增任何圖都自動達標，不必逐張調。
+- 2026-08-04 使用者定案（PPT 時代）：資料 14pt／註記 12pt，字級由畫布尺寸
+  反推補償 PPT 圖框縮放——本檔原本逐畫布驗「縮進圖框後落在 14/12pt」。
+- 2026-08-11 使用者定案：「HTML 的圖中文字都維持在 15」——web 不補償、
+  資料與註記同級 15px。
+- 🔴 2026-08-12（unify-chart-source）：**單一來源＝WEB 尺寸**，PPT 預放大
+  退場（chart_scale ≡ 1.0），簡報端（deck skill）自行 refit 字級。
+  「縮進圖框後達標」的舊斷言失去對象，本檔改鎖：**任何畫布反推出的字級
+  都是同一個 15px**——這正是「全部圖表在頁面上同一字高」的使用者要求。
 """
 from __future__ import annotations
 
-import json
 import unittest
-from pathlib import Path
 
 from backend.app.reports import chart_runner as cr
 
-_THEME = Path(__file__).resolve().parents[1] / "skills" / "patent-report-ppt" / "theme.json"
+#: 15px @96dpi ＝ 11.25pt（chart_sizing.WEB 的唯一定義值）。
+_TARGET_PX = 15.0
 
 
-# ⚠ FrameConstantsMatchThemeTests 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
-
-
-class FontReachesTargetTests(unittest.TestCase):
-    """實測第五輪那批畫布，反推的字級要真的落在目標值。"""
+class FontIsUniformTests(unittest.TestCase):
+    """不同形狀的畫布（原 PPT 時代的實測樣本）反推字級必須全部相同。"""
 
     CANVASES = [
         ("一般圖", 949, 460),
         ("扁圖", 949, 214),
         ("機會象限", 1120, 629),
         ("年度矩陣", 942, 456),
+        ("web 畫布", 1180, 560),
     ]
 
-    @staticmethod
-    def _final_pt(width_px: int, height_px: int, font_px: float) -> float:
-        """這個字級縮進 PPT 之後的實際 pt。"""
-        w_in, h_in = width_px / 96.0, height_px / 96.0
-        frame = (cr.CHART_WIDE_FRAME_IN if w_in / h_in >= cr.WIDE_CHART_ASPECT_MIN
-                 else cr.CHART_HERO_FRAME_IN)
-        scale = min(frame[0] / w_in, frame[1] / h_in)
-        return font_px * 0.75 * scale
-
-    def test_data_text_lands_on_14pt(self):
+    def test_data_text_is_15px_everywhere(self):
         for name, w, h in self.CANVASES:
             with self.subTest(name):
                 px = cr.chart_font_px(w, h)
-                # 🔴 2026-08-07 契約更新：chart_font_px 加 1.005 epsilon（實測 4 欄
-                # 窄畫布縮放後 11.9957pt 跌破下限）。落點由「精確命中」改為
-                # 「**不低於目標**、溢出 ≤1%」——下限才是使用者可感知的硬約束。
-                final = self._final_pt(w, h, px)
-                self.assertGreaterEqual(final, cr.CHART_DATA_TARGET_PT,
-                                        f"{name} 資料文字低於 14pt")
-                self.assertLessEqual(final, cr.CHART_DATA_TARGET_PT * 1.01,
-                                     f"{name} 資料文字溢出逾 1%")
+                # epsilon 1.005 沿用（2026-08-07 邊界餘裕教訓）：≥15px、溢出 ≤1%。
+                self.assertGreaterEqual(px, _TARGET_PX, f"{name} 資料文字低於 15px")
+                self.assertLessEqual(px, _TARGET_PX * 1.01, f"{name} 溢出逾 1%")
 
-    def test_note_text_lands_on_12pt(self):
+    def test_note_equals_data(self):
+        """🔴 2026-08-11 契約反轉：註記**不再小一級**（使用者「都維持在 15」）。
+
+        舊契約「註記比資料小、避免搶注意力」是 PPT 版面的取捨；網頁上
+        全圖同字高才是定案。
+        """
         for name, w, h in self.CANVASES:
             with self.subTest(name):
-                px = cr.chart_font_px(w, h, target_pt=cr.CHART_NOTE_TARGET_PT)
-                final = self._final_pt(w, h, px)
-                self.assertGreaterEqual(final, cr.CHART_NOTE_TARGET_PT,
-                                        f"{name} 註記低於 12pt")
-                self.assertLessEqual(final, cr.CHART_NOTE_TARGET_PT * 1.01,
-                                     f"{name} 註記溢出逾 1%")
+                self.assertEqual(
+                    cr.chart_font_px(w, h, target_pt=cr.CHART_NOTE_TARGET_PT),
+                    cr.chart_font_px(w, h))
 
-    def test_note_is_smaller_than_data(self):
-        """⚠ 註記要比資料小一級——兩者一樣大時，備註會跟內容搶注意力。"""
+    def test_scale_is_identity(self):
+        """PPT 圖框補償退場——縮放比對任何畫布恆 1.0。"""
         for name, w, h in self.CANVASES:
             with self.subTest(name):
-                self.assertLess(cr.chart_font_px(w, h, target_pt=cr.CHART_NOTE_TARGET_PT),
-                                cr.chart_font_px(w, h))
+                self.assertEqual(cr.chart_scale(float(w), float(h)), 1.0)
 
     def test_targets_are_the_agreed_values(self):
-        self.assertEqual(cr.CHART_DATA_TARGET_PT, 14.0)
-        self.assertEqual(cr.CHART_NOTE_TARGET_PT, 12.0)
+        """15px＝11.25pt，資料與註記同值（2026-08-11／08-12 兩次定案的合成）。"""
+        self.assertEqual(cr.CHART_DATA_TARGET_PT, 11.25)
+        self.assertEqual(cr.CHART_NOTE_TARGET_PT, 11.25)
 
 
 if __name__ == "__main__":

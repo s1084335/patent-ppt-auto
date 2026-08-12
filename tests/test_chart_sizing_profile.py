@@ -26,11 +26,16 @@ from backend.app.reports import chart_runner as cr
 from backend.app.reports import chart_sizing
 
 
-class ChartRunnerBindsPptProfileTests(unittest.TestCase):
-    """chart_runner 的 11 個尺寸常數必須逐欄等於 chart_sizing.PPT。"""
+class ChartRunnerBindsWebProfileTests(unittest.TestCase):
+    """chart_runner 的 11 個尺寸常數必須逐欄等於 chart_sizing.WEB。
 
-    def test_constants_match_ppt_profile(self) -> None:
-        ppt = chart_sizing.PPT
+    🔴 2026-08-12 契約更新（unify-chart-source 使用者定案）：綁定由 PPT 翻轉為
+    **WEB**——每張圖只產一份 WEB 尺寸的 SVG，PPT 預放大退場、簡報端自行 refit。
+    「常數必須綁 profile、不得寫死」的守門不變，變的只是綁哪一份。
+    """
+
+    def test_constants_match_web_profile(self) -> None:
+        ppt = chart_sizing.WEB
         # (chart_runner 常數名, PPT profile 欄位名) 逐欄對照
         pairs = [
             ("CHART_CANVAS_WIDTH", "canvas_width"),
@@ -51,7 +56,7 @@ class ChartRunnerBindsPptProfileTests(unittest.TestCase):
                 self.assertEqual(
                     getattr(cr, const_name),
                     getattr(ppt, field_name),
-                    f"chart_runner.{const_name} 必須綁 chart_sizing.PPT.{field_name}，"
+                    f"chart_runner.{const_name} 必須綁 chart_sizing.WEB.{field_name}，"
                     "不得在 chart_runner 寫死數字",
                 )
 
