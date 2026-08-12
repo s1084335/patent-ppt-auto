@@ -79,7 +79,10 @@ class ReaderGuideTests(unittest.TestCase):
     def test_guide_covers_units_and_caveats(self):
         blocks = cb.reader_guide_blocks()
         text = " ".join(b["title"] + b["body"] for b in blocks)
-        for token in ("件", "群", "同族", "共同申請"):
+        # 🔴 2026-08-12 契約更新（使用者定案術語）：BERTopic 產物稱「主題」
+        # 不稱「群」——計數單位由「件／群」改「件／主題」
+        # （守門：tests/test_topic_terminology.py）。
+        for token in ("件", "主題", "同族", "共同申請"):
             self.assertIn(token, text, f"讀圖須知缺「{token}」說明")
 
     def test_guide_is_data_independent(self):

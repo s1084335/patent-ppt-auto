@@ -2336,8 +2336,12 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "kind_summary": "種類組成",
     # 年度四欄（問題 9）
     "family_count": "家族數",
-    "topic_count": "涉及技術群",
-    "new_topic_count": "首現技術群",
+    # 🔴 2026-08-12 使用者定案術語：BERTopic 產物一律稱「技術主題」，不用「群」
+    # （IPC/CPC「主群組」是專利分類官方用語，不在此列）。
+    "topic_count": "涉及技術主題",
+    "new_topic_count": "首現技術主題",
+    # 年度矩陣交叉表的合計欄（pivot_year_matrix 產出）。
+    "total": "總件數",
     "patent_count": "專利件數",
     "year": "年份",
     "application_count": "申請件數",
@@ -3387,10 +3391,14 @@ def _build_applicant_year_matrix_section(ctx: ChartContext) -> None:
         more_variants.append({"label": "11-20", "file": "applicant_year_matrix_more.svg", "variant_key": "more"})
     # 數據區改交叉表（2026-07-29 使用者定案「數據表是長格式，難讀」）：
     # 原本每列 (公司, 年份, 件數)，同一家公司的不同年份分散在不同列。
-    # 轉置在後端做，前端不必知道差異。
-    ctx.chart_rows["applicant_year_matrix"] = pivot_year_matrix(report["rows"], "applicant_display_name")
+    # 🔴 2026-08-12 接縫修復（使用者實機看到仍是長格式）：pivot 原本只放
+    # chart_rows 桶，但顯示層 08-11 起優先吃 **section["rows"]**（受理局交叉表
+    # 機制）——沒帶就退回 reports 桶長格式。同一份轉置同時掛兩處消費點。
+    pivoted = pivot_year_matrix(report["rows"], "applicant_display_name")
+    ctx.chart_rows["applicant_year_matrix"] = pivoted
     ctx.sections.append({
         "title": report["label_zh"],
+        "rows": pivoted,
         "variants": [{"label": "Top 10", "file": "applicant_year_matrix.svg", "variant_key": "default"}],
         "more_variants": more_variants,
         "more_label": "＋查看全部（第 11～20 名）",
@@ -4199,7 +4207,8 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     # 顯示規格（2026-07-21 二次修正）：板狀佈局完成，象限圖回歸 index——
     # cluster 卡片＝主題統計表＋各來源機會矩陣 tabs。
     ctx.sections.append({
-        "title": "分群分析",
+        # 2026-08-12 使用者定案術語：卡標題改「主題分析」（BERTopic 產物稱主題不稱群）。
+        "title": "主題分析",
         "report_key": "cluster_topic_table",
         # 🔴 rows 必須帶進 section（2026-07-29 使用者實機回報「技術、功效按鈕切不了」）：
         # 原本只寫 report_key、期待前端自己從 chart_rows 取，但 API 回給前端的 section
