@@ -468,17 +468,20 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 #report-inline-view:not(:empty) { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.4rem 1.6rem; margin-top: 0.9rem; }
 .report-inline-head { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
 /* 報表版本清單：最新展開、舊版收合可點開。 */
-.report-version-head { display: flex; gap: 0.7rem; align-items: baseline; flex-wrap: wrap; margin: 1.1rem 0 0.6rem; }
-.report-version-item { border: 1px solid var(--border); border-radius: 0.5rem; margin-bottom: 0.55rem; background: var(--panel); overflow: hidden; }
-.report-version-item.open { border-color: var(--accent); }
-.report-version-row { display: flex; width: 100%; align-items: center; gap: 0.55rem; padding: 0.6rem 0.85rem; background: var(--panel-2); border: none; color: var(--text); font-size: 0.9rem; cursor: pointer; text-align: left; }
-.report-version-row:hover { background: var(--panel); }
+.report-version-head { display: flex; gap: 0.7rem; align-items: baseline; flex-wrap: wrap; margin: 1.1rem 0 0.5rem; }
+.report-version-listbox { border: 1px solid var(--border); border-radius: 0.45rem; overflow: hidden; background: var(--panel); }
+.report-version-item { border-bottom: 1px solid var(--border); background: var(--panel); }
+.report-version-item:last-child { border-bottom: none; }
+.report-version-item.open { background: var(--panel-2); }
+.report-version-row { display: flex; width: 100%; align-items: center; gap: 0.55rem; min-height: 2.45rem; padding: 0.38rem 0.7rem; color: var(--text); font-size: 0.9rem; cursor: pointer; text-align: left; }
+.report-version-row:hover { background: var(--panel-2); }
 .report-version-row .ver-caret { color: var(--text-muted); width: 1em; }
 .report-version-row .ver-time { font-weight: 600; }
-.report-version-row .ver-name { color: var(--text-muted); font-size: 0.78rem; }
+.report-version-row .ver-name { color: var(--text-muted); font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 28rem; }
+.report-version-row .ver-export { flex: 0 0 auto; }
 .ver-badge { font-size: 0.72rem; padding: 0.1rem 0.45rem; border-radius: 0.75rem; background: var(--accent); color: #fff; }
 .ver-badge-ai { background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
-.report-version-body { padding: 1.1rem 1.3rem; }
+.report-version-body { display: none; }
 .report-version-body[hidden] { display: none; }
 /* PPT 版本清單（掛在報表版本下，一版可多個 _rN）：#10 */
 .report-ppt-list { margin-top: 1.1rem; padding-top: 0.9rem; border-top: 1px dashed var(--border); }
@@ -3569,7 +3572,9 @@ function renderReportVersionList() {
     const open = idx === 0;   // 最新那筆預設展開
     const safe = cssSafeVersion(v.version);
     return '<div class="report-version-item' + (open ? ' open' : '') + '" id="report-version-item-' + safe + '">'
-      + '<button class="report-version-row" onclick="toggleReportVersion(\'' + escHtml(v.version) + '\')"'
+      + '<div class="report-version-row" role="button" tabindex="0"'
+      + ' onclick="toggleReportVersion(' + jsQuote(v.version) + ')"'
+      + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();toggleReportVersion(' + jsQuote(v.version) + ')}"'
       + ' aria-expanded="' + (open ? 'true' : 'false') + '">'
       + '<span class="ver-caret">' + (open ? '▾' : '▸') + '</span>'
       + '<span class="ver-time">' + escHtml(fmtReportVersionLabel(v.version, v.generated_at)) + '</span>'
@@ -3577,7 +3582,9 @@ function renderReportVersionList() {
       + (v.has_narratives ? '<span class="ver-badge ver-badge-ai">含 AI 解讀</span>' : '')
       + '<span style="flex:1"></span>'
       + '<span class="ver-name">' + escHtml(v.version) + '</span>'
-      + '</button>'
+      + '<button class="btn btn-primary btn-sm ver-export" onclick="event.stopPropagation(); exportReportHtmlFile('
+      + jsQuote(v.version) + ', this)">匯出 HTML 檔</button>'
+      + '</div>'
       + '<div class="report-version-body" id="report-version-body-' + safe + '"'
       + (open ? '' : ' hidden') + '></div>'
       + '</div>';
@@ -3589,8 +3596,8 @@ function renderReportVersionList() {
     : '';
   wrap.innerHTML = '<div class="report-version-head">'
     + '<h3 class="panel-title" style="padding:0;margin:0">已產製的報表版本</h3>'
-    + '<span class="hint" style="padding:0">最新版本已展開；舊版本點列展開檢視。</span>'
-    + '</div>' + rows + more;
+    + '<span class="hint" style="padding:0">最新版本已載入；點選舊版本列可切換檢視。</span>'
+    + '</div><div class="report-version-listbox">' + rows + '</div>' + more;
   // 最新那筆進頁即載入內容（使用者要「立刻看到上次產的報表」）。
   if (items.length > 0) loadReportVersionContent(items[0].version);
 }
@@ -3680,10 +3687,11 @@ async function loadReportVersionContent(version) {
   const safe = cssSafeVersion(version);
   const body = el('report-version-body-' + safe);
   if (!body || reportVersions.loaded[version]) return;
-  body.innerHTML = '<div class="hint">載入報表內容中…</div>';
+  body.innerHTML = '';
   try {
     const url = API + '/reports/versions/' + encodeURIComponent(version) + '/content';
     const content = await getJson(url);
+    // exportReportHtmlFile 已搬到緊湊版本列，body 只負責觸發內容載入與 viewer 切換。
     // R9（2026-07-27）：報表種類頁改「選單選一份、只顯示那一份」。版本區不再把整份
     // 報告全列出來——那正是使用者說的「不同報表混在一起」。這裡只放 PPT 清單，
     // 報表本體交給上方選單驅動的 #report-inline-view（見 renderReportViewer）。
@@ -3692,11 +3700,7 @@ async function loadReportVersionContent(version) {
     // 2026-08-11 使用者定案：版本區只留「匯出 HTML 檔」（自包單檔，SVG 內嵌
     // data URI，離線可開）；「開啟新分頁」按鈕使用者裁示不需要（報表本體
     // 已在頁內檢視選單顯示，開新分頁是重複入口）。
-    body.innerHTML = '<div class="report-ppt-list">'
-      + '<button class="btn btn-primary btn-sm" onclick="exportReportHtmlFile('
-      + "'" + escHtml(version) + "'" + ', this)">匯出 HTML 檔</button>'
-      + '<span class="hint" style="margin-left:.6rem">含圖表與 AI 解讀；解讀未產出時卡片會標示待產生。</span>'
-      + '</div>';
+    body.innerHTML = '';
     // 🔴 展開哪一版就顯示哪一版的報表（2026-07-30 使用者實機回報
     // 「我重產報告後，舊的報表無法再出現」「報表要能跟隨這裡收起來或出現」）。
     //
@@ -4143,10 +4147,6 @@ function isClusterSection(section) {
     || clusterVariantMatchesReport(v, 'cluster_topic_table'));
 }
 
-function hasClusterVariant(section, reportKey) {
-  return (section.variants || []).some(v => clusterVariantMatchesReport(v, reportKey));
-}
-
 function clusterVariantMatchesReport(variant, reportKey) {
   const key = String((variant && variant.variant_key) || '');
   const file = String((variant && variant.file) || (variant && variant.chart_url) || '');
@@ -4168,8 +4168,26 @@ function buildReportViewOptions(content) {
   const options = [];
   sections.forEach(function (section, sectionIndex) {
     if (isClusterSection(section)) {
-      clusterReportViews(section).forEach(function (view) {
-        options.push(Object.assign({ sectionIndex: sectionIndex, source_field: DEFAULT_TOPIC_SOURCE_FIELD }, view));
+      // 2026-08-12 使用者定案：主題分析家族**逐 variant** 攤成五個選項
+      //（統計表技術／功效、機會矩陣技術／功效、主題演進技術），包在 optgroup 下。
+      // 🔴 舊拆法只出「統計表＋機會矩陣」兩檢視，且其變體過濾器不認
+      // timeline_*——主題演進圖資料明明在 report_data 裡，檢視頁卻
+      // **完全選不到**（使用者實機發現）。
+      (section.variants || []).forEach(function (variant, variantIndex) {
+        const key = String(variant.variant_key || '');
+        options.push({
+          sectionIndex: sectionIndex,
+          variantIndex: variantIndex,
+          group: section.title || '主題分析',
+          label: variant.label || ('變體 ' + (variantIndex + 1)),
+          // 重產解讀的落點：解讀 job 只認 cluster_topic_table／opportunity_quadrant
+          // 兩個 report_key（timeline 與統計表共用前者），不能拿 variant_key 亂打。
+          report_key: key.indexOf('opportunity') === 0
+            ? 'opportunity_quadrant' : 'cluster_topic_table',
+          // 通道已由 variant 自身編碼（*_tech／*_effect），不再靠使用者點分頁鈕。
+          source_field: key.slice(-7) === '_effect'
+            ? 'effect_summary' : DEFAULT_TOPIC_SOURCE_FIELD,
+        });
       });
       return;
     }
@@ -4185,17 +4203,6 @@ function buildReportViewOptions(content) {
   return options;
 }
 
-function clusterReportViews(section) {
-  const views = [
-    { report_key: 'cluster_topic_table', label: reportLabelForKey('cluster_topic_table') },
-    { report_key: 'opportunity_quadrant', label: reportLabelForKey('opportunity_quadrant') },
-  ];
-  return views.filter(function (view) {
-    if (view.report_key === 'cluster_topic_table') return (section.rows || []).length || hasClusterVariant(section, view.report_key);
-    return hasClusterVariant(section, view.report_key);
-  });
-}
-
 function fillReportViewSelect(content) {
   reportViewContent = content;
   const sel = el('report-view-select');
@@ -4205,9 +4212,21 @@ function fillReportViewSelect(content) {
     sel.innerHTML = '<option value="">（尚無報表內容）</option>';
     return;
   }
-  sel.innerHTML = reportViewOptions
-    .map((opt, i) => '<option value="' + i + '">' + escHtml(opt.label || ('報表 ' + (i + 1))) + '</option>')
-    .join('');
+  // 帶 group 的連續選項包進 <optgroup>（目前只有主題分析家族用到）。
+  // value 仍是攤平後的 index——renderReportViewer 靠它查 reportViewOptions，不能動。
+  let html = '';
+  let openGroup = null;
+  reportViewOptions.forEach(function (opt, i) {
+    const g = opt.group || null;
+    if (g !== openGroup) {
+      if (openGroup !== null) html += '</optgroup>';
+      if (g !== null) html += '<optgroup label="' + escHtml(g) + '">';
+      openGroup = g;
+    }
+    html += '<option value="' + i + '">' + escHtml(opt.label || ('報表 ' + (i + 1))) + '</option>';
+  });
+  if (openGroup !== null) html += '</optgroup>';
+  sel.innerHTML = html;
   sel.value = '0';
   renderReportViewer();
 }
@@ -4303,6 +4322,28 @@ function sectionForReportView(section, option, sourceField) {
     });
   }
   const reportKey = option.report_key || 'cluster_topic_table';
+  // 逐 variant 選項（2026-08-12）：選單已指定唯一 variant，直接取用，
+  // 不再走 clusterVariantMatchesReport 過濾——那條認不得 timeline_*。
+  // 數據列：圖類 variant 自帶 rows；統計表 variant 無 rows，退 section.rows
+  // 依選項編碼的通道（option.source_field）過濾。
+  if (option.variantIndex !== undefined && option.variantIndex !== null) {
+    const picked = (section.variants || [])[option.variantIndex] || null;
+    const channel = option.source_field || sourceField;
+    const channelRows = (section.rows || [])
+      .filter(row => !row.source_field || row.source_field === channel);
+    const pickedRows = (picked && Array.isArray(picked.rows) && picked.rows.length)
+      ? picked.rows : channelRows;
+    return Object.assign({}, section, {
+      title: option.label || section.title,
+      report_key: option.report_key || section.report_key,
+      rows: pickedRows,
+      column_labels: (picked && picked.column_labels
+        && Object.keys(picked.column_labels).length)
+        ? picked.column_labels : section.column_labels,
+      thresholds: picked ? (picked.thresholds || {}) : {},
+      variants: picked ? [picked] : [],
+    });
+  }
   const rows = (section.rows || []).filter(row => !row.source_field || row.source_field === sourceField);
   const variants = (section.variants || []).filter(variant =>
     clusterVariantMatchesReport(variant, reportKey) && clusterVariantMatchesSource(variant, sourceField)
@@ -4422,8 +4463,14 @@ function reportSingleHtml(section, option) {
   // clusterSourceField，這行卻拿不到，畫面重繪仍是技術。
   // ⚠ 靜默失敗：按鈕 active 樣式切了、資料沒換，比毫無反應更誤導。
   // option.source_field 降為 fallback（僅在使用者尚未點過任何通道時生效）。
-  const sourceField = exportPreview.clusterSourceField
-    || (option && option.source_field) || DEFAULT_TOPIC_SOURCE_FIELD;
+  // 逐 variant 選項（2026-08-12）例外：通道由 variant 自身編碼（*_tech／*_effect），
+  // 選項值就是定案，不能被使用者上次點的分頁蓋掉——分頁鈕在此路徑也不再顯示。
+  const hasVariantPick = option
+    && option.variantIndex !== undefined && option.variantIndex !== null;
+  const sourceField = hasVariantPick
+    ? (option.source_field || DEFAULT_TOPIC_SOURCE_FIELD)
+    : (exportPreview.clusterSourceField
+      || (option && option.source_field) || DEFAULT_TOPIC_SOURCE_FIELD);
   const viewSection = sectionForReportView(section, option || {}, sourceField);
   const rows = viewSection.rows || [];
   let dataHtml = '<p class="hint" style="padding:0.3rem 0">尚無資料。</p>';
@@ -4479,7 +4526,7 @@ function reportSingleHtml(section, option) {
   const chartOnly = reportChartOnlyLayout(viewSection);
   return '<article class="export-card">'
     + '<h3>' + escHtml(viewSection.title || '') + '</h3>'
-    + (isClusterSection(section) ? reportSourceTabsHtml(sourceField) : '')
+    + (isClusterSection(section) && !hasVariantPick ? reportSourceTabsHtml(sourceField) : '')
     + reportVariantTabsHtml(viewSection, (option && option.sectionIndex) || 0)
     // 沒有圖表時表格用整寬（2026-07-30 使用者定案「這邊沒有圖表，那表格就可以用左右邊」）：
     // 主題統計表改為純數據表後右半邊只顯示「尚無圖表」，表格卻被壓在 45% 寬、
