@@ -85,6 +85,12 @@ deck_layout 幾何引擎（原樣）→ 每頁組 SVG（文字逐行斷好、絕
 - **開發期一次性映射校驗（Windows 開發機）**：五頁型逐一
   「Chromium 截圖 vs COM 轉圖 vs 實機開檔」三方對照，映射成立後固定；
   COM 自此只是開發量尺，**不進產線**。產線（Linux）零 Windows 依賴。
+- **⚠ 字型是部署前置（2026-08-12 使用者提問後定）**：Playwright／Chromium
+  量測與截圖在 Linux 原生可用，但 `getBBox` 結果取決於**裝了什麼字型**
+  ——現行 SVG 宣告 `Segoe UI`（Windows 字），Linux 伺服器無此字會 fallback，
+  字寬、撞版判定與截圖外觀全變。deck 組版 SVG 必須宣告**定案字型**並在
+  伺服器安裝同一份（建議開源 Noto Sans TC；用微軟字型需確認授權）；
+  映射校驗以該字型為準。
 - 目視從「開發側手動」升級為**產線內建**：每次產製都出逐頁 PNG（截 SVG＝
   截成品），兼作前端 deck 紀錄的逐頁預覽。
 - `regression.py` 像素基準改比 SVG 截圖；版面回歸在改 skill 時守，
