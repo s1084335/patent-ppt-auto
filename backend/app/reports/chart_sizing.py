@@ -1,29 +1,33 @@
-"""圖表尺寸與字級的兩份 profile（2026-08-03 使用者定案：只分尺寸與字級，版面邏輯共用）。
+"""圖表尺寸與字級的**唯一** profile。
 
-## 為什麼存在
+## 為什麼只剩一份
 
-`chart_runner` 產的 SVG 同時被網頁直接顯示、被 PPT 縮進圖框——兩邊約束不同：
-PPT 圖框 4.32in、縮兩次後字要 ≥12pt；網頁滿寬可捲動。2026-08-03 實證：
-為 PPT 把年度矩陣改 16 欄，連帶把三張**報表區塊**的圖弄壞（年份黏串、泡泡互撞、
-註記壓長條）——使用者定案「你要嘛把兩邊獨立分開，要嘛注意修 ppt 不要搞到這邊也壞掉」。
+2026-08-03 曾分 `PPT`／`WEB` 兩份：同一張 SVG 要同時被網頁直接顯示、被 PPT 縮進
+圖框，兩邊約束衝突（那次為 PPT 把年度矩陣改 16 欄，連帶把三張報表區塊的圖弄壞
+——年份黏串、泡泡互撞、註記壓長條）。當時的解法是「只把會衝突的參數分開，
+版面邏輯共用」。
 
-三個選項中選了中間：**只把會衝突的參數分開**（畫布尺寸、字級目標、列高、圖框），
-版面邏輯（排序、左右配置、註記內容、編碼說明）共用——完全分成兩套渲染被否決，
-版面邏輯分開會漂移成兩套，正是「同一份知識只能有一個定義處」要防的事。
+2026-08-12 `unify-chart-source`（RPT-010）定案**圖表單一來源**：引擎只輸出一份
+網頁尺寸 SVG，簡報端自行 refit 字級，PPT 補償鏈整條退場。`PPT` profile 自此
+沒有任何消費者，連同只有它在用的圖框欄位（`hero_frame_in`／`wide_frame_in`／
+`wide_aspect_min`——那是**已移除的 `build_ppt`** 的數字）於
+`restructure-html-report-export` 一併刪除。
+
+⚠ 不留「以後可能用到」的死參數：那些圖框與 deck skill 的幾何對不起來，
+留著會讓人以為改它能影響簡報，**而且不會有任何東西報錯**。簡報端的尺寸知識
+現由 deck 組版層單一持有。
 
 ## 使用規則
 
-- 🔴 **修 PPT 的尺寸／字級 → 只改 `PPT` profile**（或 theme.json 的圖框，
-  一致性測試會盯兩邊相等）。
-- `WEB` profile 目前與 `PPT` 同值（單一輸出、兩端共用同一張 SVG）；
-  日後網頁要走自己的尺寸時，改 `WEB` 並在渲染端分流——欄位已備好，不必再翻架構。
+- 改圖表尺寸／字級 → 改 `WEB`；`chart_runner` 的 11 個尺寸常數由它推導，
+  一致性測試（`test_chart_sizing_profile`）盯著，寫死數字就會紅。
 - ⚠ **位置參數不在此列**：標籤位數、泡泡半徑、註記位置一律由這些尺寸**推導**
-  （見 chart_runner 的 `chart_font_px`／`solve_chart_font`）。兩份尺寸配上寫死的
+  （見 chart_runner 的 `chart_font_px`／`solve_chart_font`）。尺寸配上寫死的
   位置＝壞兩倍，不是壞一半（2026-08-03 三個 bug 全是這樣來的）。
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -38,45 +42,29 @@ class ChartSizing:
     year_window: int             # 年度矩陣顯示年數
     bar_height: int              # 排名長條高（px）
     bubble_min_radius: float     # 年度矩陣大泡泡的最小半徑（px）
-    hero_frame_in: tuple[float, float]   # PPT 側欄版型圖框（in）＝theme.chart_hero.image
-    wide_frame_in: tuple[float, float]   # PPT 滿寬版型圖框（in）＝theme.chart_wide.image
-    wide_aspect_min: float       # 長寬比達此值改用滿寬版型（與 build_ppt 同值）
 
 
-#: PPT profile——目前的權威值（圖是進簡報的 artifact，以 PPT 約束為準）。
-PPT = ChartSizing(
-    canvas_width=949,
-    canvas_max_height=460,
-    data_target_pt=14.0,    # 2026-08-04 使用者定案「超過的降下來，不夠的要調上去」
-    note_target_pt=12.0,    # 註記比資料小一級；12pt 是全案硬底線，不得再低
-    row_height=28,
-    year_window=16,         # 2026-08-03 使用者定案（原 15 是拍的，16 由資料橫距量出）
-    bar_height=18,
-    bubble_min_radius=14.0,
-    hero_frame_in=(8.9, 5.0),
-    # 🔴 2026-08-09 高度 3.2→2.85：底部要點橫幅只有 1.28in、放不下 3 條要點
-    # （實機 p7 丟了 2 條）。頁尾固定在 6.78 故橫幅無法往下延伸，只能從圖框
-    # 讓出 0.35in（橫幅因此得到 1.63in，+27%）。
-    # ⚠ 這個值必須與 theme.json 的 chart_wide.image_height_in 相同——
-    # test_chart_font_target.FrameConstantsMatchThemeTests 盯著，改一邊就會紅。
-    wide_frame_in=(12.13, 2.85),
-    wide_aspect_min=3.5,
-)
-
-#: WEB profile（P3，2026-08-07 起有自己的值）——網頁滿寬可捲、不經 PPT 圖框縮放。
-#: 🔴 只改**尺寸與字級**：排序、配色、註記內容、版面邏輯一律與 PPT 共用
-#: （separate-web-and-ppt-chart-profiles 的 Non-goals 明列不建第二套 engine）。
-#: - 畫布更寬：網頁沒有 4.32in 圖框限制，同樣列數更不擠
-#: - 列高略增：滑鼠瞄準與可讀性優先，不必為頁高妥協
-#: 🔴 2026-08-11 使用者定案「HTML 的圖中文字和表格文字都維持在 15」：
-#:   web 的字級解算**不再補償 PPT 圖框縮放**（chart_scale 對 web 恆 1.0——
-#:   原本沿用 PPT 補償，畫布小的圖字被放大到「很清楚但很突兀」），
-#:   target 15px＝11.25pt，資料與註記同級，全部圖表在頁面上同一字高。
-WEB = replace(
-    PPT,
+#: 🔴 唯一 profile（2026-08-12 restructure-html-report-export 起）。
+#:
+#: 沿革：2026-08-03 曾分 `PPT`／`WEB` 兩份，因為同一張 SVG 要同時滿足
+#: 「PPT 圖框 4.32in、縮兩次後字要 ≥12pt」與「網頁滿寬可捲」兩種約束。
+#: `unify-chart-source`（RPT-010，2026-08-12 驗收）定案**單一來源**後，
+#: 引擎只輸出網頁尺寸、簡報端自行 refit，`PPT` profile 隨即失去所有消費者
+#: ——連同只有它在用的圖框欄位（`hero_frame_in`／`wide_frame_in`／
+#: `wide_aspect_min`，那是**已移除的 `build_ppt`** 的數字）一併刪除。
+#: ⚠ 不留「以後可能用到」的死參數：它與 deck skill 的幾何對不起來，
+#: 留著會讓人以為改它能影響簡報，而且不會有任何東西報錯。
+#:
+#: 目前的值（2026-08-11 使用者定案「HTML 的圖中文字和表格文字都維持在 15」）：
+#: target 15px＝11.25pt，資料與註記同級，全部圖表在頁面上同一字高；
+#: `chart_scale` 恆 1.0，不做任何圖框補償。
+WEB = ChartSizing(
     canvas_width=1180,
     canvas_max_height=560,
     data_target_pt=11.25,   # 15px @96dpi
     note_target_pt=11.25,   # 使用者「都維持在 15」——註記不再小一級
     row_height=32,
+    year_window=16,         # 2026-08-03 使用者定案（原 15 是拍的，16 由資料橫距量出）
+    bar_height=18,
+    bubble_min_radius=14.0,
 )

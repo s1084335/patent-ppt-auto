@@ -190,14 +190,11 @@ PT_PER_PX = 72.0 / PX_PER_INCH
 CHART_DATA_TARGET_PT = _SIZING.data_target_pt   # 資料文字（列標籤、數值、chip…）
 CHART_NOTE_TARGET_PT = _SIZING.note_target_pt   # 註記（圖例、編碼說明、來源）
 
-#: PPT 圖框尺寸（英吋）。⚠ 這是 `theme.json` 的**刻意複製**：
-#: `chart_runner` 在後端、`theme.json` 在 skill 目錄，跨模組讀不到。
-#: 依「同一份知識只能有一個定義處」的規則，無法 import 時加一致性測試釘住
-#: （`test_chart_font_target.FrameConstantsMatchThemeTests`），讓分岔立刻紅。
-CHART_HERO_FRAME_IN = _SIZING.hero_frame_in
-CHART_WIDE_FRAME_IN = _SIZING.wide_frame_in
-#: 長寬比達到多少就會被組版端改用滿寬版型（與 build_ppt.WIDE_CHART_ASPECT_MIN 同值）。
-WIDE_CHART_ASPECT_MIN = _SIZING.wide_aspect_min
+#: ⚠ PPT 圖框常數（`CHART_HERO_FRAME_IN`／`CHART_WIDE_FRAME_IN`／
+#: `WIDE_CHART_ASPECT_MIN`）已於 2026-08-12 移除（restructure-html-report-export）：
+#: 它們是**已移除的 `build_ppt`** 的圖框，`unify-chart-source` 單一來源後無任何
+#: 消費者，且與 deck skill 的幾何是兩套對不起來的數字——留著是假知識。
+#: 簡報端的尺寸知識現由 deck 組版層單一持有。
 
 
 def chart_scale(width_px: float, height_px: float) -> float:
@@ -2544,18 +2541,33 @@ def table_display_spec(reports: dict[str, dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+#: 數據表的兩個列數界線。
+#: - `DATA_TABLE_MAX_ROWS`＝單章呈現上限（2026-07-21 使用者定案「不讓人看百筆數據」，不變）
+#: - `DATA_TABLE_PREVIEW_ROWS`＝**預設**顯示列數（2026-08-12 交付檔章節式改版新增）
+#: ⚠ 本次只改「預設密度」，沒有放寬上限——第 6～20 列收合可展開，第 21 列起仍不呈現。
+DATA_TABLE_MAX_ROWS = 20
+DATA_TABLE_PREVIEW_ROWS = 5
+
+
 def _data_table_html(rows: list[dict[str, Any]], report_name: str) -> str:
-    """數據區：最多 20 筆＋總計列；不提供全量展開（2026-07-21 使用者補充——
-    不讓人看百筆數據），超出只註記共幾列；完整 rows 由 DB／report_data.json 保存。"""
+    """數據區：預設 5 列、可展開至 20 列＋總計列；超過 20 列只註記共幾列
+    （2026-07-21 使用者定案「不讓人看百筆數據」，完整 rows 由 DB／report_data.json 保存）。
+
+    🔴 2026-08-12（restructure-html-report-export）：交付檔改章節式後，數據表是
+    最肥的一項——申請人年度矩陣 21 列單張 697px。改為預設只露前
+    `DATA_TABLE_PREVIEW_ROWS` 列，其餘掛 `folded` 由展開鈕控制；**總計列永遠可見**
+    （它是結論不是明細，收起來等於把重點藏了）。
+    """
     if not rows:
         return '<p class="data-empty">無資料</p>'
     excluded = DATA_TABLE_EXCLUDED_COLUMNS.get(report_name, ())
     columns = [c for c in rows[0].keys() if c not in excluded]
     header = "".join(f"<th>{xml_text(DATA_COLUMN_LABELS.get(c, c))}</th>" for c in columns)
     body_rows = []
-    for r in rows[:20]:
+    for row_index, r in enumerate(rows[:DATA_TABLE_MAX_ROWS]):
         cells = "".join(f"<td>{xml_text(_humanize_cell(r.get(c, '')))}</td>" for c in columns)
-        body_rows.append(f"<tr>{cells}</tr>")
+        folded = ' class="folded"' if row_index >= DATA_TABLE_PREVIEW_ROWS else ""
+        body_rows.append(f"<tr{folded}>{cells}</tr>")
     # Totals row（class 放 td：列本身維持素 <tr>，與一般資料列同構）；
     # 只對加總有意義的欄出值，其餘「—」避免誤導。
     total_cells = []
@@ -2567,8 +2579,15 @@ def _data_table_html(rows: list[dict[str, Any]], report_name: str) -> str:
             total_cells.append('<td class="totals-cell"><strong>—</strong></td>')
     body_rows.append(f"<tr>{''.join(total_cells)}</tr>")
     table = f'<table><thead><tr>{header}</tr></thead><tbody>{"".join(body_rows)}</tbody></table>'
-    if len(rows) > 20:
+    shown = min(len(rows), DATA_TABLE_MAX_ROWS)
+    if shown > DATA_TABLE_PREVIEW_ROWS:
+        label = f"展開其餘 {shown - DATA_TABLE_PREVIEW_ROWS} 列（總列數 {len(rows)}）"
+        table += (f'<button type="button" class="table-expand" data-label="{xml_text(label)}">'
+                  f'{xml_text(label)}</button>')
+    if len(rows) > DATA_TABLE_MAX_ROWS:
         # 2026-07-21 定案修正：排名類「保存」也只留前 20（長尾不落庫），完整可由引擎重算
+        # ⚠ 文案字面是既有契約（test_data_table_max_20_rows_no_full_expand 盯著），
+        #   本次章節式改版只動預設密度，不改這句。
         table += f'<p class="data-note">顯示前 20 列｜總列數 {len(rows)}（入庫同前 20，完整可重算）</p>'
     return f'<div class="data-table-wrap">{table}</div>'
 
@@ -2795,6 +2814,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     narr_expired = narratives.pop("_expired", False)
 
     blocks: list[str] = []
+    nav_entries: list[tuple[str, str]] = []   # (錨點 key, 章節名)——導覽只列真的有產出的章節
     for index, section in enumerate(sections):
         variants = section.get("variants", [])
         if not variants:
@@ -2837,14 +2857,30 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             )
             buttons = f'<div class="toggle-bar">{btns}</div>'
 
-        def _panel_narrative(variant: dict[str, Any]) -> str:
+        def _panel_narrative(variant: dict[str, Any], v_i: int | None = None,
+                             group: str = "") -> str:
+            """單一變體的解讀區塊。
+
+            🔴 2026-08-12（restructure-html-report-export）：交付檔順序改為
+            圖 → 表 → 解讀後，解讀**離開了 chart-panel**（表插在中間），
+            不再靠 panel 的 hidden 連動。因此帶 `data-group` 與 `-exp` 尾綴的 id，
+            由 toggle JS 一併切換——否則「切到 L5、讀著 L4 解讀」是**靜默錯配**，
+            畫面不會有任何異狀。`v_i is None` 時維持舊行為（more 區塊圖文同框）。
+            """
             vk = variant.get("variant_key", "default")
             if narr_expired:
-                return '<div class="explanation expired">⚠️ 解讀版本過期</div>'
-            text = _variant_narrative_text(narratives, report_name, vk)
-            if text:
-                return f'<div class="explanation"><p>{xml_text(text)}</p></div>'
-            return '<div class="explanation pending">⏳ 待解讀</div>'
+                body, cls = "⚠️ 解讀版本過期", "explanation expired"
+            else:
+                text = _variant_narrative_text(narratives, report_name, vk)
+                if text:
+                    body, cls = f"<p>{xml_text(text)}</p>", "explanation"
+                else:
+                    body, cls = "⏳ 待解讀", "explanation pending"
+            if v_i is None:
+                return f'<div class="{cls}">{body}</div>'
+            hidden = "" if v_i == 0 else " hidden"
+            return (f'<div class="{cls}" data-group="{group}" '
+                    f'id="{group}-{v_i}-exp"{hidden}>{body}</div>')
 
         # 🔴 2026-08-11：index 改嵌 **web profile** 圖檔（`.web.svg` 存在就用）。
         # 原本嵌 PPT 版——PPT 版字級為補償圖框縮放而逐圖不同，在網頁原尺寸顯示
@@ -2856,10 +2892,17 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             return render_chart_embed(
                 resolve_web_asset(file, lambda f: (run_dir / f).exists()) if file else file)
 
+        # 🔴 圖 panel 只放圖（解讀已移到表之後）；`data-group` 供 toggle JS 精確選取。
+        # ⚠ 原本 JS 以 `[id^="{group}-"]` 選 panel，會**連 more 區塊的 panel 一起選中**
+        # 並設 hidden——切換過變體再展開「查看全部」就是一片空白。改用 data-group
+        # 屬性選取（more panel 不帶），順手消掉這個既有缺陷。
         panels = "".join(
-            f'<div class="chart-panel" id="{group_id}-{v_i}"{"" if v_i == 0 else " hidden"}>'
-            f'{_embed(variant["file"])}'
-            f'{_panel_narrative(variant)}</div>'
+            f'<div class="chart-panel" data-group="{group_id}" id="{group_id}-{v_i}"'
+            f'{"" if v_i == 0 else " hidden"}>{_embed(variant["file"])}</div>'
+            for v_i, variant in enumerate(variants)
+        )
+        explanations = "".join(
+            _panel_narrative(variant, v_i, group_id)
             for v_i, variant in enumerate(variants)
         )
         more_variants = section.get("more_variants", [])
@@ -2888,17 +2931,44 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             link_html = f'<div class="section-links">{items}</div>'
         note = f'<p class="section-note">{xml_text(section["note"])}</p>' if section.get("note") else ""
 
+        # 🔴 2026-08-12 使用者定案：章節順序＝**圖 → 數據表 → 解讀**
+        # （原為 表 → 圖 → 解讀，一進章節先撞到一大片數字）。
+        # 章節 id 供頂部導覽錨點跳轉；章節名不另建對照表，直接用 section["title"]。
+        nav_entries.append((report_name, title))
         blocks.append(
-            f'<section class="report-section">'
+            f'<section class="report-section" id="sec-{xml_text(report_name)}">'
             f'<div class="section-head"><h2>{xml_text(title)}</h2>{link_html}</div>'
             f'{note}'
-            f'<div class="card-data">{data_html}</div>'
             f'{buttons}<div class="chart-stage">{panels}{more_html}</div>'
+            f'<div class="card-data">{data_html}</div>'
+            f'{explanations}'
             f'</section>'
         )
 
     meta_items = " · ".join(f"{xml_text(k)}: {xml_text(v)}" for k, v in meta.items())
     meta_bar = f'<p class="meta-bar">{meta_items}</p>' if meta_items else ""
+
+    # 🔴 標題用實際分析範圍，不是寫死英文 `Patent Report`（讀者拿到檔案分不出哪一份）。
+    # 來源優先序：呼叫端 meta → 版本目錄 version_meta.json 的 workspace_name。
+    # ⚠ 讀檔失敗一律退回通用標題，不讓標題把整份報表產製弄倒。
+    workspace_name = str(meta.get("workspace") or meta.get("workspace_name") or "").strip()
+    if not workspace_name:
+        try:
+            import json as _json
+            vm = _json.loads((run_dir / "version_meta.json").read_text(encoding="utf-8"))
+            workspace_name = str(vm.get("workspace_name") or "").strip()
+        except (OSError, ValueError):
+            workspace_name = ""
+    page_title = f"{workspace_name} 專利分析報表" if workspace_name else "專利分析報表"
+
+    # 章節導覽（2026-08-12）：現行交付檔完全沒有導覽，9 章 8080px 只能一路捲。
+    nav_html = ""
+    if nav_entries:
+        chips = "".join(
+            f'<a class="navchip" href="#sec-{xml_text(key)}">{xml_text(name)}</a>'
+            for key, name in nav_entries
+        )
+        nav_html = f'<nav class="chapter-nav"><span class="nav-lead">章節</span>{chips}</nav>'
 
     html_text = f"""<!doctype html>
 <html lang="zh-Hant">
@@ -2912,7 +2982,9 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     body {{ font-family: "Microsoft JhengHei", "Segoe UI", Arial, sans-serif; margin: 0; padding: 32px; color: #111827; background: #F8FAFC; }}
     h1 {{ font-size: 28px; margin: 0 0 4px; }}
     .meta-bar {{ color: #6B7280; font-size: 13px; margin: 0 0 24px; }}
-    .report-section {{ background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 12px; padding: 20px 22px; margin: 0 0 22px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }}
+    /* scroll-margin-top：錨點跳轉後把章節頂端往下推，避開常駐導覽列（實測導覽高約 41px，
+       取 56px 留餘裕）。⚠ 少了它，跳轉後章節標題會**貼在導覽下方被蓋住**。 */
+    .report-section {{ background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 12px; padding: 16px 22px; margin: 0 0 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); scroll-margin-top: 56px; }}
     .section-head {{ display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }}
     .report-section h2 {{ font-size: 19px; margin: 0 0 12px; }}
     .section-links {{ font-size: 13px; }}
@@ -2934,13 +3006,35 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     .expand-btn {{ border: 1px solid #CBD5E1; background: #FFFFFF; color: #2563EB; font-size: 14px; font-weight: 600; padding: 8px 14px; border-radius: 8px; cursor: pointer; margin: 12px 0; }}
     .expand-btn:hover {{ background: #EFF6FF; }}
     .chart-stage {{ width: 100%; overflow-x: auto; }}
-    .chart-media {{ max-width: 100%; height: auto; display: block; }}
+    /* 🔴 圖降為證據（2026-08-12）：原本 height:auto ＝ 原尺寸顯示（1180×560），
+       圖內字 15.1px 與正文 16px 同級，整張圖搶走版面。固定 400px 高後圖內字
+       約 10.7px（小正文一級）；要看細節點圖展開原尺寸。 */
+    .chart-media {{ height: 400px; width: auto; max-width: 100%; display: block;
+      cursor: zoom-in; border: 1px solid #E5E7EB; border-radius: 8px; background: #FFFFFF; }}
+    .chart-media.zoom {{ height: auto; width: auto; cursor: zoom-out; }}
     .chart-frame {{ width: 100%; height: 620px; border: 1px solid #E5E7EB; border-radius: 8px; }}
+    /* 章節導覽：常駐頂部，scroll-margin-top 讓跳轉後標題不被蓋住。 */
+    .chapter-nav {{ position: sticky; top: 0; z-index: 5; background: #FFFFFF;
+      border-bottom: 1px solid #E5E7EB; padding: 8px 12px; margin: 0 -32px 20px;
+      display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }}
+    .nav-lead {{ font-size: 12px; color: #6B7280; letter-spacing: .05em; margin-right: 4px; }}
+    .navchip {{ font-size: 13px; text-decoration: none; color: #334155; background: #F1F5F9;
+      border: 1px solid #E2E8F0; border-radius: 999px; padding: 3px 11px; white-space: nowrap; }}
+    .navchip:hover {{ border-color: #2563EB; color: #2563EB; }}
+    .navchip:focus-visible {{ outline: 2px solid #2563EB; outline-offset: 2px; }}
+    /* 數據表預設 5 列，其餘收合（展開上限仍 20 列）。 */
+    tr.folded {{ display: none; }}
+    .data-table-wrap.expanded tr.folded {{ display: table-row; }}
+    .table-expand {{ border: 1px solid #CBD5E1; background: #FFFFFF; color: #2563EB;
+      font-size: 13px; padding: 5px 12px; border-radius: 7px; cursor: pointer; margin-top: 8px; }}
+    .table-expand:hover {{ background: #EFF6FF; }}
+    .explanation {{ margin-top: 14px; }}
     [hidden] {{ display: none !important; }}
   </style>
 </head>
 <body>
-  <h1>Patent Report</h1>
+  {nav_html}
+  <h1>{xml_text(page_title)}</h1>
   {meta_bar}
   {"".join(blocks)}
   <script>
@@ -2951,9 +3045,28 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
         document.querySelectorAll('.toggle-btn[data-group="' + group + '"]').forEach(function (b) {{
           b.classList.toggle('active', b === btn);
         }});
-        document.querySelectorAll('.chart-panel[id^="' + group + '-"]').forEach(function (panel) {{
+        // ⚠ 以 data-group 選取，不用 id 前綴：`[id^="group-"]` 會連 more 區塊的
+        // panel 一起選中並設 hidden，切換過變體再展開「查看全部」就是一片空白。
+        document.querySelectorAll('.chart-panel[data-group="' + group + '"]').forEach(function (panel) {{
           panel.hidden = (panel.id !== target);
         }});
+        // 解讀已移到數據表之後、離開 panel，必須在此一併切換，否則會出現
+        // 「圖切到 L5、解讀還停在 L4」的靜默錯配。
+        document.querySelectorAll('.explanation[data-group="' + group + '"]').forEach(function (exp) {{
+          exp.hidden = (exp.id !== target + '-exp');
+        }});
+      }});
+    }});
+    document.querySelectorAll('.chart-media').forEach(function (img) {{
+      if (img.tagName !== 'IMG') return;          // iframe 版圖表不參與縮放
+      img.addEventListener('click', function () {{ img.classList.toggle('zoom'); }});
+    }});
+    document.querySelectorAll('.table-expand').forEach(function (btn) {{
+      btn.addEventListener('click', function () {{
+        var wrap = btn.closest('.data-table-wrap');
+        if (!wrap) return;
+        var expanded = wrap.classList.toggle('expanded');
+        btn.textContent = expanded ? '收合' : btn.getAttribute('data-label');
       }});
     }});
     document.querySelectorAll('.expand-btn').forEach(function (btn) {{

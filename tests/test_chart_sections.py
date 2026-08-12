@@ -238,11 +238,19 @@ class DisplaySpecTests(unittest.TestCase):
 
     def test_data_table_max_20_rows_no_full_expand(self):
         """數據區最多 20 筆＋總計列；不提供全量展開（2026-07-21 使用者補充），只註記共幾列。
-        註記文案同步「保存前 20」定案（2026-07-21）：入庫同前 20、完整可由引擎重算。"""
+        註記文案同步「保存前 20」定案（2026-07-21）：入庫同前 20、完整可由引擎重算。
+
+        ⚠ 2026-08-12 斷言方式調整（restructure-html-report-export）：
+        **契約沒變**——上限仍 20 列、仍不給全量展開、註記文案原字面保留；
+        變的是呈現密度：預設只露前 5 列，第 6–20 列改掛 `folded` 由展開鈕控制。
+        因此列數改數所有 `<tr`（含帶 class 的），不能只數裸 `<tr>`。
+        """
         rows = [{"applicant_display_name": f"Co{i}", "patent_count": i} for i in range(25)]
         html = chart_runner._data_table_html(rows, "applicant_ranking")
-        self.assertEqual(html.count("<tr>") - 1, 20 + 1,  # header 不算、含總計列
+        self.assertEqual(len(re.findall(r"<tr[ >]", html)) - 1, 20 + 1,  # header 不算、含總計列
                          "數據區最多 20 筆＋總計列")
+        self.assertEqual(len(re.findall(r'<tr class="folded">', html)), 15,
+                         "第 6–20 列預設收合（上限不變，只改預設密度）")
         self.assertNotIn("<details>", html, "不得提供顯示全部展開")
         self.assertIn("入庫同前 20，完整可重算", html)
         self.assertIn("總列數 25", html)  # 註記共幾列
@@ -1312,7 +1320,8 @@ class SectionReportKeyTests(unittest.TestCase):
     def test_four_cards_render_non_empty_data_table(self):
         """端到端：四張卡在 index.html 的數據區不得是「無資料」。"""
         _, index_html = self._render(list(self._ROWS))
-        blocks = re.findall(r'<section class="report-section">.*?</section>', index_html, re.S)
+        # ⚠ 2026-08-12 起 section 帶錨點 id（章節導覽用），選取器不能寫死開頭標籤字面。
+        blocks = re.findall(r'<section class="report-section"[^>]*>.*?</section>', index_html, re.S)
         by_title = {}
         for block in blocks:
             title = re.search(r"<h2>(.*?)</h2>", block).group(1)
