@@ -99,6 +99,13 @@ B 案（SVG 輸出層＋窄 DrawingML 轉換器）整組撤銷，理由與承接
       ②單一併發前提寫進 runner（COM 一次一個 PowerPoint 實例）。
       🔴 **驗收＝實跑轉圖成功**，不是「確認 PowerPoint 裝了」——裝了但起不來
       是這條最典型的失敗樣態。
+      ⚠ 開發機已於 tasks 1.2 證實 COM 在**互動式 session** 下可用（回歸五步全過），
+      **不得以此代替**非互動 session 的驗證——那正是本步要測的東西。
+      🆕 **同批驗 CLI 的執行身分問題**（design 4-0b 條件 3）：`_CLI_SPECS` 的
+      `"binary": "claude"` 靠 PATH 解析，實測開發機的 CLI 在使用者 profile 底下
+      （`C:\Users\user\.local\bin\claude.exe`，2.1.217），服務身分的 PATH 通常
+      不含該目錄、認證也綁 profile。與 COM 是**同一類問題**（執行身分決定環境），
+      一起驗，不要分兩次踩。
 - [ ] 2.2b 🔴 **字型收斂＝Noto Sans TC**（design 4c，前置於映射校驗）：
       四處宣告（`deck_layout.FONT`、`chart_runner.SVG_FONT_STYLE` 與三處
       SVG 根元素、HTML 報表頁）收斂為**單一常數唯一落點**。
@@ -129,6 +136,12 @@ B 案（SVG 輸出層＋窄 DrawingML 轉換器）整組撤銷，理由與承接
       （version_meta→workspace 名；全庫退回報表標題）
 
 ## 3. TDD：runner 與回存
+
+🔴 **CLI 測試分兩層**（2026-08-13 使用者定案「到時候伺服器是接 CLI，所以測試時
+也要用這台的 CLI」，見 design 4-0b）：單元測試注入 fake `cli_runner`
+（沿現有七支 runner 的既有模式，不燒 token）；**組合驗收與 E2E 用真 CLI 實跑**。
+⚠ fake 驗得了編排與契約，驗不了「CLI 起不起得來、認證過不過、輸出形狀對不對」
+——那三件正是部署會踩的。單元測試全綠不代表產線跑得動。
 
 - [ ] 3.1 Red：runner 編排契約（機械步順序、任一步非零即 failed 短路、
       **目視迴圈**：CLI 逐頁檢視→修 content.json→重組版重截圖，
@@ -183,6 +196,10 @@ B 案（SVG 輸出層＋窄 DrawingML 轉換器）整組撤銷，理由與承接
 - [ ] 4.2 E2E：前端按鈕 → 真版本走完整鏈 → pptx＋逐頁 PNG 落 ROOT、
       DB manifest hash 相符、SSE 自動出現紀錄＋前端逐頁預覽可看；
       失敗路徑（撰稿超時／閘門紅）各演一次
+      🔴 **本步一律用這台機器的真 CLI**（design 4-0b；不得以 fake `cli_runner`
+      代替）。要驗到的是 fake 驗不到的三件：CLI 起不起得來、認證過不過、
+      輸出形狀對不對。目視迴圈也要真的跑一輪以上，證明「CLI 看得懂逐頁 PNG
+      並改得動 content.json」——那是簡報品質的依靠，不能只驗編排。
 - [ ] 4.3 🔴 系統產 vs 手工產**逐頁對照**（同版本各一份），差異列出交使用者判；
       封面技術名稱＝workspace 名稱實物確認；§7 新頁實物驗（口徑頁定義正確
       且讀得懂、綜合結論頁三欄、改版後 roadmap 頁的判準）；頁數帳 22→23

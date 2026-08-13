@@ -148,8 +148,9 @@ deck 產線＝**Windows**（使用者定案；AI 層移伺服器後即該台 Win
 | 6 | `comtypes` | 開發側 vendored 於 `D:\vscode\ppt-tools\lib` | ⑨ COM 呼叫 | 產線改列入 `pyproject`，不沿用 vendored 路徑 |
 | 7 | Playwright ＋ Chromium | playwright 1.62.0／chromium-1234 | ④圖表 SVG→PNG、字級量測 | 開發機在 `D:\vscode\playwright`，可用 `PLAYWRIGHT_HOME` 覆寫 |
 | 8 | **Noto Sans TC** 字型 | `NotoSansTC-VF.ttf`（11.39 MB） | 組版與圖表 | ⚠ 系統層安裝；缺會 fallback 且**不報錯**，量測與產出一起偏 |
+| 9 | **headless CLI**（`claude`） | 開發機實測 2.1.217 | ⑤撰稿、目視迴圈判斷 | 🔴 見下方 PATH 條件。全 AI 線共用的前置，不是 deck 專屬 |
 
-🔴 **兩個不能只靠「裝好軟體」解決的條件**
+🔴 **三個不能只靠「裝好軟體」解決的條件**
 
 1. **COM 需要互動式桌面 session。** `CreateObject("PowerPoint.Application")` 在
    Windows Service／無桌面的工作階段下常態失敗。若 Companion 以服務身分執行，
@@ -159,6 +160,22 @@ deck 產線＝**Windows**（使用者定案；AI 層移伺服器後即該台 Win
 2. **PowerPoint 授權與併發。** COM 一次驅動一個 PowerPoint 實例；多個 deck job
    併行會互搶。第一版以**單一併發**處理（job 佇列本來就是序列消費），
    若日後要並行需另行設計。
+3. **CLI 的 PATH 與認證，在服務身分下與互動式登入不同。**
+   `cli_gateway._CLI_SPECS` 的 `"binary": "claude"` 靠 PATH 解析，而開發機實測
+   它裝在**使用者 profile 底下**（`C:\Users\user\.local\bin\claude.exe`）——
+   服務身分的 PATH 通常不含該目錄，且 CLI 的登入憑證也綁使用者 profile。
+   ⚠ 這與條件 1 是**同一類問題**（執行身分決定環境），部署時要一起驗，
+   不要分兩次踩。若解不到，需改為以絕對路徑設定或指定服務執行身分。
+
+🔴 **驗收一律用「這台機器的真 CLI」實跑**（2026-08-13 使用者定案
+「到時候伺服器是接 CLI，所以測試時也要用這台的 CLI」）：
+
+| 層級 | CLI | 為什麼 |
+|---|---|---|
+| 單元測試 | 注入 fake `cli_runner` | 沿現有七支 runner 的既有模式：不燒 token、不依賴二進位存在 |
+| **組合驗收／E2E** | **真 CLI 實跑** | fake 驗得了編排與契約，驗不了「CLI 起不起得來、認證過不過、輸出形狀對不對」——那三件正是部署會踩的 |
+
+⚠ 別把兩層混為一談：單元測試全綠**不代表**產線跑得動，這正是條件 1 與 3 的形狀。
 
 ⚠ 上表用途是交付給架站方，**內容變更要同步這裡**，不要在別處另抄一份。
 
