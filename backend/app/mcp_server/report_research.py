@@ -494,17 +494,12 @@ def query_database(sql: str, limit: int | None = SQL_DEFAULT_ROWS) -> dict[str, 
     }
 
 
-def build_cli_mcp_config(server_url: str, auth_token: str) -> dict[str, Any]:
-    """CLI 專用的隔離 MCP config——**只有唯讀 profile，且不含任何 DB credential**。
-
-    ⚠ token 是 MCP server 的存取權杖，不是資料庫憑證；DB 連線只存在伺服器端。
-    """
-    return {
-        "mcpServers": {
-            "patent-report-research": {
-                "type": "http",
-                "url": server_url,
-                "headers": {"Authorization": f"Bearer {auth_token}"},
-            }
-        }
-    }
+# ⚠ 2026-08-13 刪除 build_cli_mcp_config（http 版 CLI MCP config）：
+# 產品實際發給 CLI 的是 `cli_gateway.build_stdio_mcp_config()`（Companion 與 CLI
+# 同機，走 stdio 免 token、免開埠），這支 http 版全庫只有測試在用。
+# 🔴 更關鍵：它宣告的 server 名是 `patent-report-research`（連字號），而白名單前綴
+# 是 `mcp__patent_research__*`（底線）——兩者對不上，誰哪天改用它，MCP 工具會
+# **靜默**全部不可用（CLI 只會當作沒有那些工具，照樣產出看似合理的內容）。
+# 憑證隔離與「只掛唯讀 profile」兩個判準已移到 test_report_research_profile
+# 的 CredentialIsolationTests，改驗實際走的那條路徑。
+# 日後若要恢復 http 通道，server 名必須由 `cli_gateway.MCP_SERVER_NAME` 同一常數推導。
