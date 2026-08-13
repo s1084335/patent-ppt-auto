@@ -104,6 +104,22 @@ def test_runner_uses_controlled_candidates_and_writes_review_only_suggestions():
     assert store.written[0]["members"][0]["review_status"] == "suggested"
 
 
+def test_runner_accepts_json_wrapped_in_claude_text_or_code_fence():
+    """Claude 偶爾會把有效 JSON 包在說明或 code fence 中；不得因此讓整筆任務失敗。"""
+    from backend.app.worker import ai_company_group_suggestion_runner as runner
+
+    store = FakeStore([{"company_code": "C001", "company_display_name": "創科實業"}])
+    wrapped = f"以下是查證結果：\n```json\n{_valid_cli_result()}\n```\n"
+
+    result = runner.run_company_group_suggestions(
+        store=store,
+        cli_runner=lambda *_args, **_kwargs: wrapped,
+    )
+
+    assert result == {"candidate_count": 1, "suggestion_count": 1, "inserted": 1}
+    assert store.written[0]["members"][0]["company_code"] == "C001"
+
+
 def test_runner_rejects_unknown_company_or_missing_web_source():
     """模型不得憑空新增公司，也不得產生沒有 URL 證據的連網建議。"""
     from backend.app.worker import ai_company_group_suggestion_runner as runner

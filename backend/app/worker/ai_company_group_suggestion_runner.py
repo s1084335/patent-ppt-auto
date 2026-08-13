@@ -6,8 +6,11 @@ from collections.abc import Callable
 from typing import Any
 
 from backend.app.repositories import company_group_repository as repository
-from backend.app.worker.cli_gateway import build_cli_command, parse_cli_result, run_cli
-
+from backend.app.worker.cli_gateway import (
+    build_cli_command,
+    parse_cli_result,
+    run_cli,
+)
 
 DEFAULT_CLI_TIMEOUT_SECONDS = 600.0
 WEB_RESEARCH_TOOLS = ("WebSearch", "WebFetch")
@@ -54,14 +57,29 @@ def build_prompt(candidates: list[dict[str, Any]]) -> str:
 
 def _extract_suggestions(raw: str) -> list[dict[str, Any]]:
     """解析 CLI JSON，拒絕非物件或非陣列結果。"""
+    text = raw.strip()
     try:
-        payload = json.loads(raw)
+        payload = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError("CLI company group result must be valid JSON") from exc
+        payload = _extract_embedded_json(text, exc)
     suggestions = payload.get("suggestions") if isinstance(payload, dict) else None
     if not isinstance(suggestions, list):
         raise ValueError("CLI company group result requires suggestions list")
     return suggestions
+
+
+def _extract_embedded_json(text: str, original_error: json.JSONDecodeError) -> Any:
+    """從 Claude 說明文字或 code fence 中取出第一段 JSON payload。"""
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char not in "{[":
+            continue
+        try:
+            payload, _end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        return payload
+    raise ValueError("CLI company group result must be valid JSON") from original_error
 
 
 def _validated_suggestions(
