@@ -15,7 +15,16 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 from pathlib import Path
+
+# 🔴 字型走 `chart_sizing` 的唯一定義處（2026-08-13 使用者裁決選項 A）。
+# ⚠ 本 skill 與 backend 一起佈署（design 4-0b 環境清單），故 import 得到它；
+#   判準是「改圖表字型時簡報原生文字也要跟著改」＝同一份知識，不能兩處各寫。
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from backend.app.reports.chart_sizing import FONT_FAMILY  # noqa: E402
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -39,7 +48,7 @@ CARD_ED  = RGBColor(0xC2, 0xD1, 0xE6)
 PALETTE  = {"cyan": CYAN, "blue": BLUE, "amber": AMBER, "rose": ROSE, "green": GREEN}
 TAG_COLOR = {"風險": ROSE, "機會": AMBER, "行動": GREEN, "依據": CYAN}
 
-FONT = "Microsoft JhengHei"
+FONT = FONT_FAMILY
 T_SIZE, B_SIZE = Pt(24), Pt(16)          # 規格鎖死：標題 24、內文 16
 LS = 1.22          # 設給 PowerPoint 的 line_spacing
 # ⚠ **量高度不能用 LS**。LS 是「單行行距的倍數」，而中文字型的單行行距本身

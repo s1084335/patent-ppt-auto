@@ -156,6 +156,7 @@ COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
 # 🔴 2026-08-12（unify-chart-source）：綁定改 **WEB**——每張圖只產一份
 # WEB 尺寸的 SVG（15px 字級、1180 畫布），寫入既有原檔名；簡報端（deck）
 # 自行 refit 字級，引擎不再為 PPT 預放大。
+from backend.app.reports.chart_sizing import FONT_STACK
 from backend.app.reports.chart_sizing import WEB as _SIZING
 
 
@@ -292,7 +293,7 @@ COLOR_TEXT_SOFT = "#869FB2"     # 次要文字（刻度、副標）
 # 那是「頁面文字」，這是「畫在圖元上的文字」，底色來源不同。
 TEXT_ON_LIGHT = "#1A1A1A"
 # SVG 內建字體宣告：不宣告時瀏覽器與 PowerPoint 轉圖都退回襯線字（舊版視覺斷裂主因）。
-SVG_FONT_STYLE = "<style>text{font-family:'Microsoft JhengHei','Segoe UI',sans-serif}</style>"
+SVG_FONT_STYLE = f"<style>text{{font-family:{FONT_STACK}}}</style>"
 
 
 def xml_text(value: Any) -> str:
@@ -1558,7 +1559,7 @@ def render_matrix_chart(
         # 縮放，`max-width:100%` 會直接把右側與下方**裁掉**（2026-08-09 驗收頁
         # 實測，lifecycle 的 web profile 被切掉一整欄與三列，誤判成「內容比較少」）。
         (f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
-         f' viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">'),
+         f' viewBox="0 0 {width} {height}" font-family="{FONT_STACK}">'),
         f'<rect width="{width}" height="{height}" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="26" font-size="{note_px:.1f}" font-weight="bold" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         f'<text x="16" y="56" font-size="{label_px:.1f}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
@@ -1760,7 +1761,7 @@ def render_year_span_chart(
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
-        f' viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
+        f' viewBox="0 0 {width} {height}" font-family="{FONT_STACK}">',
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="28" font-size="{label_px:.1f}"'
         f' font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
@@ -1870,7 +1871,7 @@ def render_year_bubble_matrix_chart(
     label_px = chart_font_px(width, height)
     note_px = chart_font_px(width, height, target_pt=_sizing_value("note_target_pt"))
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="{FONT_STACK}">',
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="28" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         f'<text x="16" y="90" font-size="{note_px:.1f}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
@@ -3191,7 +3192,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     /* 字級（2026-08-12 使用者指定）：正文與表格 14px、章節導覽 16px、圖內字 11px。
        ⚠ 圖內字不是 CSS 能直接設的——SVG 內寫死 15.1px，顯示字級＝15.1×縮放比，
        故由 .chart-media 的寬度反推（11 ÷ 15.1 × 1180 ≈ 860px）。 */
-    body {{ font-family: "Noto Sans TC", "Microsoft JhengHei", "Segoe UI", system-ui, sans-serif;
+    body {{ font-family: {FONT_STACK};
       margin: 0; padding: 0 32px 48px; color: var(--ink); background: var(--paper);
       font-size: 14px; line-height: 1.65; }}
     .page {{ max-width: 1200px; margin: 0 auto; }}
@@ -3987,7 +3988,7 @@ def render_cluster_topic_table_html(
     parts = [
         '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">',
         '<style>',
-        'body{font-family:"Microsoft JhengHei","Segoe UI",Arial,sans-serif;margin:16px;color:#111827}',
+        f'body{{font-family:{FONT_STACK};margin:16px;color:#111827}}',
         'table{border-collapse:collapse;width:100%;font-size:13px;margin:0 0 18px}',
         'th,td{text-align:left;padding:6px 10px;border-bottom:1px solid #E5E7EB}',
         'th{background:#F1F5F9;font-weight:600;position:sticky;top:0}',
@@ -4304,7 +4305,7 @@ def render_opportunity_quadrant_svg(
     height = int(grid_bottom + chrome["bottom_h"])
 
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="{FONT_STACK}">',
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="{margin_l}" y="{chrome["title_y"]:.0f}" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         # Y 軸口徑防呆註（沿用散點版文案）

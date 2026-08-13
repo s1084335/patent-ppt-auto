@@ -20,6 +20,13 @@ import re
 import sys
 from pathlib import Path
 
+# 字型走唯一定義處（tasks 2.2b）——重排後的 SVG 若與原圖字型不同，
+# ⚠ `fit_render_charts` 的 getBBox 量測就會偏，字級跟著算錯而不報錯。
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from backend.app.reports.chart_sizing import FONT_STACK  # noqa: E402
+
 F = 20                    # 新字級
 W = 1260                  # 圖寬（只影響長寬比，不影響投影片上的字級）
 ML_, MR_ = 64, 40
@@ -109,7 +116,7 @@ def build(d: dict) -> str:
     y_top = y_leg + (len(leg_rows) - 1) * LINE + 18
 
     o = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{{H}}" '
-         f'viewBox="0 0 {W} {{H}}" font-family="Segoe UI, sans-serif">',
+         f'viewBox="0 0 {W} {{H}}" font-family="{FONT_STACK}">',
          '<rect width="100%" height="100%" fill="white"/>',
          f'<text data-role="chart-title" x="{ML_}" y="{y_title}" font-size="{F}" '
          f'font-weight="700" fill="#00094A">{esc(d["title"])}</text>',

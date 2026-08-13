@@ -29,6 +29,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+#: 🔴 字型的**唯一定義處**（2026-08-13 使用者裁決；deck design 4c／tasks 2.2b）。
+#:
+#: 為什麼是同一份知識：改圖表字型時，簡報原生文字（標題／內文）也必須跟著改，
+#: 否則同一頁上圖內字與標題會是兩種字型。既然「改 A 就得改 B」，就只能有一處。
+#:
+#: 🔴 為什麼不能各處自己寫：`fit_render_charts` 用 Chromium 的 `getBBox` 量
+#: SVG 文字來決定圖內字級——**字型宣告不一致 → 量測錯 → 字級跟著錯，且不報錯**。
+#: 2026-08-13 實掃就抓到現成的漂移：`chart_runner.SVG_FONT_STYLE` 宣告正黑體，
+#: 同檔四個 SVG 根元素卻宣告 Segoe UI（中文靠 fallback），同一張圖兩種宣告。
+#:
+#: ⚠ 換字型是**連鎖工程**，不是改一個字串：`deck_layout.LS_RENDER`、
+#: `MIN_CHART_PT`／`MIN_CHART_PT_MULTI`、`svg_canvas.BASELINE_RATIO` 都是量自
+#: 特定字型的比例，換了要全部重量並重建 regression 基準。
+FONT_FAMILY = "Noto Sans TC"
+
+#: HTML／SVG 用的完整 fallback 鏈。⚠ 由 `FONT_FAMILY` 導出，不重打字型名
+#: ——重打就是第二個落點。後面兩個是「使用者機器沒裝 Noto」時的退路，
+#: ⚠ 但退到它們時量測與產出會一起偏（見 design 4-0b 第 6 項）。
+FONT_STACK = f"'{FONT_FAMILY}','Microsoft JhengHei','Segoe UI',sans-serif"
+
 
 @dataclass(frozen=True)
 class ChartSizing:
