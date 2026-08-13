@@ -144,6 +144,22 @@
       改由 runner 用專案 interpreter 跑腳本，依賴交給 `pyproject` 管。
       ⚠ `comtypes` **不必**列入 `pyproject`（第 3 次裁決後 COM 只在開發機用於
       映射校驗，不進產線；原條文要求列入是 COM 進產線時的需求）。
+      **2026-08-13 完成**，兩件事都做：
+      ① **收斂路徑解析**：`fit_render_charts` 與 `shoot_pages` 原本各寫一份相同
+         的三行，改一處不同步、症狀是「一支找不到瀏覽器、另一支正常」。
+         收進 `browser_env.ensure_playwright()`。
+      ② **`playwright>=1.62.0` 列入 `pyproject`**。
+         ⚠ 我一度只做 ①、跳過 ②，理由是「vendored ＋ 環境變數本來就可攜」
+         ——**那是把前提當結論**：只在「機器上已有那個目錄」時成立。
+         實測：專案 venv `import playwright` 直接 `ModuleNotFoundError`；
+         把 `PLAYWRIGHT_HOME` 指到不存在的路徑也一樣掛。
+         影響是四項實質問題：`uv sync` 後跑不起來、產線多一個無人檢查的手動
+         步驟、版本釘不住（chromium 版本是 `getBBox` 的變因）、CI／容器不能跑。
+         兩者**不互斥**，應該都做。
+      ⚠ 既有環境要跑 `uv sync` 才會裝上；在那之前 `browser_env` 以
+      「找不到套件才插 vendored lib」回退（同時只有一條生效，不是雙軌）。
+      🔴 **sync 完成後移除 `_fallback_vendored_lib`**。
+      ⚠ 瀏覽器本體不進 `pyproject`（150–400 MB），另裝或用環境變數指。
 - [ ] 2.2e 🆕 **CLI 執行身分實測**（design 4-0b 唯一剩下的 🔴 條件）：
       `_CLI_SPECS` 的 `"binary": "claude"` 靠 PATH 解析，實測開發機的 CLI 在
       使用者 profile 底下（`C:\Users\user\.local\bin\claude.exe`，2.1.217），

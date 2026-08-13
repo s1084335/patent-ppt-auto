@@ -14,6 +14,11 @@ dependencies = [
     "numpy>=2.4.6",
     "openpyxl>=3.1.0",
     "pandas>=3.0.3",
+    # deck 目視截圖與圖表字級量測（B 案）。⚠ 套件由此宣告，**瀏覽器本體不在內**
+    # ——browsers 另裝（`playwright install chromium`）或以
+    # `PLAYWRIGHT_BROWSERS_PATH` 指向既有安裝，見 skills/…/browser_env.py。
+    # 🔴 chromium 版本是 getBBox 量測的變因（deck design 4c-1），換版要重驗。
+    "playwright>=1.62.0",
     "plotly>=6.8.0",
     "psycopg-pool>=3.3.1",
     "psycopg[binary]>=3.2.0",

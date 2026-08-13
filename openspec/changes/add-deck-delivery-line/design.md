@@ -145,7 +145,8 @@ deck 產線＝**Windows**（使用者定案；AI 層移伺服器後即該台 Win
 | 2 | Python | 3.12 | 全流程 | 與 backend 同版 |
 | 3 | `python-pptx` | ≥1.0.2 | ⑦組版 ⑧audit | **已在 `pyproject.toml`**，隨 backend 環境裝 |
 | 4 | `pillow` | 隨 python-pptx 生態 | ⑦組版貼圖 | 同上 |
-| 5 | Playwright ＋ Chromium | playwright 1.62.0／chromium-1234 | ④圖表量測、⑨**目視截圖** | 🔴 B 案下**升為產線必需**（目視靠它）。⚠ 套件現 vendored 於 `D:\vscode\playwright\lib`（`fit_render_charts.py:27` 插 sys.path），**要改列入 `pyproject`**；browsers 路徑用 `PLAYWRIGHT_BROWSERS_PATH`／`PLAYWRIGHT_HOME` 指 |
+| 5 | Playwright（套件） | `playwright>=1.62.0` | ④圖表量測、⑨**目視截圖** | 🔴 B 案下**升為產線必需**。✅ 2026-08-13 已列入 `pyproject`（⚠ 既有環境要跑 `uv sync` 才生效）|
+| 5b | Chromium（瀏覽器本體） | chromium-1234 | 同上 | 150–400 MB，**不進 `pyproject`**：`playwright install chromium` 另裝，或以 `PLAYWRIGHT_BROWSERS_PATH`／`PLAYWRIGHT_HOME` 指向既有安裝（開發機 `D:\vscode\playwright\browsers`）。🔴 chromium 版本是 `getBBox` 量測的變因（4c-1），換版要重驗 |
 | 6 | **Noto Sans TC** 字型 | `NotoSansTC-VF.ttf`（11.39 MB） | 組版與圖表 | ⚠ 系統層安裝；缺會 fallback 且**不報錯**，量測與產出一起偏 |
 | 7 | **headless CLI**（`claude`） | 開發機實測 2.1.217 | ⑤撰稿、目視迴圈判斷 | 🔴 見下方 PATH 條件。全 AI 線共用的前置，不是 deck 專屬 |
 
