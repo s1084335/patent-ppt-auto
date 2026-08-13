@@ -24,6 +24,41 @@ def _notify_company_groups_changed(cur: Any, *, action: str) -> None:
     )
 
 
+def _sync_group_review_status(cur: Any, group_id: int) -> str:
+    """依現有成員狀態重算父集團狀態，供確認與撤銷共用。"""
+    cur.execute(
+        """
+        UPDATE derived_layer.company_groups AS g
+        SET review_status = CASE
+                WHEN EXISTS (
+                    SELECT 1 FROM derived_layer.company_group_members AS m
+                    WHERE m.group_id = g.group_id AND m.review_status = 'confirmed'
+                ) THEN 'confirmed'
+                WHEN EXISTS (
+                    SELECT 1 FROM derived_layer.company_group_members AS m
+                    WHERE m.group_id = g.group_id AND m.review_status = 'suggested'
+                ) THEN 'suggested'
+                ELSE 'rejected'
+            END,
+            source_type = CASE
+                WHEN EXISTS (
+                    SELECT 1 FROM derived_layer.company_group_members AS m
+                    WHERE m.group_id = g.group_id AND m.review_status = 'suggested'
+                ) THEN 'cli_ai'
+                ELSE 'manual'
+            END,
+            updated_at = now()
+        WHERE g.group_id = %s
+        RETURNING review_status
+        """,
+        (group_id,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise LookupError("company group not found")
+    return row[0]
+
+
 def normalize_group_name(value: str) -> str:
     """把集團名稱壓成一致 lookup key，避免大小寫與多空白造成重複。"""
     return " ".join((value or "").strip().lower().split())
@@ -293,6 +328,27 @@ def remove_group_member(group_id: int, member_id: int) -> dict[str, Any]:
     return {"deleted": deleted}
 
 
+def delete_group(group_id: int) -> dict[str, Any]:
+    """解散集團 mapping；成員由 FK cascade 刪除，不動公司或專利資料。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM derived_layer.company_groups
+                WHERE group_id = %s
+                RETURNING group_id
+                """,
+                (group_id,),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                _notify_company_groups_changed(cur, action="delete_group")
+        conn.commit()
+    if row is None:
+        raise LookupError("company group not found")
+    return {"group_id": row[0], "deleted": 1}
+
+
 def ingest_cli_suggestions(items: list[dict[str, Any]]) -> dict[str, Any]:
     """寫入 CLI/AI 建議；只建立 suggested group/member。"""
     suggestions = [validate_cli_suggestion(item) for item in items]
@@ -354,40 +410,7 @@ def set_suggestion_decision(member_id: int, decision: str) -> dict[str, Any]:
             )
             row = cur.fetchone()
             if row is not None:
-                cur.execute(
-                    """
-                    UPDATE derived_layer.company_groups AS g
-                    SET review_status = CASE
-                            WHEN EXISTS (
-                                SELECT 1
-                                FROM derived_layer.company_group_members AS m
-                                WHERE m.group_id = g.group_id
-                                  AND m.review_status = 'confirmed'
-                            ) THEN 'confirmed'
-                            WHEN EXISTS (
-                                SELECT 1
-                                FROM derived_layer.company_group_members AS m
-                                WHERE m.group_id = g.group_id
-                                  AND m.review_status = 'suggested'
-                            ) THEN 'suggested'
-                            ELSE 'rejected'
-                        END,
-                        source_type = CASE
-                            WHEN EXISTS (
-                                SELECT 1
-                                FROM derived_layer.company_group_members AS m
-                                WHERE m.group_id = g.group_id
-                                  AND m.review_status = 'suggested'
-                            ) THEN g.source_type
-                            ELSE 'manual'
-                        END,
-                        updated_at = now()
-                    WHERE g.group_id = %s
-                    RETURNING review_status
-                    """,
-                    (row[1],),
-                )
-                group_row = cur.fetchone()
+                group_review_status = _sync_group_review_status(cur, row[1])
                 _notify_company_groups_changed(cur, action="review_suggestion")
         conn.commit()
     if row is None:
@@ -396,5 +419,38 @@ def set_suggestion_decision(member_id: int, decision: str) -> dict[str, Any]:
         "member_id": row[0],
         "group_id": row[1],
         "review_status": row[2],
-        "group_review_status": group_row[0],
+        "group_review_status": group_review_status,
+    }
+
+
+def undo_suggestion_confirmation(member_id: int) -> dict[str, Any]:
+    """把已確認的 AI 建議退回 suggested，保留 evidence_json 供再次審核。"""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE derived_layer.company_group_members
+                SET review_status = 'suggested',
+                    source_type = 'cli_ai',
+                    updated_at = now()
+                WHERE member_id = %s
+                  AND review_status = 'confirmed'
+                  AND jsonb_typeof(evidence_json -> 'sources') = 'array'
+                  AND evidence_json ? 'sources'
+                RETURNING member_id, group_id, review_status
+                """,
+                (member_id,),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                group_review_status = _sync_group_review_status(cur, row[1])
+                _notify_company_groups_changed(cur, action="undo_confirmation")
+        conn.commit()
+    if row is None:
+        raise LookupError("confirmed AI suggestion member not found")
+    return {
+        "member_id": row[0],
+        "group_id": row[1],
+        "review_status": row[2],
+        "group_review_status": group_review_status,
     }

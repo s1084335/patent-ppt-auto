@@ -297,6 +297,14 @@ table.data td.cell-wrap, table.data th.cell-wrap {
   padding: 0.28rem 0.2rem; font-size: 0.88rem; cursor: pointer; }
 .company-group-company-option + .company-group-company-option { border-top: 1px solid var(--border); }
 .company-group-company-option input { flex: 0 0 auto; }
+.company-group-suggestion { padding: 0.65rem 0; border-top: 1px solid var(--border); }
+.company-group-suggestion-head { display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap; }
+.company-group-evidence { margin: 0.35rem 0 0.15rem 0.8rem; font-size: 0.82rem; }
+.company-group-evidence-row { display: grid; grid-template-columns: 3.4rem minmax(0, 1fr);
+  gap: 0.55rem; padding: 0.2rem 0; align-items: start; }
+.company-group-evidence-label { color: var(--text-muted); white-space: nowrap; }
+.company-group-evidence a { color: var(--accent-2); }
+.company-group-warning { color: var(--warn); }
 .code-variant-row { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.32rem; }
 .code-variant-row input { flex: 1 1 auto; min-width: 0; }
 .btn-mini { padding: 0.18rem 0.55rem; font-size: 0.85rem; line-height: 1.3;
@@ -1202,10 +1210,15 @@ function companyGroupMemberHtml(group, member) {
   const status = member.review_status || '';
   const name = member.company_display_name || '';
   const code = member.company_code ? ' / ' + member.company_code : '';
+  const hasAiEvidence = member.evidence_json
+    && Array.isArray(member.evidence_json.sources);
   const action = status === 'suggested'
     ? ' <button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', true)">確認</button>'
       + ' <button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', false)">拒絕</button>'
-    : ' <button class="btn-mini" onclick="removeCompanyGroupLayerMember(' + group.group_id + ', ' + member.member_id + ')">移除</button>';
+    : (status === 'confirmed' && hasAiEvidence
+        ? ' <button class="btn-mini" onclick="undoCompanyGroupSuggestion(' + member.member_id + ')">撤銷確認</button>'
+        : '')
+      + ' <button class="btn-mini" onclick="removeCompanyGroupLayerMember(' + group.group_id + ', ' + member.member_id + ')">移除</button>';
   return '<li style="padding:.16rem 0">' + escHtml(name + code)
     + ' <span class="pill">' + escHtml(status) + '</span>' + action + '</li>';
 }
@@ -1278,6 +1291,8 @@ function companyGroupHtml(group) {
     + '<select class="text-input" id="company-group-member-select-' + group.group_id + '" style="max-width:28rem">'
     + companyGroupCompanyOptionsHtml(members) + '</select>'
     + '<button class="btn-mini" onclick="addCompanyGroupLayerMember(' + group.group_id + ')">新增成員</button>'
+    + '<button class="btn-mini" onclick="deleteCompanyGroupLayer(' + group.group_id + ', '
+    + jsQuote(group.group_name || '') + ')">解散集團</button>'
     + '</div>'
     + (members.length
       ? '<ul style="margin:.2rem 0 .2rem 1.2rem;padding:0;list-style:none">'
@@ -1287,21 +1302,58 @@ function companyGroupHtml(group) {
     + '</details>';
 }
 
+function companyGroupConfidenceLabel(value) {
+  return { high: '高', medium: '中', low: '低' }[String(value || '').toLowerCase()] || '未提供';
+}
+
+function companyGroupEvidenceUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return url.protocol === 'https:' ? url.href : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function companyGroupEvidenceHtml(value) {
+  const evidence = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const sources = Array.isArray(evidence.sources) ? evidence.sources : [];
+  const warnings = Array.isArray(evidence.warnings) ? evidence.warnings : [];
+  const sourceHtml = sources.length
+    ? sources.map(function (source) {
+        const item = source && typeof source === 'object' ? source : {};
+        const url = companyGroupEvidenceUrl(item.url);
+        const link = url
+          ? '<a href="' + escHtml(url) + '" target="_blank" rel="noopener noreferrer">來源</a>'
+          : '<span class="company-group-evidence-label">來源無效</span>';
+        return '<div class="company-group-evidence-row"><div>' + link + '</div><div>'
+          + escHtml(item.claim || '未提供支持摘要') + '</div></div>';
+      }).join('')
+    : '<div class="hint" style="padding:.2rem 0">未提供可用的證據來源</div>';
+  const warningHtml = warnings.length
+    ? '<div class="company-group-evidence-row company-group-warning"><div>注意事項</div><div>'
+      + warnings.map(escHtml).join('；') + '</div></div>'
+    : '';
+  return '<div class="company-group-evidence">'
+    + '<div class="company-group-evidence-row"><div class="company-group-evidence-label">可信度</div><div>'
+    + escHtml(companyGroupConfidenceLabel(evidence.confidence)) + '</div></div>'
+    + '<div class="company-group-evidence-row"><div class="company-group-evidence-label">證據來源</div><div></div></div>'
+    + sourceHtml + warningHtml + '</div>';
+}
+
 function companyGroupSuggestionHtml(group) {
   const members = (group.members || []).filter(function (member) {
     return member.review_status === 'suggested';
   });
-  return '<div style="padding:.45rem 0;border-top:1px solid var(--border)">'
+  return '<div class="company-group-suggestion">'
     + '<div style="font-weight:600">' + escHtml(group.group_name || '(未命名集團)') + '</div>'
     + '<ul style="margin:.25rem 0 0 1.2rem;padding:0;list-style:none">'
     + members.map(function (member) {
       const code = member.company_code ? ' / ' + member.company_code : '';
-      const evidence = member.evidence_json && Object.keys(member.evidence_json).length
-        ? JSON.stringify(member.evidence_json)
-        : '無附加證據';
       return '<li style="padding:.2rem 0">'
-        + '<div>' + escHtml((member.company_display_name || '') + code) + '</div>'
-        + '<div class="hint" style="font-size:.78rem">證據：' + escHtml(evidence) + '</div>'
+        + '<div class="company-group-suggestion-head">'
+        + '<span>' + escHtml((member.company_display_name || '') + code) + '</span></div>'
+        + companyGroupEvidenceHtml(member.evidence_json)
         + '<div class="toolbar" style="margin-top:.2rem">'
         + '<button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', true)">確認</button>'
         + '<button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', false)">拒絕</button>'
@@ -1453,9 +1505,24 @@ async function removeCompanyGroupLayerMember(groupId, memberId) {
   await renderCompanyGroupRegistry();
 }
 
+async function deleteCompanyGroupLayer(groupId, groupName) {
+  if (!confirm('確定解散「' + groupName + '」？只會刪除集團對照，不會刪除公司或專利資料。')) return;
+  await getJson(API + '/company-groups/' + encodeURIComponent(groupId), {
+    method: 'DELETE',
+  });
+  await renderCompanyGroupRegistry();
+}
+
 async function decideCompanyGroupSuggestion(memberId, confirmed) {
   const action = confirmed ? 'confirm' : 'reject';
   await getJson(API + '/company-groups/suggestions/' + encodeURIComponent(memberId) + '/' + action, {
+    method: 'POST',
+  });
+  await renderCompanyGroupRegistry();
+}
+
+async function undoCompanyGroupSuggestion(memberId) {
+  await getJson(API + '/company-groups/suggestions/' + encodeURIComponent(memberId) + '/undo-confirm', {
     method: 'POST',
   });
   await renderCompanyGroupRegistry();

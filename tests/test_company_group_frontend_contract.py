@@ -59,6 +59,34 @@ def test_cli_suggestions_and_established_groups_have_separate_sections():
     assert "已建立集團" in src
 
 
+def test_cli_suggestion_evidence_is_structured_for_human_review():
+    """待審建議需顯示可讀證據，不得把 evidence_json 整包輸出。"""
+    src = STATIC_INDEX.read_text(encoding="utf-8")
+
+    assert "function companyGroupEvidenceHtml" in src
+    assert "function companyGroupConfidenceLabel" in src
+    assert "function companyGroupEvidenceUrl" in src
+    assert "可信度" in src
+    assert "證據來源" in src
+    assert "注意事項" in src
+    assert '>來源</a>' in src
+    assert 'target="_blank" rel="noopener noreferrer"' in src
+    assert "JSON.stringify(member.evidence_json)" not in src
+
+
+def test_established_group_has_complete_reversal_actions():
+    """已建立集團需同時保留單筆移除、AI 確認撤銷與整組解散。"""
+    src = STATIC_INDEX.read_text(encoding="utf-8")
+
+    assert "function undoCompanyGroupSuggestion" in src
+    assert "function deleteCompanyGroupLayer" in src
+    assert "/undo-confirm" in src
+    assert "撤銷確認" in src
+    assert "解散集團" in src
+    assert "移除" in src
+    assert "removeCompanyGroupLayerMember" in src
+
+
 def test_company_group_ai_suggestions_have_manual_trigger_and_sse_refresh():
     """集團 AI 建議只能由使用者手動啟動，完成後沿用 SSE 刷新清單。"""
     src = STATIC_INDEX.read_text(encoding="utf-8")

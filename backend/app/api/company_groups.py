@@ -65,6 +65,15 @@ def rename_company_group(group_id: int, body: GroupRenameRequest) -> dict[str, A
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.delete("/company-groups/{group_id}")
+def delete_company_group(group_id: int) -> dict[str, Any]:
+    """解散集團 mapping，不動公司正規化或專利資料。"""
+    try:
+        return repo.delete_group(group_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/company-groups/{group_id}/members")
 def add_company_group_member(group_id: int, body: GroupMemberRequest) -> dict[str, Any]:
     """新增 confirmed 集團成員。"""
@@ -107,5 +116,14 @@ def reject_company_group_suggestion(member_id: int) -> dict[str, Any]:
     """人工拒絕單筆 CLI/AI 建議。"""
     try:
         return repo.set_suggestion_decision(member_id, "rejected")
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/company-groups/suggestions/{member_id}/undo-confirm")
+def undo_company_group_suggestion_confirmation(member_id: int) -> dict[str, Any]:
+    """把已確認的 AI 建議退回待審並保留證據。"""
+    try:
+        return repo.undo_suggestion_confirmation(member_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
