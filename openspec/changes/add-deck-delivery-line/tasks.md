@@ -61,25 +61,49 @@
       ⚠ **排在合主線之後**：中央份 `.agents/skills/html-report-to-deck/` 是開發側
       現在唯一拿得到的一份，repo 內那份還在 worktree 分支上。提前刪會讓開發側
       手動流程在合併前無處可跑。
-- [ ] 1.4 新 `assemble_from_version.py` intake（自 unify-chart-source 移入，
+- [x] 1.4 新 `assemble_from_version.py` intake（自 unify-chart-source 移入，
       2026-08-12：它本來就是 deck 第 1 步）——版本目錄／asset 端點 → 既有
       `report.json`＋`charts/` 中間格式；texts←narratives.json、
       tables/patent_ids←report_data rows、notes←encoding_notes＋reader_guide、
       report_meta←version_meta（含 workspace 名稱，見 design 4b）；
       `extract_report.py` 降 HTML fallback
+      **2026-08-13 完成**：TDD 13 支綠。自真實產物
+      （`report_trial_20260812_133901`）反解出**五個陷阱**並逐一守住：
+      ①`variant.file` 可能是空字串（主題統計表＝解讀落點，不是圖）
+      ②`more_variants`（第 11–20 名）須剔除
+      ③rows 散在 `reports[key]`／`section`／`variant` **三處**，只讀一處會靜默少表
+      ④notes 併三來源（`section.note`＋`encoding_notes`＋`reader_guide`）
+      ⑤`narratives.json` 可能不存在，texts 留空而非炸掉
+      ⚠ 實作期再發現第六個：帶 `rows` 的 variant（Key Players、機會矩陣、主題演進）
+      **沒有 `narrative_key`**，缺鍵時以 `report_key:variant_key` 推導，
+      否則那些章節的解讀會靜默消失。
+      實跑真實版本目錄：9 章節、13 張圖（14 張 SVG 剔除 more）、註記 5／2／2…，
+      判讀 0（該版本未跑解讀，符合預期）。
 
-## 2. 沿用現行組版，只補接線需要的（原「B 案組版輸出層」）
+## 2. TDD：B 案組版輸出層（窄轉換器）
 
-🔴 **2026-08-13 使用者定案**：「用現在的 deck 流程繼續接進系統」——組版維持
-`deck_layout`／python-pptx，圖表維持 Playwright Chromium，目視維持 COM 轉圖。
-B 案（SVG 輸出層＋窄 DrawingML 轉換器）整組撤銷，理由與承接的取捨見 design 4-0。
+🔴 **2026-08-13 第 3 次裁決：恢復 B 案**（沿革與三項實測依據見 design 4-0）。
+本節曾於同日上午整組撤銷，下午恢復；`~~刪除線~~` 的撤銷註記已清除，避免
+下次讀到自相矛盾的條文。
 
-- [x] ~~2.1 Red：窄轉換器契約（SVG→DrawingML 映射、逐行定位、關 wrap）~~
-      **2026-08-13 撤銷**（design 4-0）：不做窄轉換器。
-- [x] ~~2.2 Green：`deck_layout` 輸出層改組 SVG＋窄轉換器~~
-      **2026-08-13 撤銷**（design 4-0）：組版沿用 python-pptx 現行輸出。
+- [ ] 2.1 Red：轉換器契約——五頁型元素詞彙（矩形卡／逐行文字／圖片／線）
+      SVG→DrawingML 映射、文字逐行定位＋關 wrap、超出詞彙 fail loud
+- [ ] 2.2 Green：`deck_layout` 輸出層改組 SVG＋窄轉換器；逐頁截圖產出（目視 PNG）。
+      **Chromium BBox 取代估算，寬高皆可用**（design 4c-1a，Windows-only）。
       ⚠ `fit_render_charts` 的 Chromium `getBBox` **本來就在用**（找不撞版的最大
-      字級），不是 B 案才引入的——那部分保留不動。
+      字級），不是 B 案才引入的——那部分不動。
+      🆕 **避頭尾改由引擎決定**（design 4-0 第 3 次裁決依據 2）：斷行寫死後，
+      行首中文標點不再依賴 PowerPoint 的禁則處理（現行 `deck_layout.py:183`
+      補的 `eaLnBrk`／`hangingPunct` 是「請 PowerPoint 照做」，B 案是自己斷）。
+      補測試鎖住：任一行不得以中文標點起首。
+- [ ] 2.2f 🆕 **目視截圖解析度由 `deck_layout` 導出**（design 4-0c）：
+      ⚠ **不得在 runner、skill、規格各寫一個數字**——那是上一世代
+      「同一份知識多個落點」的錯法。`deck_layout` 已是版面幾何與字級的唯一定義處，
+      截圖倍率從那裡推導，runner 只消費。
+      ⚠ 值本身**由 2.3 實測決定**，本步只建立推導管道與消費點，不預先填數字。
+- [x] ~~2.2a `overlaps()` 撞版判定改為「橫向量測、縱向推導」~~
+      **2026-08-13 撤銷**（design 4c-1a）：Windows-only 後 w／h 都吃量測值不會
+      造成跨 OS 靜默不一致，現行寫法即正確，不需改動。
 - [x] ~~2.2a `overlaps()` 撞版判定改為「橫向量測、縱向推導」~~
       **2026-08-13 撤銷**（design 4c-1a）：Windows-only 後 w／h 都吃量測值不會
       造成跨 OS 靜默不一致，現行寫法即正確，不需改動。
@@ -88,24 +112,17 @@ B 案（SVG 輸出層＋窄 DrawingML 轉換器）整組撤銷，理由與承接
       套件，等於在使用者機器上要求「有 uv ＋能連網拉套件」。
       backend 環境**已有** `python-pptx 1.0.2`（`pyproject.toml` 列著），
       改由 runner 用專案 interpreter 跑腳本，依賴交給 `pyproject` 管。
-      ⚠ 一併把 `comtypes` 列入 `pyproject`——現在它 vendored 在
-      `D:\vscode\ppt-tools\lib`，那是開發機路徑，不能進產線。
-- [ ] 2.2e 🆕 **COM 轉圖進產線的可行性實測**（design 4-0b 的兩個 🔴）：
-      ⚠ `pptx_to_png.py` 檔頭原本明寫「只用在開發／驗收側，不進 Installer
-      或使用者端」——本 change 推翻該邊界，故必須正面驗：
-      ①以 Companion 實際的執行身分（非互動式 session）跑一次轉圖，確認
-      `CreateObject("PowerPoint.Application")` 起得來；起不來則記錄所需的
-      DCOM／工作階段設定，寫進 4-0b。
-      ②單一併發前提寫進 runner（COM 一次一個 PowerPoint 實例）。
-      🔴 **驗收＝實跑轉圖成功**，不是「確認 PowerPoint 裝了」——裝了但起不來
-      是這條最典型的失敗樣態。
-      ⚠ 開發機已於 tasks 1.2 證實 COM 在**互動式 session** 下可用（回歸五步全過），
-      **不得以此代替**非互動 session 的驗證——那正是本步要測的東西。
-      🆕 **同批驗 CLI 的執行身分問題**（design 4-0b 條件 3）：`_CLI_SPECS` 的
-      `"binary": "claude"` 靠 PATH 解析，實測開發機的 CLI 在使用者 profile 底下
-      （`C:\Users\user\.local\bin\claude.exe`，2.1.217），服務身分的 PATH 通常
-      不含該目錄、認證也綁 profile。與 COM 是**同一類問題**（執行身分決定環境），
-      一起驗，不要分兩次踩。
+      ⚠ `comtypes` **不必**列入 `pyproject`（第 3 次裁決後 COM 只在開發機用於
+      映射校驗，不進產線；原條文要求列入是 COM 進產線時的需求）。
+- [ ] 2.2e 🆕 **CLI 執行身分實測**（design 4-0b 唯一剩下的 🔴 條件）：
+      `_CLI_SPECS` 的 `"binary": "claude"` 靠 PATH 解析，實測開發機的 CLI 在
+      使用者 profile 底下（`C:\Users\user\.local\bin\claude.exe`，2.1.217），
+      服務身分的 PATH 通常不含該目錄、認證也綁 profile。
+      以 Companion 實際的執行身分跑一次真 CLI，確認起得來且認證過；
+      解不到則改為絕對路徑設定或指定服務執行身分，結果寫回 4-0b。
+      🔴 **驗收＝實跑 CLI 成功**，不是「確認二進位存在」。
+      ⚠ 原條文還要求驗 COM 的非互動 session——**第 3 次裁決後不需要**
+      （目視改走 Chromium，產線無 PowerPoint）。
 - [ ] 2.2b 🔴 **字型收斂＝Noto Sans TC**（design 4c，前置於映射校驗）：
       四處宣告（`deck_layout.FONT`、`chart_runner.SVG_FONT_STYLE` 與三處
       SVG 根元素、HTML 報表頁）收斂為**單一常數唯一落點**。
@@ -125,13 +142,17 @@ B 案（SVG 輸出層＋窄 DrawingML 轉換器）整組撤銷，理由與承接
       `chart_sizing` 讀取**＋一致性測試——否則改後端字級會無聲算錯倍率。
       驗收判準：五頁型單圖頁與雙圖頁圖內字**實測 ≥14pt**（雙圖頁若不可行，
       列出並交使用者裁決，不得默默降標）
-- [ ] 2.3 換字型後重建 regression 基準（原「三方映射校驗」大幅縮減）
-      ⚠ 2026-08-13 改（design 4-0）：不做 B 案就**沒有映射要校**——COM 轉圖
-      本身就是目視來源，不需要證明「SVG 截圖＝PowerPoint 實開」。
-      本步只剩字型換版帶來的必要工作：以 Noto Sans TC 重跑 `regression.py`
-      並重建像素基準（⚠ 舊基準算自正黑體，不得沿用），證據入 `output/_verify/`。
-      ⚠ 仍需**一次** COM 轉圖 vs 實機開檔的抽驗（design 原記 08-02 實證
-      連 COM 都與實機有微差），確認差異在可接受範圍。
+- [ ] 2.3 🔴 映射校驗（一次性，開發機）＋解析度定值：
+      ①**五頁型三方對照**——Chromium 截 SVG vs PowerPoint COM 轉圖 vs 實機開檔，
+      **以 Noto Sans TC 為準**，證據入 `output/_verify/`。這是 B 案的地基：
+      截的是 SVG、交付的是 pptx，中間隔著窄轉換器，不校驗就可能
+      「SVG 看起來對、pptx 開起來不對」。成立後固定，日後只有改轉換器才重跑。
+      ②`regression.py` 基準改比 **SVG 截圖**並重建（⚠ 舊基準算自正黑體，不得沿用）。
+      ③🆕 **定出目視截圖解析度**（design 4-0c）：造一頁**刻意植入行首標點**的樣本，
+      由低到高試，取「CLI 能穩定指出該問題」的**最小值**。
+      ⚠ 判準是**抓得到**，不是「看起來比較清楚」——後者無法收斂。
+      ⚠ 不是越大越好：目視迴圈每輪都要讀一整份，CLI 讀圖有 token 成本。
+      定出的值寫進 `deck_layout`（唯一定義處，見 2.2f），不寫進 runner 或規格。
 - [ ] 2.4 封面素材：runner 注入 workspace 名稱作封面技術名稱
       （version_meta→workspace 名；全庫退回報表標題）
 
