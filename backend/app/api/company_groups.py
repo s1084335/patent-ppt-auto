@@ -36,6 +36,12 @@ class SuggestionIngestRequest(BaseModel):
     suggestions: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class SuggestionConfirmRequest(BaseModel):
+    """確認 AI 建議時可一併修訂父集團名稱。"""
+
+    group_name: str | None = Field(default=None, max_length=255)
+
+
 @router.get("/company-groups")
 def list_company_groups() -> dict[str, Any]:
     """列出集團治理清單。"""
@@ -103,12 +109,23 @@ def ingest_company_group_suggestions(body: SuggestionIngestRequest) -> dict[str,
 
 
 @router.post("/company-groups/suggestions/{member_id}/confirm")
-def confirm_company_group_suggestion(member_id: int) -> dict[str, Any]:
+def confirm_company_group_suggestion(
+    member_id: int,
+    body: SuggestionConfirmRequest | None = None,
+) -> dict[str, Any]:
     """人工確認單筆 CLI/AI 建議。"""
     try:
-        return repo.set_suggestion_decision(member_id, "confirmed")
+        if body is not None and body.group_name is not None and not body.group_name.strip():
+            raise ValueError("group_name is required")
+        return repo.set_suggestion_decision(
+            member_id,
+            "confirmed",
+            group_name=body.group_name if body is not None else None,
+        )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/company-groups/suggestions/{member_id}/reject")
