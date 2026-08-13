@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -23,7 +24,13 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 BASELINE = HERE.parent / "regression_baseline"
-PPTX_TO_PNG = Path(r"D:\vscode\ppt-tools\pptx_to_png.py")
+
+# PPTX→PNG 轉圖器（走 PowerPoint COM）。⚠ 2026-08-13 由寫死開發機路徑改為可覆寫：
+# 目視轉圖已定案進產線（openspec add-deck-delivery-line design 4-0），
+# 產線機器不會有 `D:\vscode\`，寫死等於一到伺服器就斷。
+# 沿 `fit_render_charts.PLAYWRIGHT_HOME` 同一套慣例：環境變數優先、預設回開發機。
+DEFAULT_PPTX_TO_PNG = Path(r"D:\vscode\ppt-tools\pptx_to_png.py")
+PPTX_TO_PNG = Path(os.environ.get("PPTX_TO_PNG", DEFAULT_PPTX_TO_PNG))
 
 # ── 合成圖表：涵蓋會影響版面的幾種長寬比 ───────────────────────
 # 高瘦（會把圖內字壓小）、扁平（雙圖頁唯一成立的形狀）、方形、含 chip
@@ -133,6 +140,13 @@ def main() -> int:
     ap.add_argument("--update", action="store_true", help="重新產生基準圖")
     ap.add_argument("--keep", action="store_true", help="保留工作目錄以便查看")
     a = ap.parse_args()
+
+    # ⚠ 先擋轉圖器缺席：它排在最後一步，缺了會讓前面四步白跑（實測約 1 分鐘），
+    # 而 subprocess 的錯誤是「找不到檔案」，看不出是環境沒設好還是腳本壞了。
+    if not PPTX_TO_PNG.is_file():
+        print(f"✗ 找不到 PPTX→PNG 轉圖器：{PPTX_TO_PNG}\n"
+              f"  設環境變數 PPTX_TO_PNG 指向 pptx_to_png.py（走 PowerPoint COM）。")
+        return 1
 
     work = Path(tempfile.mkdtemp(prefix="deck_reg_"))
     charts, png = work / "charts", work / "png"

@@ -46,11 +46,21 @@
       驗證：`check_docs.py` **0 問題**——8 條數字措辭全保住，且 CLI 步驟 1–9
       仍被辨識（⚠ 該檢查是 `if blocks:`，格式一變會**靜默跳過**而非變紅，
       故以「輸出有印出步驟清單」為準，不只看問題數）。
-- [ ] 1.2 開發機路徑參數化補完（`regression.py` 的 `PPTX_TO_PNG`，現寫死
+- [x] 1.2 開發機路徑參數化補完（`regression.py` 的 `PPTX_TO_PNG`，原寫死
       `D:\vscode\ppt-tools\pptx_to_png.py`）；⚠ 目視轉圖進產線後，該路徑
       **不只是開發便利**——runner 也要解得到，需與 2.2d 的環境收斂一起定；
       跑 `check_docs.py`＋`regression.py` 確認遷移零破壞
+      **2026-08-13 完成**：改為環境變數 `PPTX_TO_PNG` 優先、預設回開發機路徑
+      （沿 `fit_render_charts.PLAYWRIGHT_HOME` 同一套慣例）；加前置存在性檢查——
+      轉圖排在最後一步，缺了會讓前面四步白跑約一分鐘，且 subprocess 只會噴
+      「找不到檔案」，看不出是環境沒設好還是腳本壞了。SKILL.md 兩處同步。
+      驗證：`check_docs.py` 0 問題；故意指到不存在路徑→提早擋下並給出設定指引；
+      預設路徑跑完整回歸 **五步全過、8 頁逐像素與基準相同**（順帶證實 COM 轉圖
+      在互動式 session 下可用；⚠ 產線的非互動 session 條件仍待 2.2e 實測）。
 - [ ] 1.3 中央份刪除；`.agents/context/README.md` 路由與引用更新
+      ⚠ **排在合主線之後**：中央份 `.agents/skills/html-report-to-deck/` 是開發側
+      現在唯一拿得到的一份，repo 內那份還在 worktree 分支上。提前刪會讓開發側
+      手動流程在合併前無處可跑。
 - [ ] 1.4 新 `assemble_from_version.py` intake（自 unify-chart-source 移入，
       2026-08-12：它本來就是 deck 第 1 步）——版本目錄／asset 端點 → 既有
       `report.json`＋`charts/` 中間格式；texts←narratives.json、

@@ -327,7 +327,7 @@ deck 產線＝**Windows**（2026-08-13 使用者定案「只做 Windows 版」�
 | 執行指令 | **PowerShell** | ⚠ 本機 Bash tool 可能因 Git 路徑問題直接失敗（`Top-level not found`），不要浪費回合重試 |
 | Python | 專案 venv（`python-pptx`／`pillow` 已在 `pyproject.toml`） | ⚠ 舊版走 `uv run --no-project --with <pkg>` 臨時拉套件，等於要求產線有 uv 且能連網；2026-08-13 起改走專案環境 |
 | SVG → PNG | `D:\vscode\playwright`（已裝 Chromium） | ⚠ 不要另外下載瀏覽器。腳本會自己指到 `D:\vscode\playwright\browsers`；**不要在 shell 另設 `PLAYWRIGHT_BROWSERS_PATH`**——`setdefault` 不會覆蓋你設的值，設到上一層就會噴 `Executable doesn't exist`。要換位置改設 `PLAYWRIGHT_HOME` |
-| PPTX → PNG 驗收 | `D:\vscode\ppt-tools\pptx_to_png.py` | 走本機 PowerPoint COM，出來就是使用者開檔會看到的樣子；不要裝 LibreOffice |
+| PPTX → PNG 驗收 | `D:\vscode\ppt-tools\pptx_to_png.py` | 走本機 PowerPoint COM，出來就是使用者開檔會看到的樣子；不要裝 LibreOffice。⚠ 路徑可用環境變數 `PPTX_TO_PNG` 覆寫（產線機器不會有 `D:\vscode\`） |
 | 產 PPTX | `python-pptx` + `pillow` | ⚠ python-pptx **不支援 SVG**，圖表一定要先轉 PNG |
 
 裝任何新工具前先看 `D:\vscode\`，要裝先問使用者。
@@ -359,7 +359,7 @@ uv run --no-project --python 3.12 --with python-pptx --with pillow python <S>\ch
 uv run --no-project --python 3.12 --with python-pptx --with pillow python <S>\make_deck.py <work>\content.json <work>\png <out>\<name>.pptx
 # 8 閘門
 uv run --no-project --python 3.12 --with python-pptx python <S>\audit_deck.py <out>\<name>.pptx
-# 9 實物：轉圖後逐頁看
+# 9 實物：轉圖後逐頁看（路徑可用環境變數 PPTX_TO_PNG 覆寫）
 uv run --no-project --python 3.12 python D:\vscode\ppt-tools\pptx_to_png.py <out>\<name>.pptx <verify>
 ```
 
