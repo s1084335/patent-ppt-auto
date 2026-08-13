@@ -51,7 +51,31 @@ Internal users use browser UI to:
 - confirm suggested members,
 - reject suggested members.
 
+Company membership selection is backed by the existing company-code registry. The UI displays
+the normalized company name and WIPS code in one selector, then derives both API fields from the
+selected registry item. Free-text company identity input is not used for group membership.
+
+The governance UI separates pending CLI/AI suggestions from established groups. Suggestions are
+visible for review with their evidence; the established-group list is collapsed by default.
+After each suggested member decision, the backend recalculates the parent group state: any
+confirmed member activates the group, remaining suggestion-only membership keeps it suggested,
+and a group with no confirmed or suggested members becomes rejected.
+
 These actions write confirmed/rejected state through backend APIs.
+
+## SSE Refresh
+
+Company-group repository mutations publish a transaction-local PostgreSQL notification on the
+existing `patent_events` channel. PostgreSQL delivers `NOTIFY` only after commit, so rolled-back
+changes cannot cause the browser to show state that was never persisted.
+
+The payload is intentionally limited to `kind`, `resource`, `action`, and `event_id`; company
+names, codes, memberships, and evidence remain behind the authenticated API read. The browser
+maps `resource=companyGroups` to `renderCompanyGroupRegistry`, using the existing browse-page
+gating, 1.5-second debounce, in-flight merge, and SSE reconnect compensation.
+
+Creating a group with initial members emits one group-level event. Nested member inserts suppress
+their own notifications to avoid an event burst for a single user action.
 
 ### CLI/AI Suggestion Source
 

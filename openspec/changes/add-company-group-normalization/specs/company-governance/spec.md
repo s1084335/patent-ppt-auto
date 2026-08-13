@@ -22,6 +22,26 @@ The system SHALL allow internal browser users to manually create and maintain co
 - **THEN** the backend SHALL persist confirmed group membership
 - **AND** derived/report refresh SHALL be able to use that confirmed membership
 
+#### Scenario: User selects an existing normalized company
+
+- **GIVEN** company normalization already exposes company display names and WIPS codes
+- **WHEN** an internal browser user creates a group or adds a group member
+- **THEN** the UI SHALL provide a selector backed by the existing company registry
+- **AND** the submitted company display name and code SHALL be derived from the selected registry item
+- **AND** the UI SHALL NOT require the user to retype those values
+
+### Requirement: Group Governance Changes Refresh Through SSE
+
+The system SHALL publish committed company-group governance changes through the existing `patent_events` SSE channel so that open browser sessions can refresh the group registry without a full-page reload.
+
+#### Scenario: Group governance data changes
+
+- **WHEN** a manual group mutation, CLI/AI suggestion ingestion, or suggestion review is committed
+- **THEN** the backend SHALL publish a `kind=data` event for resource `companyGroups`
+- **AND** the event SHALL contain refresh metadata only, not company or member data
+- **AND** the browser SHALL schedule a debounced group-registry refresh when the browse view is active
+- **AND** reconnect compensation SHALL refresh the registry after an SSE interruption
+
 ### Requirement: CLI AI Group Suggestions Are Review Only
 
 The system SHALL allow CLI/AI to produce group suggestions, but SHALL NOT allow CLI/AI output to become confirmed group mapping without browser user confirmation.
@@ -31,6 +51,15 @@ The system SHALL allow CLI/AI to produce group suggestions, but SHALL NOT allow 
 - **WHEN** CLI/AI suggests a group with members, evidence, and confidence
 - **THEN** the system SHALL store or expose it as review-only suggestion data
 - **AND** the suggestion SHALL NOT affect derived/report group fields until confirmed by a user
+
+#### Scenario: User reviews CLI AI suggestions in the browser
+
+- **GIVEN** CLI/AI has persisted review-only group suggestions with evidence
+- **WHEN** an internal browser user opens group normalization
+- **THEN** pending suggestions SHALL be shown separately from established groups
+- **AND** the user SHALL be able to confirm or reject each suggested member
+- **AND** confirming a member SHALL make its parent group confirmed for derived/report use
+- **AND** established groups SHALL remain in a collapsed list by default
 
 #### Scenario: CLI AI lacks enough evidence
 

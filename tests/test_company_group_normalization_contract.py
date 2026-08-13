@@ -1,9 +1,54 @@
 from __future__ import annotations
 
+import inspect
+import json
+
 from fastapi.testclient import TestClient
 import pytest
+from unittest import mock
 
 from backend.app.main import app
+
+
+def test_company_group_sse_event_contract():
+    """Publish only refresh metadata on the shared patent_events channel."""
+    from backend.app.repositories import company_group_repository as repo
+
+    assert hasattr(repo, "_notify_company_groups_changed")
+    calls: list[tuple[str, tuple[str]]] = []
+
+    class Cursor:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+
+    repo._notify_company_groups_changed(Cursor(), action="rename")
+
+    sql, params = calls[0]
+    assert "pg_notify('patent_events'" in sql
+    payload = json.loads(params[0])
+    assert payload["kind"] == "data"
+    assert payload["resource"] == "companyGroups"
+    assert payload["action"] == "rename"
+    assert payload["event_id"]
+    assert "company" not in payload
+
+
+def test_all_company_group_mutations_publish_sse_event():
+    """Every repository write that changes the registry must publish SSE."""
+    from backend.app.repositories import company_group_repository as repo
+
+    expected_actions = {
+        "create_manual_group": "create",
+        "rename_group": "rename",
+        "add_group_member": "add_member",
+        "remove_group_member": "remove_member",
+        "ingest_cli_suggestions": "ingest_suggestions",
+        "set_suggestion_decision": "review_suggestion",
+    }
+    for function_name, action in expected_actions.items():
+        source = inspect.getsource(getattr(repo, function_name))
+        assert "_notify_company_groups_changed" in source, function_name
+        assert f'action="{action}"' in source, function_name
 
 
 def test_company_group_api_routes_are_registered():
@@ -102,3 +147,51 @@ def test_report_api_rejects_invalid_scope_before_job_creation():
     )
 
     assert response.status_code == 422
+
+
+def test_suggestion_decision_updates_parent_group_review_status():
+    """Confirming a suggested member must activate its parent group for reports."""
+    from backend.app.repositories import company_group_repository as repo
+
+    executed: list[str] = []
+
+    class Cursor:
+        def execute(self, sql, params=None):
+            executed.append(sql)
+            self._row = (
+                (7, 3, "confirmed")
+                if "UPDATE derived_layer.company_group_members" in sql
+                else ("confirmed",)
+            )
+            return self
+
+        def fetchone(self):
+            return self._row
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    with mock.patch.object(repo, "_connect", return_value=Connection()):
+        result = repo.set_suggestion_decision(7, "confirmed")
+
+    sql = "\n".join(executed)
+    assert "UPDATE derived_layer.company_groups" in sql
+    assert "review_status = 'confirmed'" in sql
+    assert "review_status = 'suggested'" in sql
+    assert result["group_review_status"] == "confirmed"

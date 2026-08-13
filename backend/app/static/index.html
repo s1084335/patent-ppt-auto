@@ -1203,13 +1203,48 @@ function companyGroupMemberHtml(group, member) {
     + ' <span class="pill">' + escHtml(status) + '</span>' + action + '</li>';
 }
 
+let companyGroupCompanies = [];
+
+function companyGroupCompanyName(company) {
+  return (company && (company.company_name || company.zh_name || company.normalized_name) || '').trim();
+}
+
+function companyGroupCompanyOptionsHtml(members) {
+  const assignedNames = new Set((members || [])
+    .filter(function (member) { return member.review_status !== 'rejected'; })
+    .map(function (member) { return (member.company_display_name || '').trim(); })
+    .filter(Boolean));
+  const options = companyGroupCompanies.filter(function (company) {
+    const name = companyGroupCompanyName(company);
+    return name && !assignedNames.has(name);
+  }).map(function (company) {
+    const name = companyGroupCompanyName(company);
+    const code = (company.code || '').trim();
+    const label = code ? name + '（' + code + '）' : name;
+    return '<option value="' + escHtml(code) + '">' + escHtml(label) + '</option>';
+  }).join('');
+  return '<option value="">請選擇公司</option>' + options;
+}
+
+function selectedCompanyGroupCompany(selectId) {
+  const code = ((el(selectId) || {}).value || '').trim();
+  const company = companyGroupCompanies.find(function (item) { return item.code === code; });
+  const name = companyGroupCompanyName(company);
+  if (!company || !name) return null;
+  return { company_code: company.code || null, company_display_name: name };
+}
+
 function companyGroupHtml(group) {
-  const members = group.members || [];
+  const members = (group.members || []).filter(function (member) {
+    return member.review_status === 'confirmed';
+  });
   return '<details class="reports-market-details" data-key="company-group-' + group.group_id + '">'
     + '<summary>' + escHtml(group.group_name || '(未命名集團)')
     + ' <span class="pill">' + escHtml(group.review_status || '') + '</span></summary>'
     + '<div class="toolbar" style="margin:.35rem 0">'
     + '<button class="btn-mini" onclick="renameCompanyGroupLayer(' + group.group_id + ', ' + jsQuote(group.group_name || '') + ')">改名</button>'
+    + '<select class="text-input" id="company-group-member-select-' + group.group_id + '" style="max-width:28rem">'
+    + companyGroupCompanyOptionsHtml(members) + '</select>'
     + '<button class="btn-mini" onclick="addCompanyGroupLayerMember(' + group.group_id + ')">新增成員</button>'
     + '</div>'
     + (members.length
@@ -1218,6 +1253,29 @@ function companyGroupHtml(group) {
         + '</ul>'
       : '<div class="hint" style="padding:.25rem 0">尚無成員</div>')
     + '</details>';
+}
+
+function companyGroupSuggestionHtml(group) {
+  const members = (group.members || []).filter(function (member) {
+    return member.review_status === 'suggested';
+  });
+  return '<div style="padding:.45rem 0;border-top:1px solid var(--border)">'
+    + '<div style="font-weight:600">' + escHtml(group.group_name || '(未命名集團)') + '</div>'
+    + '<ul style="margin:.25rem 0 0 1.2rem;padding:0;list-style:none">'
+    + members.map(function (member) {
+      const code = member.company_code ? ' / ' + member.company_code : '';
+      const evidence = member.evidence_json && Object.keys(member.evidence_json).length
+        ? JSON.stringify(member.evidence_json)
+        : '無附加證據';
+      return '<li style="padding:.2rem 0">'
+        + '<div>' + escHtml((member.company_display_name || '') + code) + '</div>'
+        + '<div class="hint" style="font-size:.78rem">證據：' + escHtml(evidence) + '</div>'
+        + '<div class="toolbar" style="margin-top:.2rem">'
+        + '<button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', true)">確認</button>'
+        + '<button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', false)">拒絕</button>'
+        + '</div></li>';
+    }).join('')
+    + '</ul></div>';
 }
 
 async function renderCompanyGroupRegistry() {
@@ -1230,20 +1288,44 @@ async function renderCompanyGroupRegistry() {
     + '</details>';
   const body = el('company-group-body');
   try {
-    const data = await getJson(API + '/company-groups');
+    const results = await Promise.all([
+      getJson(API + '/company-groups'),
+      getJson(API + '/company-codes/existing'),
+    ]);
+    const data = results[0];
+    companyGroupCompanies = results[1].items || [];
     const groups = data.items || [];
+    const suggestionGroups = groups.filter(function (group) {
+      return (group.members || []).some(function (member) {
+        return member.review_status === 'suggested';
+      });
+    });
+    const establishedGroups = groups.filter(function (group) {
+      return group.review_status === 'confirmed'
+        || (group.members || []).some(function (member) {
+          return member.review_status === 'confirmed';
+        });
+    });
     body.innerHTML = '<div class="code-field"><label>集團名稱</label>'
       + '<input class="text-input" id="company-group-name" placeholder="例如：創科集團"></div>'
-      + '<div class="code-field"><label>公司名稱</label>'
-      + '<input class="text-input" id="company-group-member-name" placeholder="已正規化公司顯示名"></div>'
-      + '<div class="code-field"><label>公司代碼</label>'
-      + '<input class="text-input" id="company-group-member-code" placeholder="可空"></div>'
+      + '<div class="code-field"><label>公司</label>'
+      + '<select class="text-input" id="company-group-company-select">'
+      + companyGroupCompanyOptionsHtml([]) + '</select></div>'
       + '<button class="btn" onclick="createCompanyGroupLayer()">建立集團</button>'
       + '<div id="company-group-msg" class="hint" style="padding:.4rem 0 0"></div>'
       + '<hr>'
-      + (groups.length
-        ? groups.map(companyGroupHtml).join('')
-        : '<div class="hint" style="padding:.35rem 0">尚未建立集團</div>');
+      + (suggestionGroups.length
+        ? '<details id="company-group-suggestions" open>'
+          + '<summary>CLI 建議待審核（' + suggestionGroups.length + '）</summary>'
+          + suggestionGroups.map(companyGroupSuggestionHtml).join('')
+          + '</details>'
+        : '')
+      + '<details id="company-group-list">'
+      + '<summary>已建立集團（' + establishedGroups.length + '）</summary>'
+      + (establishedGroups.length
+        ? establishedGroups.map(companyGroupHtml).join('')
+        : '<div class="hint" style="padding:.35rem 0">尚未建立集團</div>')
+      + '</details>';
   } catch (e) {
     body.innerHTML = '<div class="task-detail-error">載入失敗：' + escHtml(e.message) + '</div>';
   }
@@ -1252,11 +1334,10 @@ async function renderCompanyGroupRegistry() {
 
 async function createCompanyGroupLayer() {
   const groupName = ((el('company-group-name') || {}).value || '').trim();
-  const companyName = ((el('company-group-member-name') || {}).value || '').trim();
-  const companyCode = ((el('company-group-member-code') || {}).value || '').trim();
-  if (!groupName || !companyName) {
+  const member = selectedCompanyGroupCompany('company-group-company-select');
+  if (!groupName || !member) {
     const msg = el('company-group-msg');
-    if (msg) msg.innerHTML = '<div class="code-conflict">請填集團名稱與公司名稱</div>';
+    if (msg) msg.innerHTML = '<div class="code-conflict">請填集團名稱並選擇公司</div>';
     return;
   }
   await getJson(API + '/company-groups', {
@@ -1264,7 +1345,7 @@ async function createCompanyGroupLayer() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       group_name: groupName,
-      members: [{ company_code: companyCode || null, company_display_name: companyName }],
+      members: [member],
     }),
   });
   await renderCompanyGroupRegistry();
@@ -1282,16 +1363,16 @@ async function renameCompanyGroupLayer(groupId, currentName) {
 }
 
 async function addCompanyGroupLayerMember(groupId) {
-  const companyName = prompt('要加入的公司顯示名');
-  if (!companyName || !companyName.trim()) return;
-  const companyCode = prompt('公司代碼（可空）') || '';
+  const member = selectedCompanyGroupCompany('company-group-member-select-' + groupId);
+  if (!member) {
+    const msg = el('company-group-msg');
+    if (msg) msg.innerHTML = '<div class="code-conflict">請先選擇要加入的公司</div>';
+    return;
+  }
   await getJson(API + '/company-groups/' + encodeURIComponent(groupId) + '/members', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      company_code: companyCode.trim() || null,
-      company_display_name: companyName.trim(),
-    }),
+    body: JSON.stringify(member),
   });
   await renderCompanyGroupRegistry();
 }
@@ -5669,6 +5750,7 @@ function connectSSE() {
     try {
       const ev = JSON.parse(e.data);
       if (ev.kind === 'run') { updateTaskFromEvent(ev); maybeRefreshFromEvent(ev); }
+      if (ev.kind === 'data') maybeRefreshDataEvent(ev);
     } catch (_) {}
   };
   sse.addEventListener('heartbeat', function () {});
@@ -5744,6 +5826,7 @@ const RESOURCE_REFRESHERS = {
   'topics': { navs: ['topics'], run: renderTopics },  // 選擇存 state，重繪不失
   'reports': { navs: ['reports'], run: refreshReportsArea },
   'workspaces': { navs: null, run: loadWorkspaces },  // 頂列下拉；自恢復上次選定
+  'companyGroups': { navs: ['browse'], run: renderCompanyGroupRegistry },
 };
 
 const REFRESH_DEBOUNCE_MS = 1500;   // design.md「合併」：同資源事件 1.5 秒窗合併
@@ -5767,6 +5850,10 @@ function maybeRefreshFromEvent(ev) {
   const cached = taskById[ev.run_id];
   const jobType = ev.run_type || (cached && cached.job_type);
   (JOB_REFRESH_TARGETS[jobType] || []).forEach(scheduleResourceRefresh);
+}
+
+function maybeRefreshDataEvent(ev) {
+  if (ev.resource === 'companyGroups') scheduleResourceRefresh('companyGroups');
 }
 
 // 資源級排程：頁面 gating → debounce 合併 → in-flight 合併。

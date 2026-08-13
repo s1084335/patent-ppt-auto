@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+import json
 from typing import Any
+from uuid import uuid4
 
 from psycopg.types.json import Jsonb
 
 REVIEW_STATUSES = {"suggested", "confirmed", "rejected"}
 SOURCE_TYPES = {"manual", "cli_ai"}
+
+
+def _notify_company_groups_changed(cur: Any, *, action: str) -> None:
+    """在目前 transaction 提交後通知瀏覽器重讀集團清單。"""
+    payload = {
+        "kind": "data",
+        "resource": "companyGroups",
+        "action": action,
+        "event_id": f"companyGroups:{uuid4().hex}",
+    }
+    cur.execute(
+        "SELECT pg_notify('patent_events', %s)",
+        (json.dumps(payload, separators=(",", ":")),),
+    )
 
 
 def normalize_group_name(value: str) -> str:
@@ -154,7 +170,9 @@ def create_manual_group(group_name: str, members: list[dict[str, Any]]) -> dict[
                     company_code=member.get("company_code"),
                     company_display_name=member["company_display_name"],
                     connection=conn,
+                    notify=False,
                 )
+            _notify_company_groups_changed(cur, action="create")
         conn.commit()
     return {"group_id": group_id, "group_name": name}
 
@@ -178,6 +196,8 @@ def rename_group(group_id: int, group_name: str) -> dict[str, Any]:
                 (name, normalize_group_name(name), group_id),
             )
             row = cur.fetchone()
+            if row is not None:
+                _notify_company_groups_changed(cur, action="rename")
         conn.commit()
     if row is None:
         raise LookupError("company group not found")
@@ -190,6 +210,7 @@ def add_group_member(
     company_code: str | None,
     company_display_name: str,
     connection: Any | None = None,
+    notify: bool = True,
 ) -> dict[str, Any]:
     """新增 manual confirmed 成員；可共用外層 transaction。"""
     display_name = company_display_name.strip()
@@ -207,6 +228,8 @@ def add_group_member(
         with conn.cursor() as cur:
             cur.execute(sql, (group_id, company_code, display_name))
             member_id = cur.fetchone()[0]
+            if notify:
+                _notify_company_groups_changed(cur, action="add_member")
         if close_after:
             conn.commit()
     finally:
@@ -227,6 +250,8 @@ def remove_group_member(group_id: int, member_id: int) -> dict[str, Any]:
                 (group_id, member_id),
             )
             deleted = cur.rowcount
+            if deleted:
+                _notify_company_groups_changed(cur, action="remove_member")
         conn.commit()
     return {"deleted": deleted}
 
@@ -266,12 +291,14 @@ def ingest_cli_suggestions(items: list[dict[str, Any]]) -> dict[str, Any]:
                         ),
                     )
                 inserted += 1
+            if inserted:
+                _notify_company_groups_changed(cur, action="ingest_suggestions")
         conn.commit()
     return {"inserted": inserted}
 
 
 def set_suggestion_decision(member_id: int, decision: str) -> dict[str, Any]:
-    """人工確認或拒絕單筆 CLI/AI 建議。"""
+    """人工確認或拒絕單筆 CLI/AI 建議，並同步父集團的生效狀態。"""
     if decision not in {"confirmed", "rejected"}:
         raise ValueError("decision must be confirmed or rejected")
     with _connect() as conn:
@@ -289,7 +316,48 @@ def set_suggestion_decision(member_id: int, decision: str) -> dict[str, Any]:
                 (decision, member_id),
             )
             row = cur.fetchone()
+            if row is not None:
+                cur.execute(
+                    """
+                    UPDATE derived_layer.company_groups AS g
+                    SET review_status = CASE
+                            WHEN EXISTS (
+                                SELECT 1
+                                FROM derived_layer.company_group_members AS m
+                                WHERE m.group_id = g.group_id
+                                  AND m.review_status = 'confirmed'
+                            ) THEN 'confirmed'
+                            WHEN EXISTS (
+                                SELECT 1
+                                FROM derived_layer.company_group_members AS m
+                                WHERE m.group_id = g.group_id
+                                  AND m.review_status = 'suggested'
+                            ) THEN 'suggested'
+                            ELSE 'rejected'
+                        END,
+                        source_type = CASE
+                            WHEN EXISTS (
+                                SELECT 1
+                                FROM derived_layer.company_group_members AS m
+                                WHERE m.group_id = g.group_id
+                                  AND m.review_status = 'suggested'
+                            ) THEN g.source_type
+                            ELSE 'manual'
+                        END,
+                        updated_at = now()
+                    WHERE g.group_id = %s
+                    RETURNING review_status
+                    """,
+                    (row[1],),
+                )
+                group_row = cur.fetchone()
+                _notify_company_groups_changed(cur, action="review_suggestion")
         conn.commit()
     if row is None:
         raise LookupError("suggestion member not found")
-    return {"member_id": row[0], "group_id": row[1], "review_status": row[2]}
+    return {
+        "member_id": row[0],
+        "group_id": row[1],
+        "review_status": row[2],
+        "group_review_status": group_row[0],
+    }

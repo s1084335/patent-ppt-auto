@@ -32,6 +32,9 @@
 - [x] 5.1 Add a collapsed "group normalization" section in company governance UI.
 - [x] 5.2 Support manual group creation, member selection, rename, remove, confirm suggestion, reject suggestion.
 - [x] 5.3 Label report/chart scope clearly as company or group.
+- [x] 5.4 Replace free-text group member identity with a selector backed by the existing company-code registry.
+- [x] 5.5 Separate CLI/AI suggestions into an evidence-backed review section and keep established groups collapsed by default.
+- [x] 5.6 Publish committed group mutations through SSE and refresh the visible group registry through the existing debounced resource scheduler.
 
 ## 6. Acceptance
 
@@ -39,6 +42,8 @@
 - [x] 6.2 Run OpenSpec strict validation for this change.
 - [x] 6.3 Perform manual UI smoke: create group, confirm AI suggestion, refresh report, verify company/group scope difference. Supabase schema was upgraded after explicit approval; DB behavior smoke used a rollback transaction and left no test rows.
 - [x] 6.4 Stop after local validation; do not push or merge until user explicitly asks.
+- [x] 6.5 Re-run focused frontend/API tests, OpenSpec strict validation, and Supabase rollback behavior smoke for suggestion decisions.
+- [x] 6.6 Verify SSE event contract, frontend data-event dispatch, reconnect compensation, and rendered group UI.
 
 ## 7. Product Skill
 
