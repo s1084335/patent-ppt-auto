@@ -156,9 +156,13 @@
          影響是四項實質問題：`uv sync` 後跑不起來、產線多一個無人檢查的手動
          步驟、版本釘不住（chromium 版本是 `getBBox` 的變因）、CI／容器不能跑。
          兩者**不互斥**，應該都做。
-      ⚠ 既有環境要跑 `uv sync` 才會裝上；在那之前 `browser_env` 以
-      「找不到套件才插 vendored lib」回退（同時只有一條生效，不是雙軌）。
-      🔴 **sync 完成後移除 `_fallback_vendored_lib`**。
+      ✅ **已安裝並移除過渡回退**：`playwright==1.62.0` 裝進現用的 venv
+      （釘版而非最新——既有 browsers 是 chromium-1234，裝最新版會對不上）。
+      ⚠ 沒在 `deck-work` 跑 `uv sync`：該 worktree 無 `.venv`，sync 會從頭建
+      含 torch 數 GB；實際在用的是主工作樹的 venv，而 `pyproject` 改動還在本
+      分支上——**合主線後主工作樹 `uv sync` 才會自然涵蓋**。
+      驗證：`playwright.__file__` 指向專案 venv、回退不再啟用、
+      `shoot_pages`／`fit_render_charts` 實跑正常（browsers 沿用既有，未重下載）。
       ⚠ 瀏覽器本體不進 `pyproject`（150–400 MB），另裝或用環境變數指。
 - [ ] 2.2e 🆕 **CLI 執行身分實測**（design 4-0b 唯一剩下的 🔴 條件）：
       `_CLI_SPECS` 的 `"binary": "claude"` 靠 PATH 解析，實測開發機的 CLI 在
