@@ -1,0 +1,4 @@
+interface:
+  display_name: "Company Group Normalization"
+  short_description: "Semi-automatic company group curation for patent reports."
+  default_prompt: "Use $company-group-normalization to suggest and review company group mappings without confirming them automatically."

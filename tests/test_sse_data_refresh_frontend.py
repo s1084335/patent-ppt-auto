@@ -49,7 +49,14 @@ class MappingSingleSourceTests(unittest.TestCase):
     def test_resource_refreshers_exist_with_nav_gating(self):
         """資源 → 刷新函式＋適用頁；停留無關頁面不刷（WSP-007 scenario 2）。"""
         self.assertIn("const RESOURCE_REFRESHERS", self.html)
-        for res in ("browsePatents", "noteCoverage", "topics", "reports", "workspaces"):
+        for res in (
+            "browsePatents",
+            "noteCoverage",
+            "topics",
+            "reports",
+            "workspaces",
+            "companyGroups",
+        ):
             self.assertIn("'" + res + "'", self.html, f"缺資源 {res}")
         match = re.search(r"function scheduleResourceRefresh\(.*?\n\}", self.html, re.DOTALL)
         self.assertIsNotNone(match, "缺 scheduleResourceRefresh")
@@ -89,6 +96,21 @@ class EventDispatchTests(unittest.TestCase):
         match = re.search(r"function connectSSE\(.*?\n\}", self.html, re.DOTALL)
         self.assertIsNotNone(match)
         self.assertIn("maybeRefreshFromEvent", match.group(0))
+
+    def test_company_group_data_event_dispatches_to_registry_refresh(self):
+        """集團資料事件必須沿用既有 refresh scheduler，不能直接重繪整頁。"""
+        self.assertRegex(
+            self.html,
+            r"'companyGroups':\s*\{\s*navs:\s*\['browse'\],\s*run:\s*renderCompanyGroupRegistry",
+        )
+        match = re.search(r"function connectSSE\(.*?\n\}", self.html, re.DOTALL)
+        self.assertIsNotNone(match)
+        self.assertIn("maybeRefreshDataEvent", match.group(0))
+        self.assertIn("function maybeRefreshDataEvent", self.html)
+        self.assertRegex(
+            self.html,
+            r"ev\.resource\s*===\s*'companyGroups'.*scheduleResourceRefresh\('companyGroups'\)",
+        )
 
 
 class BrowsePreserveExpandedTests(unittest.TestCase):

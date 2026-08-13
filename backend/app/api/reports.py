@@ -14,7 +14,7 @@ handlers.py 的 report_generate。report_names 與 filters 欄以既有報表定
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -39,6 +39,7 @@ class ReportRequest(BaseModel):
     filters: dict[str, Any] | None = None
     limit: int | None = Field(default=None, ge=1)
     patent_ids: list[int] | None = None
+    report_scope: Literal["company", "group"] = "company"
     idempotency_key: str | None = Field(default=None, max_length=200)
     # 分群類報表（主題統計表／機會板／痛點板）的範圍：分群一律以 workspace 為單位。
     # 2026-07-28 補：原本前端沒送、model 也沒這欄，worker 端 workspace_id 恆為 None，
@@ -102,6 +103,7 @@ def create_report(request: ReportRequest) -> dict[str, Any]:
                 )
 
     payload: dict[str, Any] = {"report_names": list(report_names)}
+    payload["report_scope"] = request.report_scope
     if request.filters is not None:
         payload["filters"] = request.filters
     if request.limit is not None:
