@@ -19,6 +19,8 @@
 - [x] 3.3 Green: implement suggestion ingestion as review-only data or workflow output.
 - [x] 3.4 Red: CLI/AI permission tests prove suggested mappings do not affect reports until confirmed.
 - [x] 3.5 Green: wire suggestion listing into governance UI/API.
+- [x] 3.6 Red: manual trigger, AI job registration, web-tool allowlist, controlled-candidate, HTTPS evidence, and SSE refresh contract tests.
+- [x] 3.7 Green: add the centralized `ai:company_group_suggestion` bridge runner; allow only Claude `WebSearch`/`WebFetch` and persist only validated suggestions.
 
 ## 4. TDD: Derived And Reports
 
@@ -35,6 +37,7 @@
 - [x] 5.4 Replace free-text group member identity with a selector backed by the existing company-code registry.
 - [x] 5.5 Separate CLI/AI suggestions into an evidence-backed review section and keep established groups collapsed by default.
 - [x] 5.6 Publish committed group mutations through SSE and refresh the visible group registry through the existing debounced resource scheduler.
+- [x] 5.7 Add a manual "產生 AI 建議" trigger; disable it while the global job is queued/running and keep the suggestion section hidden when empty.
 
 ## 6. Acceptance
 
@@ -44,6 +47,7 @@
 - [x] 6.4 Stop after local validation; do not push or merge until user explicitly asks.
 - [x] 6.5 Re-run focused frontend/API tests, OpenSpec strict validation, and Supabase rollback behavior smoke for suggestion decisions.
 - [x] 6.6 Verify SSE event contract, frontend data-event dispatch, reconnect compensation, and rendered group UI.
+- [ ] 6.7 Verify the manual web-research trigger, running state, CLI execution, suggestion display, and HTTPS evidence on the deployed environment.
 
 ## 7. Product Skill
 

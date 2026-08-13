@@ -290,6 +290,13 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .code-field { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
 .code-field > label { flex: 0 0 6.2rem; font-size: 0.85rem; color: var(--text-muted); }
 .code-field input { flex: 1 1 auto; min-width: 0; }
+.company-group-company-picker { flex: 1 1 auto; max-height: 12rem; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 0.35rem; background: var(--panel);
+  padding: 0.3rem 0.45rem; }
+.company-group-company-option { display: flex; align-items: center; gap: 0.45rem;
+  padding: 0.28rem 0.2rem; font-size: 0.88rem; cursor: pointer; }
+.company-group-company-option + .company-group-company-option { border-top: 1px solid var(--border); }
+.company-group-company-option input { flex: 0 0 auto; }
 .code-variant-row { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.32rem; }
 .code-variant-row input { flex: 1 1 auto; min-width: 0; }
 .btn-mini { padding: 0.18rem 0.55rem; font-size: 0.85rem; line-height: 1.3;
@@ -1234,6 +1241,31 @@ function selectedCompanyGroupCompany(selectId) {
   return { company_code: company.code || null, company_display_name: name };
 }
 
+function companyGroupCompanyCheckboxesHtml() {
+  if (!companyGroupCompanies.length) return '<div class="hint" style="padding:.25rem">尚無可選公司</div>';
+  return companyGroupCompanies.map(function (company, index) {
+    const name = companyGroupCompanyName(company);
+    const code = (company.code || '').trim();
+    const label = code ? name + '（' + code + '）' : name;
+    return '<label class="company-group-company-option">'
+      + '<input type="checkbox" class="company-group-company-checkbox" data-company-index="'
+      + index + '">'
+      + '<span>' + escHtml(label) + '</span></label>';
+  }).join('');
+}
+
+function selectedCompanyGroupCompanies() {
+  return Array.from(document.querySelectorAll(
+    '#company-group-company-picker .company-group-company-checkbox:checked'
+  )).map(function (checkbox) {
+    const company = companyGroupCompanies[parseInt(checkbox.dataset.companyIndex, 10)];
+    const name = companyGroupCompanyName(company);
+    return company && name
+      ? { company_code: company.code || null, company_display_name: name }
+      : null;
+  }).filter(Boolean);
+}
+
 function companyGroupHtml(group) {
   const members = (group.members || []).filter(function (member) {
     return member.review_status === 'confirmed';
@@ -1308,10 +1340,13 @@ async function renderCompanyGroupRegistry() {
     });
     body.innerHTML = '<div class="code-field"><label>集團名稱</label>'
       + '<input class="text-input" id="company-group-name" placeholder="例如：創科集團"></div>'
-      + '<div class="code-field"><label>公司</label>'
-      + '<select class="text-input" id="company-group-company-select">'
-      + companyGroupCompanyOptionsHtml([]) + '</select></div>'
+      + '<div class="code-field"><label>公司（可多選）</label>'
+      + '<div class="company-group-company-picker" id="company-group-company-picker">'
+      + companyGroupCompanyCheckboxesHtml() + '</div></div>'
       + '<button class="btn" onclick="createCompanyGroupLayer()">建立集團</button>'
+      + '<button class="btn" id="company-group-ai-suggest" style="margin-left:.45rem" onclick="runCompanyGroupSuggestions()"'
+      + (companyGroupSuggestionJobRunning() ? ' disabled' : '') + '>'
+      + (companyGroupSuggestionJobRunning() ? 'AI 建議產生中…' : '產生 AI 建議') + '</button>'
       + '<div id="company-group-msg" class="hint" style="padding:.4rem 0 0"></div>'
       + '<hr>'
       + (suggestionGroups.length
@@ -1334,10 +1369,10 @@ async function renderCompanyGroupRegistry() {
 
 async function createCompanyGroupLayer() {
   const groupName = ((el('company-group-name') || {}).value || '').trim();
-  const member = selectedCompanyGroupCompany('company-group-company-select');
-  if (!groupName || !member) {
+  const members = selectedCompanyGroupCompanies();
+  if (!groupName || !members.length) {
     const msg = el('company-group-msg');
-    if (msg) msg.innerHTML = '<div class="code-conflict">請填集團名稱並選擇公司</div>';
+    if (msg) msg.innerHTML = '<div class="code-conflict">請填集團名稱並至少選擇一家公司</div>';
     return;
   }
   await getJson(API + '/company-groups', {
@@ -1345,10 +1380,41 @@ async function createCompanyGroupLayer() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       group_name: groupName,
-      members: [member],
+      members: members,
     }),
   });
   await renderCompanyGroupRegistry();
+}
+
+let companyGroupSuggestionStarting = false;
+async function runCompanyGroupSuggestions() {
+  const msg = el('company-group-msg');
+  if (companyGroupSuggestionJobRunning()) return;
+  companyGroupSuggestionStarting = true;
+  const suggestButton = el('company-group-ai-suggest');
+  if (suggestButton) {
+    suggestButton.disabled = true;
+    suggestButton.textContent = 'AI 建議產生中…';
+  }
+  try {
+    await getJson(API + '/ai-tasks', {
+      method: 'POST',
+      headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ task_type: 'ai:company_group_suggestion' }),
+    });
+    if (msg) msg.textContent = 'AI 建議任務已建立，完成後會自動刷新。';
+    await fetchTasks();
+    companyGroupSuggestionStarting = false;
+    await renderCompanyGroupRegistry();
+  } catch (e) {
+    companyGroupSuggestionStarting = false;
+    if (suggestButton) {
+      suggestButton.disabled = false;
+      suggestButton.textContent = '產生 AI 建議';
+    }
+    if (msg) msg.innerHTML = '<div class="code-conflict">建立 AI 建議任務失敗：'
+      + escHtml(e.message) + '</div>';
+  }
 }
 
 async function renameCompanyGroupLayer(groupId, currentName) {
@@ -5509,6 +5575,10 @@ const RECENT_DONE_KEEP = 5;
 const HIDDEN_TASK_STATUSES = new Set(['succeeded']);  // 仍用於 SSE 即時事件的降級判斷
 let taskById = {};  // job_id -> 任務物件，供點擊展開詳情查閱 error_message／stage
 function isHiddenTask(t) { return HIDDEN_TASK_STATUSES.has(t.status); }
+function taskDisplayName(jobType) {
+  const names = { 'ai:company_group_suggestion': 'AI 集團建議' };
+  return names[jobType] || jobType;
+}
 function taskCardHtml(t) {
   const statusCls = 'status-' + (t.status || 'queued');
   const pct = t.progress_percent ?? 0;
@@ -5517,7 +5587,7 @@ function taskCardHtml(t) {
   return '<div class="task-card task-clickable" data-run-id="' + t.job_id + '"'
     + ' onclick="toggleTaskDetail(' + t.job_id + ')" title="點擊查看詳情">'
     + '<div class="task-card-header">'
-    + '<span class="task-type">' + escHtml(t.job_type) + ' #' + escHtml(t.job_id) + '</span>'
+    + '<span class="task-type">' + escHtml(taskDisplayName(t.job_type)) + ' #' + escHtml(t.job_id) + '</span>'
     + '<span class="task-status ' + statusCls + '">' + escHtml(t.status) + '</span>'
     + '</div>'
     + '<div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:' + pct + '%"></div></div>'
@@ -5580,6 +5650,11 @@ function hasRunningJob(jobType, workspaceId) {
     t.job_type === jobType
     && ['queued', 'running'].includes(t.status)
     && t.workspace_id === workspaceId);
+}
+function companyGroupSuggestionJobRunning() {
+  return companyGroupSuggestionStarting || taskListCache.some(t =>
+    t.job_type === 'ai:company_group_suggestion'
+    && ['queued', 'running'].includes(t.status));
 }
 function hasRunningIrrelevantFilter(workspaceId) {
   return hasRunningJob('ai:irrelevant_filter', workspaceId);
@@ -5814,6 +5889,7 @@ const JOB_REFRESH_TARGETS = {
   'ai:narrative': [],
   'embeddings': [],          // 無可見面（供之後的分群消費）
   'ai:company_zh_name': [],  // 草稿區已移除（2026-07-29 使用者定案）
+  'ai:company_group_suggestion': ['companyGroups'],
   'case_comparison': [],     // 比對頁自有流程；本 change 未覆蓋（tasks 3.4 揭露）
 };
 

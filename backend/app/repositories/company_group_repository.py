@@ -147,6 +147,43 @@ def list_company_groups() -> list[dict[str, Any]]:
             return list(cur.fetchall())
 
 
+def list_suggestion_candidates(*, limit: int | None = None) -> list[dict[str, Any]]:
+    """一次取出尚未進入有效集團關係的已確認公司，供 AI 受控查證。"""
+    sql = """
+        SELECT DISTINCT ON (ca."申請人代碼")
+            ca."申請人代碼" AS company_code,
+            COALESCE(
+                NULLIF(BTRIM(ca."公司中文名稱"), ''),
+                NULLIF(BTRIM(ca."正規化名稱"), ''),
+                NULLIF(BTRIM(ca."別稱"), '')
+            ) AS company_display_name
+        FROM derived_layer.company_aliases ca
+        WHERE ca.review_status = 'confirmed'
+          AND NULLIF(BTRIM(ca."申請人代碼"), '') IS NOT NULL
+          AND COALESCE(
+                NULLIF(BTRIM(ca."公司中文名稱"), ''),
+                NULLIF(BTRIM(ca."正規化名稱"), ''),
+                NULLIF(BTRIM(ca."別稱"), '')
+          ) IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM derived_layer.company_group_members gm
+              WHERE gm.company_code = ca."申請人代碼"
+                AND gm.review_status IN ('suggested', 'confirmed')
+          )
+        ORDER BY ca."申請人代碼", ca.updated_at DESC, ca.id DESC
+    """
+    params: tuple[Any, ...] = ()
+    if limit is not None:
+        sql += "\n        LIMIT %s"
+        params = (int(limit),)
+    from psycopg.rows import dict_row
+
+    with _connect() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(sql, params)
+            return [dict(row) for row in cur.fetchall()]
+
+
 def create_manual_group(group_name: str, members: list[dict[str, Any]]) -> dict[str, Any]:
     """由使用者手動建立 confirmed 集團與 confirmed 成員。"""
     name = group_name.strip()

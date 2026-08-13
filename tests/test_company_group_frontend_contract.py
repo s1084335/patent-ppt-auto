@@ -24,7 +24,7 @@ def test_company_group_members_are_selected_from_existing_companies():
     src = STATIC_INDEX.read_text(encoding="utf-8")
 
     assert "API + '/company-codes/existing'" in src
-    assert 'id="company-group-company-select"' in src
+    assert 'id="company-group-company-picker"' in src
     assert "companyGroupCompanyOptionsHtml" in src
     assert "company-group-member-select-" in src
     assert "selectedCompanyGroupCompany" in src
@@ -32,6 +32,18 @@ def test_company_group_members_are_selected_from_existing_companies():
     assert 'id="company-group-member-code"' not in src
     assert "prompt('要加入的公司顯示名')" not in src
     assert "prompt('公司代碼（可空）')" not in src
+
+
+def test_new_company_group_supports_multiple_company_selection():
+    """建立集團時可勾選多家公司，並一次送入 members 陣列。"""
+    src = STATIC_INDEX.read_text(encoding="utf-8")
+
+    assert 'id="company-group-company-picker"' in src
+    assert 'class="company-group-company-checkbox"' in src
+    assert "selectedCompanyGroupCompanies" in src
+    assert "const members = selectedCompanyGroupCompanies" in src
+    assert "members: members" in src
+    assert "members.length" in src
 
 
 def test_cli_suggestions_and_established_groups_have_separate_sections():
@@ -45,6 +57,26 @@ def test_cli_suggestions_and_established_groups_have_separate_sections():
     assert '<details id="company-group-list" open>' not in src
     assert "CLI 建議待審核" in src
     assert "已建立集團" in src
+
+
+def test_company_group_ai_suggestions_have_manual_trigger_and_sse_refresh():
+    """集團 AI 建議只能由使用者手動啟動，完成後沿用 SSE 刷新清單。"""
+    src = STATIC_INDEX.read_text(encoding="utf-8")
+
+    assert "function runCompanyGroupSuggestions()" in src
+    assert 'onclick="runCompanyGroupSuggestions()"' in src
+    assert "產生 AI 建議" in src
+    assert "ai:company_group_suggestion" in src
+    assert "API + '/ai-tasks'" in src
+    assert "companyGroupSuggestionJobRunning" in src
+    assert "AI 建議產生中" in src
+    assert "'ai:company_group_suggestion': ['companyGroups']" in src
+    assert 'id="company-group-ai-suggest"' in src
+    assert "companyGroupSuggestionStarting = true" in src
+    assert "suggestButton.disabled = true" in src
+    assert "function taskDisplayName" in src
+    assert "'ai:company_group_suggestion': 'AI 集團建議'" in src
+    assert "taskDisplayName(t.job_type)" in src
 
 
 def test_report_generation_ui_exposes_group_scope():

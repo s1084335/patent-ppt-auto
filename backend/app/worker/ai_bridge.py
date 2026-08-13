@@ -398,6 +398,26 @@ def _run_ai_company_zh_name_job(payload: dict[str, Any], context: JobContext) ->
 
 # job_type → 執行函式。值存「函式名」而非函式物件，讓 execute_ai_job 在呼叫當下才解析到
 # 模組屬性——測試以 mock.patch.object 換掉 _run_ai_* 時才會生效（存物件會綁死原函式）。
+def _run_ai_company_group_suggestion_job(
+    payload: dict[str, Any], context: JobContext
+) -> dict[str, Any]:
+    """執行手動公司集團連網查證，結果只寫入待審核建議。"""
+    from . import ai_company_group_suggestion_runner
+
+    context.heartbeat("準備集團查證", 1)
+    return ai_company_group_suggestion_runner.run_company_group_suggestions(
+        cli_kind=str(payload.get("cli_kind") or "claude"),
+        model=payload.get("model") or None,
+        cli_runner=payload.get("_cli_runner"),
+        limit=int(payload["limit"]) if payload.get("limit") else None,
+        timeout_seconds=float(
+            payload.get("cli_timeout_seconds")
+            or ai_company_group_suggestion_runner.DEFAULT_CLI_TIMEOUT_SECONDS
+        ),
+        progress=lambda stage, percent: context.heartbeat(stage, percent),
+    )
+
+
 def _source_field_for_filter(payload: dict[str, Any]) -> str:
     """決定不相干篩選要用哪個通道的主題來挑候選。
 
@@ -561,6 +581,7 @@ _AI_JOB_RUNNERS: dict[str, str] = {
     "ai:patent_note": "_run_ai_patent_note_job",
     "ai:candidate_explanation": "_run_ai_candidate_explanation_job",
     "ai:company_zh_name": "_run_ai_company_zh_name_job",
+    "ai:company_group_suggestion": "_run_ai_company_group_suggestion_job",
     "ai:irrelevant_filter": "_run_ai_irrelevant_filter_job",
 }
 

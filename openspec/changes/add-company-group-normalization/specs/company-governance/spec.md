@@ -66,6 +66,7 @@ The system SHALL allow CLI/AI to produce group suggestions, but SHALL NOT allow 
 - **GIVEN** there is no confirmed group seed
 - **AND** there is no current user-provided target group or report goal
 - **AND** there is no high-confidence internal alias or name pattern
+- **AND** there is no verifiable public-web evidence
 - **WHEN** CLI/AI evaluates possible group mappings
 - **THEN** it SHALL return an `insufficient_evidence` warning
 - **AND** it SHALL NOT produce a confident group candidate
@@ -92,3 +93,31 @@ The system SHALL accept only manual browser actions and CLI/AI suggestions as gr
 - **THEN** the evidence MAY be attached to a review-only suggestion
 - **AND** it SHALL NOT create confirmed group membership
 - **AND** user confirmation SHALL still be required
+
+### Requirement: Manual Web Research Trigger
+
+The system SHALL start company-group web research only after an internal browser user explicitly requests it.
+
+#### Scenario: User starts AI group suggestions
+
+- **GIVEN** the group-normalization section is available
+- **WHEN** the user presses `產生 AI 建議`
+- **THEN** the browser SHALL create one `ai:company_group_suggestion` job through the existing AI-task API
+- **AND** the button SHALL be disabled while that job is queued or running
+- **AND** page load and patent import SHALL NOT start the job
+
+#### Scenario: CLI researches controlled candidates
+
+- **GIVEN** the backend has selected confirmed companies without suggested or confirmed group membership
+- **WHEN** the AI bridge executes the job
+- **THEN** the CLI SHALL receive only those company codes and display names
+- **AND** the CLI SHALL have only `WebSearch` and `WebFetch` tools
+- **AND** every accepted member SHALL exactly match an input company
+- **AND** every accepted member SHALL include at least one HTTPS evidence source
+- **AND** accepted output SHALL be persisted only as review-only suggestion data
+
+#### Scenario: Suggestion job completes
+
+- **WHEN** the job succeeds
+- **THEN** the existing SSE resource scheduler SHALL refresh `companyGroups`
+- **AND** the pending suggestion section SHALL remain hidden when no suggestions exist

@@ -32,11 +32,21 @@ Use only these sources:
 1. Manual browser user actions: create, rename, add/remove members, confirm suggestions, reject suggestions.
 2. CLI/AI suggestions: review-only candidates with evidence, confidence, and warnings.
 
-CLI/AI must stay semi-automatic. Even if future web access is available, web evidence may only support a suggestion; it must not create or confirm a group mapping.
+CLI/AI must stay semi-automatic. Public-web evidence may support a suggestion, but it must not create or confirm a group mapping.
 
 ## CLI/AI Suggestion Rules
 
-Default to internal project data only:
+The product may perform public-web research only through the centralized manual
+`ai:company_group_suggestion` job. Page load and import must never start it automatically.
+The CLI receives a backend-controlled candidate list and exactly these tools:
+
+- `WebSearch`
+- `WebFetch`
+
+Do not grant Bash, file tools, MCP tools, database credentials, or direct database access.
+Use Claude for this job because the current OpenCode gateway cannot enforce the tool allowlist.
+
+Use these controlled inputs:
 
 - existing confirmed group mappings,
 - current user-provided target group or report goal,
@@ -44,11 +54,16 @@ Default to internal project data only:
 - WIPS company codes, aliases, and normalized display names,
 - current report context and high-impact ungrouped rows.
 
+The backend must reject unknown company codes/names and members without an HTTPS evidence URL.
+Persist accepted output only through the existing suggestion repository. SSE completion refreshes
+the browser review section; when there are no suggestions, the whole section stays hidden.
+
 Generate a candidate only when at least one basis exists:
 
 - a confirmed group seed,
 - a user-provided target group,
 - a high-confidence internal alias/name pattern.
+- verifiable public-web evidence gathered by the manual suggestion job.
 
 If no basis exists, return `insufficient_evidence` and do not propose a confident group. Identical Chinese display names alone are not enough to confirm ownership or group relationship.
 

@@ -62,6 +62,8 @@ AI_JOB_TYPES: frozenset[str] = frozenset(
         # 寫回 company_aliases 的 ai_suggested 態列（不進正式顯示欄），待使用者逐筆確認。
         # 內嵌待中文化清單於 prompt，CLI 不需讀檔/連網；prompt 明令不硬翻、允許查無保留原文。
         "ai:company_zh_name",
+        # 集團歸屬查證：手動啟動、CLI 僅能連網取證，結果只進 suggested 審核列。
+        "ai:company_group_suggestion",
         # 市場資料摘要：AI 讀 workspace 的市場 PDF（pymupdf 抽文字內嵌 prompt），產「結構化
         # ＋敘述」摘要草稿（accepted_at=NULL 待逐筆確認）。CLI 白名單為空（不讀檔/不連網）；
         # 全庫 workspace 不提供市場資料，runner 拒為全庫產。報表只讀已確認現行版。

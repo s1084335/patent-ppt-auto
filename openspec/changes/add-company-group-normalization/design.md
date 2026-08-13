@@ -88,10 +88,20 @@ CLI/AI may:
 
 CLI/AI suggestion is semi-automatic:
 
-- default evidence source is internal project data only,
-- future web access, if explicitly enabled, remains evidence-only and must not confirm mappings,
-- a confident candidate requires at least one of: confirmed group seed, user-provided target group/report goal, or high-confidence internal alias/name pattern,
+- the manually triggered suggestion job may research public web evidence,
+- web evidence remains evidence-only and must not confirm mappings,
+- a confident candidate requires at least one of: confirmed group seed, user-provided target group/report goal, high-confidence internal alias/name pattern, or verifiable public-web evidence,
 - when that basis is missing, CLI/AI must return `insufficient_evidence` instead of inventing a group.
+
+The browser starts web research only after an internal user presses `產生 AI 建議`.
+The request uses the existing `/api/v1/ai-tasks` entrypoint with
+`task_type=ai:company_group_suggestion`; page load and patent import never start it.
+The AI bridge owns the full job wiring. The backend supplies only ungrouped companies from
+the confirmed company-code registry, and the CLI receives only `WebSearch` and `WebFetch`.
+Because other configured CLI kinds cannot enforce this allowlist, this job accepts Claude only.
+Every accepted member must exactly match a supplied company code/name and include at least one
+HTTPS evidence source. Completion refreshes `companyGroups` through the existing SSE scheduler.
+An empty suggestion list remains hidden in the frontend.
 
 CLI/AI must not:
 
