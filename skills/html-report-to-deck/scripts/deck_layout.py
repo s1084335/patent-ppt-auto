@@ -190,6 +190,30 @@ def _apply_kinsoku(lines: list[str], capacity: float) -> list[str]:
     return fixed
 
 
+# 目視截圖倍率的**唯一定義處**（design 4-0c）。
+# ⚠ 不得在 runner、skill 文件或規格另寫一個數字——那是「同一份知識多個落點」，
+#   各自演進而不會報錯。要調就調這裡。
+#
+# 判準是**能力不是像素**：CLI 要能辨識行首中文標點（目視清單裡最細的一項，
+# 過得了它，溢出／重疊／裁切必然過得了）。
+# ⚠ 值待 tasks 2.3 實測定案：造一頁刻意植入行首標點的樣本，由低到高試，
+#   取「CLI 能穩定指出該問題」的**最小值**。⚠ 不是越大越好——目視迴圈每輪都要
+#   讀一整份，CLI 讀圖有 token 成本。
+# 暫定 2：1280×720 的兩倍＝2560×1440，內文 16pt 在圖上約 43px。
+VISUAL_SCALE = 2.0
+
+
+def visual_shot_size() -> tuple[int, int]:
+    """目視截圖的像素尺寸——由版面尺寸與倍率推導，呼叫端不自己算。
+
+    ⚠ 用 `round` 不用 `int`：`SW = 13.333` 本身是 13⅓ 的截斷值
+    （精確值 ×96 = 1280），再截一次會變 2559，截圖就比版面少 1px。
+    """
+    from svg_canvas import DPI
+
+    return round(SW * DPI * VISUAL_SCALE), round(SH * DPI * VISUAL_SCALE)
+
+
 def _text_page_lines() -> int:
     """純文字頁的內文區放得下幾個顯示行——由版面幾何算出，不寫死。"""
     avail_pt = (BAND_BOT - CHART_TOP - 0.44) * 72
