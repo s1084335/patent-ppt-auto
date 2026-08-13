@@ -34,14 +34,24 @@
 
 - [ ] 2.1 Red：轉換器契約——五頁型元素詞彙（矩形卡／逐行文字／圖片／線）
       SVG→DrawingML 映射、文字逐行定位＋關 wrap、超出詞彙 fail loud
-- [ ] 2.2 Green：`deck_layout` 輸出層改組 SVG＋窄轉換器；Chromium BBox 量測
-      取代 `text_h()` 估算；逐頁截圖產出（目視 PNG）
+- [ ] 2.2 Green：`deck_layout` 輸出層改組 SVG＋窄轉換器；逐頁截圖產出（目視 PNG）。
+      🔴 **Chromium BBox 只取代寬度估算**（`text_w`）——**高度不得改用量測**，
+      理由見 design 4c-1：`getBBox` 的 height 跨 OS 差 21% 且無法用係數校正。
+      縱向一律由 `row_h`／`LS_RENDER` 推導。
+- [ ] 2.2a 🔴 **`overlaps()` 撞版判定改為「橫向量測、縱向推導」**（design 4c-1）：
+      `fit_render_charts.overlaps()` 目前 w 與 h 都吃量測值——同一張圖會在
+      Windows 判定撞版、Linux 判定沒撞（**兩邊都不報錯**）。改後補測試守住。
 - [ ] 2.2b 🔴 **字型收斂＝Noto Sans TC**（design 4c，前置於映射校驗）：
       四處宣告（`deck_layout.FONT`、`chart_runner.SVG_FONT_STYLE` 與三處
-      SVG 根元素、HTML 報表頁）收斂為**單一常數唯一落點**；開發機與伺服器
-      裝同版字型（部署腳本納入）；**重量**由字型推導的常數——`LS_RENDER`
-      （現 1.40，量自正黑體 16pt）、`MIN_CHART_PT` 9.0／`MIN_CHART_PT_MULTI`
-      12.0。⚠ 組版字級不變（標題 24／內文 16），變的是字型與量測常數
+      SVG 根元素、HTML 報表頁）收斂為**單一常數唯一落點**。
+      ⚠ **字型檔本身**：兩端必須是同一個 `NotoSansTC-VF.ttf`——apt 的
+      `fonts-noto-cjk` 叫 `Noto Sans CJK TC`，**名稱對不上會 fallback 到
+      DejaVu Sans**（實測）。WSL2 已於 2026-08-13 從 Windows 複製一份到
+      `~/.local/share/fonts/`；伺服器部署腳本要納入同一份。
+      **重量**由字型推導的常數——`LS_RENDER`（現 1.40，量自正黑體 16pt）、
+      `MIN_CHART_PT` 9.0／`MIN_CHART_PT_MULTI` 12.0。
+      🔴 **重量必須在 Linux 執行**（產線環境）；拿 Windows 的數字回去用
+      等於量測基準搞錯邊。⚠ 組版字級不變（標題 24／內文 16）。
 - [ ] 2.2c 🔴 **圖表字達 14pt**（design 4d，使用者定案的目標字級）：
       依關係式 `投影片pt = SVG字級px × 316.8 ÷ SVG高度px` 反推——現況
       8.5–13.3pt **不達標**，需在本步定圖區幾何與 SVG 高度
@@ -50,10 +60,13 @@
       `chart_sizing` 讀取**＋一致性測試——否則改後端字級會無聲算錯倍率。
       驗收判準：五頁型單圖頁與雙圖頁圖內字**實測 ≥14pt**（雙圖頁若不可行，
       列出並交使用者裁決，不得默默降標）
-- [ ] 2.3 🔴 映射校驗（Windows 開發機、一次性）：五頁型
-      「Chromium 截圖 vs COM 轉圖 vs 實機開檔」三方對照，**以 Noto Sans TC
-      為準**，證據入 `output/_verify/`；regression 基準改比 SVG 截圖並重建
-      （⚠ 舊基準算自正黑體，不得沿用）
+- [ ] 2.3 🔴 映射校驗（一次性）：五頁型三方對照——
+      **WSL2 Chromium 截圖**（產線量測端）vs Windows COM 轉圖 vs 實機開檔，
+      **以 Noto Sans TC 為準**，證據入 `output/_verify/`；
+      regression 基準改比 SVG 截圖並重建（⚠ 舊基準算自正黑體，不得沿用）。
+      ⚠ 截圖與量測**在 Linux 做**（design 4c-1／4c-2）：Windows 的角色只剩
+      「提供 Linux 沒有的 PowerPoint COM」，量測端統一才不會把開發機的數字
+      當成產線結論。環境已備妥（chromium-1234 兩端對齊、字型同檔）。
 - [ ] 2.4 封面素材：runner 注入 workspace 名稱作封面技術名稱
       （version_meta→workspace 名；全庫退回報表標題）
 

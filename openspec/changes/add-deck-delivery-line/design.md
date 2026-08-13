@@ -142,6 +142,45 @@ runner 依 `version_meta.json` 的 workspace 歸屬查回 **workspace 名稱**
 `MIN_CHART_PT=9.0`／`MIN_CHART_PT_MULTI=12.0`（可讀性門檻）皆量自正黑體。
 映射校驗（tasks 2.3）在 Noto Sans TC 下重跑並重建 regression 基準。
 
+#### 4c-1. 🔴 WSL2 實測結論（2026-08-13）：寬度可跨 OS 信賴，**高度不可**
+
+環境備妥後在 WSL2（Ubuntu 24.04）與 Windows 各量一次同一段 SVG 文字
+（`Noto Sans TC` 15.1px，同一個 `NotoSansTC-VF.ttf` 檔案）：
+
+| 量的東西 | Windows | Linux | 判斷 |
+|---|---|---|---|
+| 寬度（每字/em） | 1.0000 | 1.0000 | ✅ **完全一致**，中文全形字寬＝字級 |
+| 高度（h/em） | 1.444–1.467 | 1.182–1.222 | ❌ **差約 21%**，且各自有 ±1.5% 抖動 |
+
+⚠ **不是 Chromium 版本問題**：兩邊都對齊到 chromium-1234（151.0.7922.34）後
+差異依舊。根因是 OS 字型引擎——Windows 走 DirectWrite、Linux 走
+FreeType/HarfBuzz，對 ascent／descent／line gap 的解讀本就不同。
+⚠ **也無法用固定係數校正**：比例隨字級在 1.44–1.47 與 1.18–1.22 間各自抖動
+（整數像素捨入），不是穩定倍數。
+
+**因此定案：`getBBox` 只採信 `width`，`height` 一律由排版公式算。**
+
+- 撞版判定的**橫向**用量測（寬度可信）；**縱向**用 `row_h`／`LS_RENDER` 推導。
+  ⚠ `fit_render_charts.overlaps()` 目前 w 與 h 都用量測值——**必須改**，
+  否則同一張圖會在 Windows 判定撞版、Linux 判定沒撞（或反過來），
+  而且兩邊都不會報錯。這正是 B 案最怕的靜默不一致。
+- **`LS_RENDER` 重量必須在 Linux 做**：產線在 Linux，拿 Windows 的數字回去
+  用等於把量測基準搞錯邊。
+
+#### 4c-2. 環境基準（2026-08-13 已備妥）
+
+| 項目 | 值 | 備註 |
+|---|---|---|
+| 字型 | `Noto Sans TC`（`NotoSansTC-VF.ttf`，11.39 MB） | ⚠ **兩邊必須是同一個檔**：apt 的 `fonts-noto-cjk` 提供的是 `Noto Sans CJK TC`，**名稱對不上**——實測宣告 `Noto Sans TC` 時 `fc-match` 會 fallback 到 DejaVu Sans（無中文字符）。已由 Windows 複製到 WSL2 `~/.local/share/fonts/` |
+| Chromium | chromium-1234（151.0.7922.34） | 兩端已對齊；Windows 與既有 chromium-1228 共存，不影響其他專案 |
+| Playwright | 1.62.0 | 兩端同版 |
+| Linux | WSL2 Ubuntu 24.04（`D:\WSL2\Ubuntu-24.04`，與 DockerDesktopWSL 平行） | Python 3.12.3／uv 0.12.3／git 2.43.0 |
+
+🔴 **量測一律在 Linux 執行**（產線環境）；Windows 的角色縮到「提供 Linux
+沒有的 PowerPoint COM」。映射校驗（tasks 2.3）因此改為
+「**WSL2 Chromium 截圖** vs Windows COM 轉圖 vs 實機開檔」三方對照——
+量測端統一，才不會把開發機的數字當成產線結論。
+
 ### 4d. 字級目標與「HTML 圖尺寸 → 投影片字級」的連動（2026-08-12 使用者定案）
 
 **目標字級**（使用者定）：標題 **24pt**、內文 **16pt**、**圖表字 14pt**。
