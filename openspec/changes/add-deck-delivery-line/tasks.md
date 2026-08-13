@@ -35,18 +35,37 @@
       report_meta←version_meta（含 workspace 名稱，見 design 4b）；
       `extract_report.py` 降 HTML fallback
 
-## 2. TDD：B 案組版輸出層（窄轉換器）
+## 2. 沿用現行組版，只補接線需要的（原「B 案組版輸出層」）
 
-- [ ] 2.1 Red：轉換器契約——五頁型元素詞彙（矩形卡／逐行文字／圖片／線）
-      SVG→DrawingML 映射、文字逐行定位＋關 wrap、超出詞彙 fail loud
-- [ ] 2.2 Green：`deck_layout` 輸出層改組 SVG＋窄轉換器；逐頁截圖產出（目視 PNG）。
-      **Chromium BBox 取代估算，寬高皆可用**（design 4c-1a，Windows-only）。
-      ⚠ 原條文為「高度不得改用量測」，那是跨 OS 前提下的限制；deck 定為
-      Windows 版後量測端＝產線端，限制撤銷。若日後要上 Linux 產線，
-      design 4c-1 的四條約束原樣復活。
+🔴 **2026-08-13 使用者定案**：「用現在的 deck 流程繼續接進系統」——組版維持
+`deck_layout`／python-pptx，圖表維持 Playwright Chromium，目視維持 COM 轉圖。
+B 案（SVG 輸出層＋窄 DrawingML 轉換器）整組撤銷，理由與承接的取捨見 design 4-0。
+
+- [x] ~~2.1 Red：窄轉換器契約（SVG→DrawingML 映射、逐行定位、關 wrap）~~
+      **2026-08-13 撤銷**（design 4-0）：不做窄轉換器。
+- [x] ~~2.2 Green：`deck_layout` 輸出層改組 SVG＋窄轉換器~~
+      **2026-08-13 撤銷**（design 4-0）：組版沿用 python-pptx 現行輸出。
+      ⚠ `fit_render_charts` 的 Chromium `getBBox` **本來就在用**（找不撞版的最大
+      字級），不是 B 案才引入的——那部分保留不動。
 - [x] ~~2.2a `overlaps()` 撞版判定改為「橫向量測、縱向推導」~~
       **2026-08-13 撤銷**（design 4c-1a）：Windows-only 後 w／h 都吃量測值不會
       造成跨 OS 靜默不一致，現行寫法即正確，不需改動。
+- [ ] 2.2d 🆕 **執行方式改走專案環境**（接線前置，design 4-0b）：skill 現行以
+      `uv run --no-project --python 3.12 --with python-pptx --with pillow` 臨時拉
+      套件，等於在使用者機器上要求「有 uv ＋能連網拉套件」。
+      backend 環境**已有** `python-pptx 1.0.2`（`pyproject.toml` 列著），
+      改由 runner 用專案 interpreter 跑腳本，依賴交給 `pyproject` 管。
+      ⚠ 一併把 `comtypes` 列入 `pyproject`——現在它 vendored 在
+      `D:\vscode\ppt-tools\lib`，那是開發機路徑，不能進產線。
+- [ ] 2.2e 🆕 **COM 轉圖進產線的可行性實測**（design 4-0b 的兩個 🔴）：
+      ⚠ `pptx_to_png.py` 檔頭原本明寫「只用在開發／驗收側，不進 Installer
+      或使用者端」——本 change 推翻該邊界，故必須正面驗：
+      ①以 Companion 實際的執行身分（非互動式 session）跑一次轉圖，確認
+      `CreateObject("PowerPoint.Application")` 起得來；起不來則記錄所需的
+      DCOM／工作階段設定，寫進 4-0b。
+      ②單一併發前提寫進 runner（COM 一次一個 PowerPoint 實例）。
+      🔴 **驗收＝實跑轉圖成功**，不是「確認 PowerPoint 裝了」——裝了但起不來
+      是這條最典型的失敗樣態。
 - [ ] 2.2b 🔴 **字型收斂＝Noto Sans TC**（design 4c，前置於映射校驗）：
       四處宣告（`deck_layout.FONT`、`chart_runner.SVG_FONT_STYLE` 與三處
       SVG 根元素、HTML 報表頁）收斂為**單一常數唯一落點**。
@@ -66,12 +85,13 @@
       `chart_sizing` 讀取**＋一致性測試——否則改後端字級會無聲算錯倍率。
       驗收判準：五頁型單圖頁與雙圖頁圖內字**實測 ≥14pt**（雙圖頁若不可行，
       列出並交使用者裁決，不得默默降標）
-- [ ] 2.3 🔴 映射校驗（一次性）：五頁型三方對照——Chromium 截圖 vs
-      COM 轉圖 vs 實機開檔，**以 Noto Sans TC 為準**，證據入 `output/_verify/`；
-      regression 基準改比 SVG 截圖並重建（⚠ 舊基準算自正黑體，不得沿用）。
-      ⚠ 2026-08-13 改（design 4c-1a）：**三端全在 Windows**。原條文要求截圖
-      與量測在 WSL2 做，那建立在「產線是 Linux」的前提上，已隨 Windows-only
-      撤銷；WSL2 環境保留但本 change 不使用。
+- [ ] 2.3 換字型後重建 regression 基準（原「三方映射校驗」大幅縮減）
+      ⚠ 2026-08-13 改（design 4-0）：不做 B 案就**沒有映射要校**——COM 轉圖
+      本身就是目視來源，不需要證明「SVG 截圖＝PowerPoint 實開」。
+      本步只剩字型換版帶來的必要工作：以 Noto Sans TC 重跑 `regression.py`
+      並重建像素基準（⚠ 舊基準算自正黑體，不得沿用），證據入 `output/_verify/`。
+      ⚠ 仍需**一次** COM 轉圖 vs 實機開檔的抽驗（design 原記 08-02 實證
+      連 COM 都與實機有微差），確認差異在可接受範圍。
 - [ ] 2.4 封面素材：runner 注入 workspace 名稱作封面技術名稱
       （version_meta→workspace 名；全庫退回報表標題）
 

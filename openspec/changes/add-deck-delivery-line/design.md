@@ -18,16 +18,17 @@ ai_report_deck_runner（Companion 內，host-agnostic）
   2. subprocess：assemble_from_version → plan_deck →（標記則 chip 重排）→ fit
   3. build_prompt：plan.json＋report.json 素材路徑＋撰稿契約
      → headless CLI → 產 work/content.json（唯一輸出檔，同 narrative 權限面）
-  4. subprocess：check_content → 組版（B 案：SVG→量測→轉換）→ audit
-     → **逐頁截圖**
+  4. subprocess：check_content → 組版（`make_deck`／python-pptx）→ audit
+     → **逐頁轉圖**（COM，`pptx_to_png.py`；2026-08-13 起沿用現有工具，見 4-0）
   5. 🔁 CLI 目視迴圈（見下）：CLI 看逐頁 PNG → 有問題修 content.json
      → runner 重跑 4 → 再看；通過或達上限為止
   6. 回存：pptx＋逐頁 PNG 寫 <DECK_ARTIFACT_ROOT>/<version>/，manifest＋紀錄寫 DB
 ```
 
-**目視迴圈＝現行開發流的「看了回去調」原樣搬進產線，只換工具**
-（2026-08-12 使用者明示保留）：開發流是我目視 COM 轉圖後回頭調整再轉再看；
-產線由撰稿 CLI 對 Chromium 逐頁截圖做同一件事——檢查清單沿用 skill 現行目視
+**目視迴圈＝現行開發流的「看了回去調」原樣搬進產線**
+（2026-08-12 使用者明示保留；⚠ 原文寫「只換工具」，2026-08-13 撤銷 B 案後
+**連工具都不換**——見 4-0）：開發流是我目視 COM 轉圖後回頭調整再轉再看；
+產線由撰稿 CLI 對**同一份 COM 轉圖**做同一件事——檢查清單沿用 skill 現行目視
 清單（重疊、裁切、圖內字可讀、版面平衡、行首標點），發現問題**只能改
 content.json**（縮寫、改寫、拆頁、轉純文字頁——與今天人工調整的合法動作
 一致；圖表、版面引擎、字級規格照授權界線不得動），runner 重組版重截圖後
@@ -42,7 +43,11 @@ check_content 的閘門紅走同一個迴圈、吃同一個參數，不另設第
 **預設 4 的依據**（2026-08-12 使用者定案，回顧開發實績後定）：開發側交付
 `_v17` 走了十幾輪，但其中大半是**版面引擎調整**（字級、斷行估算、撞版）與
 **規格層來回**——前者 B 案已從根消滅（斷行寫死＋Chromium 實測 BBox）、
-後者已定案凍結，兩類都不落在產線迴圈裡。產線迴圈只扛**純內容輪**
+後者已定案凍結，兩類都不落在產線迴圈裡。
+🔴 **2026-08-13：前半依據失效**——B 案撤銷（4-0），版面問題**沒有從根消滅**，
+會重新出現在產線迴圈裡。4 這個值因此從「有依據」降為「起始猜測」。
+⚠ 它本來就是產線參數（改設定不改程式），實跑後依目視迴圈紀錄校準；
+若實績顯示常態超過 4 輪，那是「該不該回頭做 B 案」的訊號，不是把上限一路調高。產線迴圈只扛**純內容輪**
 （縮寫、改寫、拆頁），該類實績約 2–4 輪：首輪抓大問題、次輪掃殘留、
 三輪多為確認。取 4 留一輪餘裕救「差一口氣」，又不致把「撰稿方向錯了」
 磨成半成品。每輪成本＝機械重組版（秒級）＋看一批 PNG，遠低於 fail 後
@@ -87,7 +92,80 @@ CLI 輸出：`content.json` 一檔。驗證：check_content 既有閘門（佔�
   「這份 deck 的每段話查了什麼、改過幾輪」才可回放。
 - 失敗不落半成品：pptx 先寫 work dir，全閘門過才搬進 ROOT。
 
-### 4. 組版輸出層＝B 案（2026-08-12 使用者定案；借鑒 ppt-master 確定性中間層）
+### 4-0. 🔴 B 案**撤銷**——沿用現有工具鏈（2026-08-13 使用者定案）
+
+使用者原話：「deck 確定 Windows-only，也就是說一開始用啥工具就繼續用，
+**只要能接線進系統就好**」。本 change 的目標收斂為**接線**，不是改造組版引擎。
+
+**沿用的工具鏈**（＝開發側九步現行用的，一個都不換）：
+
+| 步 | 工具 | 現況 |
+|---|---|---|
+| ④ `fit_render_charts` | Playwright Chromium | SVG→高解析 PNG，並用 `getBBox` 逐圖找不撞版的最大字級 |
+| ⑦ `make_deck`／`deck_layout` | **python-pptx** ＋ PIL | 原生文字框、`Pt(24)`／`Pt(16)`、`add_shape` |
+| ⑧ `audit_deck` | python-pptx 讀回 | 閘門檢查 |
+| ⑨ 目視 | `D:\vscode\ppt-tools\pptx_to_png.py`（PowerPoint COM） | 產線目視即用它 |
+
+**因此下列 B 案產物一律不做**：每頁組 SVG 的輸出層、窄 SVG→DrawingML 轉換器、
+逐頁截 SVG 當目視來源、Chromium 截圖 vs COM 三方映射校驗。
+（tasks 2.1／2.2／2.3 對應撤銷。）
+
+#### ⚠ 撤銷後承接的兩個取捨（不是反對，是要標明）
+
+1. **精準度流失沒有消失，只是回到產線迴圈裡扛。**
+   B 案要解的是「PowerPoint 保留排版決定權」——python-pptx 原生文字框在開檔時
+   自行換行，引擎只能估算。§1 把目視迴圈預設定為 4 輪，依據是「版面引擎調整那類
+   B 案已從根消滅、產線只扛純內容輪」——**這個依據隨本次撤銷失效**。
+   撞版／溢出會重新出現在產線，而 CLI 在迴圈裡只能改 `content.json`
+   （縮寫、改寫、拆頁），不能調版面引擎。縮短文字通常繞得過去，但**輪數可能吃緊**。
+   → 對策：`DECK_VISUAL_LOOP_MAX_ROUNDS` 本來就是產線參數（不改程式即可調）；
+   實跑後依累積數據校準，⚠ 每輪都要落目視迴圈紀錄，否則沒有數據可校。
+2. **產線目視依賴機器裝有 PowerPoint。**
+   不做 B 案就沒有 SVG 中間層可截，`pptx_to_png.py` 走 COM 是唯一轉圖路徑。
+   ✅ **2026-08-13 使用者裁決**：「**目視迴圈一樣要有，這很重要我簡報品質就靠它**；
+   到時候我去伺服器裝 PowerPoint，或是必要工具列出來交給人家。」
+   → 目視迴圈**保留**，COM 轉圖為產線轉圖路徑，PowerPoint 列為**部署前置**
+   （由使用者負責在產線機器上備妥，見 §4-0b 清單）。
+
+#### ⚠ 這推翻了 `pptx_to_png.py` 原本的設計邊界
+
+該工具檔頭明寫：「綁死 Windows 桌面，Lightning 容器端不會有 Office；
+**只用在開發／驗收側，不進 Installer 或使用者端**」。現在它要進產線。
+不是不能，但原本被那條邊界擋掉的問題現在要正面處理——見 §4-0b 的兩個 🔴。
+
+### 4-0b. 產線環境需求清單（2026-08-13，交付給架站方）
+
+deck 產線＝**Windows**（使用者定案；AI 層移伺服器後即該台 Windows 伺服器）。
+以下由使用者／架站方備妥；缺任何一項 deck job 都跑不完。
+
+| # | 項目 | 版本／來源 | 用在哪 | 備註 |
+|---|---|---|---|---|
+| 1 | Windows | 桌面版或 Server 皆可 | 全流程 | 🔴 見下方 COM session 條件 |
+| 2 | **Microsoft PowerPoint** | Office 16 以上（開發側實測環境） | ⑨ 目視轉圖 | 🔴 需授權；見下方 COM session 條件 |
+| 3 | Python | 3.12 | 全流程 | 與 backend 同版 |
+| 4 | `python-pptx` | ≥1.0.2 | ⑦組版 ⑧audit | **已在 `pyproject.toml`**，隨 backend 環境裝 |
+| 5 | `pillow` | 隨 python-pptx 生態 | ⑦組版貼圖 | 同上 |
+| 6 | `comtypes` | 開發側 vendored 於 `D:\vscode\ppt-tools\lib` | ⑨ COM 呼叫 | 產線改列入 `pyproject`，不沿用 vendored 路徑 |
+| 7 | Playwright ＋ Chromium | playwright 1.62.0／chromium-1234 | ④圖表 SVG→PNG、字級量測 | 開發機在 `D:\vscode\playwright`，可用 `PLAYWRIGHT_HOME` 覆寫 |
+| 8 | **Noto Sans TC** 字型 | `NotoSansTC-VF.ttf`（11.39 MB） | 組版與圖表 | ⚠ 系統層安裝；缺會 fallback 且**不報錯**，量測與產出一起偏 |
+
+🔴 **兩個不能只靠「裝好軟體」解決的條件**
+
+1. **COM 需要互動式桌面 session。** `CreateObject("PowerPoint.Application")` 在
+   Windows Service／無桌面的工作階段下常態失敗。若 Companion 以服務身分執行，
+   需改為登入使用者的工作階段執行，或設定 DCOM identity。
+   ⚠ **部署驗收必須實跑一次轉圖**，不能只確認 PowerPoint 裝了——裝了但起不來
+   是這條最典型的失敗樣態。
+2. **PowerPoint 授權與併發。** COM 一次驅動一個 PowerPoint 實例；多個 deck job
+   併行會互搶。第一版以**單一併發**處理（job 佇列本來就是序列消費），
+   若日後要並行需另行設計。
+
+⚠ 上表用途是交付給架站方，**內容變更要同步這裡**，不要在別處另抄一份。
+
+### 4. ~~組版輸出層＝B 案~~（2026-08-12 定案，**2026-08-13 撤銷，見 4-0**）
+
+⚠ 以下保留供追溯——若日後精準度成為實際痛點，這是已經評估過的方案，
+不必重新研究一次。
 
 精準度流失的唯一來源是「PowerPoint 保留排版決定權」（原生文字框開檔時自行
 換行——估算器猜、COM 驗、08-02 實證連 COM 都與實機有微差）。B 案把決定權

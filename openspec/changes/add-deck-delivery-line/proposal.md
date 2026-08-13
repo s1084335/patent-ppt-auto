@@ -33,19 +33,22 @@
 
 ## 已確認決策（本 change 的邊界）
 
-1. 流程與閘門不動、**組版輸出層改造（B 案，2026-08-12 使用者定案）**：
-   `plan_deck`／`fit_render_charts`／`check_content`／`audit_deck` 與其閘門、
-   `deck_layout` 幾何引擎、授權界線（僅 chip 四象限可重排）原樣；
-   第 7 步組版改為「**每頁先組 SVG**（文字由引擎逐行斷好）→ Chromium 量測與
-   截圖（目視內建、Linux 原生）→ **窄 SVG→DrawingML 轉換器**產原生 PPTX
-   （逐行文字定位寫死、關 wrap——PowerPoint 零重排自由）」。
-   借鑒 ppt-master 的「確定性中間層」概念；精準度**高於**現況
-   （消滅 08-02 實證的 PowerPoint 斷行漂移），且產線不需任何 Windows。
+1. 🔴 **流程、閘門、工具鏈全部不動——本 change 只做接線**（2026-08-13 使用者定案
+   「用現在的 deck 流程繼續接進系統」，推翻 08-12 的 B 案）：
+   九步演算法、`deck_layout` 幾何引擎、授權界線（僅 chip 四象限可重排）原樣，
+   **組版維持 python-pptx、圖表維持 Playwright Chromium、目視維持 COM 轉圖**。
+   ~~原 B 案（每頁組 SVG → 窄 SVG→DrawingML 轉換器）~~ 撤銷，理由與承接的
+   兩個取捨（精準度回到產線迴圈、產線需 PowerPoint）見 design 4-0。
 2. 取料走 `unify-chart-source` 的版本目錄 intake（該 change 先行）。
 3. 產物 DB＋NAS、不自動下載（2026-08-12）。
-4. AI 層將移伺服器（Companion＋CLI 集中，2026-08-12）——runner 設計必須
-   host-agnostic：不假設 Windows、不依賴使用者桌面。
+4. AI 層將移伺服器（Companion＋CLI 集中，2026-08-12）。
+   ⚠ 2026-08-13 修正：原文要求 runner「不假設 Windows、不依賴使用者桌面」——
+   deck 定為 **Windows-only** 且目視走 COM 後，**這兩條都不再成立**。
+   deck 產線＝Windows 伺服器，且 COM 需要互動式桌面工作階段（design 4-0b）。
+   runner 其餘部分仍維持 host-agnostic（不寫死開發機路徑）。
 5. Installer 已廢止——skill 佈署屬伺服器佈署腳本範圍，不做使用者端打包。
+   🆕 產線環境需求清單（PowerPoint／Python／字型／Chromium 等 8 項＋2 個
+   COM 工作階段條件）見 design 4-0b，**交付給架站方**。
 6. **內容架構吸收批次（2026-08-12 使用者逐項裁決，明細見 design §7）**：
    來源行（機械）／三欄分析帶（選項版型）／narrative 寫法範式（建議形）／
    插圖走**參數化圖形文法**六型（不建成品素材庫、第一版不開自由畫 SVG 後門）／
@@ -58,11 +61,20 @@
 
 ## 未決問題
 
-（無——原 Q1「視覺驗收定位」已於 2026-08-12 裁決為 B 案：目視改為產線內建的
-Chromium 逐頁截圖（截 SVG＝截成品，因 PPTX 已無重排自由）；PowerPoint COM
-降為**開發期一次性映射校驗**（Windows 開發機上證明「SVG 截圖＝PowerPoint 實開」，
-逐頁型驗證後固定），不進產線。曾評估之替代案（Windows 轉圖代理／LibreOffice／
-Aspose）的取捨留 design.md 備查。）
+（無。）
+
+原 Q1「視覺驗收定位」的裁決史——**同一題裁決兩次，第二次推翻第一次**：
+
+- 2026-08-12：裁為 B 案。目視改產線內建的 Chromium 逐頁截圖（截 SVG＝截成品，
+  因 PPTX 已無重排自由）；PowerPoint COM 降為開發期一次性映射校驗，不進產線。
+- 🔴 2026-08-13：**改回沿用現行工具**。使用者定案「用現在的 deck 流程繼續接進
+  系統」＋「**目視迴圈一樣要有，這很重要我簡報品質就靠它**」＋「到時候我去
+  伺服器裝 PowerPoint，或是必要工具列出來交給人家」。
+  → 目視迴圈**保留且進產線**，轉圖走 COM，PowerPoint 成為部署前置。
+
+曾評估之替代案（Windows 轉圖代理／LibreOffice／Aspose）與 B 案本身的取捨，
+留 design.md §4 備查——若日後精準度成為實際痛點，那是已評估過的方案，
+不必重新研究一次。
 
 ## Capabilities
 
