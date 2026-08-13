@@ -105,6 +105,16 @@
         ②轉換器原本以 cwd 解析相對圖檔路徑——已修為**相對於 SVG 檔所在目錄**，
         並補測試；不修的話 runner 從別的目錄呼叫會靜默找不到圖。
 - [ ] 2.2 Green：`deck_layout` 輸出層改組 SVG＋窄轉換器；逐頁截圖產出（目視 PNG）。
+      **進度（2026-08-13）**：✅ 引擎自行斷行（`wrap_lines`＋避頭尾，8 支綠／
+      438 subtests）。⬜ SVG 輸出層（五頁型改產 SVG）、⬜ 逐頁截圖。
+      🔴 斷行與 `est_lines` **鎖在同一套係數**（都走 `_per_line`），並以
+      `test_line_count_matches_est_lines` 直接斷言 `len(wrap_lines) == est_lines`
+      ——兩者各算各的就是「估高一套、排版另一套」，不一致不會報錯，
+      只會讓版面偶爾溢出或留白。
+      避頭尾採**回推**（把前一字移到下一行）而非懸掛：本 skill 絕對定位，
+      標點突出右邊界會撞到右側元素（標籤欄頁右欄緊貼邊界）。
+      ⚠ 改 `deck_layout` 後跑 `regression.py`：**8 頁逐像素與基準相同**，
+      既有組版零破壞。
       **Chromium BBox 取代估算，寬高皆可用**（design 4c-1a，Windows-only）。
       ⚠ `fit_render_charts` 的 Chromium `getBBox` **本來就在用**（找不撞版的最大
       字級），不是 B 案才引入的——那部分不動。

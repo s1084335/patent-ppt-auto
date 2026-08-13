@@ -102,6 +102,94 @@ def _per_line(w_in: float, pt: int = 16) -> float:
     return w_in * 72 / (pt * 1.06)
 
 
+# ── 引擎自行斷行（B 案：把排版決定權從 PowerPoint 收回） ──────────
+# 行首禁則：這些字元不得出現在行首（中文排版通則）。
+NO_LINE_START = "，。、；：？！）」』】》〉…—·%〞”’,.;:?!)]}"
+# 行尾禁則：開括號類不得留在行尾，否則下一行開頭會孤零零一個引號。
+NO_LINE_END = "（「『【《〈〝“‘([{"
+
+
+def wrap_lines(text: str, w_in: float, pt: int = 16) -> list[str]:
+    """把一段文字切成一行一行，供 SVG 逐行絕對定位。
+
+    🔴 **與 `est_lines` 是同一套係數**（都走 `_per_line`）。兩者若各算各的，
+    就是估高一套、排版另一套——不一致不會報錯，只會讓版面偶爾溢出或留白。
+    `tests/test_engine_line_breaking.py` 直接鎖住 `len(wrap_lines) == est_lines`。
+
+    避頭尾以**回推**處理：把前一個字移到下一行，讓標點不落在行首。
+    ⚠ 不用懸掛（讓標點突出右邊界）——那是排版慣例，但本 skill 是絕對定位，
+    突出去會撞到右側元素（標籤欄頁的右欄就緊貼邊界）。回推的代價是該行少一個字。
+
+    空字串回 `[""]` 而非 `[]`：下游按行數配位置，少一行會讓整段上移。
+    """
+    if not text:
+        return [""]
+    capacity = _per_line(w_in, pt)
+    lines: list[str] = []
+    current = ""
+    used = 0.0
+
+    for char in text:
+        width = 1.0 if ord(char) > 0x2E80 else 0.55
+        if current and used + width > capacity + 1e-9:
+            lines.append(current)
+            current, used = "", 0.0
+        current += char
+        used += width
+
+    if current:
+        lines.append(current)
+    return _apply_kinsoku(lines, capacity)
+
+
+def _apply_kinsoku(lines: list[str], capacity: float) -> list[str]:
+    """避頭尾修正：行首禁則字回推、行尾禁則字下推。
+
+    ⚠ 逐行往後掃並就地修正，因為修一行會影響下一行的開頭；
+    一次掃完再修會漏掉連鎖情形（實測「）。」這種連續禁則字）。
+    """
+    fixed = [line for line in lines]
+    index = 0
+    while index < len(fixed) - 1:
+        current, following = fixed[index], fixed[index + 1]
+        moved = False
+
+        # 下一行以禁則字開頭 → 把本行最後一個字推過去，讓它不在行首。
+        while following and following[0] in NO_LINE_START and len(current) > 1:
+            current, following = current[:-1], current[-1] + following
+            moved = True
+            # 推過去後若本行行尾又變成禁則字，下面那個迴圈會處理。
+
+        # 本行以開括號結尾 → 把它推到下一行。
+        while current and current[-1] in NO_LINE_END and len(current) > 1:
+            if units(current[-1] + following) > capacity + 1e-9:
+                break                       # 推不過去（下一行滿了），維持原狀
+            current, following = current[:-1], current[-1] + following
+            moved = True
+
+        fixed[index], fixed[index + 1] = current, following
+        if not moved:
+            index += 1
+            continue
+        # 推字後下一行可能超寬，重切它與其後所有內容。
+        if units(following) > capacity + 1e-9:
+            rest = "".join(fixed[index + 1:])
+            tail: list[str] = []
+            cur, used = "", 0.0
+            for char in rest:
+                w = 1.0 if ord(char) > 0x2E80 else 0.55
+                if cur and used + w > capacity + 1e-9:
+                    tail.append(cur)
+                    cur, used = "", 0.0
+                cur += char
+                used += w
+            if cur:
+                tail.append(cur)
+            fixed[index + 1:] = tail
+        index += 1
+    return fixed
+
+
 def _text_page_lines() -> int:
     """純文字頁的內文區放得下幾個顯示行——由版面幾何算出，不寫死。"""
     avail_pt = (BAND_BOT - CHART_TOP - 0.44) * 72

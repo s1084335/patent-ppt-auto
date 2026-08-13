@@ -452,7 +452,9 @@ uv run --no-project --python 3.12 python D:\vscode\ppt-tools\pptx_to_png.py <out
 
 | 檔案 | 用途 |
 |---|---|
-| `scripts/extract_report.py` | HTML → SVG 圖表（內嵌 data URI）＋章節／表格／判讀文字 |
+| `scripts/assemble_from_version.py` | **intake 正式入口**：報表版本目錄 → `report.json`＋`charts/` |
+| `scripts/extract_report.py` | HTML → SVG 圖表（內嵌 data URI）＋章節／表格／判讀文字（**HTML fallback**，正式路徑走上一列） |
+| `scripts/svg_to_pptx.py` | **窄 SVG→DrawingML 轉換器**：每頁 SVG → 原生 PPTX；詞彙外 fail loud |
 | `scripts/plan_deck.py` | 自動排頁＋**結構調整檢查表**＋玩家頁骨架＋解析 `patent_ids` 供補查 |
 | `scripts/fetch_claims.py` | 唯讀補查請求項（開發側；產品側改走 MCP） |
 | `scripts/regression.py` | **版面回歸測試**：合成素材跑完整組版鏈，逐像素比對 `regression_baseline/` |
