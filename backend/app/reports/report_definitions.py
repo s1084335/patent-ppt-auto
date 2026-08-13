@@ -355,6 +355,9 @@ ALLOWED_FILTER_COLUMNS = {
     "applicant_display_name",
     "current_assignee_display_name",
     "recent_assignee_display_name",
+    "applicant_group_display_name",
+    "current_assignee_group_display_name",
+    "recent_assignee_group_display_name",
 }
 
 

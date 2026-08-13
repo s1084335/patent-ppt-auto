@@ -1098,6 +1098,7 @@ async function renderBrowse() {
     + '<strong>② 直接填公司中文名稱與變體</strong>。'
     + '成果顯示在下方專利表的申請人／專利權人／受讓人欄與相關報表。</p>'
     + '<div id="company-code-registry"></div>'
+    + '<div id="company-group-registry"></div>'
     + '</div>'
     + '</details>'
     // ── TW 專利狀態管理（2026-08-07 使用者定案：與資料維護一起出現，
@@ -1114,6 +1115,7 @@ async function renderBrowse() {
   state.browseOffset = 0;
   renderCompanyCodeRegistry();   // 非阻塞：代碼區自己載，不擋專利表
   renderNoteCoverage();          // 同上：備註覆蓋率
+  renderCompanyGroupRegistry();  // 集團層正規化：公司層上方，預設收合
   await loadBrowsePatents();
 }
 function onBrowseSearch() { state.browseOffset = 0; loadBrowsePatents(); }
@@ -1187,6 +1189,129 @@ async function renderCompanyCodeRegistry() {
     if (body) body.innerHTML = '<div class="task-detail-error">載入失敗：' + escHtml(e.message) + '</div>';
   }
   restoreOpenDetailKeys(wrap, openKeys);   // 載入失敗也要回開外框，不困住使用者
+}
+
+function companyGroupMemberHtml(group, member) {
+  const status = member.review_status || '';
+  const name = member.company_display_name || '';
+  const code = member.company_code ? ' / ' + member.company_code : '';
+  const action = status === 'suggested'
+    ? ' <button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', true)">確認</button>'
+      + ' <button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', false)">拒絕</button>'
+    : ' <button class="btn-mini" onclick="removeCompanyGroupLayerMember(' + group.group_id + ', ' + member.member_id + ')">移除</button>';
+  return '<li style="padding:.16rem 0">' + escHtml(name + code)
+    + ' <span class="pill">' + escHtml(status) + '</span>' + action + '</li>';
+}
+
+function companyGroupHtml(group) {
+  const members = group.members || [];
+  return '<details class="reports-market-details" data-key="company-group-' + group.group_id + '">'
+    + '<summary>' + escHtml(group.group_name || '(未命名集團)')
+    + ' <span class="pill">' + escHtml(group.review_status || '') + '</span></summary>'
+    + '<div class="toolbar" style="margin:.35rem 0">'
+    + '<button class="btn-mini" onclick="renameCompanyGroupLayer(' + group.group_id + ', ' + jsQuote(group.group_name || '') + ')">改名</button>'
+    + '<button class="btn-mini" onclick="addCompanyGroupLayerMember(' + group.group_id + ')">新增成員</button>'
+    + '</div>'
+    + (members.length
+      ? '<ul style="margin:.2rem 0 .2rem 1.2rem;padding:0;list-style:none">'
+        + members.map(function (m) { return companyGroupMemberHtml(group, m); }).join('')
+        + '</ul>'
+      : '<div class="hint" style="padding:.25rem 0">尚無成員</div>')
+    + '</details>';
+}
+
+async function renderCompanyGroupRegistry() {
+  const wrap = el('company-group-registry');
+  if (!wrap) return;
+  const openKeys = collectOpenDetailKeys(wrap);
+  wrap.innerHTML = '<details class="reports-market-details" id="company-group-details">'
+    + '<summary>集團正規化</summary>'
+    + '<div id="company-group-body"><div class="hint">載入中…</div></div>'
+    + '</details>';
+  const body = el('company-group-body');
+  try {
+    const data = await getJson(API + '/company-groups');
+    const groups = data.items || [];
+    body.innerHTML = '<div class="code-field"><label>集團名稱</label>'
+      + '<input class="text-input" id="company-group-name" placeholder="例如：創科集團"></div>'
+      + '<div class="code-field"><label>公司名稱</label>'
+      + '<input class="text-input" id="company-group-member-name" placeholder="已正規化公司顯示名"></div>'
+      + '<div class="code-field"><label>公司代碼</label>'
+      + '<input class="text-input" id="company-group-member-code" placeholder="可空"></div>'
+      + '<button class="btn" onclick="createCompanyGroupLayer()">建立集團</button>'
+      + '<div id="company-group-msg" class="hint" style="padding:.4rem 0 0"></div>'
+      + '<hr>'
+      + (groups.length
+        ? groups.map(companyGroupHtml).join('')
+        : '<div class="hint" style="padding:.35rem 0">尚未建立集團</div>');
+  } catch (e) {
+    body.innerHTML = '<div class="task-detail-error">載入失敗：' + escHtml(e.message) + '</div>';
+  }
+  restoreOpenDetailKeys(wrap, openKeys);
+}
+
+async function createCompanyGroupLayer() {
+  const groupName = ((el('company-group-name') || {}).value || '').trim();
+  const companyName = ((el('company-group-member-name') || {}).value || '').trim();
+  const companyCode = ((el('company-group-member-code') || {}).value || '').trim();
+  if (!groupName || !companyName) {
+    const msg = el('company-group-msg');
+    if (msg) msg.innerHTML = '<div class="code-conflict">請填集團名稱與公司名稱</div>';
+    return;
+  }
+  await getJson(API + '/company-groups', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      group_name: groupName,
+      members: [{ company_code: companyCode || null, company_display_name: companyName }],
+    }),
+  });
+  await renderCompanyGroupRegistry();
+}
+
+async function renameCompanyGroupLayer(groupId, currentName) {
+  const nextName = prompt('新的集團名稱', currentName || '');
+  if (!nextName || !nextName.trim()) return;
+  await getJson(API + '/company-groups/' + encodeURIComponent(groupId), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ group_name: nextName.trim() }),
+  });
+  await renderCompanyGroupRegistry();
+}
+
+async function addCompanyGroupLayerMember(groupId) {
+  const companyName = prompt('要加入的公司顯示名');
+  if (!companyName || !companyName.trim()) return;
+  const companyCode = prompt('公司代碼（可空）') || '';
+  await getJson(API + '/company-groups/' + encodeURIComponent(groupId) + '/members', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      company_code: companyCode.trim() || null,
+      company_display_name: companyName.trim(),
+    }),
+  });
+  await renderCompanyGroupRegistry();
+}
+
+async function removeCompanyGroupLayerMember(groupId, memberId) {
+  if (!confirm('移除這個集團成員？')) return;
+  await getJson(
+    API + '/company-groups/' + encodeURIComponent(groupId)
+      + '/members/' + encodeURIComponent(memberId),
+    { method: 'DELETE' },
+  );
+  await renderCompanyGroupRegistry();
+}
+
+async function decideCompanyGroupSuggestion(memberId, confirmed) {
+  const action = confirmed ? 'confirm' : 'reject';
+  await getJson(API + '/company-groups/suggestions/' + encodeURIComponent(memberId) + '/' + action, {
+    method: 'POST',
+  });
+  await renderCompanyGroupRegistry();
 }
 
 function blankCodeGroup() { return { code: '', zh_name: '', normalized_name: '', variants: [''] }; }
@@ -3399,6 +3524,14 @@ function renderReports() {
     + '<div class="toolbar">'
     + '<button class="btn btn-outline" id="btn-report-all" onclick="toggleAllReports()">全選／全不選</button>'
     + '</div>'
+    + '<div class="toolbar">'
+    + '<label class="reports-header-label" for="report-scope-select">統計層級</label>'
+    + '<select id="report-scope-select" class="select">'
+    + '<option value="company">公司</option>'
+    + '<option value="group">集團</option>'
+    + '</select>'
+    + '<span class="hint" style="padding:0;font-size:.82rem">集團層級只套用已確認的集團成員；未歸檔公司維持原公司名。</span>'
+    + '</div>'
     + '<div class="report-check-list">' + checks + '</div>'
     + '<div class="toolbar">'
     + '<button class="btn btn-primary" id="btn-gen-report" onclick="submitReports()">產製選定報表</button>'
@@ -3436,6 +3569,8 @@ function toggleAllReports() {
 async function submitReports() {
   const names = Array.from(state.reportSelection);
   if (names.length === 0) { alert('請至少勾選一個報表。'); return; }
+  const scopeEl = el('report-scope-select');
+  const reportScope = scopeEl ? scopeEl.value : 'company';
   const btn = el('btn-gen-report');
   btn.disabled = true; btn.textContent = '送出中…';
   try {
@@ -3444,7 +3579,11 @@ async function submitReports() {
       // workspace_id 決定分群類報表（主題統計表／機會板／痛點板）的範圍。
       // 2026-07-28 補：原本沒送，worker 端 workspace_id 恆為 None，這三份一律靜默跳過
       // ——就算跑過分群也產不出來。全庫（null）沒有分群範圍，那三份本來就不適用。
-      body: JSON.stringify({ report_names: names, workspace_id: state.workspaceId }),
+      body: JSON.stringify({
+        report_names: names,
+        workspace_id: state.workspaceId,
+        report_scope: reportScope,
+      }),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));

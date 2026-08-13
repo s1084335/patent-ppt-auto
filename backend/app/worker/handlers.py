@@ -398,6 +398,7 @@ def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict
         "report_names": [str(name) for name in report_names],
         "filters": payload.get("filters"),
         "patent_ids": payload.get("patent_ids"),
+        "report_scope": str(payload.get("report_scope") or "company"),
         "cluster_data": cluster_data,
         "workspace_name": _resolve_workspace_name(payload.get("workspace_id")),
         "workspace_id": payload.get("workspace_id"),
