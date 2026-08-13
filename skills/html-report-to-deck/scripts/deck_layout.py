@@ -117,8 +117,17 @@ def units(t: str) -> float:
 
 
 def est_lines(t: str, w_in: float, pt: int = 16) -> int:
-    """估算換行行數，含 6% 安全邊界（PowerPoint 實際字距略寬於估算）。"""
-    return max(1, math.ceil(units(t) * pt * 1.06 / (w_in * 72)))
+    """換行行數。🔴 **直接數實際切出來的行**，不另外估。
+
+    ⚠ 2026-08-13 之前這裡是獨立的數學式（`ceil(units × pt × 1.06 ÷ 寬)`）。
+    加入不可分割詞組保護後兩者分岔了——保護會讓某些行提早斷，實際行數比
+    純數學估的多一行，於是**估高一套、排版另一套**，版面偶爾就會溢出。
+    改為委派給 `wrap_lines`：估的就是實際會切出來的東西，天然不會漂。
+
+    安全邊界（1.06）仍在，它在 `_per_line` 裡——兩邊共用同一個容量。
+    效能：一份簡報幾千字，切分成本可忽略。
+    """
+    return max(1, len(wrap_lines(t, w_in, pt)))
 
 
 def text_h(paras, w_in: float) -> float:
@@ -147,6 +156,50 @@ NO_LINE_START = "，。、；：？！）」』】》〉…—·%〞”’,.;:?!
 NO_LINE_END = "（「『【《〈〝“‘([{"
 
 
+def _is_token_char(char: str) -> bool:
+    """算不算英數詞組的一部分（ASCII 英數與號碼常見符號）。"""
+    return char.isascii() and (char.isalnum() or char in "/-.")
+
+
+def _protected_ranges(text: str) -> list[tuple[int, int]]:
+    """找出**不可從中間斷開**的詞組範圍 `[start, end)`。
+
+    ⚠ 回傳「範圍」而不是「空格索引」：只記空格的話，`_inside_protected` 得再
+    往兩側掃一次算邊界，那是同一份計算的第二個落點——而且我第一版就漏算了
+    左側詞，導致斷點退到空格之前、詞組照樣被拆成「US」＋「 12345678」。
+
+    🔴 2026-08-13 逐頁目視 slide05 抓到：「CN 223248696」被從空格拆開，
+    行尾留下孤立的「CN」。避頭尾只管標點，管不到這個。
+    ⚠ 它是「只有目視看得到」的一類——程式化檢查全綠、字寬也沒超。
+
+    判準：空格兩側都非 CJK、且**至少一側含數字**。
+    - `CN 223248696`／`A63B 069/18`／`US 12345678` → 保護
+    - `11 件`／`2020 年` → 不保護（CJK 側本來就是合理斷點）
+    - `the quick` → 不保護（兩側都沒數字，是一般英文）
+
+    ⚠ 詞組邊界用「非 ASCII 英數」而不是「空白」：中英文之間沒有空格，
+    「…一下，CN」往左取到空白會把整串中文吃進來，於是誤判成「含 CJK」
+    而不保護（2026-08-13 實測踩到）。
+    """
+    ranges: list[tuple[int, int]] = []
+    for index, char in enumerate(text):
+        if char != " ":
+            continue
+        start = index
+        while start > 0 and _is_token_char(text[start - 1]):
+            start -= 1
+        end = index + 1
+        while end < len(text) and _is_token_char(text[end]):
+            end += 1
+        left, right = text[start:index], text[index + 1:end]
+        if not left or not right:
+            continue                        # 有一側不是英數詞：可斷
+        if not any(c.isdigit() for c in left + right):
+            continue                        # 純英文詞組：一般斷行即可
+        ranges.append((start, end))
+    return ranges
+
+
 def wrap_lines(text: str, w_in: float, pt: int = 16) -> list[str]:
     """把一段文字切成一行一行，供 SVG 逐行絕對定位。
 
@@ -163,21 +216,75 @@ def wrap_lines(text: str, w_in: float, pt: int = 16) -> list[str]:
     if not text:
         return [""]
     capacity = _per_line(w_in, pt)
+    return _apply_kinsoku(_greedy_wrap(text, capacity), capacity)
+
+
+def _greedy_wrap(text: str, capacity: float) -> list[str]:
+    """貪婪斷行，遇不可分割詞組往前退。**斷行邏輯的唯一落點**。
+
+    ⚠ `_apply_kinsoku` 推字後也需要重切，必須呼叫本函式而不是自己寫一份
+    ——2026-08-13 就是因為那裡另寫了一段（沒有詞組保護），讓保護在推字後失效。
+    同一份斷行知識只能有一個落點。
+    """
+    if not text:
+        return [""]
+    ranges = _protected_ranges(text)
     lines: list[str] = []
-    current = ""
+    start = 0
     used = 0.0
 
-    for char in text:
+    for index, char in enumerate(text):
         width = 1.0 if ord(char) > 0x2E80 else 0.55
-        if current and used + width > capacity + 1e-9:
-            lines.append(current)
-            current, used = "", 0.0
-        current += char
+        if index > start and used + width > capacity + 1e-9:
+            cut = index
+            # 斷點切斷受保護詞組 → 往前退到詞組之前。
+            while cut > start and _inside_protected(cut, ranges):
+                cut -= 1
+            # ⚠ 退不動就照原斷點走（fail open）：詞組本身超過行寬時硬保護會
+            #   無限迴圈或整行溢出。
+            if cut == start:
+                cut = index
+            lines.append(text[start:cut])
+            start = cut
+            used = sum(1.0 if ord(c) > 0x2E80 else 0.55 for c in text[start:index])
         used += width
 
-    if current:
-        lines.append(current)
-    return _apply_kinsoku(lines, capacity)
+    if start < len(text):
+        lines.append(text[start:])
+    return lines or [""]
+
+
+def _token_start_at_end(line: str) -> int | None:
+    """若這一行**結束在受保護詞組內**，回傳該詞組的起點索引；否則 None。
+
+    ⚠ 只看行尾：`_apply_kinsoku` 是從行尾借字，切點永遠在那裡。
+    回傳起點（而非只回傳 bool）是為了讓呼叫端能把**整個詞組**移走——
+    只知道「不能借」的話，兩條規則就只能二選一。
+    """
+    if not line or not _is_token_char(line[-1]):
+        return None
+    right_start = len(line) - 1
+    while right_start > 0 and _is_token_char(line[right_start - 1]):
+        right_start -= 1
+    if right_start == 0 or line[right_start - 1] != " ":
+        return None
+    left_end = right_start - 1
+    left_start = left_end
+    while left_start > 0 and _is_token_char(line[left_start - 1]):
+        left_start -= 1
+    left, right = line[left_start:left_end], line[right_start:]
+    if not left or not any(c.isdigit() for c in left + right):
+        return None
+    return left_start
+
+
+def _inside_protected(cut: int, ranges: list[tuple[int, int]]) -> bool:
+    """在 `cut` 斷行會不會把某個受保護詞組切成兩半。
+
+    ⚠ 在詞組**之前**（cut == start）或**之後**（cut == end）斷都是合法的，
+    只有落在中間才算切斷。
+    """
+    return any(start < cut < end for start, end in ranges)
 
 
 def _apply_kinsoku(lines: list[str], capacity: float) -> list[str]:
@@ -193,8 +300,19 @@ def _apply_kinsoku(lines: list[str], capacity: float) -> list[str]:
         moved = False
 
         # 下一行以禁則字開頭 → 把本行最後一個字推過去，讓它不在行首。
+        # 🔴 若行尾正在**不可分割詞組**內，改推**整個詞組**：2026-08-13 實測，
+        #   借一個字會把「CN 223248696」切成「…CN 22324869」＋「6）。」
+        #   ——避頭尾修好了、詞組卻被拆了。
+        #   ⚠ 兩條規則本身不衝突，衝突的是「只借一個字」這個手段。
+        #   推整個詞組兩者都滿足；只有整行都是詞組時才真的無解（那時停手）。
         while following and following[0] in NO_LINE_START and len(current) > 1:
-            current, following = current[:-1], current[-1] + following
+            token_start = _token_start_at_end(current)
+            if token_start is not None:
+                if token_start <= 0:
+                    break                   # 整行都是那個詞組，推不動
+                current, following = current[:token_start], current[token_start:] + following
+            else:
+                current, following = current[:-1], current[-1] + following
             moved = True
             # 推過去後若本行行尾又變成禁則字，下面那個迴圈會處理。
 
@@ -210,20 +328,10 @@ def _apply_kinsoku(lines: list[str], capacity: float) -> list[str]:
             index += 1
             continue
         # 推字後下一行可能超寬，重切它與其後所有內容。
+        # ⚠ 走 `_greedy_wrap`，**不要在這裡另寫一份**——2026-08-13 就是因為
+        #   這裡有第二份斷行邏輯（沒有詞組保護），讓保護在推字後失效。
         if units(following) > capacity + 1e-9:
-            rest = "".join(fixed[index + 1:])
-            tail: list[str] = []
-            cur, used = "", 0.0
-            for char in rest:
-                w = 1.0 if ord(char) > 0x2E80 else 0.55
-                if cur and used + w > capacity + 1e-9:
-                    tail.append(cur)
-                    cur, used = "", 0.0
-                cur += char
-                used += w
-            if cur:
-                tail.append(cur)
-            fixed[index + 1:] = tail
+            fixed[index + 1:] = _greedy_wrap("".join(fixed[index + 1:]), capacity)
         index += 1
     return fixed
 

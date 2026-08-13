@@ -89,6 +89,12 @@ class ConsistencyWithEstimatorTests(unittest.TestCase):
         cls.mod = _load()
 
     def test_line_count_matches_est_lines(self):
+        """⚠ 2026-08-13 起 `est_lines` **委派**給 `wrap_lines`，本測試因此成為
+        結構保證而非數值驗證（自己跟自己比必然通過，見 pitfalls #39）。
+        留著是為了：有人把 `est_lines` 改回獨立算法時立刻紅。
+        真正的數值驗證在 `test_est_lines_delegates`（原始碼）與
+        `test_text_height_model.py`（對 COM 實測值）。
+        """
         for width in (3.0, 4.5, 6.0, 8.0, 10.0):
             for text in SAMPLES:
                 with self.subTest(width=width, text=text[:12]):
@@ -96,6 +102,17 @@ class ConsistencyWithEstimatorTests(unittest.TestCase):
                         len(self.mod.wrap_lines(text, width)),
                         self.mod.est_lines(text, width),
                         "切分行數與 est_lines 不一致——版面裕度會算錯")
+
+    def test_est_lines_delegates(self):
+        """🔴 `est_lines` 必須委派，不得自己算。
+
+        獨立的數學式在加入詞組保護後就會與實際切分分岔——保護讓某些行提早斷，
+        實際行數多一行，於是估高一套、排版另一套，版面偶爾溢出而裕度表不叫。
+        """
+        source = (SCRIPTS / "deck_layout.py").read_text(encoding="utf-8")
+        body = source.split("def est_lines(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("wrap_lines", body, "est_lines 應委派給 wrap_lines")
+        self.assertNotIn("math.ceil", body, "不得殘留獨立的數學估算")
 
 
 class HangingPunctuationTests(unittest.TestCase):
@@ -146,6 +163,77 @@ class HangingPunctuationTests(unittest.TestCase):
                     with self.subTest(width=width, line=line):
                         self.assertLessEqual(self.mod.units(line), capacity + 1e-9,
                                              "回推不該讓行超寬（那是懸掛的行為）")
+
+
+class UnbreakableTokenTests(unittest.TestCase):
+    """不可分割詞組：專利號之類「前綴＋空格＋號碼」不得從空格處斷開。
+
+    ## 怎麼發現的
+
+    2026-08-13 逐頁目視 `regression_baseline/slide05`（標籤欄頁）：第二行結尾是
+    孤立的「CN」，號碼「223248696）。」被推到第三行。
+    ⚠ 那張是 pptx 路徑（PowerPoint 斷的），**不是 B 案引入的**；但 B 案把斷行
+    收回引擎後，`wrap_lines` 只看字寬，會照樣拆。
+
+    🔴 這是「只有目視看得到」的一類：程式化檢查全綠、SVG 合法、字寬也沒超，
+    但讀者會看到孤立的「CN」。它同時證明了逐頁目視不可抽樣。
+
+    ## 判準
+
+    空格兩側都非 CJK、且**至少一側含數字** → 不可分割。
+    - `CN 223248696`、`A63B 069/18`、`US 12345678` → 保護
+    - `11 件`、`2020 年` → 不保護（CJK 側本來就可斷）
+    - `the quick` → 不保護（兩側都沒數字，是一般英文）
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load()
+
+    PROTECTED = ["CN 223248696", "A63B 069/18", "US 12345678"]
+
+    def test_patent_number_not_split(self):
+        text = ("本頁列出三案：CN 111167066、CN 211798524、CN 223248694，"
+                "另有 CN 223248696 待補。")
+        for width_tenth in range(25, 105, 5):
+            width = width_tenth / 10
+            lines = self.mod.wrap_lines(text, width)
+            for index, line in enumerate(lines[:-1]):
+                with self.subTest(width=width, line=line):
+                    # 行尾若是「CN」這種前綴，下一行開頭就是被拆開的號碼
+                    self.assertFalse(
+                        line.rstrip().endswith("CN"),
+                        f"專利號被拆開：行尾『CN』，下一行『{lines[index + 1][:12]}』")
+
+    def test_protected_tokens_stay_whole(self):
+        """受保護的詞組必須整串出現在同一行（除非它本身就超過行寬）。"""
+        for token in self.PROTECTED:
+            for width_tenth in range(30, 105, 5):
+                width = width_tenth / 10
+                if self.mod.units(token) > self.mod._per_line(width):
+                    continue                # 詞組本身放不下，允許斷（fail open）
+                text = f"前置文字說明一下，{token}，後面還有一些補充內容。"
+                joined = "\n".join(self.mod.wrap_lines(text, width))
+                with self.subTest(token=token, width=width):
+                    self.assertIn(token, joined.replace("\n", ""),
+                                  "文字內容改變了")
+                    self.assertIn(token, joined,
+                                  f"『{token}』被斷行拆開")
+
+    def test_oversized_token_still_breaks(self):
+        """⚠ 詞組本身超過行寬時仍須斷——否則會無限迴圈或整行溢出。"""
+        text = "AB 1234567890123456789012345678901234567890"
+        lines = self.mod.wrap_lines(text, 2.5)
+        self.assertGreater(len(lines), 1, "超長詞組沒有被斷開")
+        self.assertEqual("".join(lines), text, "斷開時丟字了")
+
+    def test_cjk_side_still_breaks(self):
+        """`11 件`／`2020 年` 這種 CJK 側不受保護——否則會過度限制斷點。"""
+        text = "共 11 件、2020 年至 2026 年之間，分布於五個受理局與八個技術主題。"
+        # 只要能正常切成多行即可（不因保護規則而卡死）
+        lines = self.mod.wrap_lines(text, 3.0)
+        self.assertGreater(len(lines), 1)
+        self.assertEqual("".join(lines), text)
 
 
 if __name__ == "__main__":
