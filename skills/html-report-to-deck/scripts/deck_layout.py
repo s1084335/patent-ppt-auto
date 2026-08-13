@@ -238,7 +238,32 @@ def _set_font(run, *, size, bold=False, color=TEXT):
             {"typeface": FONT}))
 
 
+def _svg_canvas(w_in: float = SW, h_in: float = SH):
+    """建一張 SVG 畫布，注入本模組的字型／行高／量測函式。
+
+    ⚠ 延遲 import：`svg_canvas` 不得反向 import 本模組（會循環），
+    它需要的東西一律由這裡注入——字型與行高的唯一定義處在本檔。
+    """
+    from svg_canvas import SvgCanvas
+
+    return SvgCanvas(w_in, h_in, font=FONT, ls_render=LS_RENDER,
+                     unit_width=units, wrap_lines=wrap_lines)
+
+
+def _is_svg(sl) -> bool:
+    """畫布是 SVG 還是 pptx slide。
+
+    用有沒有 `to_svg` 判斷，不用 isinstance——避免本模組為了型別檢查而 import
+    `svg_canvas`（那會製造循環相依，而且只為了一個判斷不值得）。
+    """
+    return hasattr(sl, "to_svg")
+
+
 def rect(sl, x, y, w, h, fill=None, line=None, shape=MSO_SHAPE.RECTANGLE, radius=None):
+    if _is_svg(sl):
+        sl.rect(x, y, w, h, fill=fill, line=line,
+                radius=radius if shape == MSO_SHAPE.ROUNDED_RECTANGLE else None)
+        return None
     s = sl.shapes.add_shape(shape, Inches(x), Inches(y), Inches(w), Inches(h))
     if fill is None:
         s.fill.background()
@@ -256,7 +281,25 @@ def rect(sl, x, y, w, h, fill=None, line=None, shape=MSO_SHAPE.RECTANGLE, radius
     return s
 
 
+def picture(sl, path, x, y, w, h):
+    """貼圖原語。⚠ 原本各頁型直接呼叫 `s.shapes.add_picture`——包成原語才能分派。
+
+    SVG 端寫**相對路徑**（`Path.name`）：圖檔與 SVG 同目錄，Chromium 用 `goto`
+    載入時才抓得到（2026-08-13 實測 `file://` 絕對 URI ＋ `set_content` 會破圖）。
+    """
+    if _is_svg(sl):
+        sl.picture(Path(path).name, x, y, w, h)
+        return None
+    return sl.shapes.add_picture(str(path), Inches(x), Inches(y), Inches(w), Inches(h))
+
+
 def textbox(sl, x, y, w, h, blocks, *, anchor=MSO_ANCHOR.TOP, space_after=6):
+    if _is_svg(sl):
+        sl.text_block(x, y, w, h, blocks,
+                      anchor_middle=(anchor == MSO_ANCHOR.MIDDLE),
+                      space_after=space_after,
+                      default_size_pt=B_SIZE.pt, default_color=TEXT)
+        return None
     tb = sl.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
     tf = tb.text_frame
     tf.word_wrap = True
@@ -345,8 +388,7 @@ def chart_stack(s, pngs, y, h):
         ih = w * r
         rect(s, ML + (CW - w) / 2 - pad, cy, w + 2 * pad, ih + 2 * pad,
              fill=CARD, line=CARD_ED, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.04)
-        s.shapes.add_picture(str(p), Inches(ML + (CW - w) / 2), Inches(cy + pad),
-                             Inches(w), Inches(ih))
+        picture(s, p, ML + (CW - w) / 2, cy + pad, w, ih)
         cy += ih + 2 * pad + gap
     return w
 
@@ -607,6 +649,66 @@ def slide_roadmap(prs, c, page):
     return s
 
 
+class _SvgDeck:
+    """`Presentation` 的替身，讓 `base()` 與各頁型**一行都不用改**。
+
+    它們呼叫的是 `prs.slides.add_slide(prs.slide_layouts[6])`——這裡照樣提供，
+    只是回傳 SVG 畫布而非 pptx slide。
+    """
+
+    def __init__(self) -> None:
+        self.pages: list = []
+        self.slide_layouts = [None] * 7
+        self.slides = self
+        self.slide_width = self.slide_height = None
+
+    def add_slide(self, _layout):
+        canvas = _svg_canvas()
+        self.pages.append(canvas)
+        return canvas
+
+
+def _compose(deck, content: dict, png_dir: Path) -> dict:
+    """跑完整份簡報的頁型。⚠ **頁型呼叫的唯一落點**——pptx 與 SVG 兩個輸出端
+    共用這一份，否則兩邊會各自演進（少一頁、順序不同都不會報錯）。
+    """
+    slide_cover(deck, content)
+    slide_rec(deck, content)
+    widths = {}
+    for i, spec in enumerate(content["pages"], start=3):
+        if spec.get("charts"):
+            widths[i] = slide_chart(deck, content, i, spec, png_dir)
+        else:
+            slide_text(deck, content, i, spec)      # 純文字頁：不佔圖表寬度
+    slide_roadmap(deck, content, len(content["pages"]) + 3)
+    return widths
+
+
+def build_svg(content: dict, png_dir, out_dir) -> list[Path]:
+    """B 案輸出端：每頁一個 SVG 檔，回傳檔案清單。
+
+    ⚠ PNG 一併複製到 `out_dir`：`picture()` 在 SVG 端寫的是**相對路徑**，
+    Chromium 用 `goto` 載入 SVG 時才抓得到同目錄的圖
+    （2026-08-13 實測 `file://` 絕對 URI ＋ `set_content` 會破圖）。
+    """
+    import shutil
+
+    png_dir, out_dir = Path(png_dir), Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _REPORT.clear()
+
+    deck = _SvgDeck()
+    _compose(deck, content, png_dir)
+
+    for png in png_dir.glob("*.png"):
+        shutil.copyfile(png, out_dir / png.name)
+
+    written = []
+    for index, canvas in enumerate(deck.pages, start=1):
+        written.append(canvas.save(out_dir / f"page{index:02d}.svg"))
+    return written
+
+
 def build(content: dict, png_dir, out_path) -> int:
     """組裝簡報並印出裕度表與圖表在投影片上的實際字級。回傳溢出區域數（必須為 0）。"""
     png_dir, out_path = Path(png_dir), Path(out_path)
@@ -615,15 +717,8 @@ def build(content: dict, png_dir, out_path) -> int:
 
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(SW), Inches(SH)
-    slide_cover(prs, content)
-    slide_rec(prs, content)
-    widths = {}
-    for i, spec in enumerate(content["pages"], start=3):
-        if spec.get("charts"):
-            widths[i] = slide_chart(prs, content, i, spec, png_dir)
-        else:
-            slide_text(prs, content, i, spec)      # 純文字頁：不佔圖表額度
-    slide_roadmap(prs, content, len(content["pages"]) + 3)
+    # 頁型呼叫走 _compose（唯一落點，與 build_svg 共用）
+    widths = _compose(prs, content, png_dir)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(out_path)
