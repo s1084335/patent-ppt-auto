@@ -17,15 +17,16 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 from pathlib import Path
 
-# 瀏覽器用工作區既有的 Playwright，不另行安裝（可用 PLAYWRIGHT_HOME 覆寫）
-_PW = Path(os.environ.get("PLAYWRIGHT_HOME", r"D:\vscode\playwright"))
-sys.path.insert(0, str(_PW / "lib"))
-os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_PW / "browsers"))
+# 瀏覽器環境走 browser_env（唯一定義處）——原本這三行在本檔與 shoot_pages
+# 各寫一份，改一處不會同步另一處。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from browser_env import ensure_playwright  # noqa: E402
+
+ensure_playwright()
 
 SCALE = 3          # 截圖倍率：投影片放大後仍要清楚
 BASE_FONT = 15.1   # 報表圖表的原字級（其餘字級依同一倍率縮放）

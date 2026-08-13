@@ -90,6 +90,26 @@ class VisualShotTests(unittest.TestCase):
                 self.assertNotIn(hardcoded, source,
                                  f"寫死了尺寸 {hardcoded}，應從 deck_layout 導出")
 
+    def test_playwright_env_has_single_source(self):
+        """🔴 Playwright 路徑解析只能有一處（tasks 2.2d）。
+
+        ⚠ `fit_render_charts` 與 `shoot_pages` 原本各寫一份相同的三行
+        （`PLAYWRIGHT_HOME` → `sys.path` → `PLAYWRIGHT_BROWSERS_PATH`）。
+        改一處不會同步另一處，而症狀是「其中一支在產線找不到瀏覽器、另一支正常」，
+        很難聯想到是同一件事。
+        """
+        single = SCRIPTS / "browser_env.py"
+        self.assertTrue(single.is_file(), "缺少唯一定義處 browser_env.py")
+        for name in ("fit_render_charts.py", "shoot_pages.py"):
+            code = "\n".join(
+                line for line in (SCRIPTS / name).read_text(encoding="utf-8").splitlines()
+                if not line.lstrip().startswith("#"))
+            with self.subTest(script=name):
+                self.assertIn("ensure_playwright", code, "應呼叫共用的環境準備")
+                self.assertNotIn("PLAYWRIGHT_BROWSERS_PATH", code,
+                                 "不得自己設 browsers 路徑")
+                self.assertNotIn("PLAYWRIGHT_HOME", code, "不得自己解析安裝根目錄")
+
     def test_uses_goto_not_set_content(self):
         """🔴 載入方式鎖死：`set_content` 會讓 `<image>` 破圖（2026-08-13 實測）。"""
         source = (SCRIPTS / "shoot_pages.py").read_text(encoding="utf-8")

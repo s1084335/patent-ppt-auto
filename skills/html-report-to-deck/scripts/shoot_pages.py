@@ -16,16 +16,14 @@
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
-# 瀏覽器用工作區既有的 Playwright，不另行安裝（沿 fit_render_charts.py 同一套）。
-_PW = Path(os.environ.get("PLAYWRIGHT_HOME", r"D:\vscode\playwright"))
-sys.path.insert(0, str(_PW / "lib"))
-os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_PW / "browsers"))
-
+# 瀏覽器環境走 browser_env（唯一定義處）。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from browser_env import ensure_playwright  # noqa: E402
+
+ensure_playwright()
 
 
 def shoot(svg_paths: list[Path | str], out_dir: Path | str) -> list[Path]:

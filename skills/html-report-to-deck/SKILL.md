@@ -466,6 +466,7 @@ uv run --no-project --python 3.12 python D:\vscode\ppt-tools\pptx_to_png.py <out
 | `scripts/deck_layout.py` | 版面引擎＋定案配色＋字數上限＋標籤欄幾何＋**引擎斷行**＋目視倍率的**唯一定義處** |
 | `scripts/svg_canvas.py` | SVG 畫布：`deck_layout` 的第二個輸出端（B 案），把同一套幾何畫成 SVG |
 | `scripts/shoot_pages.py` | 逐頁截圖（SVG → PNG）供目視迴圈；⚠ 一律 `goto` 不用 `set_content`（後者會讓圖破） |
+| `scripts/browser_env.py` | Playwright 安裝路徑解析的**唯一定義處**（`PLAYWRIGHT_HOME` 覆寫）|
 | `scripts/audit_deck.py` | 字級／圖表去重／頁數閘門 |
 | `references/content-template.json` | content.json 填寫範本 |
 | [references/narrative.md](references/narrative.md) | 敘事與濃縮寫法、每種圖表要轉成什麼判讀 |
