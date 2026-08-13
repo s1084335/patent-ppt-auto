@@ -21,14 +21,27 @@ cli_runner／candidate_fetcher／topics_fetcher／persister 皆可注入，
 """
 from __future__ import annotations
 
+import functools
 import json
 from collections.abc import Callable
 from typing import Any
+
+from . import cli_gateway
+from .cli_gateway import NO_TOOLS
+from .cli_gateway import build_cli_command as _gw_build_cli_command
 
 # 版本隨 prompt 契約升版而變，寫進 analysis_outputs 供追溯。
 PROMPT_VERSION = "topic_backfill_v1"
 
 DEFAULT_CLI_TIMEOUT_SECONDS = 600.0
+
+# 🔴 最小權限（2026-08-13 修正擴權）：build_prompt 已把候選文本與主題清單全部
+# 內嵌 prompt，不讀檔、不寫檔、不上網、不查 DB——白名單為空。
+# ⚠ 原本 argv 組裝寫在 `ai_bridge._run_ai_topic_backfill_job` 的 closure 裡，
+# 並從 `ai_narrative_runner` 借 build_cli_command（＝`partial(tools=RESEARCH_TOOLS)`），
+# 於是本線靜默拿到 Read/Glob/Grep/Write ＋八支 MCP 取證工具＋`--mcp-config`。
+# 2026-08-13 一併搬回 runner，與其餘六支同款：權限由使用它的 runner 自己宣告。
+build_cli_command = functools.partial(_gw_build_cli_command, tools=NO_TOOLS)
 
 
 class TopicBackfillError(RuntimeError):
@@ -113,6 +126,23 @@ def _validate_suggestions(
             })
     suggestions.sort(key=lambda s: s["patent_id"])
     return suggestions
+
+
+def build_cli_runner(cli_kind: str, model: str | None) -> Callable[..., str]:
+    """組正式 CLI 執行器（收 prompt 回內文字串），供 ai_bridge 帶入 run_topic_backfill。
+
+    ⚠ `--output-format json` 的 stdout 是 envelope（type/result/…），AI 內文在
+    `result` 欄——直接回 stdout 會讓 runner 解析到外殼而非建議 JSON
+    （2026-08-07 真資料首跑即踩）。
+    ⚠ 執行器以 `cli_gateway.run_cli` 的**模組屬性**取得，不在 import 期綁定，
+    測試才攔得到。
+    """
+    def _run(prompt: str, *, timeout_seconds: float) -> str:
+        argv = build_cli_command(cli_kind, prompt, model=model)
+        parsed = cli_gateway.parse_cli_result(cli_gateway.run_cli(argv, timeout_seconds))
+        return str(parsed.get("result") or "")
+
+    return _run
 
 
 def run_topic_backfill(

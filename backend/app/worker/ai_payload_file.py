@@ -61,10 +61,11 @@ RETENTION_DAYS = 7
 # 現行資料量不觸發分批；5000 筆／40 主題約 512KB → 約 4 批。
 MAX_PAYLOAD_CHARS = 150_000
 
-# CLI 讀資料檔所需的最小權限：只有 Read。
-# 不給 Write（產物由 stdout JSON 回傳，不需 CLI 寫檔）、
-# 不給 Bash／WebFetch（避免專利文字內的 prompt injection 取得執行或連外能力）。
-READ_ONLY_TOOLS = "Read"
+# ⚠ 2026-08-13 刪除本模組的 READ_ONLY_TOOLS：它與 `cli_gateway.READ_ONLY_TOOLS`
+# 是同一份知識的第二個落點，且全庫零 import——連本檔的
+# `build_cli_command_with_payload` 都是在函式內 `from .cli_gateway import
+# READ_ONLY_TOOLS`（區域名稱蓋掉模組級的），所以它從來沒被用到。
+# 權限等級的唯一定義處在 cli_gateway。
 
 
 def payload_root(root: Path | None = None) -> Path:
@@ -181,8 +182,10 @@ def build_cli_command_with_payload(
     這是本模組的重點——不論資料多大（實測 128K 亦然），argv 都維持數百字元，
     永遠不會撞上 Windows 32,767 的命令列上限。
 
-    工具權限固定為 Read（見 READ_ONLY_TOOLS 的說明）；不沿用各 runner 原本的
-    tail_args，避免又出現「同一件事多個落點」。
+    工具權限固定為 `cli_gateway.READ_ONLY_TOOLS`（只有 Read）：不給 Write（產物由
+    stdout JSON 回傳，不需 CLI 寫檔）、不給 Bash／WebFetch（避免專利文字內的
+    prompt injection 取得執行或連外能力）。不沿用各 runner 原本的 tail_args，
+    避免又出現「同一件事多個落點」。
     """
     from .cli_gateway import READ_ONLY_TOOLS, build_cli_command
 

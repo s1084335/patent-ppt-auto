@@ -25,6 +25,14 @@
 
 ⚠ 這個模型刻意接受兩種 body 形狀（具名欄位／泛型 params），兩者同名時的優先序
 就是它的核心契約，卻一直沒有測試。
+
+## 2026-08-13：換樣本，不換判準
+
+`ai:report_plan` 與 `then_export_ppt` 都已隨 PPT 交付線移除（2026-08-10），
+本檔三支因此紅在 pydantic 的 task_type 驗證，而不是紅在合併邏輯。
+⚠ 但**受測行為沒有消失**——`to_payload()` 的優先序是通用契約，只是原本拿
+那條線當樣本。改用仍存在的 `cli_kind` 當樣本（現行**唯一**有非 None 預設值的
+具名欄位，`= "claude"`，正是當年出事的同一種欄位），三個判準原樣保留。
 """
 from __future__ import annotations
 
@@ -37,30 +45,34 @@ class PayloadMergeTests(unittest.TestCase):
     """兩種 body 形狀的合併優先序。"""
 
     def test_params_value_survives_unset_named_default(self):
-        """🔴 params 填了 True，具名欄位沒送 → 必須是 True。"""
+        """🔴 params 填了值，具名欄位沒送 → 必須保留 params 的值。
+
+        `cli_kind` 的預設是 `"claude"`（非 None），正是當年 `then_export_ppt=False`
+        蓋掉 `True` 的同一種欄位：`exclude_none` 攔不住它，只有 `exclude_unset` 能。
+        """
         req = CreateAiTaskRequest(
-            task_type="ai:report_plan",
-            params={"then_export_ppt": True, "snapshot_id": "v1"},
+            task_type="ai:narrative",
+            params={"cli_kind": "opencode", "based_on_version": "v1"},
         )
-        self.assertIs(req.to_payload()["then_export_ppt"], True,
-                      "params 的值被具名欄位的預設值蓋掉了")
+        self.assertEqual(req.to_payload()["cli_kind"], "opencode",
+                         "params 的值被具名欄位的預設值蓋掉了")
 
     def test_explicit_named_field_wins(self):
         """具名欄位**有送**時仍應覆蓋 params——那才是「具名優先」的原意。"""
         req = CreateAiTaskRequest(
-            task_type="ai:report_plan",
-            params={"then_export_ppt": True},
-            then_export_ppt=False,
+            task_type="ai:narrative",
+            params={"cli_kind": "opencode"},
+            cli_kind="claude",
         )
-        self.assertIs(req.to_payload()["then_export_ppt"], False)
+        self.assertEqual(req.to_payload()["cli_kind"], "claude")
 
     def test_params_only_fields_pass_through(self):
-        """params 專有的鍵原樣帶過（selected_charts 等泛型欄位）。"""
+        """params 專有的鍵原樣帶過（模型未宣告的泛型欄位）。"""
         payload = CreateAiTaskRequest(
-            task_type="ai:report_plan",
-            params={"selected_charts": ["a:default"], "page_budget": 12},
+            task_type="ai:topic_backfill",
+            params={"source_field": "技術", "page_budget": 12},
         ).to_payload()
-        self.assertEqual(payload["selected_charts"], ["a:default"])
+        self.assertEqual(payload["source_field"], "技術")
         self.assertEqual(payload["page_budget"], 12)
 
     def test_unset_named_fields_do_not_appear(self):
@@ -70,7 +82,7 @@ class PayloadMergeTests(unittest.TestCase):
         """
         payload = CreateAiTaskRequest(task_type="ai:narrative",
                                       params={"based_on_version": "v1"}).to_payload()
-        self.assertNotIn("then_export_ppt", payload)
+        self.assertNotIn("cli_kind", payload)
         self.assertNotIn("report_keys", payload)
 
 

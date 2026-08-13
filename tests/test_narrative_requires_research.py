@@ -1,22 +1,18 @@
 """解讀階段也必須實際查證（2026-08-10 使用者要求延伸）。
 
-使用者要求「PPT 時順便監控有沒有去查證據來寫」。查證後釐清三個階段的權限：
-
-| 階段 | 工具 | 能查 DB | 稽核 |
-|---|---|---|---|
-| `ai:narrative`（產每頁要點） | `RESEARCH_TOOLS`（MCP 唯讀） | ✅ | ❌ **本次補** |
-| `ai:report_plan`（產 SlidePlan） | report-research MCP | ✅ | ✅ 已有（`31f8e81`） |
-| `ai:report_ppt`（產文案 slots） | 只有 `Read` | ❌ 設計上不查 | 不適用 |
-
-⚠ `ai:report_ppt` 不能查是**刻意**的：它的文案來自已經查證過的 `narratives.json`，
-白名單維持最小（`READ_ONLY_TOOLS`）。要監控「有沒有查證據來寫」，真正的落點是
-**narrative**——簡報上每一頁的要點就是它產的，而它有查證能力卻沒有任何紀錄。
+使用者要求「順便監控有沒有去查證據來寫」。要監控這件事，真正的落點是
+**narrative**——報表每一段解讀就是它產的，而它是唯一持有 `RESEARCH_TOOLS`
+（MCP 唯讀取證）的 AI 線，有查證能力卻一度沒有任何紀錄。其餘 AI 線一律
+`NO_TOOLS`／`READ_ONLY_TOOLS`，設計上就不查 DB，稽核不適用。
 
 ## 稽核工具的落點
 
-`query_audit_file` 與 `read_query_audit` 從 `report_planning_runner` 移到
-`mcp_server.report_research`（`AUDIT_PATH_ENV` 的定義處），兩個 runner 共用。
-⚠ 複製第二份會讓兩條線的稽核格式各自演進，而不一致本身不會報錯。
+`query_audit_file` 與 `read_query_audit` 定義在 `mcp_server.report_research`
+（`AUDIT_PATH_ENV` 的定義處），由需要的呼叫端共用。
+⚠ 複製第二份會讓稽核格式各自演進，而不一致本身不會報錯。
+
+⚠ 2026-08-13：原本本檔還守著另一條走 MCP 取證的規劃線不留稽核副本；
+該線已隨 PPT 交付線整條移除（2026-08-10），對應測試同步退場（見下方註解）。
 """
 from __future__ import annotations
 
@@ -46,13 +42,9 @@ class SharedAuditToolsTests(unittest.TestCase):
         self.assertEqual(os.environ.get(AUDIT_PATH_ENV), before, "離場要還原環境變數")
         self.assertFalse(path.exists(), "離場要刪除稽核暫存檔")
 
-    def test_planning_runner_uses_shared_tools(self):
-        """規劃線改用共用實作，不留第二份。"""
-        source = (PROJECT_ROOT / "backend" / "app" / "worker"
-                  / "report_planning_runner.py").read_text(encoding="utf-8")
-        self.assertIn("query_audit_file", source)
-        self.assertNotIn("def _query_audit_file", source,
-                         "私有副本必須移除——稽核格式只能有一個定義處")
+    # ⚠ 2026-08-13 移除 test_planning_runner_uses_shared_tools：它讀的那支規劃線
+    # runner 已隨 PPT 交付線整條移除（2026-08-10），檔案不存在故整支恆紅。
+    # 第二份副本的風險隨該線消失，「只有一個定義處」由本類其餘測試與 narrative 那組續守。
 
 
 class NarrativeResearchTests(unittest.TestCase):

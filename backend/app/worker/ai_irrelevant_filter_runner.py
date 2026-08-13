@@ -40,15 +40,14 @@ from backend.app.db.connection import get_connection_kwargs
 
 import functools
 
-from .cli_gateway import NO_TOOLS
-from .cli_gateway import build_cli_command as _gw_build_cli_command
-from .ai_narrative_runner import (
+from .cli_gateway import (
     DEFAULT_CLI_TIMEOUT_SECONDS,
     CliRunner,
+    NO_TOOLS,
     parse_cli_result,
-    _CLI_SPECS,
-    _subprocess_cli_runner,
+    run_cli,
 )
+from .cli_gateway import build_cli_command as _gw_build_cli_command
 from .ai_payload_file import extract_json_payload
 
 
@@ -242,7 +241,7 @@ def run_irrelevant_filter(
     """
     from . import ai_payload_file as pf
 
-    runner = cli_runner if cli_runner is not None else _subprocess_cli_runner
+    runner = cli_runner if cli_runner is not None else run_cli
     pf.cleanup_old_payloads(root=payload_root)
 
     if progress is not None:

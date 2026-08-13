@@ -96,10 +96,16 @@ class ExtractJsonPayloadTests(unittest.TestCase):
 
 
 class AllRunnersUseSharedExtractorTests(unittest.TestCase):
-    """七支 runner 都必須走共用函式，不得各自實作。
+    """用到剝圍欄的 runner 都必須走共用函式，不得各自實作。
 
     同一段剝圍欄邏輯原本複製了七份，實機兩支炸掉才發現。收口成一份後，
     修一次全部受益；逐支修＝下次又只修到其中幾支。
+
+    ⚠ 2026-08-13 移除 ai_report_ppt_runner（隨 PPT 交付線刪除），否則本類讀檔
+    FileNotFoundError 恆紅。名單維持「原本就在守的那幾支」，不順手補進
+    ai_topic_backfill_runner——它的回覆解析走自己的 `_parse_reply`（取第一個 `{`
+    到最後一個 `}`），是否該一併收口到 extract_json_payload 屬另一個判斷，
+    不在本次清債範圍內硬塞。
     """
 
     RUNNERS = (
@@ -107,7 +113,6 @@ class AllRunnersUseSharedExtractorTests(unittest.TestCase):
         "ai_company_zh_name_runner",
         "ai_irrelevant_filter_runner",
         "ai_patent_note_runner",
-        "ai_report_ppt_runner",
         "ai_topic_label_runner",
     )
 

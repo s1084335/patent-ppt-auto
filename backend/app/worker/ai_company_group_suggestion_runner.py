@@ -6,14 +6,15 @@ from collections.abc import Callable
 from typing import Any
 
 from backend.app.repositories import company_group_repository as repository
+from backend.app.worker.ai_payload_file import extract_json_payload
 from backend.app.worker.cli_gateway import (
+    WEB_RESEARCH_TOOLS,
     build_cli_command,
     parse_cli_result,
     run_cli,
 )
 
 DEFAULT_CLI_TIMEOUT_SECONDS = 600.0
-WEB_RESEARCH_TOOLS = ("WebSearch", "WebFetch")
 
 
 class CompanyGroupSuggestionStore:
@@ -28,12 +29,17 @@ class CompanyGroupSuggestionStore:
         return repository.ingest_cli_suggestions(suggestions)
 
 
+def _require_supported_cli(cli_kind: str) -> None:
+    """連網任務只允許能強制工具白名單的 Claude CLI。"""
+    if cli_kind != "claude":
+        raise ValueError("company group web research requires claude tool whitelist")
+
+
 def build_company_group_cli_command(
     cli_kind: str, prompt: str, *, model: str | None = None
 ) -> list[str]:
     """建立只允許 WebSearch 與 WebFetch 的 headless CLI 命令。"""
-    if cli_kind != "claude":
-        raise ValueError("company group web research requires claude tool whitelist")
+    _require_supported_cli(cli_kind)
     return build_cli_command(cli_kind, prompt, model=model, tools=WEB_RESEARCH_TOOLS)
 
 
@@ -57,30 +63,11 @@ def build_prompt(candidates: list[dict[str, Any]]) -> str:
 
 def _extract_suggestions(raw: str) -> list[dict[str, Any]]:
     """解析 CLI JSON，拒絕非物件或非陣列結果。"""
-    text = raw.strip()
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        payload = _extract_embedded_json(text, exc)
+    payload = extract_json_payload(raw)
     suggestions = payload.get("suggestions") if isinstance(payload, dict) else None
     if not isinstance(suggestions, list):
         raise ValueError("CLI company group result requires suggestions list")
     return suggestions
-
-
-def _extract_embedded_json(text: str, original_error: json.JSONDecodeError) -> Any:
-    """從 Claude 說明文字或 code fence 中取出第一段 JSON payload。"""
-    decoder = json.JSONDecoder()
-    for index, char in enumerate(text):
-        if char not in "{[":
-            continue
-        try:
-            payload, _end = decoder.raw_decode(text[index:])
-        except json.JSONDecodeError:
-            continue
-        return payload
-    raise ValueError("CLI company group result must be valid JSON") from original_error
-
 
 def _validated_suggestions(
     suggestions: list[dict[str, Any]], candidates: list[dict[str, Any]]
@@ -148,8 +135,7 @@ def run_company_group_suggestions(
     progress: Callable[[str, int], None] | None = None,
 ) -> dict[str, int]:
     """讀候選、連網查證、驗證結果，再寫入 review-only suggestions。"""
-    if cli_kind != "claude":
-        raise ValueError("company group web research requires claude tool whitelist")
+    _require_supported_cli(cli_kind)
     suggestion_store = store if store is not None else CompanyGroupSuggestionStore()
     if progress is not None:
         progress("讀取未分組公司", 10)

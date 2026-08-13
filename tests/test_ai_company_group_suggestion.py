@@ -83,6 +83,24 @@ def test_cli_kind_without_tool_whitelist_is_rejected():
         runner.build_company_group_cli_command("opencode", "prompt")
 
 
+@pytest.mark.parametrize(
+    "render",
+    [
+        lambda raw: raw,
+        lambda raw: f"依契約輸出：\n```json\n{raw}\n```",
+        lambda raw: f"以下為契約指定的 JSON 物件：\n```json\n{raw}\n```",
+        lambda raw: f"```json\n{raw}\n```",
+        lambda raw: f"{raw}\n以上為建議。",
+    ],
+)
+def test_extract_suggestions_accepts_real_cli_wrappers(render):
+    """昂貴的連網查證不得因 CLI 加開場白、圍欄或尾句整趟作廢。"""
+    from backend.app.worker import ai_company_group_suggestion_runner as runner
+
+    suggestions = runner._extract_suggestions(render(_valid_cli_result()))
+    assert suggestions[0]["group_name"] == "創科集團"
+
+
 def test_runner_uses_controlled_candidates_and_writes_review_only_suggestions():
     """CLI 只能針對 backend 給定公司提案，且寫入既有 suggested workflow。"""
     from backend.app.worker import ai_company_group_suggestion_runner as runner

@@ -9,13 +9,14 @@ MCP 取證白名單加上去要改七處，漏一處那條線就查不到資料�
 整合的是 argv 骨架，**不是權限**。四支最小權限任務（company_zh_name、
 irrelevant_filter、patent_note、report_ppt 舊路徑）資料內嵌 prompt，本來就
 不需要任何工具；把它們併進同一份白名單是**擴權**，是安全退步不是整合。
-所以權限做成三個顯式等級，由各 runner 宣告自己要哪一級。
+所以權限做成四個顯式等級，由各 runner 宣告自己要哪一級。
 
 | 等級 | 內容 | 用在哪 |
 |---|---|---|
 | `NO_TOOLS` | 空白名單 | 資料內嵌 prompt 的任務 |
 | `READ_ONLY_TOOLS` | `Read` | 走資料檔（ai_payload_file） |
 | `RESEARCH_TOOLS` | 檔案工具＋MCP 唯讀取證 | 敘述線、規劃線 |
+| `WEB_RESEARCH_TOOLS` | `WebSearch`＋`WebFetch` | 需公開網路證據的人工建議線 |
 
 ## 取證一律走 MCP（2026-08-09 定案）
 
@@ -30,7 +31,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,12 @@ class CliResult:
     stderr: str
 
 
+CliRunner = Callable[[Sequence[str], float], CliResult]
+
+# 共用長任務的預設逾時；特殊成本 runner 可自行覆寫。
+DEFAULT_CLI_TIMEOUT_SECONDS = 1800.0
+
+
 _CLI_SPECS: dict[str, dict[str, Any]] = {
     "claude": {
         "binary": "claude",
@@ -81,6 +88,7 @@ _CLI_SPECS: dict[str, dict[str, Any]] = {
 # ── 權限等級 ──────────────────────────────────────────────────
 NO_TOOLS = ""
 READ_ONLY_TOOLS = "Read"
+WEB_RESEARCH_TOOLS = ("WebSearch", "WebFetch")
 
 # 取證等級：檔案工具＋MCP 唯讀工具（工具名由 TOOL_NAMES 推導，不另抄一份）。
 RESEARCH_TOOLS: tuple[str, ...] = (

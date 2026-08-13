@@ -22,7 +22,8 @@ domain 函式）。未來安裝包階段把 headless CLI 掛 MCP 機制建好時
   未知 candidate_id 的驗證，只存說明不代選案。
 
 設計沿用 ai_topic_label_runner／ai_patent_note_runner：CLI 呼叫抽成可注入的 `cli_runner`
-（測試餵 fake，不跑二進位、不燒 token），指令組裝共用 ai_narrative_runner.build_cli_command。
+（測試餵 fake，不跑二進位、不燒 token），指令組裝共用 cli_gateway.build_cli_command
+（本線宣告 NO_TOOLS：prompt 資料內嵌，不需要任何工具）。
 輸出契約：{"explanations":[{"candidate_id":...,"explanation":...}]}；繁體中文。
 """
 
@@ -33,13 +34,24 @@ from typing import Any, Callable, Sequence
 
 from backend.app.clustering import workspace_service
 
-from .ai_narrative_runner import (
+import functools
+
+from .cli_gateway import (
     DEFAULT_CLI_TIMEOUT_SECONDS,
     CliRunner,
-    build_cli_command,
+    NO_TOOLS,
     parse_cli_result,
+    run_cli,
 )
 from .ai_payload_file import extract_json_payload
+from .cli_gateway import build_cli_command as _gw_build_cli_command
+
+# 🔴 最小權限（2026-08-13 修正擴權）：本任務 prompt 由 build_prompt 把候選指標
+# 全部內嵌，不讀檔、不寫檔、不上網、不查 DB——白名單為空。
+# ⚠ 原本從 `ai_narrative_runner` 借 build_cli_command，那是
+# `partial(tools=RESEARCH_TOOLS)`，於是本線靜默拿到 Read/Glob/Grep/Write ＋
+# 八支 MCP 取證工具＋`--mcp-config`。借共用符號時要連權限一起看，不是只看名字對。
+build_cli_command = functools.partial(_gw_build_cli_command, tools=NO_TOOLS)
 
 
 # 候選說明流程版本；隨 prompt 契約升版而變，寫進結果供追溯。
@@ -178,10 +190,9 @@ def run_candidate_explanation(
         progress("AI 產生候選方案說明中", 40)
     prompt = build_prompt(payload)
     argv = build_cli_command(cli_kind, prompt, model=model)
-    # runner 為 None 時走 ai_narrative_runner 的預設 subprocess 執行器（正式）；測試注入 fake。
+    # runner 為 None 時走共用 gateway 的 subprocess 執行器；測試可注入 fake。
     if runner is None:
-        from .ai_narrative_runner import _subprocess_cli_runner
-        runner = _subprocess_cli_runner
+        runner = run_cli
     parsed = parse_cli_result(runner(argv, timeout_seconds))
 
     known_ids = {int(c["candidate_id"]) for c in candidates}

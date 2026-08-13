@@ -19,11 +19,24 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest import mock
 
 from backend.app.db import job_repository
 from backend.app.worker import ai_irrelevant_filter_runner as runner_mod
 from backend.app.worker import runner as worker_runner
-from backend.app.worker.ai_narrative_runner import CliResult
+from backend.app.worker.cli_gateway import CliResult
+
+
+_PERSIST_PATCHER = mock.patch.object(runner_mod, "_persist_verdicts", return_value=0)
+
+
+def setUpModule():
+    """本檔只驗 runner 契約；落庫行為由專用 persistence 測試負責。"""
+    _PERSIST_PATCHER.start()
+
+
+def tearDownModule():
+    _PERSIST_PATCHER.stop()
 
 
 class RecordingCli:

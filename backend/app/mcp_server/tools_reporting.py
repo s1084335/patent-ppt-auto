@@ -203,25 +203,12 @@ def refresh_derived_data(scope: str) -> dict[str, Any]:
     return json_safe({"scope": name, "steps": steps})
 
 
-def generate_report_ppt(version: str) -> dict[str, Any]:
-    """觸發報告 PPT 產製（薄包 job 佇列）。
-
-    PPT 產製屬耗時、有超時風險，故一律建立 report_generate workflow_run 排隊、回 run_id
-    供輪詢，不在 MCP 工具行程內同步跑（避免傳輸層逾時）。version＝要產製的報表版本代號。
-    """
-    from backend.app.db.job_repository import create_job
-
-    v = str(version or "").strip()
-    if not v:
-        raise ValueError("version 不得為空")
-    job = create_job("report_generate", payload={"version": v, "artifact": "ppt"})
-    return json_safe({
-        "run_id": job.job_id,
-        "run_type": "report_generate",
-        "status": job.status,
-        "version": v,
-        "queued": True,
-    })
+# ⚠ 2026-08-13 移除 generate_report_ppt（PPT 交付線已於 2026-08-10 整條退場）。
+# 它建的是 report_generate job，payload 帶 {"version": v, "artifact": "ppt"}，但
+# handle_report_generate **兩個鍵都不讀**——version 不消費（該 job 是產*新*版本，
+# 不是對指定版本再加工）、artifact 全庫無消費者。於是呼叫它＝排一筆重產全部報表的
+# job，卻回 run_id 與 "queued": true，呼叫端以為在產 PPT。
+# 🔴 比報 422 更糟：**不報錯**，回報成功卻做了別的事。
 
 
 def get_data_status() -> dict[str, Any]:

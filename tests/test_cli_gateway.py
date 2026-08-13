@@ -15,7 +15,9 @@ irrelevant_filter、patent_note、report_ppt 舊路徑）資料內嵌 prompt，�
 from __future__ import annotations
 
 import unittest
+import inspect
 from pathlib import Path
+from typing import Any, ClassVar
 
 _WORKER = Path(__file__).resolve().parents[1] / "backend" / "app" / "worker"
 
@@ -44,12 +46,13 @@ class SingleGatewayTests(unittest.TestCase):
 class ToolTierTests(unittest.TestCase):
     """權限分級顯式宣告，整合骨架不擴權。"""
 
-    def test_three_tiers_exist(self):
+    def test_four_tiers_exist(self):
         from backend.app.worker import cli_gateway as gw
 
         self.assertEqual(gw.NO_TOOLS, "", "最小權限等級＝空白名單")
         self.assertEqual(gw.READ_ONLY_TOOLS, "Read")
         self.assertTrue(gw.RESEARCH_TOOLS, "取證等級要有工具")
+        self.assertEqual(gw.WEB_RESEARCH_TOOLS, ("WebSearch", "WebFetch"))
 
     def test_research_tier_uses_mcp_not_bash(self):
         """取證改走 MCP：不得再靠 `Bash(uv run:*)` 呼叫查詢閘道。
@@ -89,22 +92,184 @@ class ToolTierTests(unittest.TestCase):
 
 
 class MinimalPrivilegePreservedTests(unittest.TestCase):
-    """四支最小權限 runner 併入後仍是空白名單（回歸防護）。"""
+    """每一條已註冊 AI job 都必須有實際 argv 路徑與明示權限。"""
 
-    CASES = ("ai_company_zh_name_runner", "ai_irrelevant_filter_runner",
-             "ai_patent_note_runner", "ai_report_ppt_runner")
+    EXPECTED_TIERS: ClassVar[dict[str, str]] = {
+        "ai:narrative": "RESEARCH_TOOLS",
+        "ai:topic_backfill": "NO_TOOLS",
+        "ai:topic_label": "READ_ONLY_TOOLS",
+        "ai:patent_note": "READ_ONLY_TOOLS",
+        "ai:candidate_explanation": "NO_TOOLS",
+        "ai:company_zh_name": "READ_ONLY_TOOLS",
+        "ai:company_group_suggestion": "WEB_RESEARCH_TOOLS",
+        "ai:irrelevant_filter": "READ_ONLY_TOOLS",
+    }
 
-    def test_each_runner_declares_no_tools(self):
+    DATA_FILE_RUNNERS: ClassVar[dict[str, tuple[str, str]]] = {
+        "ai:topic_label": ("ai_topic_label_runner", "run_topic_label"),
+        "ai:patent_note": ("ai_patent_note_runner", "run_patent_note"),
+        "ai:company_zh_name": ("ai_company_zh_name_runner", "run_company_zh_name"),
+        "ai:irrelevant_filter": ("ai_irrelevant_filter_runner", "run_irrelevant_filter"),
+    }
+
+    def _assert_policy_is_complete(self, job_types):
+        self.assertEqual(
+            set(job_types),
+            set(self.EXPECTED_TIERS),
+            "AI_JOB_TYPES 有新增或移除時，必須同步複審實際 argv 的最小權限等級",
+        )
+
+    def _actual_argv(self, job_type):
         import importlib
 
+        from backend.app.worker import ai_payload_file as pf
+
+        if job_type in self.DATA_FILE_RUNNERS:
+            module_name, function_name = self.DATA_FILE_RUNNERS[job_type]
+            module = importlib.import_module(f"backend.app.worker.{module_name}")
+            source = inspect.getsource(getattr(module, function_name))
+            self.assertIn(
+                "pf.build_cli_command_with_payload",
+                source,
+                f"{job_type} 產品路徑未走 READ_ONLY payload helper",
+            )
+            return pf.build_cli_command_with_payload(
+                "claude", instruction="test", payload_path=Path("payload.json")
+            )
+        if job_type == "ai:narrative":
+            from backend.app.worker import ai_narrative_runner as module
+            return module.build_cli_command("claude", "test")
+        if job_type == "ai:topic_backfill":
+            from unittest import mock
+
+            from backend.app.worker import ai_topic_backfill_runner as module
+            from backend.app.worker import cli_gateway as gw
+
+            seen = []
+
+            def fake_run_cli(argv, _timeout):
+                seen.append(list(argv))
+                return gw.CliResult(
+                    exit_code=0, stdout='{"result": "{}"}', stderr=""
+                )
+
+            with mock.patch.object(module.cli_gateway, "run_cli", fake_run_cli):
+                module.build_cli_runner("claude", None)("test", timeout_seconds=1)
+            return seen[0]
+        if job_type == "ai:candidate_explanation":
+            from backend.app.worker import ai_candidate_explanation_runner as module
+            return module.build_cli_command("claude", "test")
+        if job_type == "ai:company_group_suggestion":
+            from backend.app.worker import ai_company_group_suggestion_runner as module
+            return module.build_company_group_cli_command("claude", "test")
+        self.fail(f"沒有 {job_type} 的實際 argv 取樣器")
+
+    def test_every_registered_job_uses_reviewed_actual_argv_tier(self):
+        from backend.app.db.job_repository import AI_JOB_TYPES
         from backend.app.worker import cli_gateway as gw
 
-        for name in self.CASES:
-            module = importlib.import_module(f"backend.app.worker.{name}")
-            argv = module.build_cli_command("claude", "hi")
+        self._assert_policy_is_complete(AI_JOB_TYPES)
+        for job_type in sorted(AI_JOB_TYPES):
+            argv = self._actual_argv(job_type)
+            expected = getattr(gw, self.EXPECTED_TIERS[job_type])
+            names = list(expected) if not isinstance(expected, str) else [expected]
+            actual = argv[argv.index("--allowedTools") + 1 :]
+            with self.subTest(job_type=job_type):
+                self.assertEqual(actual, names)
+
+    def test_unreviewed_new_job_fails_the_guard(self):
+        with self.assertRaises(AssertionError):
+            self._assert_policy_is_complete({*self.EXPECTED_TIERS, "ai:unreviewed"})
+
+
+class NarrativeReexportRetirementTests(unittest.TestCase):
+    """一般 runner 不得再透過 narrative 取得 gateway 共用符號。"""
+
+    RUNNERS = (
+        "ai_company_zh_name_runner.py",
+        "ai_irrelevant_filter_runner.py",
+        "ai_patent_note_runner.py",
+        "ai_topic_label_runner.py",
+        "ai_candidate_explanation_runner.py",
+    )
+
+    def test_runners_import_gateway_directly(self):
+        for name in self.RUNNERS:
+            source = (_WORKER / name).read_text(encoding="utf-8")
             with self.subTest(runner=name):
-                self.assertEqual(argv[argv.index("--allowedTools") + 1], gw.NO_TOOLS,
-                                 f"{name} 的白名單被擴權了")
+                self.assertNotIn("from .ai_narrative_runner import", source)
+
+
+class DataEmbeddedLinesUseNoToolsTests(unittest.TestCase):
+    """兩條「prompt 資料內嵌」的 AI 線不得沿用敘述線的取證權限（2026-08-13）。
+
+    ⚠ 這兩條原本從 `ai_narrative_runner` 借 `build_cli_command`——那是
+    `partial(tools=RESEARCH_TOOLS)`，於是它們拿到 Read/Glob/Grep/**Write** ＋
+    八支 MCP 取證工具＋`--mcp-config`，而它們的 prompt 完全是資料內嵌的
+    （candidate_explanation 串候選指標、topic_backfill 串候選文本＋主題清單），
+    一個工具都不需要。不報錯，只是靜默多權限。
+
+    本類刻意**只守這兩條**，不擴成「全部 AI 線」的對照表：第四種權限等級
+    （WebSearch／WebFetch）尚在另一條線定案中，現在定介面會定成兩份。
+    """
+
+    def _assert_no_tools(self, argv, where):
+        """斷言 argv 是空白名單且沒掛 MCP config。"""
+        from backend.app.worker import cli_gateway as gw
+
+        self.assertIn("--allowedTools", argv, f"{where} 沒有工具白名單旗標")
+        self.assertEqual(argv[argv.index("--allowedTools") + 1], gw.NO_TOOLS,
+                         f"{where} 的白名單被擴權了：{argv}")
+        self.assertNotIn("--mcp-config", argv,
+                         f"{where} 不需要取證工具，不該掛 MCP config")
+
+    def test_candidate_explanation_uses_no_tools(self):
+        """ai:candidate_explanation 實際跑的就是模組級 build_cli_command。"""
+        from backend.app.worker import ai_candidate_explanation_runner as mod
+
+        self._assert_no_tools(mod.build_cli_command("claude", "hi"),
+                              "ai:candidate_explanation")
+
+    def test_topic_backfill_uses_no_tools(self):
+        """ai:topic_backfill 走 ai_bridge 組的那條 argv——驗**實際路徑**。
+
+        以 fake 取代 run_topic_backfill 以攔下 bridge 傳入的 cli_runner，再呼叫它
+        一次即可拿到真正送給 CLI 的 argv；DB fetcher 是 lambda，從頭到尾不被呼叫。
+        ⚠ subprocess 執行器同時攔 `cli_gateway` 與 `ai_narrative_runner` 兩處綁定，
+        argv 組裝日後搬家（closure → runner）也照樣攔得到。
+        """
+        from unittest import mock
+
+        from backend.app.worker import ai_bridge
+        from backend.app.worker import ai_topic_backfill_runner as backfill
+        from backend.app.worker import cli_gateway as gw
+
+        seen: list[list[str]] = []
+
+        def fake_run_cli(argv, timeout):
+            seen.append(list(argv))
+            return gw.CliResult(exit_code=0, stdout='{"result": "{}"}', stderr="")
+
+        captured: dict[str, Any] = {}
+
+        def fake_run_topic_backfill(**kwargs):
+            captured["cli"] = kwargs["cli_runner"]
+            return {}
+
+        class _Ctx:
+            """只需要 heartbeat 的最小 JobContext 替身。"""
+
+            def heartbeat(self, *args, **kwargs):
+                return None
+
+        with mock.patch.object(backfill, "run_topic_backfill", fake_run_topic_backfill), \
+                mock.patch.object(gw, "run_cli", fake_run_cli):
+            ai_bridge._run_ai_topic_backfill_job({"workspace_id": 1}, _Ctx())
+            self.assertIn("cli", captured, "bridge 應傳入 cli_runner")
+            captured["cli"]("PROMPT", timeout_seconds=1.0)
+
+        self.assertEqual(len(seen), 1, f"應組出恰好一條 CLI argv：{seen}")
+        self._assert_no_tools(seen[0], "ai:topic_backfill")
 
 
 class DatabaseEvidenceToolTests(unittest.TestCase):

@@ -37,16 +37,15 @@ from backend.app.transforms.text import clean_text
 
 import functools
 
-from .cli_gateway import NO_TOOLS
-from .cli_gateway import build_cli_command as _gw_build_cli_command
-from .ai_narrative_runner import (
+from .cli_gateway import (
     DEFAULT_CLI_TIMEOUT_SECONDS,
     CliResult,
     CliRunner,
-    _CLI_SPECS,
-    _subprocess_cli_runner,
+    NO_TOOLS,
     parse_cli_result,
+    run_cli,
 )
+from .cli_gateway import build_cli_command as _gw_build_cli_command
 from . import ai_payload_file as pf
 from .ai_payload_file import extract_json_payload
 
@@ -347,7 +346,7 @@ def run_company_zh_name(
     AI 只產草稿（ai_suggested 態），不進正式顯示欄；使用者確認才走 apply_confirmed_display_names。
     回傳：候選數、草稿寫入數、cli_kind／prompt_version 供追溯。
     """
-    runner = cli_runner if cli_runner is not None else _subprocess_cli_runner
+    runner = cli_runner if cli_runner is not None else run_cli
     zh_store = store if store is not None else CompanyZhNameStore()
 
     if progress is not None:
