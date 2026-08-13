@@ -86,8 +86,24 @@
 本節曾於同日上午整組撤銷，下午恢復；`~~刪除線~~` 的撤銷註記已清除，避免
 下次讀到自相矛盾的條文。
 
-- [ ] 2.1 Red：轉換器契約——五頁型元素詞彙（矩形卡／逐行文字／圖片／線）
-      SVG→DrawingML 映射、文字逐行定位＋關 wrap、超出詞彙 fail loud
+- [x] 2.1 Red→Green：轉換器契約——元素詞彙、SVG→DrawingML 映射、
+      文字逐行定位＋關 wrap、超出詞彙 fail loud
+      **2026-08-13 完成**（`skills/html-report-to-deck/scripts/svg_to_pptx.py`，14 支綠）
+      - 詞彙自 `deck_layout.py` 反解＝**三種**原生元素：`<rect>`→`add_shape`
+        （圓角看 `rx`）、`<text>`→`add_textbox`、`<image>`→`add_picture`。
+        ⚠ 「線」**不另立詞彙**——它是矩形的退化形（`RULE_W = 0.014in` 細 rect），
+        另立就會有兩個表示法。
+      - 座標系 **96 dpi**（1280×720 ＝ 13.333×7.5in）。依據是
+        `deck_layout.py:73` 的既有註記「0.008in 在 96dpi 下只有 0.77px」。
+      - 🔴 端到端煙霧測試（SVG→pptx→COM 轉圖，一頁）：標題／副標／圓角卡／
+        **1.344px 細線**／三行均勻間距／圖片位置尺寸／右邊界豎線／頁尾**全部吻合**。
+      - 🔴 **同一份 SVG 用 Chromium 截圖對照，抓到兩個真問題**：
+        ①圖片破圖——`set_content` 沒有 base URL，`file://` 被跨來源擋掉
+        （COM 轉圖卻正常）。⚠ 若不處理，目視會看到假警報，更糟的是日後
+        真的出錯時分不出是「真錯」還是「又是載入問題」。
+        → 目視截圖**必須 SVG 存檔後 `goto`**，圖用相對路徑（見 2.2）。
+        ②轉換器原本以 cwd 解析相對圖檔路徑——已修為**相對於 SVG 檔所在目錄**，
+        並補測試；不修的話 runner 從別的目錄呼叫會靜默找不到圖。
 - [ ] 2.2 Green：`deck_layout` 輸出層改組 SVG＋窄轉換器；逐頁截圖產出（目視 PNG）。
       **Chromium BBox 取代估算，寬高皆可用**（design 4c-1a，Windows-only）。
       ⚠ `fit_render_charts` 的 Chromium `getBBox` **本來就在用**（找不撞版的最大
@@ -96,6 +112,10 @@
       行首中文標點不再依賴 PowerPoint 的禁則處理（現行 `deck_layout.py:183`
       補的 `eaLnBrk`／`hangingPunct` 是「請 PowerPoint 照做」，B 案是自己斷）。
       補測試鎖住：任一行不得以中文標點起首。
+      🔴 **逐頁截圖：SVG 存檔後用 `page.goto(file://…)`，不得用 `set_content`**
+      （2026-08-13 實測，見 2.1 發現①）：`set_content` 沒有 base URL，
+      SVG 內的圖片會**破圖**而 pptx 卻是好的——目視因此看到假警報。
+      圖檔在 SVG 同目錄、用相對路徑引用。
 - [ ] 2.2f 🆕 **目視截圖解析度由 `deck_layout` 導出**（design 4-0c）：
       ⚠ **不得在 runner、skill、規格各寫一個數字**——那是上一世代
       「同一份知識多個落點」的錯法。`deck_layout` 已是版面幾何與字級的唯一定義處，
