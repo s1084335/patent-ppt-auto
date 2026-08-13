@@ -39,12 +39,19 @@ done
 
 cd "$PROJECT_ROOT"
 
+normalize_db_url() {
+    printf '%s' "$1" \
+        | tr -d '\r' \
+        | sed -E "s/^([\"'])(.*)\1$/\2/"
+}
+
 # ── 1. 環境參數：DB_URL 沒設就從 .env 撈，不要求使用者每次手貼 ──
 if [ -z "${DB_URL:-}" ]; then
     if [ -f .env ]; then
         DB_URL="$(grep -E '^DATABASE_URL=' .env | head -1 | cut -d= -f2-)"
     fi
 fi
+DB_URL="$(normalize_db_url "$DB_URL")"
 if [ -z "${DB_URL:-}" ]; then
     echo "✗ DB_URL 未設定，且 .env 內找不到 DATABASE_URL" >&2
     echo "  請先 export DB_URL='postgresql://...'" >&2
