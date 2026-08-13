@@ -51,13 +51,37 @@ TAG_COLOR = {"風險": ROSE, "機會": AMBER, "行動": GREEN, "依據": CYAN}
 FONT = FONT_FAMILY
 T_SIZE, B_SIZE = Pt(24), Pt(16)          # 規格鎖死：標題 24、內文 16
 LS = 1.22          # 設給 PowerPoint 的 line_spacing
-# ⚠ **量高度不能用 LS**。LS 是「單行行距的倍數」，而中文字型的單行行距本身
-#   就大於字級：實測 Microsoft JhengHei 16pt ＋ LS 1.22 的實際渲染行高是
-#   22.4pt＝字級的 1.40 倍，不是 19.5pt（2026-08-11 用 PowerPoint COM 的
-#   TextRange.BoundHeight 量 6 段，估 1.960in／實際 2.200in，每段少算 0.040in）。
-# ⚠ 少算的部分平常被各區塊的 padding 吸收，**段數一多就會把最後一行切掉**，
-#   而且裕度表不會叫——因為它用的正是同一個低估的估算器。
-LS_RENDER = 1.40
+# ⚠ **量高度不能用 LS**。LS 是「單行行距的倍數」，而中文字型的單行行距本身就大於
+#   字級。2026-08-11 用 PowerPoint COM 的 TextRange.BoundHeight 量出「約 1.40 倍」，
+#   當時寫成單一常數 LS_RENDER。
+#
+# 🔴 2026-08-13 換 Noto Sans TC 重量時發現**模型形狀是錯的**，不只是數值。
+#   實測（COM，同一套方法）：
+#       字級 行數  實測高   等效倍率
+#        16    1   21.39   1.337
+#        16    2   44.82   1.401
+#        16    3   68.24   1.422
+#        24    1   32.08   1.337
+#        24    3  102.35   1.422
+#        24    4  137.49   1.432
+#   等效倍率**隨行數上升** → 固定倍率不可能同時吻合各種行數。拆開就一致了：
+#   **首行 1.337、後續每行 1.464**（16pt 與 24pt 誤差 <0.1%）。
+#
+# ⚠ 舊值 1.40 在 2 行剛好吻合、**3 行以上一路低估**（3 行差 0.065em、4 行 0.129em）。
+#   舊註記寫「段數一多就會把最後一行切掉，而且裕度表不會叫」——**根因就在這裡**：
+#   不是數值不夠大，是用一個常數去逼近一條斜線。
+LS_FIRST = 1.337   # 首行：含字型的 ascent＋descent，不含行距
+LS_NEXT = 1.464    # 後續每行：多了段內行距
+
+
+def lines_height_pt(lines: int, size_pt: float) -> float:
+    """n 行文字的實際渲染高度（pt）。估高的**唯一入口**。
+
+    ⚠ 不要在別處寫 `行數 × 字級 × 倍率`——那正是被本次修正推翻的模型。
+    """
+    if lines <= 0:
+        return 0.0
+    return size_pt * (LS_FIRST + (lines - 1) * LS_NEXT)
 
 SW, SH = 13.333, 7.5
 ML = 0.5
@@ -98,8 +122,13 @@ def est_lines(t: str, w_in: float, pt: int = 16) -> int:
 
 
 def text_h(paras, w_in: float) -> float:
-    """paras = [(全文, 字級pt, space_after pt)]，回傳所需高度（英吋）。"""
-    return sum(est_lines(t, w_in, s) * s * LS_RENDER + gap for t, s, gap in paras) / 72
+    """paras = [(全文, 字級pt, space_after pt)]，回傳所需高度（英吋）。
+
+    ⚠ 走 `lines_height_pt`，不自己乘倍率——見該函式的說明（模型是兩段式，
+    不是固定倍率）。
+    """
+    return sum(lines_height_pt(est_lines(t, w_in, s), s) + gap
+               for t, s, gap in paras) / 72
 
 
 def note(region: str, avail: float, need: float):
@@ -226,7 +255,8 @@ def visual_shot_size() -> tuple[int, int]:
 def _text_page_lines() -> int:
     """純文字頁的內文區放得下幾個顯示行——由版面幾何算出，不寫死。"""
     avail_pt = (BAND_BOT - CHART_TOP - 0.44) * 72
-    return int(avail_pt // (16 * LS_RENDER + 8))     # 每行含 8pt 段距
+    # 每則是獨立段落（各自首行），故用單行高＋8pt 段距。
+    return int(avail_pt // (lines_height_pt(1, 16) + 8))
 
 
 def budget() -> dict[str, float]:
@@ -279,7 +309,7 @@ def _svg_canvas(w_in: float = SW, h_in: float = SH):
     """
     from svg_canvas import SvgCanvas
 
-    return SvgCanvas(w_in, h_in, font=FONT, ls_render=LS_RENDER,
+    return SvgCanvas(w_in, h_in, font=FONT, ls_first=LS_FIRST, ls_next=LS_NEXT,
                      unit_width=units, wrap_lines=wrap_lines)
 
 

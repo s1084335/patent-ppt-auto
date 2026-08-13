@@ -23,7 +23,7 @@ ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 
 from deck_layout import (BAND_BOT, CHART_TOP, CW, LABEL_GAP,  # noqa: E402
-                         LABEL_W, LS_RENDER, MIN_CHART_PT,
+                         LABEL_W, LS_FIRST, LS_NEXT, MIN_CHART_PT,
                          MIN_CHART_PT_MULTI, _per_line, _text_page_lines)
 
 # 文件裡的數字 → 程式算出來的值。regex 的第 1 個 group 就是文件寫的數字。
@@ -37,7 +37,8 @@ CLAIMS: list[tuple[str, str, float]] = [
      round(_per_line(CW - 0.52 - LABEL_W - LABEL_GAP))),
     ("標籤欄容量", r"標籤要短（≤ (\d+\.\d+) 單位）", round(_per_line(LABEL_W), 1)),
     ("左欄寬", r"左欄吃掉 (\d+\.\d+)in", LABEL_W),
-    ("渲染行高倍率", r"字級的 (\d+\.\d+) 倍", LS_RENDER),
+    ("首行行高倍率", r"首行是字級的 (\d+\.\d+) 倍", LS_FIRST),
+    ("後續行高倍率", r"後續每行 (\d+\.\d+) 倍", LS_NEXT),
 ]
 
 

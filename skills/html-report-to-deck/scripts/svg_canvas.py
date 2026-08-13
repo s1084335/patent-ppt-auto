@@ -26,18 +26,22 @@ from pathlib import Path
 
 DPI = 96.0
 
-# 行盒頂 → 基線的比例（乘上「字級 × ls_render」）。
+# 行盒頂 → 基線的比例（乘上「字級 × 該行的行高倍率」）。
 #
 # ⚠ **量出來的，不是猜的**。SVG 的 y 是基線、pptx 的 top 是框頂，兩者差一個
 #   ascent＋行內留白。量法：A（現行 pptx 路徑）與 B（本檔）各產一份 → COM 轉同
-#   一批圖 → 逐頁比像素差 → 掃描取總差最小者。2026-08-13 實測（8 頁合成素材）：
+#   一批圖 → 逐頁比像素差 → 掃描取總差最小者。
+#
+#   第一次（2026-08-13，Microsoft JhengHei ＋ 固定倍率 1.40）：
 #     0.50→291880  0.55→275694  0.60→256289  **0.65→189651**  0.68→228784
 #     0.72→241013  0.75→260433  0.80→258047  0.85→283007  0.90→299534
-#   兩側都上升，0.65 是真極小值（不是掃描邊界）。
+#   換 Noto Sans TC ＋兩段式行高後**重掃**（tasks 2.2b-2）：
+#     0.55→388353  0.60→369329  **0.65→297503**  0.70→305788  0.75→349967
+#   ⚠ 兩次都是 0.65 且兩側都上升——真極小值，不是掃描邊界。
 #
-# 它與字型學吻合，不是任意擬合：0.65 × LS_RENDER(1.40) = 0.91，即基線距框頂
+# 它與字型學吻合，不是任意擬合：0.65 × 行高倍率(約 1.40) = 0.91，即基線距框頂
 # 約 0.91 em，落在中文字型 ascent 的常見範圍（0.88–0.92 em）。
-# 🔴 **換字型要重量**——ascent 比例隨字型而變（tasks 2.2b 收斂為 Noto Sans TC 時要重跑）。
+# 🔴 **換字型要重量**——ascent 比例隨字型而變。
 BASELINE_RATIO = 0.65
 
 
@@ -57,11 +61,11 @@ class SvgCanvas:
     """
 
     def __init__(self, w_in: float, h_in: float, *, font: str,
-                 ls_render: float, unit_width, wrap_lines,
+                 ls_first: float, ls_next: float, unit_width, wrap_lines,
                  baseline_ratio: float | None = None) -> None:
         self.w_in, self.h_in = w_in, h_in
         self.font = font
-        self.ls_render = ls_render
+        self.ls_first, self.ls_next = ls_first, ls_next
         self.baseline_ratio = (BASELINE_RATIO if baseline_ratio is None
                                else baseline_ratio)
         self._units = unit_width          # deck_layout.units
@@ -106,17 +110,27 @@ class SvgCanvas:
 
         for item in rendered:
             cursor += item["space_before"]
-            for line in item["lines"]:
+            for index, line in enumerate(item["lines"]):
                 size_pt = line["size_pt"]
-                # SVG 的 y 是基線；行盒高 = size × ls_render，基線落在盒內
-                # BASELINE_RATIO 處（實測值，見該常數的註記）。
-                baseline = cursor + (size_pt * self.ls_render
-                                     * self.baseline_ratio) / 72
+                # 🔴 行高是**兩段式**：首行 ls_first、後續 ls_next
+                # （見 deck_layout.lines_height_pt 的實測依據）。
+                # SVG 的 y 是基線，落在行盒內 BASELINE_RATIO 處。
+                ratio = self.ls_first if index == 0 else self.ls_next
+                baseline = cursor + (size_pt * ratio * self.baseline_ratio) / 72
                 self._emit_line(line, x, w, baseline)
-                cursor += size_pt * self.ls_render / 72
+                cursor += size_pt * ratio / 72
             cursor += item["space_after"]
 
     # ── 內部 ──────────────────────────────────────────────────
+    def _block_height(self, lines: int, size_pt: float) -> float:
+        """n 行的高度（pt）。⚠ 與 `deck_layout.lines_height_pt` 是同一個模型
+        ——那裡是唯一定義處，這裡因注入的是兩個常數而重算一次相同公式；
+        兩者若不一致，估高與實際繪製就會分家。
+        """
+        if lines <= 0:
+            return 0.0
+        return size_pt * (self.ls_first + (lines - 1) * self.ls_next)
+
     def _layout_blocks(self, blocks, w_in, space_after, default_size_pt, default_color):
         """段落 → 行；每行帶其樣式片段。回傳含高度資訊的結構。"""
         out = []
@@ -144,7 +158,7 @@ class SvgCanvas:
                 })
             out.append({
                 "lines": lines,
-                "height": len(lines) * size_pt * self.ls_render / 72
+                "height": self._block_height(len(lines), size_pt) / 72
                           + _pt(opt.get("space_after"), space_after) / 72
                           + _pt(opt.get("space_before"), 0) / 72,
                 "space_after": _pt(opt.get("space_after"), space_after) / 72,
