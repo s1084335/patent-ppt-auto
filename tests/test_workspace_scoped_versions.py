@@ -136,13 +136,10 @@ class FrontendWiringTests(unittest.TestCase):
         self.assertIn("workspace_id", body.group(0),
                       "報表種類頁版本清單未帶 workspace——會顯示別的 workspace 的版本")
 
-    def test_export_versions_fetch_scoped(self):
-        import re
-
-        body = re.search(r"async function loadExportVersionOptions\(\).*?\n\}", self.html, re.S)
-        self.assertIsNotNone(body)
-        self.assertIn("workspace_id", body.group(0),
-                      "匯出報告版本下拉未帶 workspace——PPT 會顯示別的 workspace 的上一版")
+    # ⚠ 2026-08-13 退場 test_export_versions_fetch_scoped：匯出頁的版本下拉
+    #   （`loadExportVersionOptions`）隨 tasks 0 清空移除，與報表種類頁的下拉重複。
+    #   「版本清單要帶 workspace」這條契約由上面 test_report_versions_fetch_scoped
+    #   守著同一件事——現在只剩一個落點，反而不會漂移。
 
 
 class HandlerWiringTests(unittest.TestCase):

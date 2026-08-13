@@ -29,16 +29,33 @@ INDEX_HTML = PROJECT_ROOT / "backend" / "app" / "static" / "index.html"
 VENDOR_DIR = PROJECT_ROOT / "backend" / "app" / "static" / "vendor" / "pptx-renderer"
 
 
+def _code_only(html: str) -> str:
+    """剔除註解，只留可執行的程式碼與標記。
+
+    ⚠ 本檔驗的是「**沒有活的引用**」，不是「這個名字不准出現在檔案裡」。
+    本庫的慣例是移除時留註解交代拿掉了什麼、為什麼——那些註解必然會提到被
+    移除的函式名。若直接對全文做子字串比對，這些說明反而會讓測試永遠紅，
+    逼人把說明刪掉，等於用測試消滅可維護性。
+
+    做法只處理兩種形式：`/* … */` 區塊、整行 `//` 開頭。行尾註解不處理
+    （保守：多留＝比較容易紅，不會造成假綠）。
+    """
+    without_blocks = re.sub(r"/\*.*?\*/", "", html, flags=re.S)
+    return "\n".join(line for line in without_blocks.splitlines()
+                     if not line.lstrip().startswith("//"))
+
+
 class PptRemnantsRemovedTests(unittest.TestCase):
     """PPT 線殘骸必須清乾淨——留著的每一項都是「按了會壞」或「永遠不會動」。"""
 
     @classmethod
     def setUpClass(cls):
         cls.html = INDEX_HTML.read_text(encoding="utf-8")
+        cls.code = _code_only(cls.html)
 
     def _absent(self, name: str) -> None:
         """⚠ 不用 assertNotIn：失敗時它會把整份 index.html 印進 traceback。"""
-        self.assertFalse(name in self.html, f"殘骸仍在：{name}")
+        self.assertFalse(name in self.code, f"殘骸仍在：{name}")
 
     def test_dead_ppt_entrypoints_are_gone(self):
         """入口與其下游：打的 job type 已不存在，按下去必定 422。"""
@@ -66,7 +83,7 @@ class PptRemnantsRemovedTests(unittest.TestCase):
         `readOnlyReportView()` 回傳的 view 仍帶 `editMode: false`——那是
         `renderReportContentHtml` 的**參數契約**（報表種類頁共用），不是殘骸。
         """
-        m = re.search(r"const exportPreview = \{.*?\n\};", self.html, re.S)
+        m = re.search(r"const exportPreview = \{.*?\n\};", self.code, re.S)
         self.assertIsNotNone(m, "找不到 exportPreview 狀態物件")
         state = m.group(0)
         for field in ("pptFiles", "selectedPptFile", "pptViewer", "editMode", "edits"):
