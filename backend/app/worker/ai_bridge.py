@@ -524,19 +524,11 @@ def _run_ai_topic_backfill_job(payload: dict[str, Any], context: JobContext) -> 
 
     cli = payload.get("_cli_runner")
     if cli is None:
-        from .ai_narrative_runner import (
-            _subprocess_cli_runner,
-            build_cli_command,
-            parse_cli_result,
-        )
-
-        def cli(prompt: str, *, timeout_seconds: float) -> str:
-            argv = build_cli_command(cli_kind, prompt, model=model)
-            # ⚠ --output-format json 的 stdout 是 envelope（type/result/…），
-            # AI 內文在 "result" 欄——直接回 stdout 會讓 runner 解析到外殼
-            # 而非建議 JSON（2026-08-07 真資料首跑即踩）。
-            parsed = parse_cli_result(_subprocess_cli_runner(argv, timeout_seconds))
-            return str(parsed.get("result") or "")
+        # ⚠ 2026-08-13：argv 組裝搬回 runner（與其餘六支 AI 線同款）。原本這段
+        # closure 從 `ai_narrative_runner` 借 build_cli_command，那是取證等級
+        # （`partial(tools=RESEARCH_TOOLS)`），本線因此靜默拿到 12 支工具＋
+        # `--mcp-config`；權限應由使用它的 runner 自己宣告，不從別條線借。
+        cli = ai_topic_backfill_runner.build_cli_runner(cli_kind, model)
 
     result = ai_topic_backfill_runner.run_topic_backfill(
         workspace_id=int(workspace_id),

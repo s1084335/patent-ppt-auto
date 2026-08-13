@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from typing import Any
 
 _WORKER = Path(__file__).resolve().parents[1] / "backend" / "app" / "worker"
 
@@ -89,10 +90,13 @@ class ToolTierTests(unittest.TestCase):
 
 
 class MinimalPrivilegePreservedTests(unittest.TestCase):
-    """四支最小權限 runner 併入後仍是空白名單（回歸防護）。"""
+    """最小權限 runner 併入後仍是空白名單（回歸防護）。"""
 
+    # ⚠ 2026-08-13 移除 ai_report_ppt_runner（隨 PPT 交付線刪除，整支測試因
+    # ModuleNotFoundError 恆紅）。名單刻意維持「原本就在守的那幾支」，不趁機擴成
+    # 全部 AI 線：第四種權限等級尚在另一條線定案中，擴寫會定出第二份介面。
     CASES = ("ai_company_zh_name_runner", "ai_irrelevant_filter_runner",
-             "ai_patent_note_runner", "ai_report_ppt_runner")
+             "ai_patent_note_runner")
 
     def test_each_runner_declares_no_tools(self):
         import importlib
@@ -105,6 +109,79 @@ class MinimalPrivilegePreservedTests(unittest.TestCase):
             with self.subTest(runner=name):
                 self.assertEqual(argv[argv.index("--allowedTools") + 1], gw.NO_TOOLS,
                                  f"{name} 的白名單被擴權了")
+
+
+class DataEmbeddedLinesUseNoToolsTests(unittest.TestCase):
+    """兩條「prompt 資料內嵌」的 AI 線不得沿用敘述線的取證權限（2026-08-13）。
+
+    ⚠ 這兩條原本從 `ai_narrative_runner` 借 `build_cli_command`——那是
+    `partial(tools=RESEARCH_TOOLS)`，於是它們拿到 Read/Glob/Grep/**Write** ＋
+    八支 MCP 取證工具＋`--mcp-config`，而它們的 prompt 完全是資料內嵌的
+    （candidate_explanation 串候選指標、topic_backfill 串候選文本＋主題清單），
+    一個工具都不需要。不報錯，只是靜默多權限。
+
+    本類刻意**只守這兩條**，不擴成「全部 AI 線」的對照表：第四種權限等級
+    （WebSearch／WebFetch）尚在另一條線定案中，現在定介面會定成兩份。
+    """
+
+    def _assert_no_tools(self, argv, where):
+        """斷言 argv 是空白名單且沒掛 MCP config。"""
+        from backend.app.worker import cli_gateway as gw
+
+        self.assertIn("--allowedTools", argv, f"{where} 沒有工具白名單旗標")
+        self.assertEqual(argv[argv.index("--allowedTools") + 1], gw.NO_TOOLS,
+                         f"{where} 的白名單被擴權了：{argv}")
+        self.assertNotIn("--mcp-config", argv,
+                         f"{where} 不需要取證工具，不該掛 MCP config")
+
+    def test_candidate_explanation_uses_no_tools(self):
+        """ai:candidate_explanation 實際跑的就是模組級 build_cli_command。"""
+        from backend.app.worker import ai_candidate_explanation_runner as mod
+
+        self._assert_no_tools(mod.build_cli_command("claude", "hi"),
+                              "ai:candidate_explanation")
+
+    def test_topic_backfill_uses_no_tools(self):
+        """ai:topic_backfill 走 ai_bridge 組的那條 argv——驗**實際路徑**。
+
+        以 fake 取代 run_topic_backfill 以攔下 bridge 傳入的 cli_runner，再呼叫它
+        一次即可拿到真正送給 CLI 的 argv；DB fetcher 是 lambda，從頭到尾不被呼叫。
+        ⚠ subprocess 執行器同時攔 `cli_gateway` 與 `ai_narrative_runner` 兩處綁定，
+        argv 組裝日後搬家（closure → runner）也照樣攔得到。
+        """
+        from unittest import mock
+
+        from backend.app.worker import ai_bridge, ai_narrative_runner
+        from backend.app.worker import ai_topic_backfill_runner as backfill
+        from backend.app.worker import cli_gateway as gw
+
+        seen: list[list[str]] = []
+
+        def fake_run_cli(argv, timeout):
+            seen.append(list(argv))
+            return gw.CliResult(exit_code=0, stdout='{"result": "{}"}', stderr="")
+
+        captured: dict[str, Any] = {}
+
+        def fake_run_topic_backfill(**kwargs):
+            captured["cli"] = kwargs["cli_runner"]
+            return {}
+
+        class _Ctx:
+            """只需要 heartbeat 的最小 JobContext 替身。"""
+
+            def heartbeat(self, *args, **kwargs):
+                return None
+
+        with mock.patch.object(backfill, "run_topic_backfill", fake_run_topic_backfill), \
+                mock.patch.object(ai_narrative_runner, "_subprocess_cli_runner", fake_run_cli), \
+                mock.patch.object(gw, "run_cli", fake_run_cli):
+            ai_bridge._run_ai_topic_backfill_job({"workspace_id": 1}, _Ctx())
+            self.assertIn("cli", captured, "bridge 應傳入 cli_runner")
+            captured["cli"]("PROMPT", timeout_seconds=1.0)
+
+        self.assertEqual(len(seen), 1, f"應組出恰好一條 CLI argv：{seen}")
+        self._assert_no_tools(seen[0], "ai:topic_backfill")
 
 
 class DatabaseEvidenceToolTests(unittest.TestCase):
