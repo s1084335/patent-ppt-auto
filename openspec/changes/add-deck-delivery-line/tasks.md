@@ -154,8 +154,31 @@
       ⚠ 原條文還要求驗 COM 的非互動 session——**第 3 次裁決後不需要**
       （目視改走 Chromium，產線無 PowerPoint）。
 - [ ] 2.2b 🔴 **字型收斂＝Noto Sans TC**（design 4c，前置於映射校驗）：
-      四處宣告（`deck_layout.FONT`、`chart_runner.SVG_FONT_STYLE` 與三處
-      SVG 根元素、HTML 報表頁）收斂為**單一常數唯一落點**。
+      收斂為**單一常數唯一落點**。
+      ⚠ **2026-08-13 實掃：不是四處，是九處**（原條文低估）：
+
+      | # | 位置 | 現值 |
+      |---|---|---|
+      | 1 | `deck_layout.py:42` `FONT` | `Microsoft JhengHei` |
+      | 2 | `rebuild_chip_chart.py:112` SVG 根元素 | `Segoe UI, sans-serif` |
+      | 3 | `chart_runner.py:295` `SVG_FONT_STYLE` | `'Microsoft JhengHei','Segoe UI'` |
+      | 4–7 | `chart_runner.py` SVG 根元素 ×4（`1561`／`1763`／`1873`／`4307`） | `Segoe UI, sans-serif` |
+      | 8 | `chart_runner.py:3194` HTML 報表頁 | ✅ 已 Noto 優先（線一改的） |
+      | 9 | `chart_runner.py:3990` 另一處 HTML | `Microsoft JhengHei／Segoe UI／Arial` |
+
+      ⚠ **3 與 4–7 互相矛盾**：`SVG_FONT_STYLE` 宣告正黑體，但四個 SVG 根元素
+      宣告 Segoe UI（中文靠 fallback）——同一張圖兩種宣告，已經是漂移的證據。
+      🔴 **這不只是整潔**：`fit_render_charts` 用 `getBBox` 量 SVG 文字來決定
+      圖內字級，字型不一致 → 量測錯 → **字級跟著錯**，而且不會報錯。
+      🔴 **待裁決：唯一定義處放哪**（涉及 skill 的自足性）。
+      判準是「改圖表字型時簡報原生文字也要跟著改」＝同一份知識。
+      選項 A：放 `chart_sizing.py`，skill `import` 它（需先做 2.2d 的環境收斂；
+      代價是 skill 不再能獨立於 backend 執行）。
+      選項 B：環境變數為唯一事實來源，兩邊都讀（skill 保持自足，但 fallback
+      預設值仍會有兩處）。
+      ⚠ **連帶工作**（換字型必做，不可略）：重量 `LS_RENDER`／`MIN_CHART_PT`／
+      `MIN_CHART_PT_MULTI`、重建 `regression` 像素基準、**重跑 `BASELINE_RATIO`**
+      （`svg_canvas.py` 那個 0.65 是量自正黑體的 ascent 比例）。
       ⚠ **字型檔本身**：`NotoSansTC-VF.ttf` 必須隨 Installer 佈到使用者機器
       （不能假設 Windows 內建——實測宣告 `Noto Sans TC` 而機器上沒有時會
       fallback，量測與產出一起錯）。
