@@ -33,10 +33,14 @@ STARTUP_SCRIPT = PROJECT_ROOT / "scripts" / "companion_startup_install.ps1"
 client = TestClient(app)
 PREFIX = "/api/v1"
 
-# Windows PowerShell 5.1 的 stdout/stderr 走系統 ANSI（繁中機器為 cp950），不是 UTF-8。
-# 以 utf-8 解會在腳本輸出含中文時丟 UnicodeDecodeError，讓整批 launcher 測試假性失敗
-# （2026-07-27 實測：11 個 launcher 測試皆因此而非因邏輯錯誤而紅）。
-PS_OUTPUT_ENCODING = "mbcs" if os.name == "nt" else "utf-8"
+# 🔴 2026-08-13 更正：PowerShell 的 stdout 實測是 **UTF-8**，不是系統 ANSI。
+# 原本寫 "mbcs"（繁中機器＝cp950），而專案路徑含中文（`D:\力山\專案\...`）會進
+# `LAUNCH_PLAN` JSON——cp950 解不開 → `proc.stdout` 變成 None → 11 支 launcher
+# 測試全掛在 `'NoneType' object has no attribute 'splitlines'`。
+# raw bytes 實測：utf-8／utf-8-sig 解得開，mbcs／cp950 皆炸。
+# ⚠ 這條只在**路徑含非 ASCII 的機器**上紅，純英文路徑不重現，所以是本機紅不是 CI 紅；
+# 也因此 2026-07-27 當時的相反結論（改 mbcs 才綠）是把根因看反了。
+PS_OUTPUT_ENCODING = "utf-8"
 
 
 # ── PowerShell dry-run 輔助 ────────────────────────────────────
