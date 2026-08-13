@@ -5,13 +5,15 @@ description: Guide product and CLI agents to semi-automatically curate company g
 
 # Company Group Normalization
 
-## Overview
+## 執行 Runbook
+
+### Overview
 
 Use this skill when working on group normalization for patent reports. Group normalization is a second layer above company normalization: it groups already-normalized companies into a corporate group for explicit group-scope analysis.
 
 Do not replace WIPS company codes, `company_aliases`, raw patent data, or company-level display names.
 
-## Core Contract
+### Core Contract
 
 Follow this data flow:
 
@@ -25,7 +27,7 @@ Keep these scopes separate:
 - Group-scope reports group by group display fields such as `applicant_group_display_name`.
 - Suggested mappings never affect reports until an internal browser user confirms them.
 
-## Allowed Sources
+### Allowed Sources
 
 Use only these sources:
 
@@ -34,7 +36,7 @@ Use only these sources:
 
 CLI/AI must stay semi-automatic. Public-web evidence may support a suggestion, but it must not create or confirm a group mapping.
 
-## CLI/AI Suggestion Rules
+### CLI/AI Suggestion Rules
 
 The product may perform public-web research only through the centralized manual
 `ai:company_group_suggestion` job. Page load and import must never start it automatically.
@@ -54,9 +56,13 @@ Use these controlled inputs:
 - WIPS company codes, aliases, and normalized display names,
 - current report context and high-impact ungrouped rows.
 
-The backend must reject unknown company codes/names and members without an HTTPS evidence URL.
+The backend must reject unknown company codes/names, unknown `target_group_id` values, and members without an HTTPS evidence URL.
 Persist accepted output only through the existing suggestion repository. SSE completion refreshes
 the browser review section; when there are no suggestions, the whole section stays hidden.
+
+The backend supplies confirmed groups and their confirmed seed members as a controlled list. The
+CLI may either target one of those groups by `target_group_id` or propose a new `group_name`. An
+existing target is revalidated during persistence, and its name is never taken from model output.
 
 Generate a candidate only when at least one basis exists:
 
@@ -67,29 +73,31 @@ Generate a candidate only when at least one basis exists:
 
 If no basis exists, return `insufficient_evidence` and do not propose a confident group. Identical Chinese display names alone are not enough to confirm ownership or group relationship.
 
-Minimum suggestion payload:
+Minimum existing-group suggestion payload:
 
 ```json
 {
-  "suggested_group_name": "Example Group",
+  "target_group_id": 123,
   "members": [
     {
       "company_code": "A001",
-      "company_display_name": "Example Company"
+      "company_display_name": "Example Company",
+      "evidence_json": {
+        "confidence": "high",
+        "sources": [{
+          "url": "https://example.com/evidence",
+          "title": "Evidence title",
+          "claim": "Evidence summary"
+        }],
+        "warnings": []
+      }
     }
-  ],
-  "confidence": "low|medium|high",
-  "evidence": [
-    {
-      "type": "alias|name_similarity|existing_mapping|report_context|user_target",
-      "value": "..."
-    }
-  ],
-  "warnings": [
-    "insufficient_evidence"
   ]
 }
 ```
+
+For a new group, replace `target_group_id` with `group_name`. Existing-group review displays the
+target name read-only; only a new pending group may be renamed during confirmation.
 
 Use warning flags such as:
 
@@ -98,7 +106,7 @@ Use warning flags such as:
 - `brand_or_subsidiary_uncertain`
 - `external_evidence_required`
 
-## Write Boundaries
+### Write Boundaries
 
 CLI/AI may write only through backend-controlled suggestion workflows or output artifacts. It must not:
 
@@ -111,6 +119,12 @@ CLI/AI may write only through backend-controlled suggestion workflows or output 
 
 Manual confirmation through the browser/backend is required before derived data or reports use a group mapping.
 
-## Implementation Pointers
+## 開發備註
 
-Treat `openspec/changes/add-company-group-normalization/` as the authoritative product specification until the change is implemented and archived. Expected persistence is a group table plus a group membership table, such as `derived_layer.company_groups` and `derived_layer.company_group_members`, unless implementation finds an equivalent schema that preserves the same contract.
+### Implementation Pointers
+
+Treat `openspec/specs/company-governance/` as the authoritative implemented product specification.
+Persistence uses `derived_layer.company_groups` and `derived_layer.company_group_members`;
+do not add a parallel group mapping source.
+
+The existing-group extension is specified by `openspec/changes/suggest-existing-company-group-membership/` until implementation and archive.

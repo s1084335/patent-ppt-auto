@@ -1345,11 +1345,16 @@ function companyGroupSuggestionHtml(group) {
   const members = (group.members || []).filter(function (member) {
     return member.review_status === 'suggested';
   });
+  const canEditName = group.review_status !== 'confirmed';
+  const targetHtml = canEditName
+    ? '<div class="code-field"><label for="company-group-suggestion-name-' + group.group_id
+      + '">確認後集團名稱</label>'
+      + '<input class="text-input" id="company-group-suggestion-name-' + group.group_id
+      + '" maxlength="255" value="' + escHtml(group.group_name || '') + '"></div>'
+    : '<div class="code-field"><label>加入既有集團</label><strong>'
+      + escHtml(group.group_name || '(未命名集團)') + '</strong></div>';
   return '<div class="company-group-suggestion">'
-    + '<div class="code-field"><label for="company-group-suggestion-name-' + group.group_id
-    + '">確認後集團名稱</label>'
-    + '<input class="text-input" id="company-group-suggestion-name-' + group.group_id
-    + '" maxlength="255" value="' + escHtml(group.group_name || '') + '"></div>'
+    + targetHtml
     + '<ul style="margin:.25rem 0 0 1.2rem;padding:0;list-style:none">'
     + members.map(function (member) {
       const code = member.company_code ? ' / ' + member.company_code : '';
@@ -1358,8 +1363,8 @@ function companyGroupSuggestionHtml(group) {
         + '<span>' + escHtml((member.company_display_name || '') + code) + '</span></div>'
         + companyGroupEvidenceHtml(member.evidence_json)
         + '<div class="toolbar" style="margin-top:.2rem">'
-        + '<button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', true, ' + group.group_id + ')">確認</button>'
-        + '<button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', false, ' + group.group_id + ')">拒絕</button>'
+        + '<button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', true, ' + group.group_id + ', ' + canEditName + ')">確認</button>'
+        + '<button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', false, ' + group.group_id + ', ' + canEditName + ')">拒絕</button>'
         + '</div></li>';
     }).join('')
     + '</ul></div>';
@@ -1520,18 +1525,20 @@ function pendingCompanyGroupName(groupId) {
   return ((el('company-group-suggestion-name-' + groupId) || {}).value || '').trim();
 }
 
-async function decideCompanyGroupSuggestion(memberId, confirmed, groupId) {
+async function decideCompanyGroupSuggestion(memberId, confirmed, groupId, editGroupName) {
   const action = confirmed ? 'confirm' : 'reject';
   const options = { method: 'POST' };
   if (confirmed) {
-    const groupName = pendingCompanyGroupName(groupId);
-    if (!groupName) {
-      const msg = el('company-group-msg');
-      if (msg) msg.innerHTML = '<div class="code-conflict">請輸入集團名稱</div>';
-      return;
+    if (editGroupName) {
+      const groupName = pendingCompanyGroupName(groupId);
+      if (!groupName) {
+        const msg = el('company-group-msg');
+        if (msg) msg.innerHTML = '<div class="code-conflict">請輸入集團名稱</div>';
+        return;
+      }
+      options.headers = { 'Content-Type': 'application/json' };
+      options.body = JSON.stringify({ group_name: groupName });
     }
-    options.headers = { 'Content-Type': 'application/json' };
-    options.body = JSON.stringify({ group_name: groupName });
   }
   await getJson(API + '/company-groups/suggestions/' + encodeURIComponent(memberId) + '/' + action, {
     ...options,

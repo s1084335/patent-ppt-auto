@@ -243,10 +243,13 @@ def test_suggestion_decision_updates_parent_group_review_status():
     from backend.app.repositories import company_group_repository as repo
 
     executed: list[str] = []
+    notifications: list[dict[str, object]] = []
 
     class Cursor:
         def execute(self, sql, params=None):
             executed.append(sql)
+            if "pg_notify('patent_events'" in sql:
+                notifications.append(json.loads(params[0]))
             self._row = (
                 (7, 3, "confirmed")
                 if "UPDATE derived_layer.company_group_members" in sql
@@ -283,6 +286,9 @@ def test_suggestion_decision_updates_parent_group_review_status():
     assert "UPDATE derived_layer.company_groups" in sql
     assert "review_status = 'confirmed'" in sql
     assert "review_status = 'suggested'" in sql
+    assert notifications[0]["kind"] == "data"
+    assert notifications[0]["resource"] == "companyGroups"
+    assert notifications[0]["action"] == "review_suggestion"
     assert result["group_review_status"] == "confirmed"
 
 
@@ -562,3 +568,239 @@ def test_reversal_repository_rejects_missing_targets():
             repo.delete_group(3)
         with pytest.raises(LookupError, match="confirmed AI suggestion member not found"):
             repo.undo_suggestion_confirmation(7)
+
+
+def test_ingest_existing_group_suggestion_adds_only_a_suggested_member():
+    """指定既有 group 時不得 INSERT parent，也不得改名或確認 member。"""
+    from backend.app.repositories import company_group_repository as repo
+
+    executed: list[tuple[str, object]] = []
+
+    class Cursor:
+        def execute(self, sql, params=None):
+            executed.append((sql, params))
+            if "SELECT group_id, group_name" in sql:
+                self._row = (9, "創科集團")
+            elif "INSERT INTO derived_layer.company_group_members" in sql:
+                self._row = (101,)
+            else:
+                self._row = None
+            return self
+
+        def fetchone(self):
+            return self._row
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class Connection:
+        def __init__(self):
+            self.commits = 0
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            self.commits += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    connection = Connection()
+    suggestion = {
+        "target_group_id": 9,
+        "group_name": "創科集團",
+        "members": [
+            {
+                "company_code": "C001",
+                "company_display_name": "新子公司",
+                "evidence_json": {
+                    "confidence": "high",
+                    "sources": [{"url": "https://example.com/sub"}],
+                },
+            }
+        ],
+    }
+
+    with mock.patch.object(repo, "_connect", return_value=connection):
+        result = repo.ingest_cli_suggestions([suggestion])
+
+    sql = "\n".join(statement for statement, _ in executed)
+    member_params = next(
+        params
+        for statement, params in executed
+        if "INSERT INTO derived_layer.company_group_members" in statement
+    )
+    assert "INSERT INTO derived_layer.company_groups" not in sql
+    assert "UPDATE derived_layer.company_groups" not in sql
+    assert member_params[:3] == (9, "C001", "新子公司")
+    assert "'suggested', 'cli_ai'" in sql
+    notify_params = next(
+        params for statement, params in executed if "pg_notify('patent_events'" in statement
+    )
+    notify_payload = json.loads(notify_params[0])
+    assert notify_payload["kind"] == "data"
+    assert notify_payload["resource"] == "companyGroups"
+    assert notify_payload["action"] == "ingest_suggestions"
+    assert connection.commits == 1
+    assert result == {"inserted": 1}
+
+
+def test_existing_group_candidates_include_only_confirmed_groups_and_members():
+    """送給 CLI 的既有目標及種子成員都必須受 confirmed 條件控制。"""
+    from backend.app.repositories import company_group_repository as repo
+
+    executed: list[str] = []
+
+    class Cursor:
+        def execute(self, sql, params=None):
+            executed.append(sql)
+            return self
+
+        def fetchall(self):
+            return [{"group_id": 9, "group_name": "創科集團", "confirmed_members": []}]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class Connection:
+        def cursor(self, **_kwargs):
+            return Cursor()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    with mock.patch.object(repo, "_connect", return_value=Connection()):
+        rows = repo.list_confirmed_group_candidates()
+
+    sql = "\n".join(executed)
+    assert "g.review_status = 'confirmed'" in sql
+    assert "m.review_status = 'confirmed'" in sql
+    assert rows[0]["group_id"] == 9
+
+
+@pytest.mark.parametrize("invalid_target", [True, "not-an-id", 0])
+def test_cli_suggestion_rejects_invalid_target_group_id(invalid_target):
+    """repository 邊界只接受 optional positive integer target。"""
+    from backend.app.repositories import company_group_repository as repo
+
+    with pytest.raises(ValueError, match="target_group_id must be a positive integer"):
+        repo.validate_cli_suggestion(
+            {
+                "target_group_id": invalid_target,
+                "group_name": "創科集團",
+                "members": [{"company_display_name": "新子公司"}],
+            }
+        )
+
+
+def test_ingest_new_group_suggestion_still_creates_suggested_parent():
+    """未指定 target 時維持原本建立待審 parent 的流程。"""
+    from backend.app.repositories import company_group_repository as repo
+
+    executed: list[str] = []
+
+    class Cursor:
+        def execute(self, sql, params=None):
+            executed.append(sql)
+            self._row = (20,) if "INSERT INTO derived_layer.company_groups" in sql else None
+            return self
+
+        def fetchone(self):
+            return self._row
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    suggestion = {
+        "group_name": "新集團",
+        "members": [{"company_code": "C001", "company_display_name": "新子公司"}],
+    }
+    with mock.patch.object(repo, "_connect", return_value=Connection()):
+        result = repo.ingest_cli_suggestions([suggestion])
+
+    sql = "\n".join(executed)
+    assert "INSERT INTO derived_layer.company_groups" in sql
+    assert "INSERT INTO derived_layer.company_group_members" in sql
+    assert result == {"inserted": 1}
+
+
+def test_ingest_rejects_missing_or_nonconfirmed_target_group():
+    """即使繞過 runner 直打 ingest，未知或非 confirmed target 仍不可寫入。"""
+    from backend.app.repositories import company_group_repository as repo
+
+    class Cursor:
+        def execute(self, sql, params=None):
+            return self
+
+        def fetchone(self):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class Connection:
+        def __init__(self):
+            self.commits = 0
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            self.commits += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    connection = Connection()
+    suggestion = {
+        "target_group_id": 999,
+        "group_name": "不存在集團",
+        "members": [
+            {
+                "company_code": "C001",
+                "company_display_name": "新子公司",
+                "evidence_json": {"sources": [{"url": "https://example.com/sub"}]},
+            }
+        ],
+    }
+
+    with mock.patch.object(repo, "_connect", return_value=connection):
+        with pytest.raises(ValueError, match="confirmed target group not found"):
+            repo.ingest_cli_suggestions([suggestion])
+
+    assert connection.commits == 0

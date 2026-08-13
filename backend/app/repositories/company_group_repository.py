@@ -94,8 +94,49 @@ def _ensure_review_only(value: str | None, *, field: str) -> str:
     return value
 
 
+def _optional_positive_id(value: Any, *, field: str) -> int | None:
+    """把 optional ID 正規化為正整數，明確拒絕 Python bool。"""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be a positive integer")  # noqa: TRY004
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a positive integer") from exc
+    if normalized <= 0:
+        raise ValueError(f"{field} must be a positive integer")
+    return normalized
+
+
+def _normalize_cli_member(raw_member: Any, *, index: int) -> dict[str, Any]:
+    """驗證一筆 CLI 建議成員並固定為 suggested/cli_ai。"""
+    if not isinstance(raw_member, dict):
+        raise ValueError(f"members[{index}] must be an object")  # noqa: TRY004
+    display_name = str(raw_member.get("company_display_name") or "").strip()
+    if not display_name:
+        raise ValueError(f"members[{index}].company_display_name is required")
+    evidence = raw_member.get("evidence_json", {})
+    if not isinstance(evidence, dict):
+        raise ValueError(  # noqa: TRY004
+            f"members[{index}].evidence_json must be an object"
+        )
+    return {
+        "company_code": raw_member.get("company_code"),
+        "company_display_name": display_name,
+        "review_status": _ensure_review_only(
+            raw_member.get("review_status"), field="member.review_status"
+        ),
+        "source_type": "cli_ai",
+        "evidence_json": evidence,
+    }
+
+
 def validate_cli_suggestion(payload: dict[str, Any]) -> dict[str, Any]:
     """驗證並正規化 CLI/AI 集團建議 payload，輸出永遠是 review-only。"""
+    target_group_id = _optional_positive_id(
+        payload.get("target_group_id"), field="target_group_id"
+    )
     group_name = str(payload.get("group_name") or "").strip()
     if not group_name:
         raise ValueError("group_name is required")
@@ -109,31 +150,16 @@ def validate_cli_suggestion(payload: dict[str, Any]) -> dict[str, Any]:
         "normalized_group_name": normalize_group_name(group_name),
         "review_status": _ensure_review_only(payload.get("review_status"), field="review_status"),
         "source_type": "cli_ai",
+        "target_group_id": target_group_id,
         "members": [],
     }
     if payload.get("source_type") not in (None, "", "cli_ai"):
         raise ValueError("CLI suggestion source_type must be cli_ai")
 
-    for index, raw_member in enumerate(members):
-        if not isinstance(raw_member, dict):
-            raise ValueError(f"members[{index}] must be an object")
-        display_name = str(raw_member.get("company_display_name") or "").strip()
-        if not display_name:
-            raise ValueError(f"members[{index}].company_display_name is required")
-        evidence = raw_member.get("evidence_json", {})
-        if not isinstance(evidence, dict):
-            raise ValueError(f"members[{index}].evidence_json must be an object")
-        normalized["members"].append(
-            {
-                "company_code": raw_member.get("company_code"),
-                "company_display_name": display_name,
-                "review_status": _ensure_review_only(
-                    raw_member.get("review_status"), field="member.review_status"
-                ),
-                "source_type": "cli_ai",
-                "evidence_json": evidence,
-            }
-        )
+    normalized["members"] = [
+        _normalize_cli_member(raw_member, index=index)
+        for index, raw_member in enumerate(members)
+    ]
     return normalized
 
 
@@ -217,6 +243,38 @@ def list_suggestion_candidates(*, limit: int | None = None) -> list[dict[str, An
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(sql, params)
             return [dict(row) for row in cur.fetchall()]
+
+
+def list_confirmed_group_candidates() -> list[dict[str, Any]]:
+    """列出 CLI 可指向的已確認集團及已確認種子成員。"""
+    sql = """
+        SELECT
+            g.group_id,
+            g.group_name,
+            COALESCE(
+                jsonb_agg(
+                    jsonb_build_object(
+                        'company_code', m.company_code,
+                        'company_display_name', m.company_display_name
+                    )
+                    ORDER BY m.company_display_name
+                ) FILTER (
+                    WHERE m.member_id IS NOT NULL
+                      AND m.review_status = 'confirmed'
+                ),
+                '[]'::jsonb
+            ) AS confirmed_members
+        FROM derived_layer.company_groups g
+        LEFT JOIN derived_layer.company_group_members m ON m.group_id = g.group_id
+        WHERE g.review_status = 'confirmed'
+        GROUP BY g.group_id, g.group_name
+        ORDER BY g.group_name
+    """
+    from psycopg.rows import dict_row
+
+    with _connect() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(sql)
+        return [dict(row) for row in cur.fetchall()]
 
 
 def create_manual_group(group_name: str, members: list[dict[str, Any]]) -> dict[str, Any]:
@@ -350,22 +408,40 @@ def delete_group(group_id: int) -> dict[str, Any]:
 
 
 def ingest_cli_suggestions(items: list[dict[str, Any]]) -> dict[str, Any]:
-    """寫入 CLI/AI 建議；只建立 suggested group/member。"""
+    """寫入 CLI/AI 建議；新集團或既有集團成員都只進 suggested。"""
     suggestions = [validate_cli_suggestion(item) for item in items]
     with _connect() as conn:
         with conn.cursor() as cur:
             inserted = 0
             for suggestion in suggestions:
-                cur.execute(
-                    """
-                    INSERT INTO derived_layer.company_groups
-                        (group_name, normalized_group_name, review_status, source_type)
-                    VALUES (%s, %s, 'suggested', 'cli_ai')
-                    RETURNING group_id
-                    """,
-                    (suggestion["group_name"], suggestion["normalized_group_name"]),
-                )
-                group_id = cur.fetchone()[0]
+                target_group_id = suggestion["target_group_id"]
+                if target_group_id is not None:
+                    # 寫入前鎖定並重驗，避免 CLI 取得清單後集團狀態已改變。
+                    cur.execute(
+                        """
+                        SELECT group_id, group_name
+                        FROM derived_layer.company_groups
+                        WHERE group_id = %s
+                          AND review_status = 'confirmed'
+                        FOR UPDATE
+                        """,
+                        (target_group_id,),
+                    )
+                    target_group = cur.fetchone()
+                    if target_group is None:
+                        raise ValueError("confirmed target group not found")
+                    group_id = target_group[0]
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO derived_layer.company_groups
+                            (group_name, normalized_group_name, review_status, source_type)
+                        VALUES (%s, %s, 'suggested', 'cli_ai')
+                        RETURNING group_id
+                        """,
+                        (suggestion["group_name"], suggestion["normalized_group_name"]),
+                    )
+                    group_id = cur.fetchone()[0]
                 for member in suggestion["members"]:
                     cur.execute(
                         """

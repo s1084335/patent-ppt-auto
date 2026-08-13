@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from unittest import mock
 
 import pytest
 
@@ -12,13 +13,17 @@ from backend.app.worker import ai_bridge
 class FakeStore:
     """記錄 runner 的受控讀寫，避免單元測試碰資料庫。"""
 
-    def __init__(self, candidates):
+    def __init__(self, candidates, existing_groups=None):
         self.candidates = list(candidates)
+        self.existing_groups = list(existing_groups or [])
         self.written = []
 
     def fetch_candidates(self, *, limit=None):
         rows = self.candidates
         return rows if limit is None else rows[:limit]
+
+    def fetch_existing_groups(self):
+        return self.existing_groups
 
     def ingest_suggestions(self, suggestions):
         self.written.extend(suggestions)
@@ -120,6 +125,100 @@ def test_runner_uses_controlled_candidates_and_writes_review_only_suggestions():
     assert store.written[0]["review_status"] == "suggested"
     assert store.written[0]["source_type"] == "cli_ai"
     assert store.written[0]["members"][0]["review_status"] == "suggested"
+
+
+def test_runner_can_target_only_a_backend_controlled_existing_group():
+    """既有 group id 必須來自 backend 白名單，且名稱由 backend 覆寫。"""
+    from backend.app.worker import ai_company_group_suggestion_runner as runner
+
+    store = FakeStore(
+        [{"company_code": "C001", "company_display_name": "新子公司"}],
+        [{"group_id": 9, "group_name": "創科集團", "confirmed_members": ["創科實業"]}],
+    )
+    payload = json.dumps(
+        {
+            "suggestions": [
+                {
+                    "target_group_id": 9,
+                    "group_name": "模型不得改這個名稱",
+                    "members": [
+                        {
+                            "company_code": "C001",
+                            "company_display_name": "新子公司",
+                            "evidence_json": {
+                                "confidence": "high",
+                                "sources": [{"url": "https://example.com/sub", "claim": "子公司"}],
+                            },
+                        }
+                    ],
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+    prompts = []
+
+    result = runner.run_company_group_suggestions(
+        store=store,
+        cli_runner=lambda prompt, **_: prompts.append(prompt) or payload,
+    )
+
+    assert '"group_id": 9' in prompts[0]
+    assert "創科實業" in prompts[0]
+    assert result["inserted"] == 1
+    assert store.written[0]["target_group_id"] == 9
+    assert store.written[0]["group_name"] == "創科集團"
+
+
+def test_runner_rejects_model_invented_existing_group_id():
+    """模型不得用名稱或猜測 id 指向 backend 未提供的 group。"""
+    from backend.app.worker import ai_company_group_suggestion_runner as runner
+
+    store = FakeStore(
+        [{"company_code": "C001", "company_display_name": "新子公司"}],
+        [{"group_id": 9, "group_name": "創科集團", "confirmed_members": []}],
+    )
+    payload = json.loads(_valid_cli_result())
+    payload["suggestions"][0]["target_group_id"] = 999
+    payload["suggestions"][0]["members"][0]["company_display_name"] = "新子公司"
+
+    with pytest.raises(ValueError, match="unknown target_group_id"):
+        runner.run_company_group_suggestions(
+            store=store,
+            cli_runner=lambda *_args, **_kwargs: json.dumps(payload, ensure_ascii=False),
+        )
+
+
+@pytest.mark.parametrize("invalid_target", [True, "not-an-id"])
+def test_runner_rejects_non_integer_existing_group_id(invalid_target):
+    """JSON boolean 或非整數字串不得被轉成既有 group id。"""
+    from backend.app.worker import ai_company_group_suggestion_runner as runner
+
+    store = FakeStore(
+        [{"company_code": "C001", "company_display_name": "新子公司"}],
+        [{"group_id": 1, "group_name": "創科集團", "confirmed_members": []}],
+    )
+    payload = json.loads(_valid_cli_result())
+    payload["suggestions"][0]["target_group_id"] = invalid_target
+    payload["suggestions"][0]["members"][0]["company_display_name"] = "新子公司"
+
+    with pytest.raises(ValueError, match="target_group_id must be an integer"):
+        runner.run_company_group_suggestions(
+            store=store,
+            cli_runner=lambda *_args, **_kwargs: json.dumps(payload, ensure_ascii=False),
+        )
+
+
+def test_store_reads_existing_groups_through_repository_boundary():
+    """正式 store 只透過 repository 取得受控既有集團。"""
+    from backend.app.worker import ai_company_group_suggestion_runner as runner
+
+    groups = [{"group_id": 9, "group_name": "創科集團", "confirmed_members": []}]
+    with mock.patch.object(
+        runner.repository, "list_confirmed_group_candidates", return_value=groups
+    ) as fetch:
+        assert runner.CompanyGroupSuggestionStore().fetch_existing_groups() == groups
+    fetch.assert_called_once_with()
 
 
 def test_runner_accepts_json_wrapped_in_claude_text_or_code_fence():
