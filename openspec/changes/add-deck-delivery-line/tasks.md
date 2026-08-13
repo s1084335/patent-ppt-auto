@@ -22,10 +22,33 @@
 
 ## 1. skill 遷入產品 repo
 
-- [ ] 1.1 `.agents/skills/html-report-to-deck/` → `skills/html-report-to-deck/`；
-      SKILL.md 依硬規範重寫兩區（Runbook 零開發機路徑；COM 目視、regression、
-      pitfalls 收開發備註）；「非產品線」邊界註記依 2026-08-12 定案改寫留痕
-- [ ] 1.2 開發機路徑參數化補完（`regression.py` 的 PPTX_TO_PNG）；
+- [x] 1.1 `.agents/skills/html-report-to-deck/` → `skills/html-report-to-deck/`；
+      SKILL.md 依硬規範（AGENTS.md §Skill 撰寫硬規範）重寫兩區；
+      「非產品線」邊界註記依 2026-08-12 定案改寫留痕。
+      🔴 **2026-08-13 兩處修正**（原條文在 B 案前提下寫的）：
+      ① **COM 目視留在 Runbook，不收進開發備註**——原文把它當開發量尺，
+         但目視迴圈已定案進產線（design 4-0），它是 Runbook 的一步。
+         收進開發備註的只剩 `regression.py` 與 `pitfalls.md`。
+      ② **Runbook 區的讀者＝撰稿 CLI，不是「照九步手動跑的人」**。
+         產品側九步由 runner 以 subprocess 驅動（design §1），CLI 只實際做兩件事：
+         **第 5 步撰稿**（吃 plan.json／report.json → 出 content.json，含輸出契約
+         與唯讀 MCP 取證四條硬規則）與**目視迴圈**（看逐頁 PNG、檢查清單、
+         發現問題只能改 content.json）。九步全流程屬 runner 職責，連同開發側
+         手動操作一併收進開發備註。
+      ⚠ 硬規範要求 Runbook 區「不得出現開發機路徑」——現行 SKILL.md 的
+      `uv run --no-project --with ...` 指令與 `D:\vscode\...` 路徑都要清掉
+      （執行方式改走專案環境，見 2.2d）。
+      **2026-08-13 完成**：原樣複製後重寫兩區。Runbook＝撰稿＋目視迴圈
+      （含輸入輸出契約、頁型容量、schema、取證四規則、閘門讀法、優先順序梯子、
+      授權界線、回報格式）；開發備註＝九步手動流程、驗證分層、配色與幾何、
+      regression／check_docs、產線環境需求（只交叉引用 design 4-0b 不另抄）。
+      邊界註記已改寫留痕：舊版寫「不是產品交付線」，deck 接線後該句失效。
+      驗證：`check_docs.py` **0 問題**——8 條數字措辭全保住，且 CLI 步驟 1–9
+      仍被辨識（⚠ 該檢查是 `if blocks:`，格式一變會**靜默跳過**而非變紅，
+      故以「輸出有印出步驟清單」為準，不只看問題數）。
+- [ ] 1.2 開發機路徑參數化補完（`regression.py` 的 `PPTX_TO_PNG`，現寫死
+      `D:\vscode\ppt-tools\pptx_to_png.py`）；⚠ 目視轉圖進產線後，該路徑
+      **不只是開發便利**——runner 也要解得到，需與 2.2d 的環境收斂一起定；
       跑 `check_docs.py`＋`regression.py` 確認遷移零破壞
 - [ ] 1.3 中央份刪除；`.agents/context/README.md` 路由與引用更新
 - [ ] 1.4 新 `assemble_from_version.py` intake（自 unify-chart-source 移入，
