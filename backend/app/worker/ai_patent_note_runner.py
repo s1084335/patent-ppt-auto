@@ -47,17 +47,15 @@ from typing import Any, Callable, Iterable, Sequence
 
 import functools
 
-from .cli_gateway import NO_TOOLS
-from .cli_gateway import build_cli_command as _gw_build_cli_command
-from .ai_narrative_runner import (
+from .cli_gateway import (
     DEFAULT_CLI_TIMEOUT_SECONDS,
     CliResult,
     CliRunner,
-    NarrativeRunnerError,
-    _CLI_SPECS,
-    _subprocess_cli_runner,
+    NO_TOOLS,
     parse_cli_result,
+    run_cli,
 )
+from .cli_gateway import build_cli_command as _gw_build_cli_command
 from .ai_payload_file import extract_json_payload
 
 from backend.app.clustering.sources import PATENT_NOTE_SOURCE_COLUMNS
@@ -316,7 +314,7 @@ def run_patent_note(
     """
     from . import ai_payload_file as pf
 
-    runner = cli_runner if cli_runner is not None else _subprocess_cli_runner
+    runner = cli_runner if cli_runner is not None else run_cli
     # patents 直接給定時（測試／呼叫端已備妥資料）不建 store，避免無謂連線。
     note_store = store if store is not None else (
         None if patents is not None else PatentNoteStore())

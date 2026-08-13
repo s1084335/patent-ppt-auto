@@ -150,7 +150,7 @@ class UploadNarrativesBackTests(unittest.TestCase):
                 (run_dir / "narratives.json").write_text(
                     json.dumps({"based_on_version": version, "reports": {}}),
                     encoding="utf-8")
-                from backend.app.worker.ai_narrative_runner import CliResult
+                from backend.app.worker.cli_gateway import CliResult
                 return CliResult(exit_code=0, stdout="{}", stderr="")
 
             def _fake_upload(path):
@@ -182,7 +182,7 @@ class UploadNarrativesBackTests(unittest.TestCase):
                 (run_dir / "narratives.json").write_text(
                     json.dumps({"based_on_version": version, "reports": {}}),
                     encoding="utf-8")
-                from backend.app.worker.ai_narrative_runner import CliResult
+                from backend.app.worker.cli_gateway import CliResult
                 return CliResult(exit_code=0, stdout="{}", stderr="")
 
             with self.assertRaises(r.NarrativeRunnerError):

@@ -309,28 +309,17 @@ def validate_narrative_contract(
     return warnings
 
 
-# 預設 headless CLI 逾時（秒）；解讀多卡多變體可能久，給足時間但避免無限卡住。
-DEFAULT_CLI_TIMEOUT_SECONDS = 1800.0
-
-# 雙 CLI 指令對照（headless 非互動、只讀寫 narratives.json）。換 CLI 只改此表。
-# 各值為「除提示字串外」的固定 argv 尾段；提示由 build_cli_command 插在二進位之後。
-# 🔴 2026-08-09：`_CLI_SPECS`／`build_cli_command`／`CliResult`／`parse_cli_result`
-# 已收斂到 `cli_gateway`（使用者定案「能整合的都要整合」）。七個 runner 各存一份
-# 時，加 MCP 取證白名單要改七處——漏一處那條線就查不到資料庫，而且不會報錯。
-#
-# ⚠ 取證通道同時由 `Bash(uv run:*)`＋query_patents.py 改為 MCP 唯讀工具
-# （RESEARCH_TOOLS）：工具清單即能力清單，不必靠提示詞約束「該查哪張表」。
 import functools
 
-from .cli_gateway import (  # 模組中段 re-export，維持既有 import 路徑
-    _CLI_SPECS,  # noqa: F401  （re-export：既有呼叫端仍由本模組取用）
+from .cli_gateway import (
+    DEFAULT_CLI_TIMEOUT_SECONDS,
     RESEARCH_TOOLS,
     CliGatewayError,
-    CliResult,
+    CliRunner,
     parse_cli_result,
+    run_cli,
 )
 from .cli_gateway import build_cli_command as _gw_build_cli_command
-from .cli_gateway import run_cli as _subprocess_cli_runner
 
 # headless 解讀流程失敗（CLI 不存在、非零退出、產物缺失或版本不符）。
 # ⚠ 2026-08-09 起是 CliGatewayError 的**別名**而非獨立類別：CLI 呼叫收斂到
@@ -353,10 +342,6 @@ def _narrative_report_keys(narratives_path: Path) -> set[str]:
         return set()
     reports = data.get("reports")
     return set(reports) if isinstance(reports, dict) else set()
-
-
-# cli_runner 介面：收 (argv, timeout) 回 CliResult；預設 subprocess 實作，測試可注入 fake。
-CliRunner = Callable[[Sequence[str], float], CliResult]
 
 
 def materialize_report_version(version: str) -> Path:
@@ -635,7 +620,7 @@ def run_narrative(
     model 由任務 payload 帶下來選具體模型（如 claude-opus-4-8），未給則用 CLI 預設。
     回傳：based_on_version、narratives 檔路徑、覆蓋變體數（narrated／variants_total）與缺漏。
     """
-    runner = cli_runner if cli_runner is not None else _subprocess_cli_runner
+    runner = cli_runner if cli_runner is not None else run_cli
     # 預設 refresh_index 延遲 import：避免 worker 匯入即拉進整個報表引擎相依。
     if refresh_index is None:
         from backend.app.reports.chart_runner import refresh_index as _refresh

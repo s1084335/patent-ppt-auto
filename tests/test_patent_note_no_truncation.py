@@ -94,7 +94,7 @@ class OverLimitRaisesTests(unittest.TestCase):
         from test_ai_patent_note import FakeNoteStore
 
         from backend.app.worker import ai_patent_note_runner as r
-        from backend.app.worker.ai_narrative_runner import CliResult
+        from backend.app.worker.cli_gateway import CliResult
 
         def fake_cli(argv, timeout):
             return CliResult(

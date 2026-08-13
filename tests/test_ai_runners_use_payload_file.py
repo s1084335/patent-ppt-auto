@@ -178,7 +178,7 @@ class IrrelevantFilterUsesPayloadFileTests(unittest.TestCase):
 
     def test_argv_stays_small(self):
         from backend.app.worker import ai_irrelevant_filter_runner as r
-        from backend.app.worker.ai_narrative_runner import CliResult
+        from backend.app.worker.cli_gateway import CliResult
         captured = {}
 
         def fake_cli(argv, timeout):

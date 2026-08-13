@@ -36,13 +36,14 @@ from backend.app.clustering import workspace_service
 
 import functools
 
-from .ai_narrative_runner import (
+from .cli_gateway import (
     DEFAULT_CLI_TIMEOUT_SECONDS,
     CliRunner,
+    NO_TOOLS,
     parse_cli_result,
+    run_cli,
 )
 from .ai_payload_file import extract_json_payload
-from .cli_gateway import NO_TOOLS
 from .cli_gateway import build_cli_command as _gw_build_cli_command
 
 # 🔴 最小權限（2026-08-13 修正擴權）：本任務 prompt 由 build_prompt 把候選指標
@@ -189,10 +190,9 @@ def run_candidate_explanation(
         progress("AI 產生候選方案說明中", 40)
     prompt = build_prompt(payload)
     argv = build_cli_command(cli_kind, prompt, model=model)
-    # runner 為 None 時走 ai_narrative_runner 的預設 subprocess 執行器（正式）；測試注入 fake。
+    # runner 為 None 時走共用 gateway 的 subprocess 執行器；測試可注入 fake。
     if runner is None:
-        from .ai_narrative_runner import _subprocess_cli_runner
-        runner = _subprocess_cli_runner
+        runner = run_cli
     parsed = parse_cli_result(runner(argv, timeout_seconds))
 
     known_ids = {int(c["candidate_id"]) for c in candidates}

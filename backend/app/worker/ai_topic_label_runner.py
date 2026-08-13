@@ -33,16 +33,15 @@ from typing import Any, Callable
 
 import functools
 
-from .cli_gateway import READ_ONLY_TOOLS
-from .cli_gateway import build_cli_command as _gw_build_cli_command
-from .ai_narrative_runner import (
+from .cli_gateway import (
     DEFAULT_CLI_TIMEOUT_SECONDS,
     CliResult,
     CliRunner,
-    _subprocess_cli_runner,
-    build_cli_command as _build_cli_command,
+    READ_ONLY_TOOLS,
     parse_cli_result,
+    run_cli,
 )
+from .cli_gateway import build_cli_command as _gw_build_cli_command
 from .ai_payload_file import extract_json_payload
 
 
@@ -218,7 +217,7 @@ def run_topic_label(
 
     回傳：requested／updated 主題數、run_id 與 cli_kind／prompt_version 供追溯。
     """
-    runner = cli_runner if cli_runner is not None else _subprocess_cli_runner
+    runner = cli_runner if cli_runner is not None else run_cli
     if apply_labels is None:
         from backend.app.clustering.workspace_service import apply_topic_labels
 

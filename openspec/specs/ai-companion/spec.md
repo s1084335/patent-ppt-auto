@@ -8,13 +8,35 @@
 
 ### Requirement: AIC-001 AI 工作類型單一來源
 
-系統 SHALL 由 `AI_JOB_TYPES` 單一定義需要外部 AI CLI 的工作，Companion runner registry 必須完整覆蓋該集合。
+系統 SHALL 由 `AI_JOB_TYPES` 單一定義需要外部 AI CLI 的工作，Companion runner registry 必須完整覆蓋該集合。最小權限守門 SHALL 從同一集合推導，逐一驗證產品實際執行的 argv 路徑；新增或移除工作類型但未複審權限等級時，測試 MUST 失敗。
 
 #### Scenario: 新增 AI job 未註冊 runner
 
 - **WHEN** `AI_JOB_TYPES` 新增類型但 runner registry 未加入
 - **THEN** 守門測試 SHALL 失敗
 - **AND** 不得等到正式 job 被領取後才發現
+
+#### Scenario: 新增 AI job 未宣告工具權限
+
+- **WHEN** `AI_JOB_TYPES` 新增類型但最小權限政策尚未宣告該類型
+- **THEN** 守門測試 SHALL 失敗
+- **AND** 不得以手寫部分 runner 名單略過新類型
+
+### Requirement: AIC-007 CLI 工具權限分級
+
+系統 SHALL 由共用 CLI gateway 提供無工具、只讀檔案、唯讀資料取證與公開網頁查證四種明示權限等級。各 runner MUST 直接依賴 gateway 並選用完成任務所需的最小等級，不得透過另一個 runner 的 re-export 繼承工具權限。
+
+#### Scenario: 資料檔 runner 執行
+
+- **WHEN** runner 透過受控 payload file 提供輸入
+- **THEN** 實際 argv SHALL 只允許 `Read`
+- **AND** 不得因模組級 legacy wrapper 為空權限而誤判產品路徑
+
+#### Scenario: 集團歸屬公開網頁查證
+
+- **WHEN** 使用者手動啟動公司集團建議
+- **THEN** 實際 argv SHALL 只允許 `WebSearch` 與 `WebFetch`
+- **AND** 不得取得 shell、檔案、MCP 或資料庫工具
 
 ### Requirement: AIC-002 Host-side CLI 執行
 
