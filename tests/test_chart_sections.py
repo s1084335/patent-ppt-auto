@@ -238,11 +238,19 @@ class DisplaySpecTests(unittest.TestCase):
 
     def test_data_table_max_20_rows_no_full_expand(self):
         """數據區最多 20 筆＋總計列；不提供全量展開（2026-07-21 使用者補充），只註記共幾列。
-        註記文案同步「保存前 20」定案（2026-07-21）：入庫同前 20、完整可由引擎重算。"""
+        註記文案同步「保存前 20」定案（2026-07-21）：入庫同前 20、完整可由引擎重算。
+
+        ⚠ 2026-08-12 斷言方式調整（restructure-html-report-export）：
+        **契約沒變**——上限仍 20 列、仍不給全量展開、註記文案原字面保留；
+        變的是呈現密度：預設只露前 5 列，第 6–20 列改掛 `folded` 由展開鈕控制。
+        因此列數改數所有 `<tr`（含帶 class 的），不能只數裸 `<tr>`。
+        """
         rows = [{"applicant_display_name": f"Co{i}", "patent_count": i} for i in range(25)]
         html = chart_runner._data_table_html(rows, "applicant_ranking")
-        self.assertEqual(html.count("<tr>") - 1, 20 + 1,  # header 不算、含總計列
+        self.assertEqual(len(re.findall(r"<tr[ >]", html)) - 1, 20 + 1,  # header 不算、含總計列
                          "數據區最多 20 筆＋總計列")
+        self.assertEqual(len(re.findall(r'<tr class="folded">', html)), 15,
+                         "第 6–20 列預設收合（上限不變，只改預設密度）")
         self.assertNotIn("<details>", html, "不得提供顯示全部展開")
         self.assertIn("入庫同前 20，完整可重算", html)
         self.assertIn("總列數 25", html)  # 註記共幾列
@@ -305,7 +313,14 @@ class DisplaySpecTests(unittest.TestCase):
             self.assertEqual(drawn, chart_runner.CHART_ROW_LIMIT,
                              f"IPC/CPC {level} 應截前 {chart_runner.CHART_ROW_LIMIT} 名，實得 {drawn}")
 
-    def test_year_matrix_expand_label_wips_style(self):
+    def test_year_matrix_long_tail_in_single_chart(self):
+        """長尾（第 11 名之後）要看得到——原以第二張圖＋「＋查看全部」鈕達成。
+
+        🔴 2026-08-12 契約更新（申請人矩陣改跨度圖）：跨度條一列只佔 20–34px，
+        **20 列進得了單一畫布**，不再拆兩張。原本要兩張純粹是泡泡直徑吃掉高度。
+        守的不變量沒變（長尾要看得到），達成方式從「展開第二張」變成「本來就在同一張」。
+        ⚠ 前身為 `test_year_matrix_expand_label_wips_style`（驗「＋查看全部」文案）。
+        """
         rows = [{"applicant_display_name": f"Co{i:02d}", "application_year": 2020, "patent_count": 30 - i}
                 for i in range(15)]
         reports = {"applicant_year_matrix": {"label_zh": "申請人年度矩陣", "rows": rows}}
@@ -313,8 +328,13 @@ class DisplaySpecTests(unittest.TestCase):
             ctx = self._fake_ctx(tmp, reports)
             chart_runner._build_applicant_year_matrix_section(ctx)
             section = ctx.sections[0]
-        self.assertTrue(str(section.get("more_label", "")).startswith("＋查看全部"),
-                        f"收合鈕應為 WIPS 式「＋查看全部」，實得 {section.get('more_label')!r}")
+            svg = (Path(tmp) / "applicant_year_matrix.svg").read_text(encoding="utf-8")
+        self.assertFalse(section.get("more_variants"), "併成一張後不應再有第二張圖")
+        self.assertNotIn("more_label", section, "沒有第二張圖就不該留展開鈕文案")
+        self.assertEqual(len(section["variants"]), 1)
+        for name in ("Co00", "Co10", "Co14"):
+            with self.subTest(name=name):
+                self.assertIn(name, svg, "長尾必須在同一張圖上")
 
     def test_ranking_limit_default_follows_chart_row_limit(self):
         """🔴 2026-08-10 契約變更：ranking_limit 預設收斂到 CHART_ROW_LIMIT（10）。
@@ -781,8 +801,9 @@ class NarrativeRefreshTests(unittest.TestCase):
         self.assertIn("測試解讀文字XYZ", index_html, "解讀文字應嵌入每張圖表變體面板內")
         self.assertNotIn("待解讀", index_html, "解讀齊備後不得殘留待解讀佔位")
         self.assertEqual(stats["pending"], [], "無缺漏 key")
-        # applicant_year_matrix has 2 variants (default + more); v1 direct text serves both
-        self.assertEqual(stats["narrated"], 2)
+        # 🔴 2026-08-12：申請人矩陣改跨度圖後 Top10 與第 11–20 名併成一張，
+        # variant 由 2（default + more）減為 1——narrated 隨之 2 → 1。
+        self.assertEqual(stats["narrated"], 1)
 
     def test_narrative_lookup_strips_level_suffix(self):
         """IPC/CPC 卡查找鍵由檔名 fallback 帶 _L4 尾巴，narratives 契約鍵不帶層級——
@@ -859,18 +880,16 @@ class SelectiveRenderTests(unittest.TestCase):
             # 只查趨勢 section 依賴的兩張報表（公告補齊雙線），沒有其他報表被查。
             self.assertEqual(sorted(set(fetched)), ["application_trend", "publication_trend"])
             # 產出檔只有選中 sections 的圖＋固定數檔。
-            # ⚠ 2026-08-09 契約變更（P3 雙 profile）：每張圖多產一份 web profile
-            # （`.web.svg`），並多一個 `profile_manifest.json` 記錄 identity →
-            # 兩個 profile 的 path 與 checksum。
+            # 🔴 2026-08-12 契約變更（unify-chart-source 使用者定案）：每張圖
+            # 只產**一份** WEB 尺寸的 SVG（原檔名），`.web.svg` 副本與
+            # `profile_manifest.json` 隨雙 profile 機制退場。
             self.assertEqual(
                 sorted(result["files"]),
                 sorted([
                     "annual_trend.svg",
-                    "annual_trend.web.svg",
                     "report_data.json",
                     "index.html",
                     "artifact_manifest.json",
-                    "profile_manifest.json",
                     "version_meta.json",
                 ]),
             )
@@ -1007,8 +1026,14 @@ class SelectiveRenderTests(unittest.TestCase):
         self.assertEqual(row["recent_assignee_count"], 2)
         self.assertEqual(row["recent_assignee_display_names"], "Acme; Beta")
 
-    def test_applicant_year_matrix_outputs_bubble_svg_json_and_expand_html(self):
-        """專利權人 × 年份矩陣使用泡泡圖，JSON 不因圖表前 20 家而裁切。"""
+    def test_applicant_year_matrix_outputs_span_svg_and_full_json(self):
+        """專利權人 × 年份使用**跨度圖**，JSON 不因圖表前 20 家而裁切。
+
+        🔴 2026-08-12 契約更新（design 7.8b）：泡泡矩陣 → 跨度圖、兩張併一張。
+        不變量：① 圖只畫前 20 家 ② `report_data` 保留全部 22 列（圖的截斷不得
+        傳染到資料）③ 色階仍表達量級。變的是圖元（circle→span-bar）與檔案數。
+        ⚠ 前身為 `test_applicant_year_matrix_outputs_bubble_svg_json_and_expand_html`。
+        """
 
         matrix_rows = [
             {"applicant_display_name": f"Owner {index:02d}", "application_year": 2020, "patent_count": 30 - index}
@@ -1025,35 +1050,33 @@ class SelectiveRenderTests(unittest.TestCase):
 
             run_dir = Path(result["output_dir"])
             svg = (run_dir / "applicant_year_matrix.svg").read_text(encoding="utf-8")
-            more_svg = (run_dir / "applicant_year_matrix_more.svg").read_text(encoding="utf-8")
-            index_html = (run_dir / "index.html").read_text(encoding="utf-8")
             report_data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
 
         self.assertEqual(result["sections_rendered"], ["applicant_year_matrix"])
         self.assertIn("applicant_year_matrix.svg", result["files"])
-        self.assertIn("applicant_year_matrix_more.svg", result["files"])
-        self.assertIn("<circle", svg)
-        self.assertIn("<title>Owner 01 / 2020 / 29</title>", svg)
-        self.assertIn(">29</text>", svg)
-        combined_svg = svg + more_svg
-        self.assertIn('#14B8A6', combined_svg)
-        self.assertIn('#F59E0B', combined_svg)
-        self.assertIn('#DC2626', combined_svg)
-        self.assertIn("件數色階", svg)
-        self.assertIn("Owner 10", svg)
-        self.assertNotIn("Owner 11", svg)
-        self.assertIn("Owner 11", more_svg)
-        self.assertIn("Owner 20", more_svg)
-        self.assertNotIn("Owner 21", more_svg)
-        # 2026-07-21 顯示規格：收合鈕文案改 WIPS 式「＋查看全部（第 11～20 名）」（原「顯示第 11～20 名」）
-        self.assertIn("＋查看全部（第 11～20 名）", index_html)
-        self.assertIn("data-expand-target", index_html)
+        self.assertNotIn("applicant_year_matrix_more.svg", result["files"],
+                         "20 列已在單張圖上，不應再產第二張")
+        self.assertIn('data-role="span-bar"', svg, "應為跨度條而非泡泡")
+        self.assertIn("<title>Owner 01 2020–2020（29 件）</title>", svg)
+        self.assertIn('data-role="span-total"', svg, "條末應標總件數")
         self.assertIn("2020", svg)
+        # 色階仍表達量級（同泡泡矩陣的色帶，整份報表語意一致）
+        self.assertRegex(svg, r"#14B8A6|#F59E0B|#DC2626|#93C5FD")
+        # 前 20 名都在同一張；第 21 名之後才截斷
+        for name in ("Owner 01", "Owner 10", "Owner 11", "Owner 20"):
+            with self.subTest(name=name):
+                self.assertIn(name, svg)
+        self.assertNotIn("Owner 21", svg, "圖仍只畫前 20 家")
+        # 🔴 圖的截斷不得傳染到資料
         rows = report_data["reports"]["applicant_year_matrix"]["rows"]
         self.assertEqual(len(rows), 22)
         self.assertEqual(rows[0]["applicant_display_name"], "Owner 01")
 
-    def test_applicant_year_matrix_outputs_bubbles_and_keeps_full_rows(self):
+    def test_applicant_year_matrix_span_keeps_full_rows(self):
+        """圖只畫前 20 家、資料保留全部 22 列（與上一支的差異：本支專驗資料完整性）。
+
+        🔴 2026-08-12：泡泡 → 跨度圖後，第 11–20 名不再需要第二張圖。
+        """
         matrix_rows = [
             {"applicant_display_name": f"Applicant {index:02d}", "application_year": 2021, "patent_count": 25 - index}
             for index in range(1, 23)
@@ -1069,19 +1092,16 @@ class SelectiveRenderTests(unittest.TestCase):
 
             run_dir = Path(result["output_dir"])
             svg = (run_dir / "applicant_year_matrix.svg").read_text(encoding="utf-8")
-            more_svg = (run_dir / "applicant_year_matrix_more.svg").read_text(encoding="utf-8")
             report_data = json.loads((run_dir / "report_data.json").read_text(encoding="utf-8"))
 
-        self.assertIn("applicant_year_matrix_more.svg", result["files"])
-        self.assertIn("<circle", svg)
-        self.assertIn("<title>Applicant 01 / 2021 / 24</title>", svg)
-        self.assertIn("Applicant 10", svg)
-        self.assertNotIn("Applicant 11", svg)
-        self.assertIn("Applicant 11", more_svg)
-        self.assertNotIn("Applicant 21", more_svg)
+        self.assertNotIn("applicant_year_matrix_more.svg", result["files"])
+        self.assertIn("<title>Applicant 01 2021–2021（24 件）</title>", svg)
+        self.assertIn("Applicant 11", svg, "第 11 名起不再需要第二張圖")
+        self.assertIn("Applicant 20", svg)
+        self.assertNotIn("Applicant 21", svg, "圖仍只畫前 20 家")
         self.assertEqual(len(report_data["reports"]["applicant_year_matrix"]["rows"]), 22)
 
-    def test_year_bubble_matrix_uses_latest_25_years_and_large_bubbles(self):
+    def test_year_span_chart_uses_latest_years_and_marks_truncation(self):
         matrix_rows = [
             {"applicant_display_name": "Owner A", "application_year": 2000 + index, "patent_count": index + 1}
             for index in range(30)
@@ -1108,17 +1128,20 @@ class SelectiveRenderTests(unittest.TestCase):
             self.assertNotIn(f"/ {year} /", svg)
         # 🔴 P-2：年份多到放不下時保留最新那段，並在圖上標明範圍——
         # 少資訊可以，靜默少才不行（2026-08-03 使用者定案）。
-        # ⚠ 欄寬窄時年份印兩位數（見 test_year_axis_labels_readable）——
-        # 驗「最新年份在軸上」，不驗四位數字面。
-        self.assertIn(">'29<", svg, "最新年份必須在")
+        # 🔴 2026-08-12 契約更新（unify-chart-source）：畫布 949→1180（WEB），
+        # 同一份 30 年資料放得下 25 年、欄寬足以印**四位數**年份——
+        # 原斷言的兩位數 `'29` 是窄畫布的產物。驗的不變量仍是「最新年份在軸上」。
+        self.assertIn(">2029<", svg, "最新年份必須在")
         self.assertIn("僅顯示", svg, "砍了年份卻沒標明範圍")
-        radii = [float(value) for value in re.findall(r' r="([0-9.]+)"', svg)]
-        self.assertGreaterEqual(min(radii), 9.0)
-        # 🔴 2026-08-03：上限由「固定 28」改為**依欄寬推導**（見
-        # test_year_matrix_bubble_fit）。橫軸補齊連續年度後欄距 43→38px，
-        # 固定半徑會讓相鄰泡泡撞在一起。這裡只驗「還放得下格內兩位數」，
-        # 不再驗死值——驗死值等於把重疊當成規格。
-        self.assertGreaterEqual(max(radii), chart_runner.BUBBLE_MIN_RADIUS_PX)
+        # 🔴 2026-08-12 契約更新：申請人矩陣改跨度圖，圖元由泡泡（大半徑 circle）
+        # 換成「跨度條＋有件年份標點」。原本驗泡泡半徑下限（可讀性）的兩條斷言，
+        # 換成驗跨度圖自己的不變量——條要畫得出來、標點要對上有件的年份。
+        self.assertIn('data-role="span-bar"', svg)
+        bar_h = [float(m.group(1)) for m in re.finditer(
+            r'<rect data-role="span-bar"[^>]*height="([\d.]+)"', svg)]
+        self.assertTrue(bar_h and min(bar_h) >= 6.0, "跨度條高度不得低於可見下限")
+        self.assertIn('data-role="active-year"', svg,
+                      "有件年份必須標點，否則斷續投入會被讀成連續布局")
         height = float(re.search(r'<svg[^>]+height="([0-9.]+)"', svg).group(1))
         # P-2：畫布高度改為上限制（≤CHART_CANVAS_MAX_HEIGHT），不再隨列數無限長高。
         self.assertLessEqual(height, chart_runner.CHART_CANVAS_MAX_HEIGHT)
@@ -1313,7 +1336,8 @@ class SectionReportKeyTests(unittest.TestCase):
     def test_four_cards_render_non_empty_data_table(self):
         """端到端：四張卡在 index.html 的數據區不得是「無資料」。"""
         _, index_html = self._render(list(self._ROWS))
-        blocks = re.findall(r'<section class="report-section">.*?</section>', index_html, re.S)
+        # ⚠ 2026-08-12 起 section 帶錨點 id（章節導覽用），選取器不能寫死開頭標籤字面。
+        blocks = re.findall(r'<section class="report-section"[^>]*>.*?</section>', index_html, re.S)
         by_title = {}
         for block in blocks:
             title = re.search(r"<h2>(.*?)</h2>", block).group(1)
@@ -1573,8 +1597,15 @@ class SparseChartFillsFrameTests(unittest.TestCase):
         仍會放大），只是上限收到 `SPARSE_ROW_CEILING_FACTOR`＝2 倍。
         剩下的留白是**內容量的問題**（CPC L4 就只有一個分類），
         要靠版型或插圖補（W-3），不是把長條拉粗。
+
+        🔴 2026-08-12 契約更新（unify-chart-source）：畫布綁 WEB 後
+        max 高 460→560（+21.7%）、列高 28→32（+14.3%）——分母長得比分子快，
+        1 列的實際佔比由 ~0.30 降為 0.279，舊下限 0.28 差線。填框**機制零改動**
+        （實測 1/2/3 列＝156/210/426px），下限依新幾何校準為 0.26/0.35/0.6
+        ——此為量測後校準，範圍在 change 事前核准的「幾何測試逐支更新」內，
+        已於完成回報揭露。
         """
-        for n, floor in ((1, 0.28), (2, 0.35), (3, 0.6)):
+        for n, floor in ((1, 0.26), (2, 0.35), (3, 0.6)):
             height = self._height(n)
             self.assertGreaterEqual(
                 height, chart_runner.CHART_CANVAS_MAX_HEIGHT * floor,

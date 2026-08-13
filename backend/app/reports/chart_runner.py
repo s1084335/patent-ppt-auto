@@ -152,22 +152,26 @@ COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
 # 反推：要讓縮放 ≥0.9，畫布不得超過 9.89×4.80 in ＝ 949×461 px。
 # 字級 18px（＝13.5pt）× 0.9 ＝ 12.2pt，剛好過線。
 # 🔴 尺寸與字級的唯一定義處＝chart_sizing（2026-08-03 定案：只分尺寸與字級，
-# 版面邏輯共用）。修 PPT 的尺寸改 chart_sizing.PPT；本檔常數只是綁定，不自帶數值。
-from backend.app.reports.chart_sizing import PPT as _SIZING
+# 版面邏輯共用）。本檔常數只是綁定，不自帶數值。
+# 🔴 2026-08-12（unify-chart-source）：綁定改 **WEB**——每張圖只產一份
+# WEB 尺寸的 SVG（15px 字級、1180 畫布），寫入既有原檔名；簡報端（deck）
+# 自行 refit 字級，引擎不再為 PPT 預放大。
+from backend.app.reports.chart_sizing import WEB as _SIZING
 
 
 # 🔴 P3（2026-08-07）：畫布與字級目標改**依作用中的 profile** 取值——
 # 同一支 renderer 服務 web 與 ppt，只有尺寸／字級不同（版面邏輯共用）。
 # ⚠ 保留模組層常數名不變：既有呼叫端一處不用改（介面不變的深化寫法）。
 def _sizing_value(attr: str) -> float:
-    r"""取作用中 profile 的尺寸值（唯一定義處＝chart_sizing）。
+    r"""取唯一 sizing（chart_sizing.WEB）的尺寸值。
 
+    🔴 2026-08-12（unify-chart-source）：原經 chart_profiles.active_sizing()
+    依「作用中 profile」動態取值；單一來源後值是靜態的，直接讀 _SIZING
+    ——active_sizing 轉手層依刪除測試原則併掉。
     ⚠ 畫布尺寸維持 **int**：轉成 float 會讓 SVG 屬性變成 `width="949.0"`，
     下游以 `width="(\d+)"` 解析的地方就對不上（2026-08-07 實測一支測試紅）。
     """
-    from backend.app.reports.chart_profiles import active_sizing
-
-    value = getattr(active_sizing(), attr)
+    value = getattr(_SIZING, attr)
     return int(value) if isinstance(value, int) else float(value)
 
 
@@ -186,36 +190,26 @@ PT_PER_PX = 72.0 / PX_PER_INCH
 CHART_DATA_TARGET_PT = _SIZING.data_target_pt   # 資料文字（列標籤、數值、chip…）
 CHART_NOTE_TARGET_PT = _SIZING.note_target_pt   # 註記（圖例、編碼說明、來源）
 
-#: PPT 圖框尺寸（英吋）。⚠ 這是 `theme.json` 的**刻意複製**：
-#: `chart_runner` 在後端、`theme.json` 在 skill 目錄，跨模組讀不到。
-#: 依「同一份知識只能有一個定義處」的規則，無法 import 時加一致性測試釘住
-#: （`test_chart_font_target.FrameConstantsMatchThemeTests`），讓分岔立刻紅。
-CHART_HERO_FRAME_IN = _SIZING.hero_frame_in
-CHART_WIDE_FRAME_IN = _SIZING.wide_frame_in
-#: 長寬比達到多少就會被組版端改用滿寬版型（與 build_ppt.WIDE_CHART_ASPECT_MIN 同值）。
-WIDE_CHART_ASPECT_MIN = _SIZING.wide_aspect_min
+#: ⚠ PPT 圖框常數（`CHART_HERO_FRAME_IN`／`CHART_WIDE_FRAME_IN`／
+#: `WIDE_CHART_ASPECT_MIN`）已於 2026-08-12 移除（restructure-html-report-export）：
+#: 它們是**已移除的 `build_ppt`** 的圖框，`unify-chart-source` 單一來源後無任何
+#: 消費者，且與 deck skill 的幾何是兩套對不起來的數字——留著是假知識。
+#: 簡報端的尺寸知識現由 deck 組版層單一持有。
 
 
 def chart_scale(width_px: float, height_px: float) -> float:
-    """這張畫布縮進 PPT 圖框後的縮放比。
+    """畫布縮放補償——單一來源後恆為 1.0（unify-chart-source，2026-08-12）。
 
-    ⚠ 縮放比由畫布尺寸決定——這正是「同一個字級在不同頁面變成不同大小」的原因。
-    組版端 `_add_picture_fitted` 是等比縮放到框內，故取寬高兩個比例的較小者。
+    🔴 沿革：雙 profile 時代這裡算「畫布縮進 PPT 圖框的縮放比」，讓 SVG 字級
+    預放大補償二次縮放；web 自 2026-08-11 恆 1.0（「圖中文字都維持在 15」）。
+    PPT 預放大隨單一來源退場——簡報端（deck skill）逐圖 refit 字級，
+    引擎輸出即網頁顯示尺寸，無任何圖框補償。
 
-    🔴 web profile 恆回 1.0（2026-08-11 使用者定案「圖中文字都維持在 15」）：
-    網頁沒有圖框、SVG 以原生尺寸顯示，沿用 PPT 補償會讓小畫布的圖字被放大
-    ——「有些圖超大，很清楚但很突兀」。不補償後所有 web 圖字級＝target 同高。
+    ⚠ 函式保留不刪：它是「字級 target→SVG px」換算鏈的一環
+    （chart_font_px 除以它），拆掉會讓 9 支呼叫端與測試改介面——
+    介面不變、實作縮薄，同 `_add_picture_fitted` 那次的深化寫法。
     """
-    from backend.app.reports.chart_profiles import active_profile_name
-
-    if active_profile_name() == "web":
-        return 1.0
-    w_in = width_px / PX_PER_INCH
-    h_in = height_px / PX_PER_INCH
-    if h_in <= 0 or w_in <= 0:
-        return 1.0
-    frame = CHART_WIDE_FRAME_IN if w_in / h_in >= WIDE_CHART_ASPECT_MIN else CHART_HERO_FRAME_IN
-    return min(frame[0] / w_in, frame[1] / h_in)
+    return 1.0
 
 
 def solve_chart_font(width_px: float, height_for_font, *,
@@ -336,7 +330,8 @@ CHART_FILE_REPORTS: dict[str, list[str]] = {
     "applicant_ranking.svg": ["applicant_ranking"],
     "applicant_country_matrix.svg": ["applicant_country_distribution"],
     "applicant_year_matrix.svg": ["applicant_year_matrix"],
-    "applicant_year_matrix_more.svg": ["applicant_year_matrix"],
+    # ⚠ `applicant_year_matrix_more.svg`（第 11–20 名第二張）已於 2026-08-12 退場：
+    # 改跨度圖後 20 列進得了單一畫布，不需要拆兩張。
     # KP 競爭定位象限（值與 KP_QUADRANT_FILENAME 同源，測試 test_kp_quadrant_artifact 盯著）
     "kp_quadrant.svg": ["applicant_strength_profile"],
     # 三個分群 artifact 各自對回自己的報表名（供 manifest／解讀查找定位到正確報表）。
@@ -386,21 +381,6 @@ def report_names_for_artifact(filename: str) -> list[str]:
     return []
 
 
-# profile 檔名規則的唯一定義處在 chart_profiles；本模組只消費，不另立一套。
-from backend.app.reports.chart_profiles import (
-    DEFAULT_PROFILE,
-    PROFILES,
-    ChartProfileError,
-    active_profile_name,
-    parse_profile_filename,
-    profile_context,
-    profile_filename,
-)
-
-# profile manifest 的檔名（前端與組版都靠它把 identity 對到實際圖檔）。
-PROFILE_MANIFEST_NAME = "profile_manifest.json"
-
-
 def _fetch_workspace_name(workspace_id: int) -> str | None:
     """由 workspace_id 取顯示名稱（封面主標用）。"""
     from backend.app.db.connection import get_pool
@@ -440,80 +420,28 @@ def build_workspace_identity(
 
 
 def _write_svg(path: Path, svg: list[str]) -> Path:
-    """SVG 的**唯一寫檔出口**；實際落點依作用中的 profile 決定。
+    """SVG 的**唯一寫檔出口**——寫入呼叫端給的原檔名。
 
-    🔴 呼叫端一律傳「原本的」路徑（`run_dir / "lifecycle.svg"`），不必知道
-    profile 這回事——web profile 會自動改寫成 `lifecycle.web.svg`。
-    ⚠ 反過來做（每個 renderer 多收一個 profile 參數）會讓 8 支 renderer 與
-    它們的每一個測試都跟著改介面，正是 AGENTS.md「入口要精簡」那條的反例。
+    🔴 2026-08-12（unify-chart-source）：單一來源後不再有 profile 中綴改寫；
+    出口函式保留（而非散回各 renderer 直寫），維持「寫檔只有一個門」。
     """
-    target = path.with_name(profile_filename(path.name, active_profile_name()))
-    target.write_text("\n".join(svg), encoding="utf-8")
-    return target
+    path.write_text("\n".join(svg), encoding="utf-8")
+    return path
 
 
-def render_sections_all_profiles(ctx: ChartContext,
-                                 specs: tuple[SectionSpec, ...]) -> None:
-    """為每個 profile 各跑一次 section builders。
+def render_sections(ctx: ChartContext, specs: tuple[SectionSpec, ...]) -> None:
+    """跑一輪 section builders——單一來源後只渲染一次（unify-chart-source）。
 
-    PPT 先跑（既有行為，且它的產出是 report_data.json 與 artifact_manifest 的
-    依據）；web 隨後只補圖。
-
-    ⚠ 第二輪要把 `sections` 還原：builder 同時負責「畫圖」與「append 卡片資料」，
-    不還原的話網頁報表會出現重複卡片。`chart_rows` 是 dict 覆寫，重跑無害。
+    🔴 沿革：雙 profile 時代這裡叫 `render_sections_all_profiles`，PPT 先跑、
+    web 第二輪補圖（還要還原 sections 防重複卡片）。2026-08-12 起每張圖
+    只產一份 WEB 尺寸的 SVG，第二輪與其還原技巧一併退場。
     """
     for spec in specs:
         spec.build(ctx)
-    first_round_sections = list(ctx.sections)
-    for profile in PROFILES:
-        if profile == DEFAULT_PROFILE:
-            continue
-        with profile_context(profile):
-            for spec in specs:
-                spec.build(ctx)
-        ctx.sections[:] = first_round_sections
 
 
-def _variant_key_of(base_name: str, report_key: str) -> str:
-    """從既有檔名推出 variant：檔名去掉 report_key 前綴後的剩餘，沒有就是 default。
-
-    `ipc_main_distribution_L4.svg` ＋ `ipc_main_distribution` → `L4`；
-    `jurisdiction_distribution.svg` ＋ `country_distribution` → `default`
-    （檔名與 report_key 不同名，本來就沒有變體後綴）。
-    """
-    stem = base_name.removesuffix(".svg")
-    if stem.startswith(f"{report_key}_"):
-        return stem[len(report_key) + 1:]
-    return "default"
-
-
-def build_profile_manifest(run_dir: Path, version: str) -> dict[str, Any]:
-    """掃描版本目錄，建立 identity → 各 profile（web／ppt）的對應與 checksum。
-
-    identity＝`report_key:variant`（與 `chart_bundle` 選圖用的一致），path 指向
-    **既有檔名**——PPT profile 沿用原名、web profile 帶 `.web` 中綴。
-
-    ⚠ 一個檔可對應多個 report_key（`annual_trend.svg` 同時是申請與公告趨勢的
-    圖），此時該檔在每個 identity 下都登記。這正是原「一檔一 identity」命名
-    契約表達不了、因而於 2026-08-09 回寫的情形。
-
-    ⚠ checksum 綁檔案內容：兩個 profile 尺寸不同故必然不同，配錯或拿到過期檔
-    時對不上。
-    """
-    charts: dict[str, dict[str, Any]] = {}
-    for path in sorted(run_dir.glob("*.svg")):
-        try:
-            base_name, profile = parse_profile_filename(path.name)
-        except ChartProfileError:
-            continue
-        for report_key in report_names_for_artifact(base_name):
-            identity = f"{report_key}:{_variant_key_of(base_name, report_key)}"
-            entry = charts.setdefault(identity, {"version": version, "profiles": {}})
-            entry["profiles"][profile] = {
-                "path": path.name,
-                "checksum": hashlib.sha256(path.read_bytes()).hexdigest(),
-            }
-    return {"version": version, "charts": charts}
+# （build_profile_manifest／_variant_key_of 已隨雙 profile 退場，
+#   2026-08-12 unify-chart-source——identity 對應的消費者 chart_bundle 已刪。）
 
 
 def build_artifact_manifest(
@@ -1778,6 +1706,119 @@ def year_bubble_color(value: int, max_value: int) -> tuple[str, str]:
     return YEAR_BUBBLE_COLOR_BANDS[-1][1], YEAR_BUBBLE_COLOR_BANDS[-1][2]
 
 
+#: 跨度圖的形狀常數。⚠ 都由畫布尺寸推導，不寫死位置（2026-08-03 三個 bug 的教訓）。
+SPAN_BAR_HEIGHT_RATIO = 0.42     # 條高佔列高的比例
+SPAN_SINGLE_YEAR_WIDTH_RATIO = 0.5   # 單點列的方塊寬佔欄寬比例（要看得見但不像跨度）
+SPAN_ACTIVE_DOT_RATIO = 0.30     # 有件年份的標點半徑佔條高比例
+
+
+def render_year_span_chart(
+    path: Path,
+    title: str,
+    layout: dict[str, Any],
+    row_names: list[str],
+) -> None:
+    """申請人 × 年度**跨度圖**：一列一條「進場→退場」的橫條，條上標出實際有件的年份。
+
+    🔴 2026-08-12 使用者定案（design 7.8b）：本圖取代原泡泡矩陣。
+    判準是**跨度本身有沒有資訊**——實測申請人 10 列跨度 0–5 年、平均只佔全軸 11%
+    （4 列單點），泡泡散在 140 格只有 25 格有值，八成版面是空的；改成跨度條後
+    「誰早誰晚、誰只打一槍、有無世代斷層」是一眼可辨的形狀。
+    ⚠ 同樣稀疏的主題演進**維持泡泡**：它跨度平均佔全軸 56%（含一條滿軸），
+    畫成跨度條會糊成等長。兩張圖各自定型，不寫「稀疏就用跨度圖」的條件規則。
+
+    🔴 **不得失真**：本專案資料填格率僅約 11%（例如 2020、2022、2024 三年有件），
+    純甘特條會把它畫成「2020→2024 連續投入」——那是系統性地把斷續說成持續。
+    故條上以圓點標出**實際有件的年份**：條表達跨度、點表達事實，兩者並存。
+
+    跨度圖丟失逐年件數，改以條末的總件數保住量級；「哪一年是高峰」由年度趨勢圖
+    回答整體。
+    """
+    years: list[int] = layout["years"]
+    values: dict[tuple[str, int], int] = layout["values"]
+    max_value = int(layout["max_value"] or 1)
+
+    _f0 = chart_font_px(_sizing_value("canvas_width"), _sizing_value("canvas_max_height"))
+    left = label_gutter([str(name) for name in row_names], font_px=_f0 * 1.05)
+    top = 96
+    usable = _sizing_value("canvas_max_height") - top - 40
+    # ⚠ 列高自適應：20 列要進單一畫布（改版前 Top10／11–20 名是兩張圖）。
+    # 下限 20px——再低則列標籤（15.1px 字）會相黏。
+    row_h = max(20, min(34, usable // max(1, len(row_names))))
+    if row_h * len(row_names) > usable:
+        row_names = row_names[:max(1, int(usable // row_h))]
+    grid_w = _sizing_value("canvas_width") - left - 40
+    years_total = len(years)
+    years = years[-CHART_YEAR_WINDOW:]
+    cell_w = max(24, grid_w // max(1, len(years)))
+    width = left + max(1, len(years)) * cell_w + 40
+    height = top + max(1, len(row_names)) * row_h + 40
+    label_px = chart_font_px(width, height)
+    note_px = chart_font_px(width, height, target_pt=_sizing_value("note_target_pt"))
+    bar_h = max(6.0, row_h * SPAN_BAR_HEIGHT_RATIO)
+    year_x = {year: left + i * cell_w + cell_w / 2 for i, year in enumerate(years)}
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
+        f' viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
+        '<rect width="100%" height="100%" fill="white"/>',
+        f'<text data-role="chart-title" x="16" y="28" font-size="{label_px:.1f}"'
+        f' font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<text x="16" y="56" font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">'
+        f'橫條＝首件到末件的投入期間；條上圓點＝該年實際有申請；條末數字＝總件數</text>',
+        *([(f'<text x="{width - 40}" y="{top - 12}" text-anchor="end" font-size="{note_px:.1f}"'
+            f' fill="{COLOR_TEXT_SOFT}">僅顯示 {years[0]}–{years[-1]}（共 {years_total} 年）</text>')]
+          if years_total > len(years) else []),
+    ]
+    year_labels = [_year_axis_label(year, cell_w, label_px) for year in years]
+    if any(label.startswith("'") for label in year_labels):
+        parts.append(f'<text x="{left - 10}" y="{top - 12}" font-size="{label_px:.1f}"'
+                     f' text-anchor="end" fill="{COLOR_TEXT_SOFT}">申請年 20—</text>')
+    for col_index, label in enumerate(year_labels):
+        x = left + col_index * cell_w + cell_w / 2
+        parts.append(f'<text x="{x:.1f}" y="{top - 12}" font-size="{label_px:.1f}"'
+                     f' text-anchor="middle" fill="{COLOR_TEXT}">{label}</text>')
+        # 淡格線：沒有它，條的起訖對不回年份刻度。
+        parts.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}"'
+                     f' y2="{top + len(row_names) * row_h}" stroke="#EEF2F7" stroke-width="1"/>')
+
+    for row_index, company in enumerate(row_names):
+        y_center = top + row_index * row_h + row_h / 2
+        parts.append(
+            f'<text data-role="row-label" x="{left - 10}" y="{y_center + label_px * 0.35:.1f}"'
+            f' font-size="{label_px:.1f}" text-anchor="end" fill="{COLOR_TEXT}">'
+            f'{xml_text(company)}</text>')
+        active = [year for year in years if values.get((company, year), 0) > 0]
+        if not active:
+            continue
+        total = sum(values.get((company, year), 0) for year in active)
+        first_x, last_x = year_x[active[0]], year_x[active[-1]]
+        # 顏色沿用泡泡矩陣的色階（值大＝深），整份報表的量級語意一致。
+        fill = year_bubble_color(total, max(max_value, total))[0]
+        if len(active) == 1:
+            bar_w = cell_w * SPAN_SINGLE_YEAR_WIDTH_RATIO
+            bar_x = first_x - bar_w / 2
+        else:
+            bar_x, bar_w = first_x, last_x - first_x
+        parts.append(
+            f'<rect data-role="span-bar" x="{bar_x:.1f}" y="{y_center - bar_h / 2:.1f}"'
+            f' width="{bar_w:.1f}" height="{bar_h:.1f}" rx="{min(3.0, bar_h / 2):.1f}"'
+            f' fill="{fill}"><title>{xml_text(company)} {active[0]}–{active[-1]}'
+            f'（{total} 件）</title></rect>')
+        # 🔴 有件年份標點——沒有它，斷續投入會被讀成連續布局。
+        for year in active:
+            parts.append(
+                f'<circle data-role="active-year" cx="{year_x[year]:.1f}" cy="{y_center:.1f}"'
+                f' r="{max(2.5, bar_h * SPAN_ACTIVE_DOT_RATIO):.1f}" fill="#FFFFFF"'
+                f' stroke="{fill}" stroke-width="1.5"/>')
+        parts.append(
+            f'<text data-role="span-total" x="{last_x + cell_w * 0.4:.1f}"'
+            f' y="{y_center + label_px * 0.35:.1f}" font-size="{label_px:.1f}"'
+            f' fill="{COLOR_TEXT}">{total}</text>')
+    parts.append("</svg>")
+    _write_svg(path, parts)
+
+
 def render_year_bubble_matrix_chart(
     path: Path,
     title: str,
@@ -1812,13 +1853,18 @@ def render_year_bubble_matrix_chart(
     # 靜默切掉才是不能接受的。
     years = years[-CHART_YEAR_WINDOW:]
     cell_w = max(36, grid_w // max(1, len(years)))
-    # 🔴 泡泡半徑上限由**欄寬推導**，不寫死（2026-08-03 補齊連續年度後的迴歸）。
-    # 原本固定 9+19=28：欄數 14→16 讓欄距由 43px 縮到 38px，泡泡沒跟著縮，
-    # 相鄰兩格直接撞在一起（實測 4 處、最深 5.5px）。
-    # ⚠ 半徑與欄寬是同一件事的兩個落點——各寫各的就會靜默撞上。
+    # 🔴 泡泡半徑上限由**欄寬與列距**共同推導，不寫死（2026-08-03 補欄向；
+    # 2026-08-12 補列向——使用者實機抓到殘留的另一半）。
+    # 08-03：欄數 14→16 讓欄距 43→38px，泡泡沒跟著縮，橫向相鄰互撞 4 處。
+    # 08-12：列數 10 讓列距縮到 39px，上限 28 的泡泡縱向互撞 4 對
+    # （曾晴×帝瑪斯 2020/2022/2024 等）——當年只綁了欄寬，列距漏綁。
+    # ⚠ 半徑、欄寬、**列距**是同一件事的三個落點——少綁一個就靜默撞上。
     # 下限 14 是格內兩位數（18px 字）放得下的最小值；再窄寧可讓大小差異壓縮，
-    # 也不能讓數字滿出泡泡。
-    bubble_max = max(BUBBLE_MIN_RADIUS_PX, min(28.0, (cell_w - LABEL_MIN_GAP_PX) / 2))
+    # 也不能讓數字滿出泡泡（row_h 壓到 26px 地板的極端情況允許輕微相切）。
+    bubble_max = max(BUBBLE_MIN_RADIUS_PX,
+                     min(28.0,
+                         (cell_w - LABEL_MIN_GAP_PX) / 2,
+                         (row_h - LABEL_MIN_GAP_PX) / 2))
     width = left + max(1, len(years)) * cell_w + 34
     height = top + max(1, len(row_names)) * row_h + 34
     label_px = chart_font_px(width, height)
@@ -2406,8 +2452,12 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "kind_summary": "種類組成",
     # 年度四欄（問題 9）
     "family_count": "家族數",
-    "topic_count": "涉及技術群",
-    "new_topic_count": "首現技術群",
+    # 🔴 2026-08-12 使用者定案術語：BERTopic 產物一律稱「技術主題」，不用「群」
+    # （IPC/CPC「主群組」是專利分類官方用語，不在此列）。
+    "topic_count": "涉及技術主題",
+    "new_topic_count": "首現技術主題",
+    # 年度矩陣交叉表的合計欄（pivot_year_matrix 產出）。
+    "total": "總件數",
     "patent_count": "專利件數",
     "year": "年份",
     "application_count": "申請件數",
@@ -2605,18 +2655,33 @@ def table_display_spec(reports: dict[str, dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+#: 數據表的兩個列數界線。
+#: - `DATA_TABLE_MAX_ROWS`＝單章呈現上限（2026-07-21 使用者定案「不讓人看百筆數據」，不變）
+#: - `DATA_TABLE_PREVIEW_ROWS`＝**預設**顯示列數（2026-08-12 交付檔章節式改版新增）
+#: ⚠ 本次只改「預設密度」，沒有放寬上限——第 6～20 列收合可展開，第 21 列起仍不呈現。
+DATA_TABLE_MAX_ROWS = 20
+DATA_TABLE_PREVIEW_ROWS = 5
+
+
 def _data_table_html(rows: list[dict[str, Any]], report_name: str) -> str:
-    """數據區：最多 20 筆＋總計列；不提供全量展開（2026-07-21 使用者補充——
-    不讓人看百筆數據），超出只註記共幾列；完整 rows 由 DB／report_data.json 保存。"""
+    """數據區：預設 5 列、可展開至 20 列＋總計列；超過 20 列只註記共幾列
+    （2026-07-21 使用者定案「不讓人看百筆數據」，完整 rows 由 DB／report_data.json 保存）。
+
+    🔴 2026-08-12（restructure-html-report-export）：交付檔改章節式後，數據表是
+    最肥的一項——申請人年度矩陣 21 列單張 697px。改為預設只露前
+    `DATA_TABLE_PREVIEW_ROWS` 列，其餘掛 `folded` 由展開鈕控制；**總計列永遠可見**
+    （它是結論不是明細，收起來等於把重點藏了）。
+    """
     if not rows:
         return '<p class="data-empty">無資料</p>'
     excluded = DATA_TABLE_EXCLUDED_COLUMNS.get(report_name, ())
     columns = [c for c in rows[0].keys() if c not in excluded]
     header = "".join(f"<th>{xml_text(DATA_COLUMN_LABELS.get(c, c))}</th>" for c in columns)
     body_rows = []
-    for r in rows[:20]:
+    for row_index, r in enumerate(rows[:DATA_TABLE_MAX_ROWS]):
         cells = "".join(f"<td>{xml_text(_humanize_cell(r.get(c, '')))}</td>" for c in columns)
-        body_rows.append(f"<tr>{cells}</tr>")
+        folded = ' class="folded"' if row_index >= DATA_TABLE_PREVIEW_ROWS else ""
+        body_rows.append(f"<tr{folded}>{cells}</tr>")
     # Totals row（class 放 td：列本身維持素 <tr>，與一般資料列同構）；
     # 只對加總有意義的欄出值，其餘「—」避免誤導。
     total_cells = []
@@ -2628,10 +2693,67 @@ def _data_table_html(rows: list[dict[str, Any]], report_name: str) -> str:
             total_cells.append('<td class="totals-cell"><strong>—</strong></td>')
     body_rows.append(f"<tr>{''.join(total_cells)}</tr>")
     table = f'<table><thead><tr>{header}</tr></thead><tbody>{"".join(body_rows)}</tbody></table>'
-    if len(rows) > 20:
+    shown = min(len(rows), DATA_TABLE_MAX_ROWS)
+    if shown > DATA_TABLE_PREVIEW_ROWS:
+        label = f"展開其餘 {shown - DATA_TABLE_PREVIEW_ROWS} 列（總列數 {len(rows)}）"
+        table += (f'<button type="button" class="table-expand" data-label="{xml_text(label)}">'
+                  f'{xml_text(label)}</button>')
+    if len(rows) > DATA_TABLE_MAX_ROWS:
         # 2026-07-21 定案修正：排名類「保存」也只留前 20（長尾不落庫），完整可由引擎重算
+        # ⚠ 文案字面是既有契約（test_data_table_max_20_rows_no_full_expand 盯著），
+        #   本次章節式改版只動預設密度，不改這句。
         table += f'<p class="data-note">顯示前 20 列｜總列數 {len(rows)}（入庫同前 20，完整可重算）</p>'
     return f'<div class="data-table-wrap">{table}</div>'
+
+
+def _variant_table_rows(variant: dict[str, Any],
+                        section_rows: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """這個變體要顯示的資料列；`None`＝它沒有自己的資料，與其他變體共用一張表。
+
+    兩種來源，都不靠猜：
+    - 變體自帶 `rows`（機會矩陣、主題演進都有）
+    - 變體自帶 `source_field`（主題統計表的技術／功效兩個變體）→ 依它過濾 section rows
+
+    ⚠ 不從 `variant_key` 反猜通道（`key.includes('tech')` 那種）：
+    產出端知道自己分了什麼通道，讓它寫進變體即可——猜法一旦與命名脫節就靜默錯配。
+    """
+    rows = variant.get("rows")
+    if isinstance(rows, list) and rows:
+        return rows
+    source_field = variant.get("source_field")
+    if source_field:
+        return [r for r in section_rows
+                if str(r.get("source_field")) == str(source_field)]
+    return None
+
+
+def _segmented_table_html(rows: list[dict[str, Any]], report_name: str) -> str:
+    """rows 混了多個 `source_field` 時**分段各出一張表**。
+
+    🔴 2026-07-21 使用者定案：「技術主題（wips_independent_claims）與功效分類
+    （effect_summary）分成兩段各自一張表，**不得混在同表**；Source Field 欄不顯示」。
+    `cluster_topic_table` 的 section note 也自己寫著「分段不混表」。
+
+    ⚠ 但交付用 HTML 一直沒實作：`source_field` 欄早就在
+    `DATA_TABLE_EXCLUDED_COLUMNS` 隱藏了，13 列（技術 5＋功效 8）卻仍全畫在同一張表
+    ——**欄藏了、列沒分**，讀者看到兩種不同單位的主題混排卻沒有任何提示。
+    前端因為有變體過濾（一次只顯示一個通道）看不出來，交付檔才是使用者拿到的東西
+    （2026-08-12 使用者實機指出）。
+
+    通道顯示名取自 `SOURCE_SEGMENT_LABELS`（本模組唯一來源），不另建對照。
+    只有一個通道時不拆段——多一層標題只是噪音。
+    """
+    order = list(dict.fromkeys(
+        str(row.get("source_field")) for row in rows if row.get("source_field")))
+    if len(order) <= 1:
+        return _data_table_html(rows, report_name)
+    parts: list[str] = []
+    for source_field in order:
+        segment_rows = [r for r in rows if str(r.get("source_field")) == source_field]
+        label = SOURCE_SEGMENT_LABELS.get(source_field, source_field)
+        parts.append(f'<h3 class="table-segment">{xml_text(label)}</h3>'
+                     f'{_data_table_html(segment_rows, report_name)}')
+    return "".join(parts)
 
 
 def _section_report_name(section: dict[str, Any]) -> str:
@@ -2856,6 +2978,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     narr_expired = narratives.pop("_expired", False)
 
     blocks: list[str] = []
+    nav_entries: list[tuple[str, str]] = []   # (錨點 key, 章節名)——導覽只列真的有產出的章節
     for index, section in enumerate(sections):
         variants = section.get("variants", [])
         if not variants:
@@ -2885,10 +3008,26 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             except (json.JSONDecodeError, OSError):
                 rows = []
 
-        data_html = _data_table_html(rows, report_name)
-
         # 2. Chart panels + per-variant explanation
         group_id = f"sec{index}"
+
+        # 1b. 數據表：**跟著變體切換**（2026-08-12 使用者實機指出
+        # 「技術主題統計表看技術主題就好，功效主題統計表看功效通道的就好」）。
+        # 原本切換鈕只管圖與解讀，表格永遠攤全部——等於切換鈕對表格沒作用。
+        # ⚠ 只有「變體真的能決定不同資料」時才逐變體出表：
+        # IPC 的 L4／L5 兩變體共用同一份分類明細，逐變體出表只會畫兩張一樣的。
+        per_variant_rows = [_variant_table_rows(v, rows) for v in variants]
+        if len(variants) > 1 and any(vr is not None for vr in per_variant_rows):
+            data_html = "".join(
+                f'<div class="data-panel" data-group="{group_id}" id="{group_id}-{v_i}-data"'
+                f'{"" if v_i == 0 else " hidden"}>'
+                f'{_data_table_html(vr if vr is not None else rows, report_name)}</div>'
+                for v_i, vr in enumerate(per_variant_rows)
+            )
+        else:
+            # 單變體或變體無法區分資料：一張表。混通道時仍分段（fallback，
+            # 見 _segmented_table_html 的 07-21 定案說明）。
+            data_html = _segmented_table_html(rows, report_name)
         buttons = ""
         if len(variants) > 1:
             btns = "".join(
@@ -2898,14 +3037,30 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             )
             buttons = f'<div class="toggle-bar">{btns}</div>'
 
-        def _panel_narrative(variant: dict[str, Any]) -> str:
+        def _panel_narrative(variant: dict[str, Any], v_i: int | None = None,
+                             group: str = "") -> str:
+            """單一變體的解讀區塊。
+
+            🔴 2026-08-12（restructure-html-report-export）：交付檔順序改為
+            圖 → 表 → 解讀後，解讀**離開了 chart-panel**（表插在中間），
+            不再靠 panel 的 hidden 連動。因此帶 `data-group` 與 `-exp` 尾綴的 id，
+            由 toggle JS 一併切換——否則「切到 L5、讀著 L4 解讀」是**靜默錯配**，
+            畫面不會有任何異狀。`v_i is None` 時維持舊行為（more 區塊圖文同框）。
+            """
             vk = variant.get("variant_key", "default")
             if narr_expired:
-                return '<div class="explanation expired">⚠️ 解讀版本過期</div>'
-            text = _variant_narrative_text(narratives, report_name, vk)
-            if text:
-                return f'<div class="explanation"><p>{xml_text(text)}</p></div>'
-            return '<div class="explanation pending">⏳ 待解讀</div>'
+                body, cls = "⚠️ 解讀版本過期", "explanation expired"
+            else:
+                text = _variant_narrative_text(narratives, report_name, vk)
+                if text:
+                    body, cls = f"<p>{xml_text(text)}</p>", "explanation"
+                else:
+                    body, cls = "⏳ 待解讀", "explanation pending"
+            if v_i is None:
+                return f'<div class="{cls}">{body}</div>'
+            hidden = "" if v_i == 0 else " hidden"
+            return (f'<div class="{cls}" data-group="{group}" '
+                    f'id="{group}-{v_i}-exp"{hidden}>{body}</div>')
 
         # 🔴 2026-08-11：index 改嵌 **web profile** 圖檔（`.web.svg` 存在就用）。
         # 原本嵌 PPT 版——PPT 版字級為補償圖框縮放而逐圖不同，在網頁原尺寸顯示
@@ -2917,10 +3072,17 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             return render_chart_embed(
                 resolve_web_asset(file, lambda f: (run_dir / f).exists()) if file else file)
 
+        # 🔴 圖 panel 只放圖（解讀已移到表之後）；`data-group` 供 toggle JS 精確選取。
+        # ⚠ 原本 JS 以 `[id^="{group}-"]` 選 panel，會**連 more 區塊的 panel 一起選中**
+        # 並設 hidden——切換過變體再展開「查看全部」就是一片空白。改用 data-group
+        # 屬性選取（more panel 不帶），順手消掉這個既有缺陷。
         panels = "".join(
-            f'<div class="chart-panel" id="{group_id}-{v_i}"{"" if v_i == 0 else " hidden"}>'
-            f'{_embed(variant["file"])}'
-            f'{_panel_narrative(variant)}</div>'
+            f'<div class="chart-panel" data-group="{group_id}" id="{group_id}-{v_i}"'
+            f'{"" if v_i == 0 else " hidden"}>{_embed(variant["file"])}</div>'
+            for v_i, variant in enumerate(variants)
+        )
+        explanations = "".join(
+            _panel_narrative(variant, v_i, group_id)
             for v_i, variant in enumerate(variants)
         )
         more_variants = section.get("more_variants", [])
@@ -2949,17 +3111,57 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
             link_html = f'<div class="section-links">{items}</div>'
         note = f'<p class="section-note">{xml_text(section["note"])}</p>' if section.get("note") else ""
 
+        # 🔴 2026-08-12 使用者定案：章節順序＝**圖 → 數據表 → 解讀**
+        # （原為 表 → 圖 → 解讀，一進章節先撞到一大片數字）。
+        # 章節 id 供頂部導覽錨點跳轉；章節名不另建對照表，直接用 section["title"]。
+        nav_entries.append((report_name, title))
         blocks.append(
-            f'<section class="report-section">'
+            f'<section class="report-section" id="sec-{xml_text(report_name)}">'
             f'<div class="section-head"><h2>{xml_text(title)}</h2>{link_html}</div>'
             f'{note}'
-            f'<div class="card-data">{data_html}</div>'
             f'{buttons}<div class="chart-stage">{panels}{more_html}</div>'
+            f'<div class="card-data">{data_html}</div>'
+            f'{explanations}'
             f'</section>'
         )
 
-    meta_items = " · ".join(f"{xml_text(k)}: {xml_text(v)}" for k, v in meta.items())
-    meta_bar = f'<p class="meta-bar">{meta_items}</p>' if meta_items else ""
+    # 🔴 標題用實際分析範圍，不是寫死英文 `Patent Report`（讀者拿到檔案分不出哪一份）。
+    # 來源優先序：呼叫端 meta → 版本目錄 version_meta.json 的 workspace_name。
+    # ⚠ 讀檔失敗一律退回通用標題，不讓標題把整份報表產製弄倒。
+    version_meta: dict[str, Any] = {}
+    try:
+        import json as _json
+        version_meta = _json.loads((run_dir / "version_meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        version_meta = {}
+    workspace_name = str(meta.get("workspace") or meta.get("workspace_name")
+                         or version_meta.get("workspace_name") or "").strip()
+    page_title = f"{workspace_name} 專利分析報表" if workspace_name else "專利分析報表"
+
+    # 抬頭給讀者看的是「這是哪一份、什麼時候產的」。
+    # ⚠ 原本直接把呼叫端 meta 攤平顯示，交付檔抬頭因而印著
+    # `ranking_limit: 10 · ipc_levels: 4 5`——那是產製參數，對讀者沒有意義，
+    # 但對追溯有用，故降級為次要行、不佔主位。
+    stamp = str(version_meta.get("generated_at") or "").replace("T", " ")[:16]
+    primary = " · ".join(x for x in (
+        f"產製於 {stamp}" if stamp else "",
+        str(version_meta.get("version") or run_dir.name or ""),
+    ) if x)
+    params = " · ".join(f"{xml_text(k)}: {xml_text(v)}" for k, v in meta.items())
+    meta_bar = "".join(part for part in (
+        f'<p class="meta-bar">{xml_text(primary)}</p>' if primary else "",
+        f'<p class="meta-params">產製參數 {params}</p>' if params else "",
+    ))
+
+    # 章節導覽（2026-08-12）：現行交付檔完全沒有導覽，9 章 8080px 只能一路捲。
+    nav_html = ""
+    if nav_entries:
+        chips = "".join(
+            f'<a class="navchip" href="#sec-{xml_text(key)}">{xml_text(name)}</a>'
+            for key, name in nav_entries
+        )
+        nav_html = (f'<nav class="chapter-nav"><div class="chapter-nav-inner">'
+                    f'<span class="nav-lead">章節</span>{chips}</div></nav>')
 
     html_text = f"""<!doctype html>
 <html lang="zh-Hant">
@@ -2968,42 +3170,159 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>專利報表</title>
   <style>
-    :root {{ color-scheme: light dark; }}
+    /* ══ 色票：沿用產品前端（backend/app/static/index.html）的 accent／text／border，
+       同一個產品不該有兩套視覺語言。淺色單一主題（使用者定案「淺色系為主」）——
+       不宣告 dark，避免瀏覽器自動反轉把圖表白底與頁面撞在一起。 */
+    :root {{
+      color-scheme: light;
+      --paper: #F4F6F9;      /* 頁面底：比純白略深，讓白卡浮起來 */
+      --card: #FFFFFF;
+      --ink: #1A1A2E;        /* 產品 --text */
+      --ink-soft: #5A6472;   /* 次要文字：比 #6C757D 深一階，小字仍讀得清 */
+      --line: #E2E6EC;       /* 產品 --border */
+      --line-soft: #EEF1F5;  /* 表格內線：只用來分列，不圍格 */
+      --brand: #0F3460;      /* 產品 --accent */
+      --brand-soft: #1A6BC4; /* 產品 --accent-2 */
+      --wash: #EDF2F9;       /* 極淺藍：chip、表頭、解讀區底 */
+    }}
     * {{ box-sizing: border-box; }}
-    body {{ font-family: "Microsoft JhengHei", "Segoe UI", Arial, sans-serif; margin: 0; padding: 32px; color: #111827; background: #F8FAFC; }}
-    h1 {{ font-size: 28px; margin: 0 0 4px; }}
-    .meta-bar {{ color: #6B7280; font-size: 13px; margin: 0 0 24px; }}
-    .report-section {{ background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 12px; padding: 20px 22px; margin: 0 0 22px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }}
-    .section-head {{ display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }}
-    .report-section h2 {{ font-size: 19px; margin: 0 0 12px; }}
+    /* Noto Sans TC 排第一（deck 字型定案，裝了就用）；未安裝時 fallback 正黑體，
+       不因字型缺席而破版。 */
+    /* 字級（2026-08-12 使用者指定）：正文與表格 14px、章節導覽 16px、圖內字 11px。
+       ⚠ 圖內字不是 CSS 能直接設的——SVG 內寫死 15.1px，顯示字級＝15.1×縮放比，
+       故由 .chart-media 的寬度反推（11 ÷ 15.1 × 1180 ≈ 860px）。 */
+    body {{ font-family: "Noto Sans TC", "Microsoft JhengHei", "Segoe UI", system-ui, sans-serif;
+      margin: 0; padding: 0 32px 48px; color: var(--ink); background: var(--paper);
+      font-size: 14px; line-height: 1.65; }}
+    .page {{ max-width: 1200px; margin: 0 auto; }}
+    /* 報告抬頭：eyebrow 細線＋標題＋參數，一組視覺單位。 */
+    .report-head {{ padding: 28px 0 20px; }}
+    .report-head .rule {{ width: 44px; height: 3px; background: var(--brand); border-radius: 2px; }}
+    h1 {{ font-size: 28px; line-height: 1.25; margin: 12px 0 6px; color: var(--brand);
+      letter-spacing: .01em; text-wrap: balance; }}
+    .meta-bar {{ color: var(--ink-soft); font-size: 13px; margin: 0;
+      font-variant-numeric: tabular-nums; }}
+    /* 產製參數對追溯有用、對讀者無用——放得到但不搶眼。 */
+    .meta-params {{ color: #8A93A3; font-size: 12px; margin: 4px 0 0;
+      font-variant-numeric: tabular-nums; }}
+    /* scroll-margin-top：錨點跳轉後把章節頂端往下推，避開常駐導覽列。
+       🔴 **必須動態**：導覽列高度隨章節數與視窗寬度變（chip 會換行）——
+       章節導覽字級調成 16px 後實測從 42px 變 102px，寫死 56px 就再度被蓋住 46px。
+       由 JS 量實際高度寫進 --nav-h（見頁尾 script），這裡的 56px 只是 JS 未執行時的保底。 */
+    .report-section {{ background: var(--card); border: 1px solid var(--line);
+      border-radius: 10px; padding: 18px 24px 20px; margin: 0 0 18px;
+      box-shadow: 0 1px 2px rgba(15,52,96,.05);
+      scroll-margin-top: calc(var(--nav-h, 48px) + 8px); }}
+    .section-head {{ display: flex; align-items: baseline; justify-content: space-between;
+      gap: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--line-soft);
+      padding-bottom: 10px; margin-bottom: 12px; }}
+    /* 標題左側 brand 短條：一眼分得出「新的一章開始了」，比純字級差異可靠。 */
+    .report-section h2 {{ font-size: 19px; margin: 0; color: var(--brand);
+      padding-left: 12px; border-left: 4px solid var(--brand); line-height: 1.3; }}
     .section-links {{ font-size: 13px; }}
-    .section-link {{ color: #2563EB; text-decoration: none; margin-left: 12px; }}
+    .section-link {{ color: var(--brand-soft); text-decoration: none; margin-left: 12px; }}
     .section-link:hover {{ text-decoration: underline; }}
-    .section-note {{ color: #6B7280; font-size: 13px; margin: 0 0 12px; }}
-    .data-table-wrap {{ overflow-x: auto; margin: 0 0 14px; }}
-    /* 2026-08-11 使用者定案：表格文字維持 15（與圖表文字同高，整頁一致）。 */
-    .data-table-wrap table {{ border-collapse: collapse; font-size: 15px; width: 100%; }}
-    .data-table-wrap th {{ background: #F1F5F9; padding: 6px 8px; text-align: left; font-weight: 600; white-space: nowrap; border: 1px solid #E2E8F0; }}
-    .data-table-wrap td {{ padding: 4px 8px; border: 1px solid #F1F5F9; white-space: nowrap; }}
-    .data-table-wrap td.totals-cell {{ border-top: 2px solid #CBD5E1; font-weight: 600; background: #F8FAFC; }}
+    .section-note {{ color: var(--ink-soft); font-size: 13px; margin: 0 0 14px; max-width: 78ch; }}
+    .data-table-wrap {{ overflow-x: auto; margin: 8px 0 0; }}
+    /* 分段小標（技術主題／功效分類）：兩張表之間要有明確界線，
+       否則讀者會把兩種單位的主題當成同一份清單往下讀。 */
+    .table-segment {{ font-size: 14px; font-weight: 600; color: var(--brand);
+      margin: 18px 0 0; padding-left: 10px; border-left: 3px solid var(--brand-soft); }}
+    .table-segment:first-of-type {{ margin-top: 8px; }}
+    /* 表格 14px（2026-08-12 使用者指定，與正文同級；原 15px 是 08-11「與圖表同高」的定案，
+       圖表字改由寬度反推後兩者不再需要同數字）。
+       ⚠ 只留橫線不圍格：格線全開會讓 16 欄的年度矩陣變成一張網，數字反而讀不出來。 */
+    .data-table-wrap table {{ border-collapse: collapse; font-size: 14px; width: 100%;
+      font-variant-numeric: tabular-nums; }}
+    .data-table-wrap th {{ background: var(--wash); padding: 7px 10px; text-align: left;
+      font-weight: 600; white-space: nowrap; color: var(--brand);
+      border-bottom: 1px solid var(--line); }}
+    .data-table-wrap td {{ padding: 6px 10px; border-bottom: 1px solid var(--line-soft);
+      white-space: nowrap; }}
+    .data-table-wrap tbody tr:hover td {{ background: #F8FAFD; }}
+    .data-table-wrap td.totals-cell {{ border-top: 2px solid var(--line);
+      border-bottom: none; font-weight: 700; background: var(--wash); }}
     .data-table-wrap details {{ margin-top: 8px; }}
-    .data-table-wrap summary {{ cursor: pointer; font-size: 13px; color: #2563EB; }}
-    .toggle-bar {{ display: inline-flex; gap: 4px; padding: 4px; background: #F1F5F9; border-radius: 9px; margin: 0 0 14px; }}
-    .toggle-btn {{ border: none; background: transparent; color: #334155; font-size: 14px; font-weight: 600; padding: 7px 16px; border-radius: 7px; cursor: pointer; }}
-    .toggle-btn:hover {{ background: #E2E8F0; }}
-    .toggle-btn.active {{ background: #2563EB; color: #FFFFFF; }}
-    .expand-btn {{ border: 1px solid #CBD5E1; background: #FFFFFF; color: #2563EB; font-size: 14px; font-weight: 600; padding: 8px 14px; border-radius: 8px; cursor: pointer; margin: 12px 0; }}
-    .expand-btn:hover {{ background: #EFF6FF; }}
+    .data-table-wrap summary {{ cursor: pointer; font-size: 13px; color: var(--brand-soft); }}
+    .toggle-bar {{ display: inline-flex; gap: 4px; padding: 4px; background: var(--wash);
+      border-radius: 9px; margin: 0 0 14px; }}
+    .toggle-btn {{ border: none; background: transparent; color: var(--ink); font-size: 14px;
+      font-weight: 600; padding: 6px 15px; border-radius: 7px; cursor: pointer; }}
+    .toggle-btn:hover {{ background: #DFE8F4; }}
+    .toggle-btn.active {{ background: var(--brand); color: #FFFFFF; }}
+    .toggle-btn:focus-visible {{ outline: 2px solid var(--brand-soft); outline-offset: 2px; }}
+    .expand-btn {{ border: 1px solid var(--line); background: var(--card); color: var(--brand-soft);
+      font-size: 14px; font-weight: 600; padding: 7px 14px; border-radius: 7px;
+      cursor: pointer; margin: 12px 0; }}
+    .expand-btn:hover {{ background: var(--wash); border-color: var(--brand-soft); }}
     .chart-stage {{ width: 100%; overflow-x: auto; }}
-    .chart-media {{ max-width: 100%; height: auto; display: block; }}
-    .chart-frame {{ width: 100%; height: 620px; border: 1px solid #E5E7EB; border-radius: 8px; }}
+    /* 🔴 圖降為證據（2026-08-12）：原本 height:auto ＝ 原尺寸顯示（1180×560），
+       圖內字 15.1px 與正文 16px 同級，整張圖搶走版面。
+       ⚠ 縮圖的職責是「認出這是哪張圖、看出形狀」，不是讀細節——細節點圖展開原尺寸。
+
+       🔴 **限寬不限高**（實測修正）：first pass 用 `height:340px; max-width:100%`，
+       對扁圖（IPC L4 是 1180×210）會同時觸發兩條規則而**縱向拉伸變形**
+       ——實測顯示成 1490×340（比例 5.62:1 被壓成 4.38:1），而且比原尺寸**放大 26%**，
+       圖內字反而變成 19.1px、比正文還大，與「圖降為證據」完全相反。
+       改為固定寬度、高度自動：所有圖同寬 → 縮放比一致 → 圖內字一律相同。
+
+       🔴 **寬度是圖內字級的唯一旋鈕**（2026-08-12 使用者指定圖內字 11px）：
+       SVG 內字級寫死 15.1px，顯示字級＝15.1 × (顯示寬 ÷ 原始寬 1180)。
+       860px → 15.1×0.729 ≈ 11.0px。要改圖內字就改這個寬度，不要去動 SVG。 */
+    .chart-media {{ width: 100%; max-width: 860px; height: auto; display: block;
+      margin: 0 auto; cursor: zoom-in;
+      border: 1px solid var(--line); border-radius: 8px; background: var(--card); }}
+    /* 展開＝解除寬度上限，回到 SVG 原尺寸（1180 寬，字 15.1px）；
+       超出容器時由 .chart-stage 的 overflow-x 承接。 */
+    .chart-media.zoom {{ max-width: none; cursor: zoom-out; }}
+    .chart-frame {{ width: 100%; height: 620px; border: 1px solid var(--line); border-radius: 8px; }}
+    /* 章節導覽：常駐頂部，scroll-margin-top 讓跳轉後標題不被蓋住。 */
+    .chapter-nav {{ position: sticky; top: 0; z-index: 5;
+      background: rgba(255,255,255,.94); backdrop-filter: blur(6px);
+      border-bottom: 1px solid var(--line); padding: 9px 32px; margin: 0 -32px 4px; }}
+    .chapter-nav-inner {{ max-width: 1200px; margin: 0 auto; display: flex; gap: 6px;
+      flex-wrap: wrap; align-items: center; }}
+    .nav-lead {{ font-size: 13px; color: var(--ink-soft); letter-spacing: .08em;
+      margin-right: 6px; }}
+    /* 章節導覽 16px（2026-08-12 使用者指定）——比正文大一級：它是這份報告的
+       主要操作元件，掃視與點擊都要容易。 */
+    .navchip {{ font-size: 16px; text-decoration: none; color: var(--ink); background: var(--wash);
+      border: 1px solid transparent; border-radius: 999px; padding: 5px 14px; white-space: nowrap;
+      transition: color .12s, border-color .12s; }}
+    .navchip:hover {{ border-color: var(--brand-soft); color: var(--brand-soft); }}
+    .navchip:focus-visible {{ outline: 2px solid var(--brand-soft); outline-offset: 2px; }}
+    /* 數據表預設 5 列，其餘收合（展開上限仍 20 列）。 */
+    tr.folded {{ display: none; }}
+    .data-table-wrap.expanded tr.folded {{ display: table-row; }}
+    .table-expand {{ border: 1px solid var(--line); background: var(--card); color: var(--brand-soft);
+      font-size: 13px; padding: 5px 12px; border-radius: 7px; cursor: pointer; margin-top: 10px; }}
+    .table-expand:hover {{ background: var(--wash); border-color: var(--brand-soft); }}
+    /* 解讀＝這一章的結論，給它左側 brand 線與淺底，和上方的圖表數據分開。 */
+    .explanation {{ margin-top: 18px; padding: 12px 16px; background: var(--wash);
+      border-left: 3px solid var(--brand); border-radius: 0 6px 6px 0; max-width: 78ch; }}
+    .explanation p {{ margin: 0; }}
+    .explanation.pending, .explanation.expired {{ background: transparent;
+      border-left-color: var(--line); color: var(--ink-soft); font-size: 14px; padding: 8px 0 0 14px; }}
     [hidden] {{ display: none !important; }}
+    /* 列印／轉 PDF：導覽無用途，章節不要被切成兩頁。 */
+    @media print {{
+      body {{ background: #FFFFFF; padding: 0; }}
+      .chapter-nav, .table-expand, .expand-btn {{ display: none; }}
+      .report-section {{ break-inside: avoid; box-shadow: none; }}
+      tr.folded {{ display: table-row; }}
+    }}
   </style>
 </head>
 <body>
-  <h1>Patent Report</h1>
-  {meta_bar}
+  {nav_html}
+  <div class="page">
+    <header class="report-head">
+      <div class="rule"></div>
+      <h1>{xml_text(page_title)}</h1>
+      {meta_bar}
+    </header>
   {"".join(blocks)}
+  </div>
   <script>
     document.querySelectorAll('.toggle-btn').forEach(function (btn) {{
       btn.addEventListener('click', function () {{
@@ -3012,11 +3331,46 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
         document.querySelectorAll('.toggle-btn[data-group="' + group + '"]').forEach(function (b) {{
           b.classList.toggle('active', b === btn);
         }});
-        document.querySelectorAll('.chart-panel[id^="' + group + '-"]').forEach(function (panel) {{
+        // ⚠ 以 data-group 選取，不用 id 前綴：`[id^="group-"]` 會連 more 區塊的
+        // panel 一起選中並設 hidden，切換過變體再展開「查看全部」就是一片空白。
+        document.querySelectorAll('.chart-panel[data-group="' + group + '"]').forEach(function (panel) {{
           panel.hidden = (panel.id !== target);
+        }});
+        // 解讀已移到數據表之後、離開 panel，必須在此一併切換，否則會出現
+        // 「圖切到 L5、解讀還停在 L4」的靜默錯配。
+        document.querySelectorAll('.explanation[data-group="' + group + '"]').forEach(function (exp) {{
+          exp.hidden = (exp.id !== target + '-exp');
+        }});
+        // 數據表同理（2026-08-12）：切到「統計表（功效）」就該只看功效那張表。
+        document.querySelectorAll('.data-panel[data-group="' + group + '"]').forEach(function (dp) {{
+          dp.hidden = (dp.id !== target + '-data');
         }});
       }});
     }});
+    document.querySelectorAll('.chart-media').forEach(function (img) {{
+      if (img.tagName !== 'IMG') return;          // iframe 版圖表不參與縮放
+      img.addEventListener('click', function () {{ img.classList.toggle('zoom'); }});
+    }});
+    document.querySelectorAll('.table-expand').forEach(function (btn) {{
+      btn.addEventListener('click', function () {{
+        var wrap = btn.closest('.data-table-wrap');
+        if (!wrap) return;
+        var expanded = wrap.classList.toggle('expanded');
+        btn.textContent = expanded ? '收合' : btn.getAttribute('data-label');
+      }});
+    }});
+    // 導覽列高度 → --nav-h，供章節的 scroll-margin-top 使用。
+    // ⚠ 高度不是常數：chip 會隨視窗寬度換行（9 章 @16px 在 1600px 寬是兩排、
+    // 窄視窗更多排）。寫死偏移就會在某些寬度下讓章節標題被導覽蓋住。
+    (function () {{
+      var nav = document.querySelector('.chapter-nav');
+      if (!nav) return;
+      var sync = function () {{
+        document.documentElement.style.setProperty('--nav-h', nav.offsetHeight + 'px');
+      }};
+      sync();
+      window.addEventListener('resize', sync);
+    }})();
     document.querySelectorAll('.expand-btn').forEach(function (btn) {{
       btn.addEventListener('click', function () {{
         var target = document.getElementById(btn.getAttribute('data-expand-target'));
@@ -3432,39 +3786,38 @@ def shared_matrix_max(ctx: ChartContext, *report_names: str) -> int | None:
 
 
 def _build_applicant_year_matrix_section(ctx: ChartContext) -> None:
-    """申請人 × 申請年份泡泡矩陣。"""
+    """申請人 × 申請年份**跨度圖**（2026-08-12 起；原為泡泡矩陣）。
+
+    🔴 改版理由與失真防護見 `render_year_span_chart`。
+    ⚠ **Top 10 與第 11–20 名併成一張**：跨度條一列只佔 20–34px，20 列進得了
+    單一畫布——原本要兩張圖（主圖＋`_more`）純粹是泡泡直徑吃掉高度所致。
+    連帶：`applicant_year_matrix_more.svg` 與 `more_variants`／`more_label` 退場。
+    """
     report = ctx.report("applicant_year_matrix")
-    # ⚠ 這裡明確要 20：主圖取前 10（簡報端上限），11–20 名進 `_more` 網頁長尾
-    # ——「網頁端前 20、簡報端前 10」是兩條各自的定案（2026-08-04／08-10）。
-    # 預設 row_limit 收斂成 10 之後，靠預設值拿不到長尾的料。
     layout = year_bubble_matrix_layout(
         report["rows"], "applicant_display_name", row_limit=20)
     top_rows = layout["top_rows"]
-    render_year_bubble_matrix_chart(
+    render_year_span_chart(
         ctx.run_dir / "applicant_year_matrix.svg",
         report["label_zh"],
         layout,
-        top_rows[:10],
+        top_rows,
     )
-    more_variants = []
-    if len(top_rows) > 10:
-        render_year_bubble_matrix_chart(
-            ctx.run_dir / "applicant_year_matrix_more.svg",
-            f'{report["label_zh"]}（第 11～20 名）',
-            layout,
-            top_rows[10:20],
-        )
-        more_variants.append({"label": "11-20", "file": "applicant_year_matrix_more.svg", "variant_key": "more"})
     # 數據區改交叉表（2026-07-29 使用者定案「數據表是長格式，難讀」）：
     # 原本每列 (公司, 年份, 件數)，同一家公司的不同年份分散在不同列。
-    # 轉置在後端做，前端不必知道差異。
-    ctx.chart_rows["applicant_year_matrix"] = pivot_year_matrix(report["rows"], "applicant_display_name")
+    # 🔴 2026-08-12 接縫修復（使用者實機看到仍是長格式）：pivot 原本只放
+    # chart_rows 桶，但顯示層 08-11 起優先吃 **section["rows"]**（受理局交叉表
+    # 機制）——沒帶就退回 reports 桶長格式。同一份轉置同時掛兩處消費點。
+    pivoted = pivot_year_matrix(report["rows"], "applicant_display_name")
+    ctx.chart_rows["applicant_year_matrix"] = pivoted
     ctx.sections.append({
         "title": report["label_zh"],
-        "variants": [{"label": "Top 10", "file": "applicant_year_matrix.svg", "variant_key": "default"}],
-        "more_variants": more_variants,
-        "more_label": "＋查看全部（第 11～20 名）",
-        "note": f"縱軸為申請人公司，橫軸為申請年份，泡泡大小＝patent_count；依公司跨年度總量排序，預設顯示前 {min(10, len(top_rows))} / {layout['rows_total']} 家。CSV/JSON 保留完整 rows。",
+        "rows": pivoted,
+        "variants": [{"label": f"Top {len(top_rows)}", "file": "applicant_year_matrix.svg",
+                      "variant_key": "default"}],
+        "note": (f"一列＝一家公司的投入期間（首件→末件），條上圓點＝該年實際有申請、"
+                 f"條末數字＝總件數；依跨年度總量排序，顯示前 {len(top_rows)} / "
+                 f"{layout['rows_total']} 家。逐年件數見下方數據表，完整 rows 在 report_data.json。"),
     })
 
 
@@ -4184,8 +4537,12 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     present = [c for c in channels
                if any(str(r.get("source_field")) == c[0] for r in topic_rows)]
     if len(present) > 1:
-        for index, (_, variant_key, label) in enumerate(present):
-            variants.insert(index, {"label": label, "file": "", "variant_key": variant_key})
+        # ⚠ 變體**自帶 source_field**：消費端（交付 HTML 的表格切換、前端過濾）
+        # 才不必從 variant_key 反猜通道。原本 `for index, (_, ...)` 把它丟掉，
+        # 下游只好各自用 key.includes('tech') 猜——同一份知識散成多處。
+        for index, (source_field, variant_key, label) in enumerate(present):
+            variants.insert(index, {"label": label, "file": "", "variant_key": variant_key,
+                                    "source_field": source_field})
     else:
         variants.insert(0, {"label": "主題統計表", "file": "", "variant_key": "topic_table"})
 
@@ -4269,7 +4626,8 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     # 顯示規格（2026-07-21 二次修正）：板狀佈局完成，象限圖回歸 index——
     # cluster 卡片＝主題統計表＋各來源機會矩陣 tabs。
     ctx.sections.append({
-        "title": "分群分析",
+        # 2026-08-12 使用者定案術語：卡標題改「主題分析」（BERTopic 產物稱主題不稱群）。
+        "title": "主題分析",
         "report_key": "cluster_topic_table",
         # 🔴 rows 必須帶進 section（2026-07-29 使用者實機回報「技術、功效按鈕切不了」）：
         # 原本只寫 report_key、期待前端自己從 chart_rows 取，但 API 回給前端的 section
@@ -4415,7 +4773,7 @@ def run_chart_trial(
         analysis_id=analysis_id,
         cluster_data=cluster_data,
     )
-    render_sections_all_profiles(ctx, specs)
+    render_sections(ctx, specs)
 
     fetched = ctx.fetched_reports()
     generated_at = datetime.now().isoformat(timespec="seconds")
@@ -4535,19 +4893,8 @@ def run_chart_trial(
     )
     write_json(run_dir / "artifact_manifest.json", manifest)
     files.append("artifact_manifest.json")
-    # profile manifest：identity → web／ppt 兩份圖的 path 與 checksum。
-    # ⚠ 必須在圖檔全部產完後才掃描（它是掃目錄產出的，不是累積出來的）。
-    profile_manifest = build_profile_manifest(run_dir, version)
-    write_json(run_dir / PROFILE_MANIFEST_NAME, profile_manifest)
-    # web profile 的圖要進 files——`files` 是各 builder 累積的，而 builder 只
-    # 知道自己傳進去的原路徑，不知道寫檔出口把 web 版寫到哪。以 manifest 為
-    # 單一來源補齊，不另外掃一次目錄。
-    files += sorted({
-        asset["path"]
-        for entry in profile_manifest["charts"].values()
-        for asset in entry["profiles"].values()
-    })
-    files.append(PROFILE_MANIFEST_NAME)
+    # 🔴 2026-08-12（unify-chart-source）：profile_manifest.json 隨雙 profile
+    # 退場（零讀者，實碼盤點）——圖檔就是 builder 傳的原檔名，files 已含。
     files = list(dict.fromkeys(files))
     file_metadata = {
         item["file"]: item

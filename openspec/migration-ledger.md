@@ -152,3 +152,6 @@
 | change | 結果 | 日期 |
 |---|---|---|
 | `complete-core-field-reclassification` | ✅ 使用者驗收通過後 archive；spec 增量（DAT-006／RPT-008／EXP-007）已併入主規格；隔離庫 migcheck_0046 已依裁決刪除 | 2026-08-06 |
+| `complete-sse-data-refresh` | ✅ 使用者驗收通過後 archive；PRT-005 改寫（成功終結刷新 mapping＋失敗不刷資料）與 WSP-007 新增已併入主規格；三根因（6543 pooling、notifies 壽命、前端不重連）修復合 master `970406c` | 2026-08-12 |
+| `unify-chart-source` | ✅ 使用者驗收通過後 archive（標的 report_trial_20260812_133901）；RPT-010 圖表單一來源已併入主規格；含驗收期修正（年度矩陣交叉表、術語主題化、泡泡列向守門、檢視選單五變體、版本下拉） | 2026-08-12 |
+| `restructure-html-report-export` | ✅ 使用者接受後 archive（「做完併到主線去」）；交付 HTML 章節式改版（導覽／圖表→數據表→解讀／圖限寬縮圖／表預設 5 列／淺色系外觀／字級 14-16-11px），`chart_sizing.PPT` 刪除，申請人年度矩陣改跨度圖（RPT-011）。主規格併入：report-export 交付檔章節式契約＋RPT-011。實測 8080→7524px、圖內字 11.0px 一致、三時代相容、離線可開。⚠ Gate 1 總高門檻量測後由 ≤6500 調為 ≤7500（理由與裁決見 archive 內 proposal） | 2026-08-13 |

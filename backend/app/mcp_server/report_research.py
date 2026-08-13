@@ -58,8 +58,12 @@ MAX_EVIDENCE_ROWS = 200
 # ⚠ 刻意**對齊原查詢閘道**（query_patents.py 預設 500／最高 2000）：取證通道
 # 從 Bash 閘道換成 MCP 是換路，不是縮權——沿用 200 會讓需要逐案清單的查詢
 # （例如列出某公司全部案件）被靜默截斷，那是換通道造成的能力退步。
-SQL_MAX_ROWS = 2000
-SQL_DEFAULT_ROWS = 500
+# 🔴 2026-08-12 使用者裁決再放寬：**列數硬上限（原 2000）移除**——取證要拿
+# 多少列是 CLI 的判斷，權限牆退場；效能保護改「保險絲」二件套：
+# 逾時（_SQL_TIMEOUT_MS）＋回應量上限（SQL_PAYLOAD_FUSE_BYTES），
+# 超過都**明示截斷**、不擋查詢也不靜默。
+SQL_DEFAULT_ROWS = 500          # 預設分頁（呼叫端沒說要多少時的合理一頁）
+SQL_PAYLOAD_FUSE_BYTES = 5_000_000   # 回應量保險絲：5MB——防的是效能，不是權限
 
 # ⚠ snapshot_loader 註記為 object 而非 Callable：FastMCP 以 pydantic 產 JSON schema，
 # Callable 無法序列化會讓整個 server 註冊失敗（2026-08-07 實測）。它是測試注入點，
@@ -379,8 +383,34 @@ _FORBIDDEN_SQL = re.compile(
     re.IGNORECASE,
 )
 
-# 查詢逾時（毫秒）：取證查詢再複雜也不該跑滿分鐘級，逾時比拖垮 DB 好。
-_SQL_TIMEOUT_MS = 30000
+# 查詢逾時（毫秒）：防拖垮 DB 的保險絲。
+# 🔴 2026-08-12 使用者裁決放寬 30s→120s：複雜 JOIN 取證不該被砍在半路，
+# 但仍留底線——真跑超過兩分鐘多半是查詢寫壞了，不是取證需要。
+_SQL_TIMEOUT_MS = 120000
+
+
+def _collect_rows(fetch, limit: int | None, fuse_bytes: int) -> tuple[list, bool]:
+    """收集查詢結果，直到取盡／到 limit／觸發回應量保險絲。
+
+    回 (rows, truncated)。⚠ 保險絲不是擋門：已收的照回傳、truncated 明示，
+    CLI 看到旗標可自行縮小查詢範圍再查——與逾時同屬效能保護，非權限。
+    大小以逐列 JSON 序列化長度估算（與實際回應同一量級即可，不求位元組精確）。
+    """
+    rows: list = []
+    size = 0
+    batch_size = 500
+    while True:
+        want = batch_size if limit is None else min(batch_size, limit + 1 - len(rows))
+        batch = fetch(want)
+        if not batch:
+            return rows, False
+        for row in batch:
+            if limit is not None and len(rows) >= limit:
+                return rows, True      # 多取到的那列＝後面還有資料
+            size += len(json.dumps(row, ensure_ascii=False, default=str))
+            if size > fuse_bytes:
+                return rows, True      # 觸絲：已收的照回傳，明示截斷
+            rows.append(row)
 
 
 def _jsonable(value: Any) -> Any:
@@ -415,7 +445,7 @@ def validate_sql(sql: str) -> str:
     return text
 
 
-def query_database(sql: str, limit: int = SQL_DEFAULT_ROWS) -> dict[str, Any]:
+def query_database(sql: str, limit: int | None = SQL_DEFAULT_ROWS) -> dict[str, Any]:
     """唯讀 SQL 取證：查專利、申請人、法律狀態等原始資料。
 
     ⚠ 其餘工具讀的是**報表快照**（引擎已彙總的 chart_rows）；只有這一支真的
@@ -424,10 +454,10 @@ def query_database(sql: str, limit: int = SQL_DEFAULT_ROWS) -> dict[str, Any]:
 
     只接受單句 SELECT／WITH。連線由 server 端強制 read-only 交易與逾時，
     CLI 端拿不到任何 DB credential。回傳含 `truncated`，截斷會明說。
+    列數無硬上限（2026-08-12 使用者裁決）；limit 是呼叫端自選的分頁，
+    傳 None＝要全部；效能保護＝逾時＋回應量保險絲（觸發即明示截斷）。
     """
     try:
-        if limit > SQL_MAX_ROWS:
-            raise ReportResearchError(f"limit 超過上限 {SQL_MAX_ROWS}")
         text = validate_sql(sql)
     except ReportResearchError as exc:
         _audit("query_database", snapshot_id=None, sql=str(sql),
@@ -450,10 +480,8 @@ def query_database(sql: str, limit: int = SQL_DEFAULT_ROWS) -> dict[str, Any]:
         cur.execute(f"SET LOCAL statement_timeout = {_SQL_TIMEOUT_MS}")
         cur.execute(text)
         columns = [d.name for d in cur.description] if cur.description else []
-        rows = cur.fetchmany(limit + 1)
+        rows, truncated = _collect_rows(cur.fetchmany, limit, SQL_PAYLOAD_FUSE_BYTES)
         conn.rollback()   # 唯讀交易，不需要 commit
-    truncated = len(rows) > limit
-    rows = rows[:limit]
     _audit("query_database", snapshot_id=None, sql=text,
            rows=len(rows), truncated=truncated, error=None,
            row_hash=rows_fingerprint(rows))

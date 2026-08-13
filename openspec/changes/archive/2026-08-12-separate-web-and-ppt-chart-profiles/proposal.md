@@ -1,3 +1,18 @@
+# 🔴 已作廢（2026-08-12），由 `unify-chart-source` 取代
+
+本 change（13/21 tasks）的兩段命運：
+
+- **web profile 段成果已上線**並由 `unify-chart-source` 承接為唯一 profile：
+  `chart_sizing.WEB` 常數、`.web.svg` 產出、index 嵌 web 版、`resolve_web_asset`。
+- **PPT profile 段（其餘 8 項）隨 2026-08-10 PPT 交付線移除而消滅**：
+  其消費者（`chart_bundle`／`build_ppt`／CLI 選圖）已刪，`resolve_ppt_asset`
+  全庫零呼叫、`profile_manifest.json` 零讀者。
+
+2026-08-12 使用者定案「HTML 與 PPT 共用同一套來源、消費端適配」——
+雙 profile 的立論（產出端為 PPT 預放大）不再成立。以下原文保留作歷史參考。
+
+---
+
 ## Why
 
 同一張圖直接同時服務網頁與 PPT，會讓字級、長寬比與可讀性互相牽制；但另建兩套圖表邏輯又會造成資料與視覺語意漂移。系統需要以同一 chart identity、dataset 與版面邏輯產生 web／PPT 兩種 rendering profile，並確保使用者選中的圖仍是 CLI 唯一可用圖源。
