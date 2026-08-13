@@ -104,9 +104,10 @@
         → 目視截圖**必須 SVG 存檔後 `goto`**，圖用相對路徑（見 2.2）。
         ②轉換器原本以 cwd 解析相對圖檔路徑——已修為**相對於 SVG 檔所在目錄**，
         並補測試；不修的話 runner 從別的目錄呼叫會靜默找不到圖。
-- [ ] 2.2 Green：`deck_layout` 輸出層改組 SVG＋窄轉換器；逐頁截圖產出（目視 PNG）。
-      **進度（2026-08-13）**：✅ 引擎自行斷行（`wrap_lines`＋避頭尾，8 支綠／
-      438 subtests）。⬜ SVG 輸出層（五頁型改產 SVG）、⬜ 逐頁截圖。
+- [x] 2.2 Green：`deck_layout` 輸出層改組 SVG＋窄轉換器；逐頁截圖產出（目視 PNG）。
+      **2026-08-13 完成，三塊到齊**：①引擎自行斷行（`wrap_lines`＋避頭尾，
+      8 支綠／438 subtests）②SVG 輸出層（`svg_canvas` ＋ `_compose` 抽出頁型
+      呼叫，pptx 與 SVG 兩端共用；6 支綠）③逐頁截圖（`shoot_pages`，4 支綠）。
       🔴 斷行與 `est_lines` **鎖在同一套係數**（都走 `_per_line`），並以
       `test_line_count_matches_est_lines` 直接斷言 `len(wrap_lines) == est_lines`
       ——兩者各算各的就是「估高一套、排版另一套」，不一致不會報錯，
@@ -126,7 +127,7 @@
       （2026-08-13 實測，見 2.1 發現①）：`set_content` 沒有 base URL，
       SVG 內的圖片會**破圖**而 pptx 卻是好的——目視因此看到假警報。
       圖檔在 SVG 同目錄、用相對路徑引用。
-- [ ] 2.2f 🆕 **目視截圖解析度由 `deck_layout` 導出**（design 4-0c）：
+- [x] 2.2f 🆕 **目視截圖解析度由 `deck_layout` 導出**（design 4-0c）：
       ⚠ **不得在 runner、skill、規格各寫一個數字**——那是上一世代
       「同一份知識多個落點」的錯法。`deck_layout` 已是版面幾何與字級的唯一定義處，
       截圖倍率從那裡推導，runner 只消費。
@@ -134,10 +135,7 @@
 - [x] ~~2.2a `overlaps()` 撞版判定改為「橫向量測、縱向推導」~~
       **2026-08-13 撤銷**（design 4c-1a）：Windows-only 後 w／h 都吃量測值不會
       造成跨 OS 靜默不一致，現行寫法即正確，不需改動。
-- [x] ~~2.2a `overlaps()` 撞版判定改為「橫向量測、縱向推導」~~
-      **2026-08-13 撤銷**（design 4c-1a）：Windows-only 後 w／h 都吃量測值不會
-      造成跨 OS 靜默不一致，現行寫法即正確，不需改動。
-- [ ] 2.2d 🆕 **執行方式改走專案環境**（接線前置，design 4-0b）：skill 現行以
+- [x] 2.2d 🆕 **執行方式改走專案環境**（接線前置，design 4-0b）：skill 現行以
       `uv run --no-project --python 3.12 --with python-pptx --with pillow` 臨時拉
       套件，等於在使用者機器上要求「有 uv ＋能連網拉套件」。
       backend 環境**已有** `python-pptx 1.0.2`（`pyproject.toml` 列著），
@@ -157,7 +155,10 @@
          步驟、版本釘不住（chromium 版本是 `getBBox` 的變因）、CI／容器不能跑。
          兩者**不互斥**，應該都做。
       ✅ **已安裝並移除過渡回退**：`playwright==1.62.0` 裝進現用的 venv
-      （釘版而非最新——既有 browsers 是 chromium-1234，裝最新版會對不上）。
+      ⚠ 實查：**1.62.0 就是目前最新**（`uv --upgrade` 只想動 greenlet 與
+      typing-extensions 兩個相依套件）。我原本寫「釘版而非最新，裝最新會對不上
+      chromium-1234」——那是**憑推論寫進紀錄**，已更正。`pyproject` 寫
+      `>=1.62.0` 是釘下限，日後真的升版時要重驗 browsers 相容性。
       ⚠ 沒在 `deck-work` 跑 `uv sync`：該 worktree 無 `.venv`，sync 會從頭建
       含 torch 數 GB；實際在用的是主工作樹的 venv，而 `pyproject` 改動還在本
       分支上——**合主線後主工作樹 `uv sync` 才會自然涵蓋**。
@@ -173,7 +174,7 @@
       🔴 **驗收＝實跑 CLI 成功**，不是「確認二進位存在」。
       ⚠ 原條文還要求驗 COM 的非互動 session——**第 3 次裁決後不需要**
       （目視改走 Chromium，產線無 PowerPoint）。
-- [ ] 2.2b 🔴 **字型收斂＝Noto Sans TC**（design 4c，前置於映射校驗）：
+- [x] 2.2b 🔴 **字型收斂＝Noto Sans TC**（design 4c，前置於映射校驗）：
       收斂為**單一常數唯一落點**。
       ⚠ **2026-08-13 實掃：不是四處，是九處**（原條文低估）：
 
@@ -204,7 +205,7 @@
       **先確認再重建基準**，否則基準會建立在 fallback 字型上。
       regression 8 頁如預期全紅（字型換了），目視確認版面正常後 `--update`
       重建並複驗逐像素相同。
-- [ ] 2.2b-1 🔴 **`LS_RENDER` 的模型形狀是錯的**（2026-08-13 重量時發現，
+- [x] 2.2b-1 🔴 **`LS_RENDER` 的模型形狀是錯的**（2026-08-13 重量時發現，
       比換字型本身更要緊）：
 
       | 字級 | 行數 | 實測高(pt) | 倍率 |
@@ -225,7 +226,7 @@
       改法：`text_h()` 改兩段式 `首行 × 1.337 + (n-1) × 1.464`。
       ⚠ 連帶：`budget()` 的所有上限、各頁型裕度、regression 基準都會變，
       要一起重驗。這是獨立批次，不併進 2.2b。
-- [ ] 2.2b-2 重跑 `svg_canvas.BASELINE_RATIO`（現值 0.65 量自正黑體的 ascent
+- [x] 2.2b-2 重跑 `svg_canvas.BASELINE_RATIO`（現值 0.65 量自正黑體的 ascent
       比例；Noto 的 ascent 不同，換字型後要重掃）。
       ⚠ **字型檔本身**：`NotoSansTC-VF.ttf` 必須隨 Installer 佈到使用者機器
       （不能假設 Windows 內建——實測宣告 `Noto Sans TC` 而機器上沒有時會
