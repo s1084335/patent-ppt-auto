@@ -104,7 +104,10 @@ deck_layout 幾何引擎（原樣）→ 每頁組 SVG（文字逐行斷好、絕
 - PPTX 內文字仍是原生可編輯，但行斷點固定（改長會溢出）——ppt-master 同款取捨。
 - **開發期一次性映射校驗（Windows 開發機）**：五頁型逐一
   「Chromium 截圖 vs COM 轉圖 vs 實機開檔」三方對照，映射成立後固定；
-  COM 自此只是開發量尺，**不進產線**。產線（Linux）零 Windows 依賴。
+  COM 自此只是開發量尺，**不進產線**（產線目視走 Chromium 截 SVG，
+  不需要使用者機器上有 PowerPoint）。
+  ⚠ 2026-08-13 更正：原文寫「產線（Linux）零 Windows 依賴」——deck 定為
+  Windows 版後（見 4c-1a），該句不再是選型論據；B 案的理由只剩精準度。
 - 目視從「開發側手動」升級為**產線內建**：每次產製都出逐頁 PNG（截 SVG＝
   截成品），兼作前端 deck 紀錄的逐頁預覽。
 - `regression.py` 像素基準改比 SVG 截圖；版面回歸在改 skill 時守，
@@ -158,14 +161,27 @@ FreeType/HarfBuzz，對 ascent／descent／line gap 的解讀本就不同。
 ⚠ **也無法用固定係數校正**：比例隨字級在 1.44–1.47 與 1.18–1.22 間各自抖動
 （整數像素捨入），不是穩定倍數。
 
-**因此定案：`getBBox` 只採信 `width`，`height` 一律由排版公式算。**
+**原定案（跨 OS 前提下）**：`getBBox` 只採信 `width`，`height` 一律由排版
+公式算；`overlaps()` 改「橫向量測、縱向推導」；`LS_RENDER` 重量在 Linux 做。
 
-- 撞版判定的**橫向**用量測（寬度可信）；**縱向**用 `row_h`／`LS_RENDER` 推導。
-  ⚠ `fit_render_charts.overlaps()` 目前 w 與 h 都用量測值——**必須改**，
-  否則同一張圖會在 Windows 判定撞版、Linux 判定沒撞（或反過來），
-  而且兩邊都不會報錯。這正是 B 案最怕的靜默不一致。
-- **`LS_RENDER` 重量必須在 Linux 做**：產線在 Linux，拿 Windows 的數字回去
-  用等於把量測基準搞錯邊。
+#### 4c-1a. 🔴 上述約束**撤銷**——deck 只做 Windows 版（2026-08-13 使用者定案）
+
+使用者定案「**我們做 Windows 版就好**」。deck runner 本就跑在 Companion 內
+（§1），Companion 裝在使用者的 Windows 機器上——量測端與產線端**同一台機器、
+同一個 OS**，跨 OS 不一致的前提整個消失。
+
+| 原本被跨 OS 差異擋住的事 | Windows-only 後 |
+|---|---|
+| `getBBox().height` 不可信（跨 OS 差 21%） | ✅ **可用**。量與跑同一個字型引擎（DirectWrite），只剩 ±1.5% 的整數像素捨入抖動——那是既有程式一直在承受的量級 |
+| `overlaps()` 必須改成橫向量測、縱向推導 | ✅ **不必改**（tasks 2.2a 撤銷）。w／h 都吃量測值即可 |
+| `LS_RENDER` 重量必須在 Linux 做 | ✅ 改在 **Windows** 做——開發機即產線環境 |
+| 映射校驗要「WSL2 截圖 vs COM 轉圖 vs 實機」 | ✅ 三端全在 Windows，量測端本來就統一 |
+
+⚠ **4c-1 的實測數字不刪**：它是「若哪天要上 Linux 產線，這些常數全部要重量」
+的憑據。要恢復跨 OS 支援時，本節的四條約束原樣復活——不是重新研究一次。
+⚠ **本節不改 B 案的成立理由**：B 案是為了把排版決定權從 PowerPoint 收回
+（精準度），不是為了脫離 Windows。「零 Windows 依賴」自此只是副產物，
+不再是選型論據。
 
 #### 4c-2. 環境基準（2026-08-13 已備妥）
 
@@ -176,10 +192,14 @@ FreeType/HarfBuzz，對 ascent／descent／line gap 的解讀本就不同。
 | Playwright | 1.62.0 | 兩端同版 |
 | Linux | WSL2 Ubuntu 24.04（`D:\WSL2\Ubuntu-24.04`，與 DockerDesktopWSL 平行） | Python 3.12.3／uv 0.12.3／git 2.43.0 |
 
-🔴 **量測一律在 Linux 執行**（產線環境）；Windows 的角色縮到「提供 Linux
-沒有的 PowerPoint COM」。映射校驗（tasks 2.3）因此改為
-「**WSL2 Chromium 截圖** vs Windows COM 轉圖 vs 實機開檔」三方對照——
-量測端統一，才不會把開發機的數字當成產線結論。
+🔴 **2026-08-13 改（Windows-only，見 4c-1a）：量測一律在 Windows 執行。**
+原文為「量測一律在 Linux 執行（產線環境）」——那建立在「產線是 Linux 容器」
+的前提上，deck 定為 Windows 版後前提消失。映射校驗（tasks 2.3）的三方對照
+（Chromium 截圖 vs COM 轉圖 vs 實機開檔）**三端都在 Windows**。
+
+⚠ WSL2 環境**保留但停用**：本表的實測值是 4c-1 結論的證據，且未來若要恢復
+Linux 產線可直接沿用（字型已同檔、Chromium 已對齊）。現階段 deck 的任何
+量測、截圖、基準重建都不走 WSL2。
 
 ### 4d. 字級目標與「HTML 圖尺寸 → 投影片字級」的連動（2026-08-12 使用者定案）
 

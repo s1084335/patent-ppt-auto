@@ -6,14 +6,19 @@
 
 ## 0. 前置（獨立於本 change，先做完再填 deck 面）
 
-- [ ] 0.1 「匯出報告」頁**清空 PPT 線殘骸**（design §6）：`btn-export-ppt`
+- [x] 0.1 「匯出報告」頁**清空 PPT 線殘骸**（design §6）：`btn-export-ppt`
       （打已移除的 `ai:report_plan`，必定 422）、`ppt-goal-input`、
       `ppt-chart-picker`、`exportPreview` 的 PPT 狀態（`pptFiles`／
-      `selectedPptFile`／`pptViewer`／`editMode`／`edits`，全庫 29 處）、
+      `selectedPptFile`／`pptViewer`／`editMode`／`edits`）、
       localStorage 編輯稿孤兒（`EXPORT_EDIT_KEY_PREFIX`）、與報表種類頁重複的
       版本下拉與整份預覽、**`static/vendor/pptx-renderer/` 1.5 MB 資產**。
       ⚠ 頁面與導覽項**保留**（deck 要進駐），清空期間放一句「簡報產製規劃中」。
       驗收＝殘留引用歸零＋前端契約測試綠。
+      **2026-08-13 完成**（commit `7919059`）：另清出兩項未在原清單的殘骸——
+      前端自組單頁 HTML（`reviewExportOutput`／`buildExportHtml`，與引擎產出
+      必然分岔）與不可達的封面／解讀編輯分支。驗證：目標＋範圍回歸 157 passed、
+      `node --check` 驗 JS 語法、掃 inline 事件與一般呼叫確認無斷引用。
+      退場契約反轉的 16 支舊測試，新契約在 `tests/test_export_page_cleanup.py`。
 
 ## 1. skill 遷入產品 repo
 
@@ -35,23 +40,24 @@
 - [ ] 2.1 Red：轉換器契約——五頁型元素詞彙（矩形卡／逐行文字／圖片／線）
       SVG→DrawingML 映射、文字逐行定位＋關 wrap、超出詞彙 fail loud
 - [ ] 2.2 Green：`deck_layout` 輸出層改組 SVG＋窄轉換器；逐頁截圖產出（目視 PNG）。
-      🔴 **Chromium BBox 只取代寬度估算**（`text_w`）——**高度不得改用量測**，
-      理由見 design 4c-1：`getBBox` 的 height 跨 OS 差 21% 且無法用係數校正。
-      縱向一律由 `row_h`／`LS_RENDER` 推導。
-- [ ] 2.2a 🔴 **`overlaps()` 撞版判定改為「橫向量測、縱向推導」**（design 4c-1）：
-      `fit_render_charts.overlaps()` 目前 w 與 h 都吃量測值——同一張圖會在
-      Windows 判定撞版、Linux 判定沒撞（**兩邊都不報錯**）。改後補測試守住。
+      **Chromium BBox 取代估算，寬高皆可用**（design 4c-1a，Windows-only）。
+      ⚠ 原條文為「高度不得改用量測」，那是跨 OS 前提下的限制；deck 定為
+      Windows 版後量測端＝產線端，限制撤銷。若日後要上 Linux 產線，
+      design 4c-1 的四條約束原樣復活。
+- [x] ~~2.2a `overlaps()` 撞版判定改為「橫向量測、縱向推導」~~
+      **2026-08-13 撤銷**（design 4c-1a）：Windows-only 後 w／h 都吃量測值不會
+      造成跨 OS 靜默不一致，現行寫法即正確，不需改動。
 - [ ] 2.2b 🔴 **字型收斂＝Noto Sans TC**（design 4c，前置於映射校驗）：
       四處宣告（`deck_layout.FONT`、`chart_runner.SVG_FONT_STYLE` 與三處
       SVG 根元素、HTML 報表頁）收斂為**單一常數唯一落點**。
-      ⚠ **字型檔本身**：兩端必須是同一個 `NotoSansTC-VF.ttf`——apt 的
-      `fonts-noto-cjk` 叫 `Noto Sans CJK TC`，**名稱對不上會 fallback 到
-      DejaVu Sans**（實測）。WSL2 已於 2026-08-13 從 Windows 複製一份到
-      `~/.local/share/fonts/`；伺服器部署腳本要納入同一份。
+      ⚠ **字型檔本身**：`NotoSansTC-VF.ttf` 必須隨 Installer 佈到使用者機器
+      （不能假設 Windows 內建——實測宣告 `Noto Sans TC` 而機器上沒有時會
+      fallback，量測與產出一起錯）。
       **重量**由字型推導的常數——`LS_RENDER`（現 1.40，量自正黑體 16pt）、
       `MIN_CHART_PT` 9.0／`MIN_CHART_PT_MULTI` 12.0。
-      🔴 **重量必須在 Linux 執行**（產線環境）；拿 Windows 的數字回去用
-      等於量測基準搞錯邊。⚠ 組版字級不變（標題 24／內文 16）。
+      🔴 **2026-08-13 改：重量在 Windows 執行**（design 4c-1a）——原條文寫
+      「必須在 Linux」，那是產線為 Linux 容器時的要求；Windows-only 後
+      開發機即產線環境。⚠ 組版字級不變（標題 24／內文 16）。
 - [ ] 2.2c 🔴 **圖表字達 14pt**（design 4d，使用者定案的目標字級）：
       依關係式 `投影片pt = SVG字級px × 316.8 ÷ SVG高度px` 反推——現況
       8.5–13.3pt **不達標**，需在本步定圖區幾何與 SVG 高度
@@ -60,13 +66,12 @@
       `chart_sizing` 讀取**＋一致性測試——否則改後端字級會無聲算錯倍率。
       驗收判準：五頁型單圖頁與雙圖頁圖內字**實測 ≥14pt**（雙圖頁若不可行，
       列出並交使用者裁決，不得默默降標）
-- [ ] 2.3 🔴 映射校驗（一次性）：五頁型三方對照——
-      **WSL2 Chromium 截圖**（產線量測端）vs Windows COM 轉圖 vs 實機開檔，
-      **以 Noto Sans TC 為準**，證據入 `output/_verify/`；
+- [ ] 2.3 🔴 映射校驗（一次性）：五頁型三方對照——Chromium 截圖 vs
+      COM 轉圖 vs 實機開檔，**以 Noto Sans TC 為準**，證據入 `output/_verify/`；
       regression 基準改比 SVG 截圖並重建（⚠ 舊基準算自正黑體，不得沿用）。
-      ⚠ 截圖與量測**在 Linux 做**（design 4c-1／4c-2）：Windows 的角色只剩
-      「提供 Linux 沒有的 PowerPoint COM」，量測端統一才不會把開發機的數字
-      當成產線結論。環境已備妥（chromium-1234 兩端對齊、字型同檔）。
+      ⚠ 2026-08-13 改（design 4c-1a）：**三端全在 Windows**。原條文要求截圖
+      與量測在 WSL2 做，那建立在「產線是 Linux」的前提上，已隨 Windows-only
+      撤銷；WSL2 環境保留但本 change 不使用。
 - [ ] 2.4 封面素材：runner 注入 workspace 名稱作封面技術名稱
       （version_meta→workspace 名；全庫退回報表標題）
 
