@@ -197,13 +197,25 @@
       `test_est_lines_delegates` 用原始碼守住。
       驗證：69 支綠、regression 8 頁逐像素相同、用 slide05 真實文字確認
       兩條規則同時滿足（第 2 行結束在頓號、`CN 223248696` 完整移到第 3 行）。
-- [ ] 2.2e 🆕 **CLI 執行身分實測**（design 4-0b 唯一剩下的 🔴 條件）：
+- [x] 2.2e 🆕 **CLI 執行身分實測**（design 4-0b 唯一剩下的 🔴 條件）：
       `_CLI_SPECS` 的 `"binary": "claude"` 靠 PATH 解析，實測開發機的 CLI 在
       使用者 profile 底下（`C:\Users\user\.local\bin\claude.exe`，2.1.217），
       服務身分的 PATH 通常不含該目錄、認證也綁 profile。
       以 Companion 實際的執行身分跑一次真 CLI，確認起得來且認證過；
       解不到則改為絕對路徑設定或指定服務執行身分，結果寫回 4-0b。
       🔴 **驗收＝實跑 CLI 成功**，不是「確認二進位存在」。
+      **2026-08-13 完成——結論是這個條件不成立，我原本的前提就錯了。**
+      Companion 根本不以服務身分執行：`scripts/companion_startup_install.ps1`
+      用**啟動資料夾捷徑**，檔頭明寫「純使用者層級機制，不需任何提權，且同樣以
+      登入使用者身分執行——**這正是 Companion 需要的前提（要拿得到使用者自己的
+      Claude CLI 登入 token）**」。排程器那條路**已試過並否決**：「以 LogonType
+      Interactive 啟動時實測 LastTaskResult=1（啟動即失敗），改 S4U 需管理員權限」。
+      ⚠ 也就是說「CLI 拿得到 token」是該啟動方式的**設計目的**，不是巧合——
+      我沒讀那份腳本就先寫下擔憂，是憑推論寫規格。
+      實跑驗證：`build_cli_command` ＋ `run_cli` → exit=0、11.8 秒、回覆正確、
+      空白名單（`--allowedTools ''`）生效。
+      ⚠ **部署時仍要重驗**：架站方若改用服務或容器啟動 Companion，整段前提翻掉，
+      而症狀不會是明顯錯誤（可能只是認證失敗或空回應）。已寫回 design 4-0b。
       ⚠ 原條文還要求驗 COM 的非互動 session——**第 3 次裁決後不需要**
       （目視改走 Chromium，產線無 PowerPoint）。
 - [x] 2.2b 🔴 **字型收斂＝Noto Sans TC**（design 4c，前置於映射校驗）：

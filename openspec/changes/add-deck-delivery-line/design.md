@@ -155,14 +155,28 @@ B 案恢復後目視走 Chromium 截 SVG，產線不需要 Office——**不需�
 session、不需 DCOM 設定**。原本的三個條件因此去掉兩個，只剩下面這一個。
 （PowerPoint 仍是**開發機**的需求，用於一次性映射校驗，見「開發期一次性需求」。）
 
-🔴 **唯一不能只靠「裝好軟體」解決的條件**
+✅ **原本列的「CLI 執行身分」條件，實測後確認不成立**（2026-08-13，tasks 2.2e）
 
-**CLI 的 PATH 與認證，在服務身分下與互動式登入不同。**
-`cli_gateway._CLI_SPECS` 的 `"binary": "claude"` 靠 PATH 解析，而開發機實測
-它裝在**使用者 profile 底下**（`C:\Users\user\.local\bin\claude.exe`）——
-服務身分的 PATH 通常不含該目錄，且 CLI 的登入憑證也綁使用者 profile。
-若解不到，需改為以絕對路徑設定或指定服務執行身分。
-⚠ **部署驗收必須實跑一次 CLI**，不能只確認二進位存在。
+我原本寫：「`_CLI_SPECS` 的 `"binary": "claude"` 靠 PATH 解析，而 CLI 裝在使用者
+profile 底下（`C:\Users\user\.local\bin\claude.exe`），服務身分的 PATH 通常不含
+該目錄、認證也綁 profile。」
+
+⚠ **前提錯了**：Companion 根本不以服務身分執行。
+`scripts/companion_startup_install.ps1` 的檔頭寫得很清楚——用**啟動資料夾捷徑**，
+「純使用者層級機制，不需任何提權，且同樣以登入使用者身分執行——**這正是
+Companion 需要的前提（要拿得到使用者自己的 Claude CLI 登入 token）**」。
+而且排程器那條路**已經試過並否決**：「以 LogonType Interactive 啟動時實測
+LastTaskResult=1（啟動即失敗），改 S4U 需要系統管理員權限」。
+
+也就是說，「CLI 拿得到使用者 token」是這個啟動方式的**設計目的**，不是巧合。
+
+**實跑驗證**（不是確認二進位存在）：以現行執行身分呼叫
+`cli_gateway.build_cli_command` ＋ `run_cli` → `exit=0`、11.8 秒、回覆正確、
+空白名單（`--allowedTools ''`）生效。
+
+⚠ **但這條在部署時仍要重驗**：架站方若改用服務或容器啟動 Companion，
+上面整段前提就翻掉——屆時 CLI 會拿不到登入 token，而且**不會是明顯的錯誤**
+（可能表現為認證失敗或空回應）。部署驗收必須實跑一次 CLI。
 
 **開發期一次性需求**（只在開發機，不進產線清單）：
 
