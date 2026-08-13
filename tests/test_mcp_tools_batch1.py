@@ -1,7 +1,10 @@
-"""MCP 批次一三顆工具契約：save_workflow_output／refresh_derived_data／generate_report_ppt。
+"""MCP 批次一工具契約：save_workflow_output／refresh_derived_data。
+
+⚠ 2026-08-13：原第三顆 generate_report_ppt 已隨 PPT 交付線刪除，相關三支測試同步退場
+（見下方註解）。
 
 單元測試以 mock 取代被包裝的既有函式，驗 guard、scope 路由與回傳；DB 測試走拋棄式
-0021 庫（save/ppt 只碰 app_layer，安全）；refresh 因 0021 後 report_* 已為 VIEW、既有
+0021 庫（save 只碰 app_layer，安全）；refresh 因 0021 後 report_* 已為 VIEW、既有
 refresh 函式寫 legacy_0021 實體表，故其真跑 DB 測試以 RUN_DB_TESTS 閘控（屬另案 consolidation）。
 """
 from __future__ import annotations
@@ -101,26 +104,14 @@ class RefreshDerivedDataUnitTests(unittest.TestCase):
                          ["report_patent_base", "report_family_country"])
 
 
-class GenerateReportPptUnitTests(unittest.TestCase):
-    """generate_report_ppt：空 version 拒絕；否則以 report_generate 排隊回 run_id（mock create_job）。"""
-
-    def test_rejects_empty_version(self):
-        with self.assertRaises(ValueError):
-            tools_reporting.generate_report_ppt("  ")
-
-    def test_enqueues_report_generate_and_returns_run_id(self):
-        fake_job = mock.Mock(job_id=555, status="queued")
-        with mock.patch("backend.app.db.job_repository.create_job", return_value=fake_job) as cj:
-            r = tools_reporting.generate_report_ppt("report_trial_20260721")
-        cj.assert_called_once_with(
-            "report_generate", payload={"version": "report_trial_20260721", "artifact": "ppt"})
-        self.assertEqual(r["run_id"], 555)
-        self.assertEqual(r["run_type"], "report_generate")
-        self.assertTrue(r["queued"])
+# ⚠ 2026-08-13 移除 GenerateReportPptUnitTests 與 Batch1DbTests 的同名測試：
+# 受測工具 generate_report_ppt 已刪除（PPT 交付線 2026-08-10 退場）。它「回報成功
+# 卻排了一筆重產全部報表的 job」，而這兩支測試守的正是那個錯誤契約——payload 帶
+# version／artifact 兩鍵，兩鍵下游都不消費。守著它等於把錯誤行為當成規格保護起來。
 
 
 class Batch1DbTests(unittest.TestCase):
-    """拋棄式 0021 庫：save_workflow_output 真 append、generate_report_ppt 真排隊（只碰 app_layer）。"""
+    """拋棄式 0021 庫：save_workflow_output 真 append（只碰 app_layer）。"""
 
     TEST_DB = "patent_ppt_mcpbatch1"
     _prev: dict[str, str | None] = {}
@@ -176,15 +167,6 @@ class Batch1DbTests(unittest.TestCase):
     def test_save_workflow_output_rejects_ai_prefix_before_db(self):
         with self.assertRaises(ValueError):
             tools_reporting.save_workflow_output(self.run_id, "ai:narrative:x", {"text": "a"})
-
-    def test_generate_report_ppt_enqueues_run(self):
-        r = tools_reporting.generate_report_ppt("report_trial_smoke")
-        self.assertTrue(r["queued"])
-        with psycopg.connect(**_kw(self.TEST_DB)) as c:
-            run_type = c.execute(
-                "SELECT run_type FROM app_layer.workflow_runs WHERE run_id=%s", (r["run_id"],)
-            ).fetchone()[0]
-        self.assertEqual(run_type, "report_generate")
 
 
 @unittest.skipUnless(os.environ.get("RUN_DB_TESTS") == "1",
