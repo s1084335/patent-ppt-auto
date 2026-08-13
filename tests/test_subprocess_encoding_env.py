@@ -31,6 +31,14 @@ codepage；父行程用 UTF-8 解碼含中文路徑（`D:\力山\專案\專利_p
 （None 會讓真正的失敗原因完全消失）。
 
 ⚠ 兩個 runner 都要修：`ai_report_ppt_runner`（PPT）與 `ai_narrative_runner`（解讀）。
+
+## 2026-08-13：受測落點搬家
+
+修正當時的兩個落點都不在了：`ai_report_ppt_runner` 隨 PPT 交付線刪除
+（2026-08-10）；`ai_narrative_runner` 則自 2026-08-09「能整合的都要整合」起
+**不再自己起子行程**，`subprocess.run` 收斂到 `cli_gateway.run_cli`（narrative
+只留 re-export）。⚠ 受測的**行為**沒有變——只是現在全部 AI 線共用同一個落點，
+守在那裡等於一次守住七條線；本檔因此改指 `cli_gateway`。
 """
 from __future__ import annotations
 
@@ -39,11 +47,12 @@ import unittest
 
 
 class SubprocessEnvTests(unittest.TestCase):
-    """兩支 runner 呼叫子行程時都要強制 UTF-8。"""
+    """起 headless CLI 子行程時要強制 UTF-8（現行唯一落點＝cli_gateway.run_cli）。"""
 
+    # None＝模組層級搜尋：起子行程的 `run_cli` 與 None 防護所在的 `parse_cli_result`
+    # 同屬 cli_gateway，三個判準一起守。
     CASES = (
-        ("backend.app.worker.ai_report_ppt_runner", "_default_build_ppt"),
-        ("backend.app.worker.ai_narrative_runner", None),  # 模組層級搜尋
+        ("backend.app.worker.cli_gateway", None),
     )
 
     def _source(self, module_name: str, func_name: str | None) -> str:
@@ -100,23 +109,28 @@ class SubprocessRealRunTests(unittest.TestCase):
     """
 
     def test_chinese_output_survives_without_parent_env(self):
+        """⚠ 直接跑正式的 `cli_gateway.run_cli`，不重組一份等價的 subprocess 呼叫。
+
+        原本測的是 `ai_report_ppt_runner._subprocess_text_env()` 這個 helper；該
+        模組已刪，而收斂後的 `run_cli` 把 env 內嵌在自己身上、沒有對應 helper。
+        改成實跑 run_cli 反而更強：驗的是產品真正走的那條路徑，不是它的替身。
+        """
         import os
-        import subprocess
         import sys
+        from unittest import mock
 
-        from backend.app.worker.ai_report_ppt_runner import _subprocess_text_env
+        from backend.app.worker import cli_gateway as gw
 
-        # 模擬 Companion：父行程沒有 PYTHONIOENCODING
+        # 模擬 Companion（Start-Process -WindowStyle Hidden）：父行程沒有 PYTHONIOENCODING
         parent_env = {k: v for k, v in os.environ.items() if k != "PYTHONIOENCODING"}
-        env = {**parent_env, **_subprocess_text_env()}
-        completed = subprocess.run(
-            [sys.executable, "-c", "print('pptx: D:\\\\力山\\\\專案\\\\報告.pptx')"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            env=env, timeout=60,
-        )
+        with mock.patch.dict(os.environ, parent_env, clear=True):
+            result = gw.run_cli(
+                [sys.executable, "-c", "print('pptx: D:\\\\力山\\\\專案\\\\報告.pptx')"],
+                timeout=60,
+            )
         self.assertIsNotNone(
-            completed.stdout, "含中文路徑的子行程輸出仍回 None——修正未生效")
-        self.assertIn("pptx:", completed.stdout)
+            result.stdout, "含中文路徑的子行程輸出仍回 None——修正未生效")
+        self.assertIn("pptx:", result.stdout)
 
 
 if __name__ == "__main__":
