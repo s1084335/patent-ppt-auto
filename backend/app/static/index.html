@@ -1213,8 +1213,8 @@ function companyGroupMemberHtml(group, member) {
   const hasAiEvidence = member.evidence_json
     && Array.isArray(member.evidence_json.sources);
   const action = status === 'suggested'
-    ? ' <button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', true)">確認</button>'
-      + ' <button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', false)">拒絕</button>'
+    ? ' <button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', true, ' + group.group_id + ')">確認</button>'
+      + ' <button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', false, ' + group.group_id + ')">拒絕</button>'
     : (status === 'confirmed' && hasAiEvidence
         ? ' <button class="btn-mini" onclick="undoCompanyGroupSuggestion(' + member.member_id + ')">撤銷確認</button>'
         : '')
@@ -1346,7 +1346,10 @@ function companyGroupSuggestionHtml(group) {
     return member.review_status === 'suggested';
   });
   return '<div class="company-group-suggestion">'
-    + '<div style="font-weight:600">' + escHtml(group.group_name || '(未命名集團)') + '</div>'
+    + '<div class="code-field"><label for="company-group-suggestion-name-' + group.group_id
+    + '">確認後集團名稱</label>'
+    + '<input class="text-input" id="company-group-suggestion-name-' + group.group_id
+    + '" maxlength="255" value="' + escHtml(group.group_name || '') + '"></div>'
     + '<ul style="margin:.25rem 0 0 1.2rem;padding:0;list-style:none">'
     + members.map(function (member) {
       const code = member.company_code ? ' / ' + member.company_code : '';
@@ -1355,8 +1358,8 @@ function companyGroupSuggestionHtml(group) {
         + '<span>' + escHtml((member.company_display_name || '') + code) + '</span></div>'
         + companyGroupEvidenceHtml(member.evidence_json)
         + '<div class="toolbar" style="margin-top:.2rem">'
-        + '<button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', true)">確認</button>'
-        + '<button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', false)">拒絕</button>'
+        + '<button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', true, ' + group.group_id + ')">確認</button>'
+        + '<button class="btn-mini" onclick="decideCompanyGroupSuggestion(' + member.member_id + ', false, ' + group.group_id + ')">拒絕</button>'
         + '</div></li>';
     }).join('')
     + '</ul></div>';
@@ -1513,10 +1516,25 @@ async function deleteCompanyGroupLayer(groupId, groupName) {
   await renderCompanyGroupRegistry();
 }
 
-async function decideCompanyGroupSuggestion(memberId, confirmed) {
+function pendingCompanyGroupName(groupId) {
+  return ((el('company-group-suggestion-name-' + groupId) || {}).value || '').trim();
+}
+
+async function decideCompanyGroupSuggestion(memberId, confirmed, groupId) {
   const action = confirmed ? 'confirm' : 'reject';
+  const options = { method: 'POST' };
+  if (confirmed) {
+    const groupName = pendingCompanyGroupName(groupId);
+    if (!groupName) {
+      const msg = el('company-group-msg');
+      if (msg) msg.innerHTML = '<div class="code-conflict">請輸入集團名稱</div>';
+      return;
+    }
+    options.headers = { 'Content-Type': 'application/json' };
+    options.body = JSON.stringify({ group_name: groupName });
+  }
   await getJson(API + '/company-groups/suggestions/' + encodeURIComponent(memberId) + '/' + action, {
-    method: 'POST',
+    ...options,
   });
   await renderCompanyGroupRegistry();
 }

@@ -59,6 +59,19 @@ def test_cli_suggestions_and_established_groups_have_separate_sections():
     assert "已建立集團" in src
 
 
+def test_pending_company_group_name_is_editable_and_sent_only_on_confirm():
+    """待審集團名稱可先修短；確認才送名稱，拒絕不得改名。"""
+    src = STATIC_INDEX.read_text(encoding="utf-8")
+
+    assert 'id="company-group-suggestion-name-' in src
+    assert 'maxlength="255"' in src
+    assert "確認後集團名稱" in src
+    assert "function pendingCompanyGroupName" in src
+    assert "group_name: groupName" in src
+    assert "if (confirmed)" in src
+    assert "請輸入集團名稱" in src
+
+
 def test_cli_suggestion_evidence_is_structured_for_human_review():
     """待審建議需顯示可讀證據，不得把 evidence_json 整包輸出。"""
     src = STATIC_INDEX.read_text(encoding="utf-8")

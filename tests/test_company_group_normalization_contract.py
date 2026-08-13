@@ -108,6 +108,50 @@ def test_reversal_api_returns_404_when_mapping_no_longer_exists():
     assert delete_response.status_code == 404
 
 
+def test_confirmation_api_accepts_edited_group_name_and_keeps_bodyless_compatibility():
+    """確認可帶修訂名稱；舊客戶端不帶 body 時仍沿用原名稱。"""
+    from backend.app.api import company_groups as api
+
+    client = TestClient(app)
+    with mock.patch.object(
+        api.repo,
+        "set_suggestion_decision",
+        return_value={"member_id": 7, "review_status": "confirmed"},
+    ) as decide:
+        edited = client.post(
+            "/api/v1/company-groups/suggestions/7/confirm",
+            json={"group_name": "  創科集團  "},
+        )
+        unchanged = client.post("/api/v1/company-groups/suggestions/8/confirm")
+
+    assert edited.status_code == 200
+    assert unchanged.status_code == 200
+    assert decide.call_args_list == [
+        mock.call(7, "confirmed", group_name="  創科集團  "),
+        mock.call(8, "confirmed", group_name=None),
+    ]
+
+
+def test_confirmation_api_rejects_blank_and_overlong_group_names():
+    """無效名稱須在進 repository 前被 API 擋下。"""
+    from backend.app.api import company_groups as api
+
+    client = TestClient(app)
+    with mock.patch.object(api.repo, "set_suggestion_decision") as decide:
+        blank = client.post(
+            "/api/v1/company-groups/suggestions/7/confirm",
+            json={"group_name": "   "},
+        )
+        overlong = client.post(
+            "/api/v1/company-groups/suggestions/7/confirm",
+            json={"group_name": "集" * 256},
+        )
+
+    assert blank.status_code in {400, 422}
+    assert overlong.status_code == 422
+    decide.assert_not_called()
+
+
 def test_cli_suggestion_rejects_direct_confirmed_write():
     """CLI/AI 只能寫 suggested，不可繞過人工確認直接建立 confirmed mapping。"""
     from backend.app.repositories.company_group_repository import validate_cli_suggestion
@@ -240,6 +284,148 @@ def test_suggestion_decision_updates_parent_group_review_status():
     assert "review_status = 'confirmed'" in sql
     assert "review_status = 'suggested'" in sql
     assert result["group_review_status"] == "confirmed"
+
+
+def test_confirm_with_edited_name_is_atomic_and_preserves_other_member_statuses():
+    """名稱更新與單筆確認共用 transaction，且不得批次確認同組其他成員。"""
+    from backend.app.repositories import company_group_repository as repo
+
+    executed: list[tuple[str, object]] = []
+
+    class Cursor:
+        def execute(self, sql, params=None):
+            executed.append((sql, params))
+            if "UPDATE derived_layer.company_group_members" in sql:
+                self._row = (7, 3, "confirmed")
+            elif "group_name =" in sql:
+                self._row = (3, "創科集團")
+            else:
+                self._row = ("confirmed",)
+            return self
+
+        def fetchone(self):
+            return self._row
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class Connection:
+        def __init__(self):
+            self.commits = 0
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            self.commits += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    connection = Connection()
+    with mock.patch.object(repo, "_connect", return_value=connection):
+        result = repo.set_suggestion_decision(
+            7,
+            "confirmed",
+            group_name="  創科集團  ",
+        )
+
+    member_updates = [
+        sql
+        for sql, _ in executed
+        if sql.strip().startswith("UPDATE derived_layer.company_group_members")
+    ]
+    group_name_updates = [
+        (sql, params) for sql, params in executed if "group_name =" in sql
+    ]
+    assert len(member_updates) == 1
+    assert "WHERE member_id = %s" in member_updates[0]
+    assert len(group_name_updates) == 1
+    assert group_name_updates[0][1] == ("創科集團", "創科集團", 3)
+    assert connection.commits == 1
+    assert result["group_name"] == "創科集團"
+
+
+@pytest.mark.parametrize(
+    ("decision", "group_name", "message"),
+    [
+        ("rejected", "創科集團", "only be changed when confirming"),
+        ("confirmed", "   ", "group_name is required"),
+        ("confirmed", "集" * 256, "must not exceed 255"),
+    ],
+)
+def test_suggestion_decision_rejects_invalid_edited_names_before_db_write(
+    decision,
+    group_name,
+    message,
+):
+    """Repository 自身也必須守住名稱邊界，不能只依賴 HTTP schema。"""
+    from backend.app.repositories import company_group_repository as repo
+
+    with mock.patch.object(repo, "_connect") as connect:
+        with pytest.raises(ValueError, match=message):
+            repo.set_suggestion_decision(
+                7,
+                decision,
+                group_name=group_name,
+            )
+
+    connect.assert_not_called()
+
+
+def test_confirm_with_edited_name_rolls_back_when_parent_group_is_missing():
+    """父 group 異常消失時不得提交已確認 member。"""
+    from backend.app.repositories import company_group_repository as repo
+
+    class Cursor:
+        def __init__(self):
+            self._row = None
+
+        def execute(self, sql, params=None):
+            self._row = (
+                (7, 3, "confirmed")
+                if "UPDATE derived_layer.company_group_members" in sql
+                else None
+            )
+            return self
+
+        def fetchone(self):
+            return self._row
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class Connection:
+        def __init__(self):
+            self.commits = 0
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            self.commits += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    connection = Connection()
+    with mock.patch.object(repo, "_connect", return_value=connection):
+        with pytest.raises(LookupError, match="company group not found"):
+            repo.set_suggestion_decision(7, "confirmed", group_name="創科集團")
+
+    assert connection.commits == 0
 
 
 def test_undo_confirmation_restores_ai_suggestion_and_preserves_evidence():

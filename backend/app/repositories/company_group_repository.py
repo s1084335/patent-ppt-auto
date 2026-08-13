@@ -390,10 +390,24 @@ def ingest_cli_suggestions(items: list[dict[str, Any]]) -> dict[str, Any]:
     return {"inserted": inserted}
 
 
-def set_suggestion_decision(member_id: int, decision: str) -> dict[str, Any]:
+def set_suggestion_decision(
+    member_id: int,
+    decision: str,
+    *,
+    group_name: str | None = None,
+) -> dict[str, Any]:
     """人工確認或拒絕單筆 CLI/AI 建議，並同步父集團的生效狀態。"""
     if decision not in {"confirmed", "rejected"}:
         raise ValueError("decision must be confirmed or rejected")
+    edited_name = None
+    if group_name is not None:
+        edited_name = group_name.strip()
+        if decision != "confirmed":
+            raise ValueError("group_name can only be changed when confirming")
+        if not edited_name:
+            raise ValueError("group_name is required")
+        if len(edited_name) > 255:
+            raise ValueError("group_name must not exceed 255 characters")
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -410,6 +424,20 @@ def set_suggestion_decision(member_id: int, decision: str) -> dict[str, Any]:
             )
             row = cur.fetchone()
             if row is not None:
+                if edited_name is not None:
+                    cur.execute(
+                        """
+                        UPDATE derived_layer.company_groups
+                        SET group_name = %s,
+                            normalized_group_name = %s,
+                            updated_at = now()
+                        WHERE group_id = %s
+                        RETURNING group_id, group_name
+                        """,
+                        (edited_name, normalize_group_name(edited_name), row[1]),
+                    )
+                    if cur.fetchone() is None:
+                        raise LookupError("company group not found")
                 group_review_status = _sync_group_review_status(cur, row[1])
                 _notify_company_groups_changed(cur, action="review_suggestion")
         conn.commit()
@@ -420,6 +448,7 @@ def set_suggestion_decision(member_id: int, decision: str) -> dict[str, Any]:
         "group_id": row[1],
         "review_status": row[2],
         "group_review_status": group_review_status,
+        "group_name": edited_name,
     }
 
 
