@@ -104,13 +104,42 @@ def scan_bare_numbers(c: dict) -> list[str]:
     return out
 
 
+def _check_caliber_verbatim(c: dict, facts_path: Path) -> list[str]:
+    """口徑逐字閘門（design §7.5）：引用口徑的行，定義原文必須逐字出現。
+
+    規則：任一頁的 `主體｜內容` 行，若主體與事實包某條 term 相同，
+    內容必須**逐字包含**該條 text（可在後面加註解，不可改寫）。
+    ⚠ 這是「CLI 不改圖」紀律的文字版——口徑是後端唯一來源，CLI 重述＝
+    第二落點，後端改了簡報還印舊說法，而且不會有任何東西報錯。
+    ⚠ 沒引用的口徑不報錯：挑哪幾條上頁是 CLI 的合法判斷（§7.0 判斷留活）。
+    """
+    if not facts_path.is_file():
+        return []          # 舊素材（HTML fallback intake）沒有事實包：閘門不適用
+    facts = {f["term"]: f["text"]
+             for f in json.loads(facts_path.read_text(encoding="utf-8"))}
+    bad: list[str] = []
+    for page in c.get("pages") or []:
+        for line in page.get("lines") or []:
+            head, sep, rest = str(line).partition("｜")
+            term = head.strip()
+            if not sep or term not in facts:
+                continue
+            if facts[term] not in rest:
+                bad.append(
+                    f"口徑「{term}」未逐字使用引擎原文——CLI 只能挑選與加註，"
+                    f"不能改寫。應含：「{facts[term]}」；實際：「{rest[:48]}…」")
+    return bad
+
+
 def main() -> int:
     c = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     png_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else None
+    caliber_bad = _check_caliber_verbatim(
+        c, Path(sys.argv[1]).resolve().parent / "caliber_facts.json")
     fc = png_dir / "font_choice.json" if png_dir else None
     fonts = json.loads(fc.read_text(encoding="utf-8")) if fc and fc.is_file() else None
     B = budget()
-    bad: list[str] = []
+    bad: list[str] = list(caliber_bad)
 
     def chk(label: str, text: str, cap: float):
         u = units(text)

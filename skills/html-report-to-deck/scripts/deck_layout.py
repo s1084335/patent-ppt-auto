@@ -502,7 +502,23 @@ def textbox(sl, x, y, w, h, blocks, *, anchor=MSO_ANCHOR.TOP, space_after=6):
     return tb
 
 
-def base(prs, footer, page=None):
+def src_line(c: dict, spec: dict | None = None) -> str | None:
+    """來源行（design §7.1，機械）：「資料來源：<version>／<report_key>」。
+
+    `_source_version` 由 make_deck 自 report.json 蓋章（CLI 不參與，
+    content.json 自帶也會被蓋掉）；沒蓋章（開發側直跑舊素材）就不印。
+    ⚠ 顯示時去掉恆定前綴 `report_trial_`——固定字首去掉不損回溯性，
+    留著來源行 4in 起跳會擠壓 footer。
+    """
+    version = c.get("_source_version")
+    if not version:
+        return None
+    shown = str(version).removeprefix("report_trial_")
+    keys = "、".join(spec.get("charts") or []) if spec else ""
+    return f"資料來源：{shown}／{keys}" if keys else f"資料來源：{shown}"
+
+
+def base(prs, footer, page=None, source=None):
     s = prs.slides.add_slide(prs.slide_layouts[6])
     rect(s, 0, 0, SW, SH, fill=BG)
     rect(s, 0, 0, SW, 0.055, fill=CYAN)
@@ -511,6 +527,12 @@ def base(prs, footer, page=None):
         textbox(s, SW - 1.5, SH - 0.29, 1.0, 0.26,
                 [("%02d" % page, {"color": MUTED, "align": PP_ALIGN.RIGHT})])
         textbox(s, ML, SH - 0.29, 8.5, 0.26, [(footer, {"color": MUTED})])
+    if source:
+        # 右對齊、頁碼左側。⚠ 與 footer 左框共享 band：footer 文字超過 ~5in
+        # 才會撞（現行 footer 約 3.4in）；來源行去前綴後約 4.3in 內。
+        y = SH - 0.29
+        textbox(s, ML + 5.2, y, SW - 1.6 - (ML + 5.2), 0.26,
+                [(source, {"color": MUTED, "align": PP_ALIGN.RIGHT})])
     return s
 
 
@@ -596,7 +618,7 @@ def page_vars(c: dict) -> dict:
 
 
 def slide_cover(prs, c):
-    s = base(prs, c["footer"])
+    s = base(prs, c["footer"], source=src_line(c))
     V = page_vars(c)
     rect(s, 9.05, 1.15, 3.78, 5.25, fill=BG_PANEL, line=CARD_ED,
          shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.05)
@@ -629,7 +651,7 @@ def slide_cover(prs, c):
 
 
 def slide_rec(prs, c):
-    s = base(prs, c["footer"], 2)
+    s = base(prs, c["footer"], 2, source=src_line(c))
     header(s, c["rec_title"], c["rec_takeaway"])
     top, bot = CHART_TOP, 7.06
     gw = (CW - 0.22) / 2
@@ -657,7 +679,7 @@ def slide_rec(prs, c):
 
 
 def slide_chart(prs, c, page, spec, png_dir):
-    s = base(prs, c["footer"], page)
+    s = base(prs, c["footer"], page, source=src_line(c, spec))
     header(s, spec["title"], spec["takeaway"])
     full = ((spec.get("tag") + "｜") if spec.get("tag") else "") + " ".join(spec["lines"])
     bh = max(BAND_BOT - BAND_TOP, text_h([(full, 16, 0)], CW - 0.52) + 0.34)
@@ -756,7 +778,7 @@ def slide_text(prs, c, page, spec):
     頁數不受圖表數限制——需要更多頁就多加這種頁；它一樣走量測，超出會被裕度表抓到。
     `layout: "label"` 改走左標籤欄版面（`主體｜內容` 的定義列表型內容適用）。
     """
-    s = base(prs, c["footer"], page)
+    s = base(prs, c["footer"], page, source=src_line(c, spec))
     header(s, spec["title"], spec["takeaway"])
     top, bot = CHART_TOP, BAND_BOT
     if spec.get("layout") == "label":
@@ -781,7 +803,7 @@ def slide_text(prs, c, page, spec):
 
 
 def slide_roadmap(prs, c, page):
-    s = base(prs, c["footer"], page)
+    s = base(prs, c["footer"], page, source=src_line(c))
     header(s, c["roadmap_title"], c["roadmap_takeaway"])
     top = CHART_TOP
     cw_ = (CW - 0.44) / 3

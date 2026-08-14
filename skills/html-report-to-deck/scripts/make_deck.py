@@ -17,11 +17,21 @@ from deck_layout import build   # noqa: E402
 
 
 def main() -> int:
-    content = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    content_path = Path(sys.argv[1])
+    content = json.loads(content_path.read_text(encoding="utf-8"))
     # JSON 沒有 tuple：把封面統計與兩個說明區塊還原成 (值, 標籤) 的形式
     content["stats"] = [tuple(x) for x in content["stats"]]
     for k in ("read_me", "chart_rule"):
         content[k] = tuple(content[k])
+    # 來源行蓋章（design §7.1，機械）：值取自同目錄 report.json 的
+    # report_meta.source_file——**CLI 不參與**，content.json 自帶也蓋掉，
+    # 不給 CLI 竄改來源的通道。report.json 不在（開發側直跑舊素材）就不印。
+    report_path = content_path.parent / "report.json"
+    if report_path.is_file():
+        meta = json.loads(report_path.read_text(encoding="utf-8")).get("report_meta") or {}
+        content["_source_version"] = meta.get("source_file") or None
+    else:
+        content.pop("_source_version", None)
     bad = build(content, sys.argv[2], sys.argv[3])
     # 可選第 4 參數：頁面 SVG 輸出目錄（B 案目視截圖的來源；runner 產線用）。
     # ⚠ build 與 build_svg 共用 _compose（唯一落點），兩者輸出的是同一份版面。

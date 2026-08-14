@@ -205,7 +205,38 @@ def assemble(version_dir: Path | str, out_dir: Path | str) -> dict:
     }
     (out_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+    (out_dir / "caliber_facts.json").write_text(
+        json.dumps(_caliber_facts(report_data), ensure_ascii=False, indent=1),
+        encoding="utf-8")
     return report
+
+
+def _caliber_facts(report_data: dict) -> list[dict]:
+    """口徑事實包（design §7.5，機械層）：每條口徑的**權威原文**。
+
+    來源都是引擎已產的文字，這裡只彙整不改寫：
+    - `population`：各報表母體字串（「母體 55/55 件」）——term 用章節中文標題
+      ＋「母體」後綴（CLI 排口徑頁時的可讀名）；找不到對應章節退回 report_key。
+    - `table_display.reader_guide`：全報告共通判讀指引（共同申請不可相加等）。
+
+    🔴 消費端（check_content）逐字比對：CLI 挑選、排序、後綴註解都合法，
+    **重寫原文即紅**——口徑是後端唯一來源，CLI 重述＝第二落點，
+    後端改了簡報還印舊說法，而且不會有任何東西報錯。
+    """
+    facts: list[dict] = []
+    titles = {str(s.get("report_key") or ""): str(s.get("title") or "")
+              for s in report_data.get("sections") or []}
+    for key, text in (report_data.get("population") or {}).items():
+        if not str(text or "").strip():
+            continue
+        term = (titles.get(str(key)) or str(key)) + "母體"
+        facts.append({"key": f"population:{key}", "term": term, "text": str(text)})
+    for i, item in enumerate(report_data.get("table_display", {}).get("reader_guide") or []):
+        title = str(item.get("title") or "").strip()
+        body = str(item.get("body") or "").strip()
+        if title and body:
+            facts.append({"key": f"guide:{i}", "term": title, "text": body})
+    return facts
 
 
 def _report_meta(version_meta: dict, report_data: dict) -> dict:
