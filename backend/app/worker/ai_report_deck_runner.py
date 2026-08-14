@@ -354,6 +354,18 @@ def run_deck(
         base_pct = min(60 + (round_no - 1) * 8, 88)
         _progress(f"visual_round_{round_no}", base_pct)
 
+        # 跨度圖宣告式標記（design §7.8b）：CLI 宣告、引擎照畫。宣告接不上資料
+        # （名稱不在圖上、年份不在軸上）＝內容問題，走修稿輪；有套用時圖變了，
+        # 重跑 fit 讓 PNG 跟上（沒宣告時腳本秒退，不花時間）。
+        code, output = _step("marks", [py, str(scripts / "apply_chart_marks.py"),
+                                       str(work)], gate=True)
+        if code != 0:
+            _fix_round(round_no, output, "chart_marks")
+            continue
+        if "MARKS_APPLIED" in output:
+            _step("fit", [py, str(scripts / "fit_render_charts.py"),
+                          str(work / "charts"), str(work / "png")])
+
         code, output = _step("check", [py, str(scripts / "check_content.py"),
                                        str(content_path), str(work / "png")],
                              gate=True)

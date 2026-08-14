@@ -169,7 +169,7 @@ class DeckRunnerTests(unittest.TestCase):
         summary, steps, cli = self._run()
         self.assertEqual(
             steps.calls,
-            ["assemble", "plan", "fit", "check", "make", "audit", "shoot"])
+            ["assemble", "plan", "fit", "marks", "check", "make", "audit", "shoot"])
         # CLI 恰兩次：撰稿＋目視通過
         self.assertEqual(len(cli.prompts), 2)
         self.assertEqual(summary["visual_rounds"], 1)
