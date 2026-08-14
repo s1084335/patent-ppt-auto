@@ -802,6 +802,57 @@ def slide_text(prs, c, page, spec):
     return s
 
 
+#: 🔴 結論頁「專利行動」的有限動詞表（design §7.7，唯一定義處；check_content 引用）。
+#: CLI 只能選不能自創——避免 AI 寫出「應立即提出申請」這類法律／商業承諾，
+#: 越過「AI 只輔助、不做正式決策」的界線。擴充動詞走 openspec 留痕，不在 prompt 放寬。
+ACTION_VERBS = ("佈局", "追蹤", "迴避設計", "細讀比對", "暫不投入")
+
+#: 結論頁四欄（主題｜發現｜研發意涵｜專利行動）的欄寬（in）。
+#: ⚠ 總和必須 ≤ CW - 2×0.26（左右內距）；行動欄最窄——內容是動詞表單選。
+CONCL_COLS = (2.35, 3.35, 4.45, 1.35)
+
+
+def slide_conclusions(prs, c):
+    """綜合結論頁（design §7.7）：一主題一列、三欄帶（§7.2 的應用）。
+
+    發現＝機械（intake `topic_facts.json` 的字串，check_content 逐字閘門盯著）；
+    研發意涵＝CLI；專利行動＝CLI 從 `ACTION_VERBS` 單選。
+    ⚠ `conclusions` 存在時本頁**取代**建議頁（§7.10 頁數帳：取代不新增）。
+    """
+    cc = c["conclusions"]
+    s = base(prs, c["footer"], 2, source=src_line(c))
+    header(s, cc["title"], cc["takeaway"])
+    top, bot = CHART_TOP, 7.06
+    x0 = ML + 0.26
+    widths = CONCL_COLS
+    heads = ("主題", "發現", "研發意涵", "專利行動")
+    # 欄頭列
+    y = top + 0.06
+    x = x0
+    for head, w in zip(heads, widths):
+        textbox(s, x, y, w - 0.14, 0.3, [(head, {"bold": True, "color": CYAN})])
+        x += w
+    y += 0.42
+    rows = cc["rows"]
+    # 每列高＝四欄實測需求的最大者（字級鎖死，只能量不能縮）
+    heights = []
+    for r in rows:
+        cells = (r["topic"], r["finding"], r["implication"], r["action"])
+        h = max(text_h([(t, 16, 0)], w - 0.14) for t, w in zip(cells, widths))
+        heights.append(h + ROW_PAD)
+    note("結論頁列高總和", bot - y, sum(heights) + ROW_GAP * (len(rows) - 1))
+    for r, h in zip(rows, heights):
+        x = x0
+        cells = (r["topic"], r["finding"], r["implication"], r["action"])
+        styles = ({"bold": True}, {"color": MUTED}, {}, {"bold": True, "color": GREEN})
+        for t, w, st in zip(cells, widths, styles):
+            textbox(s, x, y, w - 0.14, h, [(t, st)], space_after=0)
+            x += w
+        y += h + ROW_GAP
+        rect(s, x0, y - ROW_GAP / 2, CW - 0.52, RULE_W, fill=CARD_ED)
+    return s
+
+
 def slide_roadmap(prs, c, page):
     s = base(prs, c["footer"], page, source=src_line(c))
     header(s, c["roadmap_title"], c["roadmap_takeaway"])
@@ -866,7 +917,12 @@ def _compose(deck, content: dict, png_dir: Path) -> dict:
     共用這一份，否則兩邊會各自演進（少一頁、順序不同都不會報錯）。
     """
     slide_cover(deck, content)
-    slide_rec(deck, content)
+    # §7.7：conclusions 宣告時綜合結論頁**取代**建議頁（取代不並存——
+    # 兩頁並存＝同一問題答兩次；§7.10 頁數帳也靠這條成立）。
+    if content.get("conclusions"):
+        slide_conclusions(deck, content)
+    else:
+        slide_rec(deck, content)
     widths = {}
     for i, spec in enumerate(content["pages"], start=3):
         if spec.get("charts"):

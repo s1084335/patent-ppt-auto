@@ -131,11 +131,50 @@ def _check_caliber_verbatim(c: dict, facts_path: Path) -> list[str]:
     return bad
 
 
+def _check_conclusions(c: dict, facts_path: Path) -> list[str]:
+    """結論頁閘門（design §7.7）：動詞白名單＋發現欄逐字＋三欄齊備。
+
+    - 專利行動 ∈ `deck_layout.ACTION_VERBS`（唯一定義處）——表外即紅，
+      避免 AI 寫出法律／商業承諾。
+    - 發現欄＝機械（intake topic_facts）——CLI 逐字引用，改寫即紅
+      （與口徑閘門同一條紀律）。
+    """
+    cc = c.get("conclusions")
+    if not cc:
+        return []
+    from deck_layout import ACTION_VERBS
+
+    bad: list[str] = []
+    facts = {}
+    if facts_path.is_file():
+        facts = {f["topic"]: f["finding"]
+                 for f in json.loads(facts_path.read_text(encoding="utf-8"))}
+    rows = cc.get("rows") or []
+    if not rows:
+        bad.append("結論頁沒有任何列（conclusions.rows 空）")
+    for i, r in enumerate(rows, 1):
+        for field in ("topic", "finding", "implication", "action"):
+            if not str(r.get(field) or "").strip():
+                bad.append(f"結論頁第 {i} 列缺「{field}」——三欄與主題都要齊")
+        action = str(r.get("action") or "").strip()
+        if action and action not in ACTION_VERBS:
+            bad.append(
+                f"結論頁第 {i} 列行動「{action}」不在動詞表 {list(ACTION_VERBS)}"
+                "——CLI 只能選不能自創")
+        topic = str(r.get("topic") or "").strip()
+        if topic in facts and str(r.get("finding") or "") != facts[topic]:
+            bad.append(
+                f"結論頁「{topic}」的發現欄未逐字使用引擎字串——"
+                f"應為「{facts[topic]}」；實際「{str(r.get('finding'))[:40]}」")
+    return bad
+
+
 def main() -> int:
     c = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     png_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else None
-    caliber_bad = _check_caliber_verbatim(
-        c, Path(sys.argv[1]).resolve().parent / "caliber_facts.json")
+    work_dir = Path(sys.argv[1]).resolve().parent
+    caliber_bad = _check_caliber_verbatim(c, work_dir / "caliber_facts.json")
+    caliber_bad += _check_conclusions(c, work_dir / "topic_facts.json")
     fc = png_dir / "font_choice.json" if png_dir else None
     fonts = json.loads(fc.read_text(encoding="utf-8")) if fc and fc.is_file() else None
     B = budget()

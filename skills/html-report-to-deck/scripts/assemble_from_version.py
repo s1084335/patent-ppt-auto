@@ -208,7 +208,49 @@ def assemble(version_dir: Path | str, out_dir: Path | str) -> dict:
     (out_dir / "caliber_facts.json").write_text(
         json.dumps(_caliber_facts(report_data), ensure_ascii=False, indent=1),
         encoding="utf-8")
+    (out_dir / "topic_facts.json").write_text(
+        json.dumps(_topic_facts(report_data), ensure_ascii=False, indent=1),
+        encoding="utf-8")
     return report
+
+
+def _topic_finding(row: dict) -> str:
+    """單一主題的「發現」字串（design §7.7 機械欄）——引擎欄位組裝，不判斷語意。
+
+    集中度分辨（§7.6，可計算）：單一申請人持有＝**集中持有**；
+    件數＝家數（各一件）＝**分散待驗**；其餘用引擎的消長 `status`。
+    ⚠ 集中度數值（max_share）引擎早就算好，這裡只組字串不重算。
+    """
+    pc = int(float(row.get("patent_count") or 0))
+    ac = int(float(row.get("applicant_count") or 0))
+    if ac == 1:
+        tag = "集中持有"
+    elif pc == ac and pc > 0:
+        tag = "分散待驗"
+    else:
+        tag = str(row.get("status") or "").strip() or "—"
+    share = str(row.get("max_share") or "").strip()
+    mid = f"最大持有 {share}%｜" if share else ""
+    return f"{pc}件/{ac}家｜{mid}{tag}"
+
+
+def _topic_facts(report_data: dict) -> list[dict]:
+    """主題事實包（design §7.7）：結論頁「發現」欄的機械來源。
+
+    消費端（check_content）逐字比對：CLI 挑主題、寫意涵、選行動動詞，
+    **發現欄必須逐字用這裡的字串**——與口徑閘門同一條紀律。
+    """
+    facts: list[dict] = []
+    seen: set[str] = set()
+    for row in (report_data.get("chart_rows") or {}).get("cluster_topic_table") or []:
+        label = str(row.get("label") or "").strip()
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        facts.append({"topic": label,
+                      "topic_code": str(row.get("topic_code") or ""),
+                      "finding": _topic_finding(row)})
+    return facts
 
 
 def _caliber_facts(report_data: dict) -> list[dict]:
