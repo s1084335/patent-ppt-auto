@@ -235,6 +235,29 @@ class UnbreakableTokenTests(unittest.TestCase):
         self.assertGreater(len(lines), 1)
         self.assertEqual("".join(lines), text)
 
+    def test_english_word_not_split_mid_word(self):
+        """🔴 英文**單字**不得從中間拆開（2026-08-14 SVG 基準逐頁目視 slide08 抓到）。
+
+        「對主要持有者做 claim chart，量出邊界。」被切成
+        「…claim char」＋「t，量出邊界。」——舊基準走 PowerPoint 斷行不會這樣，
+        B 案引擎自斷後才現形。詞組保護只管「含數字的空格詞組」，
+        管不到單字本身；斷點落在 ASCII 英數連續段**內部**時要回推到段首。
+        ⚠ 空格處仍可斷（`claim` 與 `chart` 之間合法）——保的是單字，不是片語。
+        """
+        text = "對主要持有者做 claim chart，量出邊界。"
+        for width_tenth in range(25, 60, 3):
+            width = width_tenth / 10
+            lines = self.mod.wrap_lines(text, width)
+            self.assertEqual("".join(lines), text, "斷行丟字了")
+            for index, line in enumerate(lines[:-1]):
+                nxt = lines[index + 1]
+                with self.subTest(width=width, line=line):
+                    # 行尾與次行行首都是英數＝單字被從中間拆開
+                    self.assertFalse(
+                        line and nxt and line[-1].isascii() and line[-1].isalnum()
+                        and nxt[0].isascii() and nxt[0].isalnum(),
+                        f"單字被拆開：『{line[-6:]}』｜『{nxt[:6]}』")
+
 
 if __name__ == "__main__":
     unittest.main()

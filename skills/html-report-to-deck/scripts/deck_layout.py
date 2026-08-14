@@ -240,8 +240,15 @@ def _greedy_wrap(text: str, capacity: float) -> list[str]:
             # 斷點切斷受保護詞組 → 往前退到詞組之前。
             while cut > start and _inside_protected(cut, ranges):
                 cut -= 1
-            # ⚠ 退不動就照原斷點走（fail open）：詞組本身超過行寬時硬保護會
-            #   無限迴圈或整行溢出。
+            # 🔴 英文**單字**內部不可斷（2026-08-14 SVG 基準目視 slide08 抓到
+            #   「claim char／t」）：斷點兩側都是 ASCII 英數＝落在單字中間，
+            #   回退到段首。⚠ 空格處仍可斷——保的是單字，不是片語；
+            #   舊基準走 PowerPoint 斷行沒這問題，引擎自斷後才現形。
+            while (start < cut < len(text)
+                   and _is_token_char(text[cut]) and _is_token_char(text[cut - 1])):
+                cut -= 1
+            # ⚠ 退不動就照原斷點走（fail open）：詞組／單字本身超過行寬時
+            #   硬保護會無限迴圈或整行溢出。
             if cut == start:
                 cut = index
             lines.append(text[start:cut])
@@ -307,6 +314,14 @@ def _apply_kinsoku(lines: list[str], capacity: float) -> list[str]:
         #   推整個詞組兩者都滿足；只有整行都是詞組時才真的無解（那時停手）。
         while following and following[0] in NO_LINE_START and len(current) > 1:
             token_start = _token_start_at_end(current)
+            # 🔴 英文單字（不含數字、不在詞組保護內）同樣不能只借一個字——
+            #   2026-08-14 目視 slide08：「claim chart」＋行首「，」，借一字變成
+            #   「claim char」＋「t，」。單字結尾就整字推（與詞組同一手段）。
+            if token_start is None and _is_token_char(current[-1]):
+                word_start = len(current) - 1
+                while word_start > 0 and _is_token_char(current[word_start - 1]):
+                    word_start -= 1
+                token_start = word_start
             if token_start is not None:
                 if token_start <= 0:
                     break                   # 整行都是那個詞組，推不動

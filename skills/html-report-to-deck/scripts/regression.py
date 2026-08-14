@@ -29,13 +29,16 @@ BASELINE = HERE.parent / "regression_baseline"
 # 目視轉圖已定案進產線（openspec add-deck-delivery-line design 4-0），
 # 產線機器不會有 `D:\vscode\`，寫死等於一到伺服器就斷。
 # 沿 `fit_render_charts.PLAYWRIGHT_HOME` 同一套慣例：環境變數優先、預設回開發機。
-DEFAULT_PPTX_TO_PNG = Path(r"D:\vscode\ppt-tools\pptx_to_png.py")
-PPTX_TO_PNG = Path(os.environ.get("PPTX_TO_PNG", DEFAULT_PPTX_TO_PNG))
+# ⚠ 2026-08-14 起基準比 SVG 截圖（Chromium），PPTX_TO_PNG（PowerPoint COM）
+# 已不在回歸路徑；COM 只用於映射校驗（tasks 2.3①，改轉換器時重跑）。
 
 # ── 合成圖表：涵蓋會影響版面的幾種長寬比 ───────────────────────
-# 高瘦（會把圖內字壓小）、扁平（雙圖頁唯一成立的形狀）、方形、含 chip
+# 高瘦（會把圖內字壓小）、扁平（雙圖頁唯一成立的形狀）、近方形、含 chip
+# ⚠ square 2026-08-14 由 900×700 改 900×560：字級門檻真的會擋之後
+#   （make_deck 把 weak 計入回傳值），700 高的方圖 7.2pt < 9pt 直接紅——
+#   回歸素材必須是**合法可交付**的 deck，不能拿門檻擋下的頁當基準。
 SHAPES = {"tall": (1180, 560), "flat_a": (1180, 150),
-          "flat_b": (1180, 160), "square": (900, 700)}
+          "flat_b": (1180, 160), "square": (900, 560)}
 
 
 def _svg(w: int, h: int, *, chip: bool) -> str:
@@ -141,13 +144,6 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true", help="保留工作目錄以便查看")
     a = ap.parse_args()
 
-    # ⚠ 先擋轉圖器缺席：它排在最後一步，缺了會讓前面四步白跑（實測約 1 分鐘），
-    # 而 subprocess 的錯誤是「找不到檔案」，看不出是環境沒設好還是腳本壞了。
-    if not PPTX_TO_PNG.is_file():
-        print(f"✗ 找不到 PPTX→PNG 轉圖器：{PPTX_TO_PNG}\n"
-              f"  設環境變數 PPTX_TO_PNG 指向 pptx_to_png.py（走 PowerPoint COM）。")
-        return 1
-
     work = Path(tempfile.mkdtemp(prefix="deck_reg_"))
     charts, png = work / "charts", work / "png"
     charts.mkdir()
@@ -157,6 +153,13 @@ def main() -> int:
     (work / "content.json").write_text(
         json.dumps(_content(), ensure_ascii=False, indent=1), encoding="utf-8")
 
+    # 🔴 2026-08-14（tasks 2.3②）：基準改比 **SVG 截圖**（Chromium，倍率由
+    # deck_layout.VISUAL_SCALE 導出），不再走 PowerPoint COM 轉圖。
+    # 依據＝B 案「截 SVG＝截成品」：斷行寫死、絕對定位、關 wrap 後 PPTX 已無
+    # 重排自由；SVG 截圖與實機開檔的對應由映射校驗（tasks 2.3①，
+    # output/_verify/mapping）背書——那一次校驗成立後固定，日常回歸不再依賴
+    # Office。⚠ COM 沒有從驗證體系消失：改動窄轉換器時要重跑映射校驗。
+    # 組版仍產 pptx 並過 audit——回歸同時守「pptx 產得出來」與「SVG 長對」。
     py = [sys.executable]
     steps = [
         ("字級擬合與轉圖", py + [str(HERE / "fit_render_charts.py"), str(charts),
@@ -164,9 +167,10 @@ def main() -> int:
         ("內容檢查", py + [str(HERE / "check_content.py"),
                           str(work / "content.json"), str(png)]),
         ("組版", py + [str(HERE / "make_deck.py"), str(work / "content.json"),
-                      str(png), str(work / "reg.pptx")]),
+                      str(png), str(work / "reg.pptx"), str(work / "svg")]),
         ("閘門", py + [str(HERE / "audit_deck.py"), str(work / "reg.pptx")]),
-        ("轉圖", py + [str(PPTX_TO_PNG), str(work / "reg.pptx"), str(work / "shots")]),
+        ("SVG 截圖", py + [str(HERE / "shoot_pages.py"), str(work / "svg"),
+                           str(work / "shots")]),
     ]
     for label, cmd in steps:
         r = _run(cmd)
@@ -178,7 +182,7 @@ def main() -> int:
             return 1
         print(f"✓ {label}")
 
-    shots = sorted((work / "shots").glob("*.PNG"), key=lambda p: p.stat().st_mtime)
+    shots = sorted((work / "shots").glob("*.png"))
     if a.update:
         if BASELINE.exists():
             shutil.rmtree(BASELINE)
