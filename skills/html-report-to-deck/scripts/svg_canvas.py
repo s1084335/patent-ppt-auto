@@ -12,12 +12,13 @@
 ## 座標系
 
 對外一律用**英吋**（與 `deck_layout` 全檔一致）；本檔在輸出時乘 `DPI` 轉成 px。
-96 dpi 的依據見 `deck_layout.py` RULE_W 那條註記與 `svg_to_pptx.py`。
+96 dpi 的依據見 `deck_layout.py` RULE_W 那條註記。
 
 ## 一個 `<text>` ＝ 一行 ＝ 一種樣式
 
-窄轉換器的詞彙不含 `<tspan>`。同一行內若有多種樣式（例如「A　主題名」＋標籤），
-就輸出多個 `<text>`，x 依前段實際寬度累加——寬度用 `units()` 算，與斷行同一套係數。
+詞彙不含 `<tspan>`（見 `SVG_VOCABULARY`）。同一行內若有多種樣式（例如
+「A　主題名」＋標籤），就輸出多個 `<text>`，x 依前段實際寬度累加
+——寬度用 `units()` 算，與斷行同一套係數。
 """
 from __future__ import annotations
 
@@ -25,6 +26,16 @@ from html import escape
 from pathlib import Path
 
 DPI = 96.0
+
+#: 🔴 頁面 SVG 的**元素詞彙邊界**（唯一定義處；2026-08-14 使用者裁決自窄轉換器
+#: 獨立出來）。`test_svg_vocabulary_guard` 掃全部頁型的實際輸出鎖住它。
+#:
+#: 為什麼要有邊界：這份詞彙是「頁面 SVG 隨時可轉原生 PPTX」的前提——
+#: 窄轉換器（svg_to_pptx，已封存於 git 歷史，復活指標見 tasks 2.1b）只吃這些。
+#: 邊界一鬆，期權就默默失效：圖形文法的箭頭用字符（→／vs）而非多邊形、
+#: 分隔線用細 rect 而非 <line>，都是這條邊界在起作用。
+#: ⚠ 擴詞彙＝同時擴轉換器的承接能力（先復活它再說），不得只在這裡放行。
+SVG_VOCABULARY = frozenset({"svg", "rect", "text", "image"})
 
 # 行盒頂 → 基線的比例（乘上「字級 × 該行的行高倍率」）。
 #

@@ -39,7 +39,6 @@ class SvgOutputTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.dl = _load("deck_layout")
-        cls.conv = _load("svg_to_pptx")
         cls.reg = _load("regression")
 
     def _run(self):
@@ -76,16 +75,9 @@ class SvgOutputTests(unittest.TestCase):
                 root = ET.fromstring(path.read_text(encoding="utf-8"))
                 self.assertTrue(root.tag.endswith("svg"))
 
-    def test_every_page_survives_the_converter(self):
-        """🔴 產生端與消費端的詞彙鎖：每一頁都要能被窄轉換器吃下去。
-
-        ⚠ 這是本檔的核心。`svg_canvas` 多產一種元素、或 `svg_to_pptx` 少收一種，
-        都會在這裡紅——否則兩邊漂移沒有任何東西會報錯。
-        """
-        out, pages = self._run()
-        count = self.conv.build_file(pages, out / "deck.pptx")
-        self.assertEqual(count, len(pages))
-        self.assertTrue((out / "deck.pptx").is_file())
+    # ⚠ test_every_page_survives_the_converter 已隨窄轉換器封存移除
+    #   （2026-08-14 使用者裁決）。詞彙鎖由 test_svg_vocabulary_guard 直接掃
+    #   產出承接（svg_canvas.SVG_VOCABULARY 為唯一定義處）；復活指標見 tasks 2.1b。
 
     def test_images_use_relative_paths(self):
         """圖檔寫相對路徑——Chromium 用 `goto` 載入 SVG 時才抓得到同目錄的圖。
