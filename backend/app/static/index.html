@@ -1190,14 +1190,16 @@ async function renderCompanyCodeRegistry() {
     + '<div id="company-code-body"><div class="hint">載入中…</div></div>'
     + '</details>';
   try {
-    const [pending, existing, notGrouped] = await Promise.all([
+    const [pending, existing, notGrouped, normalization] = await Promise.all([
       getJson(API + '/company-codes/pending?limit=200'),
       getJson(API + '/company-codes/existing'),
       // 不歸戶清單（規格批次 c）：與另兩支併發取，不多一輪往返。
       getJson(API + '/company-codes/not-grouped'),
+      getJson(API + '/company-normalization-suggestions'),
     ]);
     pendingCodeNames = pending.items || [];
     notGroupedNames = notGrouped.items || [];
+    companyNormalizationSuggestions = normalization.items || [];
     renderCompanyCodeBody(existing.items || []);
   } catch (e) {
     const body = el('company-code-body');
@@ -1585,6 +1587,8 @@ function unsavedCodeGroupCount() {
 // ⚠ 標記**不是刪除**：後端只寫一列 source_type='filter'，隨時可還原。
 // ⚠ 顯示**完全不變**：後端把「正規化名稱」填成該名稱本身，報表反查照樣顯示原名。
 let notGroupedNames = [];
+let companyNormalizationSuggestions = [];
+let companyNormalizationSuggestionStarting = false;
 
 function renderNotGroupedNames() {
   if (!notGroupedNames.length) return '';
@@ -1598,6 +1602,192 @@ function renderNotGroupedNames() {
         + ' <button class="btn-mini" onclick="restoreNotGroupedName(' + it.id + ')">還原</button>'
         + '</li>').join('')
     + '</ul></details>';
+}
+
+function companyNormalizationSuggestionJobRunning() {
+  return companyNormalizationSuggestionStarting || taskListCache.some(t =>
+    t.job_type === 'ai:company_normalization_suggestion'
+      && ['queued', 'running'].includes(t.status));
+}
+
+function companyNormalizationConfidenceLabel(value) {
+  return { high: '高', medium: '中', low: '低' }[String(value || '').toLowerCase()] || '未提供';
+}
+
+function companyNormalizationEvidenceUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return url.protocol === 'https:' ? url.href : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function companyNormalizationEvidenceHtml(metadata) {
+  const meta = metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : {};
+  const sources = Array.isArray(meta.evidence) ? meta.evidence : [];
+  const warnings = Array.isArray(meta.warnings) ? meta.warnings : [];
+  const rows = sources.length
+    ? sources.map(function (source) {
+        const item = source && typeof source === 'object' ? source : {};
+        const url = companyNormalizationEvidenceUrl(item.url);
+        const link = url
+          ? '<a href="' + escHtml(url) + '" target="_blank" rel="noopener noreferrer">來源</a>'
+          : '<span class="company-group-evidence-label">來源無效</span>';
+        return '<div class="company-group-evidence-row"><div>' + link + '</div><div>'
+          + escHtml(item.claim || '未提供支持摘要') + '</div></div>';
+      }).join('')
+    : '<div class="hint" style="padding:.2rem 0">未提供可用的證據來源</div>';
+  const personWarning = meta.suggestion_kind === 'person_affiliation'
+    ? '<div class="company-group-evidence-row company-group-warning"><div>統計警示</div><div>'
+      + '該個人名下相關專利將納入此公司統計</div></div>'
+    : '';
+  const warningHtml = warnings.length
+    ? '<div class="company-group-evidence-row company-group-warning"><div>注意事項</div><div>'
+      + warnings.map(escHtml).join('；') + '</div></div>'
+    : '';
+  return '<div class="company-group-evidence">'
+    + '<div class="company-group-evidence-row"><div class="company-group-evidence-label">可信度</div><div>'
+    + escHtml(companyNormalizationConfidenceLabel(meta.confidence)) + '</div></div>'
+    + '<div class="company-group-evidence-row"><div class="company-group-evidence-label">證據來源</div><div></div></div>'
+    + rows + personWarning + warningHtml + '</div>';
+}
+
+function companyNormalizationTargetOptionsHtml(currentCode) {
+  const current = (currentCode || '').trim();
+  const options = (existingCompanyGroups || []).map(function (group) {
+    const code = (group.code || '').trim();
+    const name = (group.company_name || group.zh_name || group.normalized_name || code).trim();
+    const label = code ? name + '（' + code + '）' : name;
+    return '<option value="' + escHtml(code) + '"' + (code === current ? ' selected' : '') + '>'
+      + escHtml(label) + '</option>';
+  }).join('');
+  return '<option value="">沿用 AI 建議目標</option>' + options;
+}
+
+function companyNormalizationSuggestionHtml(suggestion) {
+  const meta = suggestion.metadata && typeof suggestion.metadata === 'object' ? suggestion.metadata : {};
+  const target = (suggestion.suggested_zh_name || suggestion.suggested_normalized_name || suggestion.company_code || '').trim();
+  const kindLabel = {
+    map_existing: '加入既有公司',
+    update_names: '補公司名稱',
+    create_temp: '建立臨時公司',
+    person_affiliation: '自然人分析歸戶',
+  }[meta.suggestion_kind] || meta.suggestion_kind || '未分類';
+  return '<div class="company-group-suggestion" data-suggestion-id="' + escHtml(suggestion.id) + '">'
+    + '<label style="display:flex;gap:.45rem;align-items:flex-start">'
+    + '<input type="checkbox" class="company-normalization-checkbox" value="' + escHtml(suggestion.id) + '">'
+    + '<span><strong>' + escHtml(kindLabel) + '</strong> '
+    + '<span class="hint">#' + escHtml(suggestion.id) + '</span></span></label>'
+    + '<div class="code-field"><label>原始變體</label><div>' + escHtml(suggestion.raw_name || '') + '</div></div>'
+    + '<div class="code-field"><label>目標公司</label><select class="text-input" id="company-normalization-target-'
+    + escHtml(suggestion.id) + '">' + companyNormalizationTargetOptionsHtml(suggestion.company_code) + '</select></div>'
+    + '<div class="code-field"><label>名稱依據</label><div>' + escHtml(meta.zh_name_basis || '未提供') + '</div></div>'
+    + '<div class="code-field"><label>公司中文名稱</label>'
+    + '<input class="text-input" id="company-normalization-zh-' + escHtml(suggestion.id)
+    + '" value="' + escHtml(suggestion.suggested_zh_name || '') + '"></div>'
+    + '<div class="code-field"><label>正規化名稱</label>'
+    + '<input class="text-input" id="company-normalization-en-' + escHtml(suggestion.id)
+    + '" value="' + escHtml(suggestion.suggested_normalized_name || '') + '"></div>'
+    + '<div class="company-group-evidence-row"><div class="company-group-evidence-label">理由</div><div>'
+    + escHtml(meta.reason || '') + '</div></div>'
+    + companyNormalizationEvidenceHtml(meta)
+    + '<div class="toolbar" style="margin-top:.3rem">'
+    + '<button class="btn-mini" onclick="confirmCompanyNormalizationSuggestion(' + suggestion.id + ')">確認</button>'
+    + '<button class="btn-mini" onclick="skipCompanyNormalizationSuggestion(' + suggestion.id + ')">略過</button>'
+    + '</div></div>';
+}
+
+function renderCompanyNormalizationReview() {
+  if (!companyNormalizationSuggestions.length) return '';
+  return '<details id="company-normalization-review" open style="margin-top:.6rem">'
+    + '<summary>AI 公司正規化建議待審核（' + companyNormalizationSuggestions.length + '）</summary>'
+    + '<div class="toolbar" style="margin:.35rem 0">'
+    + '<button class="btn-mini" onclick="confirmSelectedCompanyNormalizationSuggestions()">確認選取</button>'
+    + '<span id="company-normalization-msg" class="hint"></span></div>'
+    + companyNormalizationSuggestions.map(companyNormalizationSuggestionHtml).join('')
+    + '</details>';
+}
+
+function selectedCompanyNormalizationSuggestions() {
+  return Array.from(document.querySelectorAll('.company-normalization-checkbox:checked'))
+    .map(function (node) { return Number(node.value); })
+    .filter(Boolean);
+}
+
+async function submitCompanyNormalizationReview(items) {
+  const msg = el('company-normalization-msg') || el('group-maint-msg');
+  try {
+    await getJson(API + '/company-normalization-suggestions/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: items }),
+    });
+    if (msg) msg.textContent = '已送出裁決，背景刷新中。';
+    await fetchTasks();
+    await renderCompanyCodeRegistry();
+  } catch (e) {
+    if (msg) msg.innerHTML = '<span class="task-detail-error">裁決失敗：' + escHtml(e.message) + '</span>';
+  }
+}
+
+function companyNormalizationReviewItem(id, action) {
+  const item = {
+    suggestion_id: id,
+    target_code: ((el('company-normalization-target-' + id) || {}).value || '').trim() || null,
+    zh_name: ((el('company-normalization-zh-' + id) || {}).value || '').trim(),
+    normalized_name: ((el('company-normalization-en-' + id) || {}).value || '').trim(),
+  };
+  if (action === 'skip') {
+    return { ...item, action: 'skip' };
+  }
+  return { ...item, action: 'confirm' };
+}
+
+async function confirmCompanyNormalizationSuggestion(id) {
+  await submitCompanyNormalizationReview([companyNormalizationReviewItem(id, 'confirm')]);
+}
+
+async function skipCompanyNormalizationSuggestion(id) {
+  await submitCompanyNormalizationReview([{ suggestion_id: id, action: 'skip' }]);
+}
+
+async function confirmSelectedCompanyNormalizationSuggestions() {
+  const ids = selectedCompanyNormalizationSuggestions();
+  const msg = el('company-normalization-msg') || el('group-maint-msg');
+  if (!ids.length) {
+    if (msg) msg.innerHTML = '<span class="code-conflict">未選取任何建議</span>';
+    return;
+  }
+  await submitCompanyNormalizationReview(ids.map(function (id) {
+    return companyNormalizationReviewItem(id, 'confirm');
+  }));
+}
+
+async function runCompanyNormalizationSuggestions() {
+  const msg = el('group-maint-msg');
+  if (companyNormalizationSuggestionJobRunning()) return;
+  companyNormalizationSuggestionStarting = true;
+  const btn = el('company-normalization-ai-suggest');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'AI 公司正規化建議產生中…';
+  }
+  try {
+    await getJson(API + '/company-normalization-suggestions/generate', { method: 'POST' });
+    if (msg) msg.textContent = 'AI 公司正規化建議任務已建立，完成後會自動刷新。';
+    await fetchTasks();
+    companyNormalizationSuggestionStarting = false;
+    await renderCompanyCodeRegistry();
+  } catch (e) {
+    companyNormalizationSuggestionStarting = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '產生 AI 公司建議';
+    }
+    if (msg) msg.innerHTML = '<div class="code-conflict">建立 AI 公司正規化建議失敗：'
+      + escHtml(e.message) + '</div>';
+  }
 }
 
 // 把待補清單的某個名稱標為不歸戶（第三個入口，✕）。
@@ -1683,8 +1873,14 @@ function renderCompanyCodeBody(existingGroups) {
     + '<div class="toolbar">'
     + '<button class="btn btn-outline" onclick="addCodeGroup()">＋ 新增一組</button>'
     + '<button class="btn btn-primary" id="btn-code-confirm" onclick="confirmCompanyCodes()">確定寫入資料庫</button>'
+    + '<button class="btn" id="company-normalization-ai-suggest" onclick="runCompanyNormalizationSuggestions()"'
+    + (companyNormalizationSuggestionJobRunning() ? ' disabled' : '') + '>'
+    + (companyNormalizationSuggestionJobRunning()
+        ? 'AI 公司正規化建議產生中…'
+        : '產生 AI 公司建議') + '</button>'
     + '</div>'
     + '<div id="code-submit-msg"></div>'
+    + renderCompanyNormalizationReview()
     // 既有代碼：平時收合，展開看代碼，再展開看該代碼下的公司變體（使用者指定的兩層）。
     // 2026-07-28 起每組可維護：改名、補真代碼（TEMP 組）、刪整組、移除單一變體。
     + '<details id="existing-codes-details" style="margin-top:.6rem">'
@@ -5668,7 +5864,10 @@ const HIDDEN_TASK_STATUSES = new Set(['succeeded']);  // 仍用於 SSE 即時事
 let taskById = {};  // job_id -> 任務物件，供點擊展開詳情查閱 error_message／stage
 function isHiddenTask(t) { return HIDDEN_TASK_STATUSES.has(t.status); }
 function taskDisplayName(jobType) {
-  const names = { 'ai:company_group_suggestion': 'AI 集團建議' };
+  const names = {
+    'ai:company_group_suggestion': 'AI 集團建議',
+    'ai:company_normalization_suggestion': 'AI 公司正規化建議',
+  };
   return names[jobType] || jobType;
 }
 function taskCardHtml(t) {
@@ -5982,6 +6181,7 @@ const JOB_REFRESH_TARGETS = {
   'embeddings': [],          // 無可見面（供之後的分群消費）
   'ai:company_zh_name': [],  // 草稿區已移除（2026-07-29 使用者定案）
   'ai:company_group_suggestion': ['companyGroups'],
+  'ai:company_normalization_suggestion': ['companyAliases'],
   'case_comparison': [],     // 比對頁自有流程；本 change 未覆蓋（tasks 3.4 揭露）
 };
 
@@ -5995,6 +6195,7 @@ const RESOURCE_REFRESHERS = {
   'reports': { navs: ['reports'], run: refreshReportsArea },
   'workspaces': { navs: null, run: loadWorkspaces },  // 頂列下拉；自恢復上次選定
   'companyGroups': { navs: ['browse'], run: renderCompanyGroupRegistry },
+  'companyAliases': { navs: ['browse'], run: renderCompanyCodeRegistry },
 };
 
 const REFRESH_DEBOUNCE_MS = 1500;   // design.md「合併」：同資源事件 1.5 秒窗合併
@@ -6022,6 +6223,7 @@ function maybeRefreshFromEvent(ev) {
 
 function maybeRefreshDataEvent(ev) {
   if (ev.resource === 'companyGroups') scheduleResourceRefresh('companyGroups');
+  if (ev.resource === 'companyAliases') scheduleResourceRefresh('companyAliases');
 }
 
 // 資源級排程：頁面 gating → debounce 合併 → in-flight 合併。

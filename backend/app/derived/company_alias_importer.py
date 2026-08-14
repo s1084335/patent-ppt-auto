@@ -6,6 +6,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from openpyxl import load_workbook
 
@@ -20,6 +21,20 @@ REQUIRED_COLUMNS = ("申請人代碼", "公司中文名稱", "正規化名稱", 
 # CJK 範圍：只服務 `canonical` 舊單欄輸入的相容判斷（見 resolve_group_names）。
 # 新流程由使用者在前端分兩格填中文／英文，不靠字元類別猜。
 _CJK_RE = re.compile(r"[一-鿿]")
+
+
+def notify_company_aliases_changed(cur: Any, *, action: str) -> None:
+    """在目前 transaction 提交後通知瀏覽器重讀公司治理區。"""
+    payload = {
+        "kind": "data",
+        "resource": "companyAliases",
+        "action": action,
+        "event_id": f"companyAliases:{uuid4().hex}",
+    }
+    cur.execute(
+        "SELECT pg_notify('patent_events', %s)",
+        (json.dumps(payload, separators=(",", ":")),),
+    )
 
 
 def normalize_lookup(value: str | None) -> str | None:
@@ -784,6 +799,317 @@ def get_draft_names(
     if not row:
         return None, None
     return clean_text(row[0]), clean_text(row[1])
+
+
+_COMPANY_NORMALIZATION_CANDIDATES_SQL = r"""
+    WITH raw_names AS (
+        SELECT x.raw_name, x.source_field, pp.patent_id
+        FROM core_layer.patent_people pp
+        CROSS JOIN LATERAL (VALUES
+            (NULLIF(BTRIM(pp."申請人"), ''), '申請人'),
+            (NULLIF(BTRIM(pp."標準化申請人"), ''), '標準化申請人'),
+            (NULLIF(BTRIM(pp."最近專利權人[US,JP,KR,CN,CA,AU]"), ''), '最近專利權人'),
+            (NULLIF(BTRIM(pp."標準當前專利權人[US,JP,KR,CN,CA,AU]"), ''), '標準當前專利權人'),
+            (NULLIF(BTRIM(pp."最近受讓人[US,KR,CN]"), ''), '最近受讓人')
+        ) AS x(raw_name, source_field)
+        WHERE x.raw_name IS NOT NULL
+    ),
+    names AS (
+        SELECT lower(regexp_replace(BTRIM(part), '\s+', ' ', 'g')) AS lookup_key,
+               BTRIM(part) AS raw_name,
+               r.source_field,
+               r.patent_id
+        FROM raw_names r
+        CROSS JOIN LATERAL regexp_split_to_table(r.raw_name, '\s*\|\s*') AS part
+        WHERE NULLIF(BTRIM(part), '') IS NOT NULL
+    )
+    SELECT md5(n.lookup_key) AS ref_hash,
+           n.lookup_key,
+           min(n.raw_name) AS raw_name,
+           array_agg(DISTINCT n.source_field ORDER BY n.source_field) AS source_fields,
+           count(DISTINCT n.patent_id) AS patent_count
+    FROM names n
+    WHERE NOT EXISTS (
+        SELECT 1 FROM derived_layer.company_aliases ca
+        WHERE ca.review_status = 'confirmed'
+          AND lower(regexp_replace(BTRIM(ca."別稱"), '\s+', ' ', 'g')) = n.lookup_key
+    )
+      AND NOT EXISTS (
+        SELECT 1 FROM derived_layer.company_aliases ca
+        WHERE ca.review_status = 'ai_suggested'
+          AND lower(regexp_replace(BTRIM(ca."別稱"), '\s+', ' ', 'g')) = n.lookup_key
+          AND ca.source_file = 'ai:company_normalization_suggestion'
+    )
+    GROUP BY n.lookup_key
+    ORDER BY count(DISTINCT n.patent_id) DESC, min(n.raw_name)
+    LIMIT %(limit)s
+"""
+
+_COMPANY_NORMALIZATION_TARGETS_SQL = """
+    SELECT md5("申請人代碼") AS ref_hash,
+           "申請人代碼" AS code,
+           max(NULLIF(BTRIM("公司中文名稱"), '')) AS zh_name,
+           max(NULLIF(BTRIM("正規化名稱"), '')) AS normalized_name,
+           count(*) AS alias_count
+    FROM derived_layer.company_aliases
+    WHERE review_status = 'confirmed'
+      AND NULLIF(BTRIM("申請人代碼"), '') IS NOT NULL
+    GROUP BY "申請人代碼"
+    HAVING max(NULLIF(BTRIM("公司中文名稱"), '')) IS NOT NULL
+        OR max(NULLIF(BTRIM("正規化名稱"), '')) IS NOT NULL
+    ORDER BY COALESCE(max(NULLIF(BTRIM("公司中文名稱"), '')),
+                      max(NULLIF(BTRIM("正規化名稱"), '')),
+                      "申請人代碼")
+"""
+
+_LIST_COMPANY_NORMALIZATION_SUGGESTIONS_SQL = """
+    SELECT id,
+           "申請人代碼" AS company_code,
+           "公司中文名稱" AS suggested_zh_name,
+           "正規化名稱" AS suggested_normalized_name,
+           "別稱" AS raw_name,
+           wips_metadata_json AS metadata,
+           updated_at
+    FROM derived_layer.company_aliases
+    WHERE review_status = 'ai_suggested'
+      AND source_file = 'ai:company_normalization_suggestion'
+    ORDER BY updated_at DESC, id
+    LIMIT %(limit)s OFFSET %(offset)s
+"""
+
+_COUNT_COMPANY_NORMALIZATION_SUGGESTIONS_SQL = """
+    SELECT count(*) AS total
+    FROM derived_layer.company_aliases
+    WHERE review_status = 'ai_suggested'
+      AND source_file = 'ai:company_normalization_suggestion'
+"""
+
+
+def list_company_normalization_candidates(
+    *,
+    limit: int | None = 100,
+    connect_kwargs: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """列出 AI 可查證的未歸戶原始變體；ref 為 opaque，不含可寫 WIPS code。"""
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from backend.app.db.connection import get_connection_kwargs
+
+    with psycopg.connect(**(connect_kwargs or get_connection_kwargs()), row_factory=dict_row) as conn:
+        rows = conn.execute(
+            _COMPANY_NORMALIZATION_CANDIDATES_SQL,
+            {"limit": int(limit or 100)},
+        ).fetchall()
+    return [
+        {
+            "candidate_ref": f"cand:{row['ref_hash'][:16]}",
+            "raw_name": row["raw_name"],
+            "candidate_type": "company_or_person",
+            "source_fields": row.get("source_fields") or [],
+            "patent_count": int(row.get("patent_count") or 0),
+        }
+        for row in rows
+    ]
+
+
+def list_company_normalization_targets(
+    *,
+    connect_kwargs: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """列出 Backend 私有 target 白名單；CLI 只會看到 target_ref 與名稱，不看 code。"""
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from backend.app.db.connection import get_connection_kwargs
+
+    with psycopg.connect(**(connect_kwargs or get_connection_kwargs()), row_factory=dict_row) as conn:
+        rows = conn.execute(_COMPANY_NORMALIZATION_TARGETS_SQL).fetchall()
+    return [
+        {
+            "target_ref": f"target:{row['ref_hash'][:16]}",
+            "code": row["code"],
+            "zh_name": row.get("zh_name"),
+            "normalized_name": row.get("normalized_name"),
+            "alias_count": int(row.get("alias_count") or 0),
+        }
+        for row in rows
+    ]
+
+
+def ingest_company_normalization_suggestions(
+    suggestions: list[dict[str, Any]],
+    *,
+    connect_kwargs: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    """把 AI 驗證後的建議寫成 `ai_suggested`；不改 confirmed、不碰 raw/core。"""
+    if not suggestions:
+        return {"inserted": 0}
+    import psycopg
+    from psycopg.types.json import Jsonb
+
+    from backend.app.db.connection import get_connection_kwargs
+
+    inserted = 0
+    with psycopg.connect(**(connect_kwargs or get_connection_kwargs())) as conn:
+        for suggestion in suggestions:
+            metadata = dict(suggestion.get("metadata") or {})
+            suggestion_id = metadata.get("suggestion_id")
+            if not suggestion_id:
+                refs = ",".join(suggestion.get("candidate_refs") or [])
+                suggestion_id = f"{metadata.get('suggestion_kind')}:{suggestion['company_code']}:{refs}"
+                metadata["suggestion_id"] = suggestion_id
+            for raw_name, candidate_ref in zip(
+                suggestion.get("raw_names") or [],
+                suggestion.get("candidate_refs") or [],
+                strict=False,
+            ):
+                row_metadata = {
+                    **metadata,
+                    "candidate_ref": candidate_ref,
+                    "raw_name": raw_name,
+                }
+                conn.execute(
+                    'DELETE FROM derived_layer.company_aliases '
+                    'WHERE review_status = %s AND source_file = %s '
+                    '  AND "申請人代碼" = %s '
+                    r"  AND alias_lookup_key = lower(regexp_replace(btrim(%s), '\s+', ' ', 'g'))",
+                    (
+                        "ai_suggested",
+                        "ai:company_normalization_suggestion",
+                        suggestion["company_code"],
+                        raw_name,
+                    ),
+                )
+                conn.execute(
+                    'INSERT INTO derived_layer.company_aliases '
+                    '("申請人代碼", "公司中文名稱", "正規化名稱", "別稱", '
+                    ' source_file, source_type, review_status, wips_metadata_json) '
+                    "VALUES (%s, %s, %s, %s, %s, 'ai_suggested', 'ai_suggested', %s)",
+                    (
+                        suggestion["company_code"],
+                        suggestion.get("zh_name"),
+                        suggestion.get("normalized_name"),
+                        raw_name,
+                        "ai:company_normalization_suggestion",
+                        Jsonb(row_metadata),
+                    ),
+                )
+                inserted += 1
+        if inserted:
+            notify_company_aliases_changed(conn, action="ingest_suggestions")
+        conn.commit()
+    return {"inserted": inserted}
+
+
+def list_company_normalization_suggestions(
+    *,
+    limit: int = 100,
+    offset: int = 0,
+    connect_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """列出公司正規化待審建議；前端用 metadata 顯示證據，不顯示 raw JSON。"""
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from backend.app.db.connection import get_connection_kwargs
+
+    with psycopg.connect(**(connect_kwargs or get_connection_kwargs()), row_factory=dict_row) as conn:
+        items = conn.execute(
+            _LIST_COMPANY_NORMALIZATION_SUGGESTIONS_SQL,
+            {"limit": limit, "offset": offset},
+        ).fetchall()
+        total = conn.execute(_COUNT_COMPANY_NORMALIZATION_SUGGESTIONS_SQL).fetchone()["total"]
+    return {"items": [dict(row) for row in items], "total": int(total)}
+
+
+def clear_company_normalization_suggestions(
+    suggestion_ids: list[int],
+    *,
+    connect_kwargs: dict[str, Any] | None = None,
+) -> int:
+    """刪掉已確認的待審列；略過的建議不走這裡，仍留待稍後處理。"""
+    if not suggestion_ids:
+        return 0
+    import psycopg
+
+    from backend.app.db.connection import get_connection_kwargs
+
+    with psycopg.connect(**(connect_kwargs or get_connection_kwargs())) as conn:
+        cur = conn.execute(
+            "DELETE FROM derived_layer.company_aliases "
+            "WHERE id = ANY(%s) AND review_status = 'ai_suggested' "
+            "  AND source_file = 'ai:company_normalization_suggestion'",
+            (suggestion_ids,),
+        )
+        deleted = int(cur.rowcount or 0)
+        if deleted:
+            notify_company_aliases_changed(conn, action="review_suggestions")
+        conn.commit()
+    return deleted
+
+
+def confirm_company_normalization_suggestions(
+    decisions: list[Any],
+    *,
+    source_label: str = "display_name_curation:company_normalization_review",
+) -> dict[str, Any]:
+    """把人工確認的 AI 建議轉成 confirmed mapping；正式寫入仍委派唯一 writer。"""
+    confirm_ids = [int(getattr(item, "suggestion_id")) for item in decisions if getattr(item, "action") == "confirm"]
+    skipped = [item for item in decisions if getattr(item, "action") == "skip"]
+    if not confirm_ids:
+        return {"confirmed": 0, "skipped": len(skipped), "written": {"inserted": 0}, "drafts_cleared": 0}
+
+    drafts = list_company_normalization_suggestions(limit=1000, offset=0)["items"]
+    drafts_by_id = {int(row["id"]): row for row in drafts}
+    missing = [sid for sid in confirm_ids if sid not in drafts_by_id]
+    if missing:
+        raise ValueError(f"company normalization suggestion not found or stale: {missing[0]}")
+    targets_by_code = {
+        str(row["code"]): row
+        for row in list_company_normalization_targets()
+    }
+
+    mapping: dict[str, dict[str, Any]] = {}
+    for decision in decisions:
+        if getattr(decision, "action") != "confirm":
+            continue
+        draft = drafts_by_id[int(getattr(decision, "suggestion_id"))]
+        target_code = clean_text(getattr(decision, "target_code", None))
+        target = targets_by_code.get(target_code) if target_code else None
+        if target_code and target is None:
+            raise ValueError(f"unknown target_code: {target_code}")
+        code = target_code or clean_text(draft.get("company_code"))
+        if not code:
+            raise ValueError("suggestion missing company_code")
+        zh = (
+            clean_text(getattr(decision, "zh_name", None))
+            or clean_text(target.get("zh_name") if target else None)
+            or clean_text(draft.get("suggested_zh_name"))
+        )
+        en = (
+            clean_text(getattr(decision, "normalized_name", None))
+            or clean_text(target.get("normalized_name") if target else None)
+            or clean_text(draft.get("suggested_normalized_name"))
+        )
+        if not (zh or en):
+            raise ValueError("confirmed suggestion requires zh_name or normalized_name")
+        entry = mapping.setdefault(code, {"zh_name": zh, "normalized_name": en, "aliases": []})
+        # 同公司多筆一起確認時，最後一筆使用者編輯的公司名視為公司層 canonical。
+        entry["zh_name"] = zh or entry.get("zh_name")
+        entry["normalized_name"] = en or entry.get("normalized_name")
+        raw_name = clean_text(draft.get("raw_name"))
+        if raw_name:
+            entry["aliases"].append(raw_name)
+
+    written = apply_confirmed_display_names(mapping, source_label)
+    cleared = clear_company_normalization_suggestions(confirm_ids)
+    return {
+        "confirmed": len(confirm_ids),
+        "skipped": len(skipped),
+        "written": written,
+        "drafts_cleared": cleared,
+    }
 
 
 def main() -> None:

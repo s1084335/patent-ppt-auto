@@ -83,6 +83,22 @@ class ZhNameConfirmRequest(BaseModel):
     items: list[ZhNameDecision] = Field(default_factory=list)
 
 
+class CompanyNormalizationReviewDecision(BaseModel):
+    """公司正規化 AI 建議的人工裁決。"""
+
+    suggestion_id: int = Field(ge=1)
+    action: Literal["confirm", "skip"]
+    target_code: str | None = Field(default=None, max_length=64)
+    zh_name: str | None = Field(default=None, max_length=200)
+    normalized_name: str | None = Field(default=None, max_length=200)
+
+
+class CompanyNormalizationReviewRequest(BaseModel):
+    """公司正規化待審建議的批次裁決。"""
+
+    items: list[CompanyNormalizationReviewDecision] = Field(default_factory=list)
+
+
 @router.get("/company-zh-drafts")
 def list_drafts(
     limit: int = Query(default=100, ge=1, le=500),
@@ -210,6 +226,50 @@ def generate_drafts() -> dict[str, Any]:
     """
     job_id = create_job("ai:company_zh_name", {})
     return {"job_id": job_id}
+
+
+@router.get("/company-normalization-suggestions")
+def list_company_normalization_review(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """列出公司正規化 AI 待審建議；前端負責可讀呈現，不顯示 raw JSON。"""
+    from backend.app.derived.company_alias_importer import (
+        list_company_normalization_suggestions,
+    )
+
+    result = list_company_normalization_suggestions(limit=limit, offset=offset)
+    return {**result, "limit": limit, "offset": offset}
+
+
+@router.post("/company-normalization-suggestions/generate")
+def generate_company_normalization_suggestions() -> dict[str, Any]:
+    """手動觸發公司正規化 AI 建議；不在 page load、匯入或 refresh 時自動建立。"""
+    job_id = create_job("ai:company_normalization_suggestion", {})
+    return {"job_id": job_id}
+
+
+@router.post("/company-normalization-suggestions/confirm")
+def confirm_company_normalization_review(
+    body: CompanyNormalizationReviewRequest,
+) -> dict[str, Any]:
+    """確認或略過公司正規化 AI 建議。
+
+    `confirm` 才轉成正式 `confirmed` mapping；`skip` 保留待審列。正式寫入委派
+    `apply_confirmed_display_names`，本端點只負責裁決與刷新排程。
+    """
+    from backend.app.derived.company_alias_importer import (
+        confirm_company_normalization_suggestions,
+    )
+
+    try:
+        result = confirm_company_normalization_suggestions(body.items)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    refresh_job_id = None
+    if result.get("confirmed"):
+        refresh_job_id = create_job("refresh_derived", {})
+    return {**result, "refresh_job_id": refresh_job_id}
 
 
 # ══════════════ 專利權人代碼補齊（2026-07-28 使用者需求）══════════════
