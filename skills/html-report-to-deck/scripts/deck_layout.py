@@ -772,6 +772,147 @@ def _slide_text_label(s, page, spec, top, bot):
     return s
 
 
+# ── 圖形文法（design §7.4）：參數化元件，組合活、渲染死 ──────────
+class FigureGrammarError(ValueError):
+    """figure 宣告不在文法內。🔴 fail loud——靜默略過會讓版面少一塊而沒人發現，
+    也等於偷偷開了「CLI 自由畫圖」的後門（§7.4 明令第一版不開）。"""
+
+
+#: 各型節點數上限（容量閘門；check_content 引用，唯一定義處）。
+FIGURE_MAX_NODES = {"flow": 6, "cycle": 6, "contrast": 8,
+                    "hierarchy": 7, "parallel": 6, "timeline": 8}
+#: 單節點文字上限（字寬單位）：固定卡寬放得下、不換第三行。
+FIGURE_NODE_UNITS = 16.0
+#: 插圖區高度（in）。固定值：figure 與文字共享頁面，量測交由裕度表。
+FIG_H = 3.0
+
+
+def _fig_card(s, x, y, w, h, text, color=None):
+    """節點卡：圓角矩形＋置中文字（渲染死——CLI 管不到樣式）。"""
+    rect(s, x, y, w, h, fill=CARD, line=color or CARD_ED,
+         shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.10)
+    textbox(s, x + 0.08, y, w - 0.16, h, [(text, {"align": PP_ALIGN.CENTER})],
+            anchor=MSO_ANCHOR.MIDDLE, space_after=0)
+
+
+def _fig_glyph(s, x, y, w, h, glyph, color):
+    textbox(s, x, y, w, h, [(glyph, {"bold": True, "color": color,
+                                     "align": PP_ALIGN.CENTER})],
+            anchor=MSO_ANCHOR.MIDDLE, space_after=0)
+
+
+def draw_figure(s, fig: dict, x: float, y: float, w: float, h: float):
+    """六型分派。⚠ 箭頭一律用字符（→ ↓ vs）不用多邊形——維持窄詞彙
+    （rect／text／image），SVG 端才不用擴 `svg_to_pptx` 的元素表。"""
+    ftype = str(fig.get("type") or "")
+    nodes = [str(n) for n in fig.get("nodes") or []]
+    if ftype not in FIGURE_MAX_NODES:
+        raise FigureGrammarError(
+            f"figure type {ftype!r} 不在文法內（可用：{sorted(FIGURE_MAX_NODES)}）"
+            "——文法不足時以實例擴元件型，走 openspec 留痕，不得自由畫圖")
+    if not nodes:
+        raise FigureGrammarError("figure 沒有任何節點")
+    {"flow": _fig_flow, "cycle": _fig_cycle, "contrast": _fig_contrast,
+     "hierarchy": _fig_hierarchy, "parallel": _fig_parallel,
+     "timeline": _fig_timeline}[ftype](s, nodes, x, y, w, h)
+
+
+def _fig_flow(s, nodes, x, y, w, h):
+    """流程：橫排卡片＋→。"""
+    n = len(nodes)
+    arrow_w = 0.45
+    card_w = (w - arrow_w * (n - 1)) / n
+    card_h = min(0.9, h - 0.4)
+    cy = y + (h - card_h) / 2
+    for i, t in enumerate(nodes):
+        cx = x + i * (card_w + arrow_w)
+        _fig_card(s, cx, cy, card_w, card_h, t, CYAN)
+        if i < len(nodes) - 1:
+            _fig_glyph(s, cx + card_w, cy, arrow_w, card_h, "→", CYAN)
+
+
+def _fig_cycle(s, nodes, x, y, w, h):
+    """循環：卡片繞橢圓排列，中央標「循環」。方向感由順時針排列承擔
+    ——旋轉箭頭需要 transform，不在窄詞彙內。"""
+    import math as _m
+
+    n = len(nodes)
+    card_w, card_h = min(2.4, w / 3), 0.62
+    rx_ = (w - card_w) / 2
+    ry_ = (h - card_h) / 2
+    cx0, cy0 = x + w / 2, y + h / 2
+    for i, t in enumerate(nodes):
+        ang = -_m.pi / 2 + 2 * _m.pi * i / n     # 從頂端開始順時針
+        cx = cx0 + rx_ * _m.cos(ang) - card_w / 2
+        cy = cy0 + ry_ * _m.sin(ang) - card_h / 2
+        _fig_card(s, cx, cy, card_w, card_h, t, BLUE)
+    _fig_glyph(s, cx0 - 0.6, cy0 - 0.2, 1.2, 0.4, "循環", MUTED)
+
+
+def _fig_contrast(s, nodes, x, y, w, h):
+    """對比：左右兩欄（前半 vs 後半），中央 vs。"""
+    half = (len(nodes) + 1) // 2
+    panel_w = (w - 0.7) / 2
+    for side, (items, color) in enumerate(
+            ((nodes[:half], CYAN), (nodes[half:], AMBER))):
+        px = x + side * (panel_w + 0.7)
+        rect(s, px, y, panel_w, h - 0.2, fill=BG_PANEL, line=color,
+             shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.05)
+        blocks = [([("▍", {"color": color}), (t, {})], {"space_after": 8})
+                  for t in items]
+        if blocks:
+            textbox(s, px + 0.2, y + 0.15, panel_w - 0.4, h - 0.5, blocks,
+                    anchor=MSO_ANCHOR.MIDDLE)
+    _fig_glyph(s, x + panel_w, y, 0.7, h - 0.2, "vs", ROSE)
+
+
+def _fig_hierarchy(s, nodes, x, y, w, h):
+    """階層：首節點為根置頂，其餘一排在下；細 rect 畫幹與橫軌。"""
+    root, children = nodes[0], nodes[1:]
+    card_h = 0.62
+    root_w = min(3.2, w / 2)
+    _fig_card(s, x + (w - root_w) / 2, y, root_w, card_h, root, CYAN)
+    if not children:
+        return
+    n = len(children)
+    card_w = min(2.6, (w - 0.3 * (n - 1)) / n)
+    total = card_w * n + 0.3 * (n - 1)
+    x0 = x + (w - total) / 2
+    rail_y = y + card_h + (h - 2 * card_h) / 2
+    rect(s, x + w / 2 - RULE_W / 2, y + card_h, RULE_W, rail_y - y - card_h, fill=CARD_ED)
+    rect(s, x0 + card_w / 2, rail_y, total - card_w, RULE_W, fill=CARD_ED)
+    for i, t in enumerate(children):
+        cx = x0 + i * (card_w + 0.3)
+        rect(s, cx + card_w / 2 - RULE_W / 2, rail_y, RULE_W,
+             y + h - card_h - rail_y, fill=CARD_ED)
+        _fig_card(s, cx, y + h - card_h, card_w, card_h, t, BLUE)
+
+
+def _fig_parallel(s, nodes, x, y, w, h):
+    """並列：等寬卡片一排，無連接——並列本身就是語意。"""
+    n = len(nodes)
+    card_w = (w - 0.3 * (n - 1)) / n
+    card_h = min(1.0, h - 0.4)
+    cy = y + (h - card_h) / 2
+    for i, t in enumerate(nodes):
+        _fig_card(s, x + i * (card_w + 0.3), cy, card_w, card_h, t, GREEN)
+
+
+def _fig_timeline(s, nodes, x, y, w, h):
+    """時間線：橫軌＋節點方標，標籤上下交錯（避免相鄰互撞）。"""
+    n = len(nodes)
+    rail_y = y + h / 2
+    rect(s, x, rail_y - RULE_W / 2, w, RULE_W * 2, fill=CARD_ED)
+    step = w / n
+    for i, t in enumerate(nodes):
+        cx = x + step * i + step / 2
+        rect(s, cx - 0.05, rail_y - 0.05, 0.1, 0.1, fill=CYAN)
+        label_y = rail_y - 0.75 if i % 2 == 0 else rail_y + 0.18
+        textbox(s, cx - step / 2 + 0.05, label_y, step - 0.1, 0.55,
+                [(t, {"align": PP_ALIGN.CENTER})], anchor=MSO_ANCHOR.MIDDLE,
+                space_after=0)
+
+
 def slide_text(prs, c, page, spec):
     """純文字頁：`charts` 留空時使用（中場小結、方法說明、附錄等）。
 
@@ -783,6 +924,10 @@ def slide_text(prs, c, page, spec):
     top, bot = CHART_TOP, BAND_BOT
     if spec.get("layout") == "label":
         return _slide_text_label(s, page, spec, top, bot)
+    # 圖形文法（design §7.4）：頁 spec 宣告 figure 時，上半渲染插圖、文字下移。
+    if spec.get("figure"):
+        draw_figure(s, spec["figure"], ML + 0.26, top + 0.1, CW - 0.52, FIG_H)
+        top += FIG_H + 0.24
     tw_ = CW - 0.52
     need = text_h([(t, 16, 8) for t in spec["lines"]], tw_)
     note(f"文字頁 P{page}", bot - top - 0.44, need)

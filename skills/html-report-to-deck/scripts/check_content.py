@@ -169,12 +169,46 @@ def _check_conclusions(c: dict, facts_path: Path) -> list[str]:
     return bad
 
 
+def _check_figures(c: dict) -> list[str]:
+    """圖形文法閘門（design §7.4）：type 白名單、節點數容量、文字長度。
+
+    容量常數取自 `deck_layout`（唯一定義處）；撞版由渲染端裕度表把關，
+    這裡只擋「進不了版型」的宣告，秒級回饋不用等組版。
+    """
+    from deck_layout import FIGURE_MAX_NODES, FIGURE_NODE_UNITS
+
+    bad: list[str] = []
+    for page in c.get("pages") or []:
+        fig = page.get("figure")
+        if not fig:
+            continue
+        title = str(page.get("title") or "")[:12]
+        ftype = str(fig.get("type") or "")
+        nodes = [str(n) for n in fig.get("nodes") or []]
+        if ftype not in FIGURE_MAX_NODES:
+            bad.append(f"頁「{title}」figure type {ftype!r} 不在文法內"
+                       f"（可用：{sorted(FIGURE_MAX_NODES)}）——不得自由畫圖")
+            continue
+        cap = FIGURE_MAX_NODES[ftype]
+        if not nodes:
+            bad.append(f"頁「{title}」figure 沒有節點")
+        elif len(nodes) > cap:
+            bad.append(f"頁「{title}」figure 節點 {len(nodes)} 個，"
+                       f"超出 {ftype} 容量 {cap}——拆頁或收斂節點")
+        for n in nodes:
+            if units(n) > FIGURE_NODE_UNITS:
+                bad.append(f"頁「{title}」figure 節點文字過長"
+                           f"（{units(n):.0f} 單位 > {FIGURE_NODE_UNITS:.0f}）→ {n[:20]}…")
+    return bad
+
+
 def main() -> int:
     c = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     png_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else None
     work_dir = Path(sys.argv[1]).resolve().parent
     caliber_bad = _check_caliber_verbatim(c, work_dir / "caliber_facts.json")
     caliber_bad += _check_conclusions(c, work_dir / "topic_facts.json")
+    caliber_bad += _check_figures(c)
     fc = png_dir / "font_choice.json" if png_dir else None
     fonts = json.loads(fc.read_text(encoding="utf-8")) if fc and fc.is_file() else None
     B = budget()
