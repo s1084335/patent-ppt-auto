@@ -68,20 +68,42 @@ class ToolAllowlistTests(unittest.TestCase):
 
 
 class CredentialIsolationTests(unittest.TestCase):
+    """CLI 可見的 MCP 設定不得洩漏憑證，且只能看到唯讀 profile。
+
+    ⚠ 2026-08-13 改指受測對象：原本驗的是 `report_research.build_cli_mcp_config`
+    （http 版），但**產品實際發給 CLI 的是** `cli_gateway.build_stdio_mcp_config()`
+    ——Companion 與 CLI 同機，走 stdio 免 token、免開埠。那支 http 版全庫只有這兩支
+    測試在用，且它宣告的 server 名 `patent-report-research` 與白名單前綴
+    `mcp__patent_research__*` 對不上（連字號 vs 底線），誰改用它 MCP 工具會**靜默**
+    全部不可用。函式已刪除，兩個判準原樣移到實際走的那條路徑上。
+    """
+
+    def _config(self):
+        from backend.app.worker import cli_gateway as gw
+
+        return gw.build_stdio_mcp_config()
+
     def test_cli_config_has_no_credential(self):
         """CLI 可見設定不得含 DB 連線字串／密碼／service key。"""
-        config = rr.build_cli_mcp_config(server_url="http://backend:8000/mcp",
-                                         auth_token="tok-123")
-        blob = str(config).lower()
+        blob = str(self._config()).lower()
         for leaked in ("postgres://", "postgresql://", "password", "service_role",
                        "database_url", "supabase"):
             self.assertNotIn(leaked, blob, f"CLI config 疑似洩漏憑證：{leaked}")
 
     def test_config_only_exposes_research_profile(self):
-        config = rr.build_cli_mcp_config(server_url="http://backend:8000/mcp",
-                                         auth_token="tok")
-        servers = config.get("mcpServers") or {}
-        self.assertEqual(list(servers), ["patent-report-research"])
+        """只掛一個 server，且它就是唯讀 profile。"""
+        from backend.app.worker import cli_gateway as gw
+
+        servers = self._config().get("mcpServers") or {}
+        self.assertEqual(list(servers), [gw.MCP_SERVER_NAME])
+        # ⚠ server 名與白名單前綴是同一份知識：對不上時工具會靜默全部不可用，
+        # 故由同一個常數推導，不各寫一份字面值。
+        self.assertTrue(
+            all(t.startswith(f"mcp__{gw.MCP_SERVER_NAME}__")
+                for t in gw.RESEARCH_TOOLS if t.startswith("mcp__")),
+            "MCP 工具前綴與 config 的 server 名不一致——工具會靜默不可用")
+        self.assertIn("--profile", servers[gw.MCP_SERVER_NAME]["args"])
+        self.assertIn("research", servers[gw.MCP_SERVER_NAME]["args"])
 
 
 class SnapshotScopeTests(unittest.TestCase):

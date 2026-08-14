@@ -10,7 +10,8 @@ from unittest import mock
 
 from backend.app.worker import ai_narrative_runner as runner
 from backend.app.worker import ai_narrative_runner
-from backend.app.worker.ai_narrative_runner import CliResult, NarrativeRunnerError
+from backend.app.worker.ai_narrative_runner import NarrativeRunnerError
+from backend.app.worker.cli_gateway import CliResult
 
 
 def _write_run_dir(base: Path, version: str, *, with_report_data: bool = True) -> Path:

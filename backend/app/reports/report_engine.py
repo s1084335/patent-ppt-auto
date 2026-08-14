@@ -17,6 +17,45 @@ def quote_ident(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+REPORT_SCOPE_COMPANY = "company"
+REPORT_SCOPE_GROUP = "group"
+REPORT_SCOPES = {REPORT_SCOPE_COMPANY, REPORT_SCOPE_GROUP}
+
+GROUP_SCOPE_COLUMN_MAP = {
+    "applicant_display_name": "applicant_group_display_name",
+    "current_assignee_display_name": "current_assignee_group_display_name",
+    "recent_assignee_display_name": "recent_assignee_group_display_name",
+}
+
+GROUP_SCOPE_TABLE_MAP = {
+    "derived_layer.report_patent_base": "derived_layer.report_patent_base_with_groups",
+    "derived_layer.report_patent_applicant_expanded": (
+        "derived_layer.report_patent_applicant_expanded_with_groups"
+    ),
+}
+
+
+def validate_report_scope(report_scope: str) -> str:
+    """確認報表聚合層級，只允許 company 或 group。"""
+    if report_scope not in REPORT_SCOPES:
+        raise ValueError(f"Unsupported report scope: {report_scope}")
+    return report_scope
+
+
+def scoped_column(column: str, report_scope: str) -> str:
+    """group scope 時把公司顯示欄位改查 confirmed 集團欄位。"""
+    if validate_report_scope(report_scope) == REPORT_SCOPE_GROUP:
+        return GROUP_SCOPE_COLUMN_MAP.get(column, column)
+    return column
+
+
+def scoped_source_table(source_table: str, report_scope: str) -> str:
+    """group scope 改讀帶集團 fallback 的 view；company scope 維持原表。"""
+    if validate_report_scope(report_scope) == REPORT_SCOPE_GROUP:
+        return GROUP_SCOPE_TABLE_MAP.get(source_table, source_table)
+    return source_table
+
+
 # aggregate 型報表可用的額外聚合函式白名單（ReportDefinition.aggregates 的第一欄）。
 # value 是 SQL 模板：{col} 會代入 quote 過的來源欄名。
 AGGREGATE_FUNCTIONS = {
@@ -113,10 +152,14 @@ AGGREGATE_FUNCTIONS = {
 }
 
 
-def build_aggregate_columns(definition: ReportDefinition) -> str:
+def build_aggregate_columns(
+    definition: ReportDefinition,
+    report_scope: str = REPORT_SCOPE_COMPANY,
+) -> str:
     """把 definition.aggregates 組成 SELECT 片段（含前置逗號），無聚合時回空字串。"""
     parts: list[str] = []
-    group_col = quote_ident(definition.group_by[0]) if definition.group_by else None
+    group_col = quote_ident(scoped_column(definition.group_by[0], report_scope)) if definition.group_by else None
+    table_name = scoped_source_table(definition.source_table, report_scope)
     for entry in definition.aggregates:
         # 第四元素（可選）＝第二個來源欄，供需要兩欄的聚合使用
         # （#3「共同且已轉讓」要同時看多值欄與受讓人欄）。
@@ -131,12 +174,16 @@ def build_aggregate_columns(definition: ReportDefinition) -> str:
             raise ValueError(f"Aggregate {func} requires group_by (report {definition.name})")
         # {table}＝來源表（反向子查詢用）。舊模板不含此佔位符，format 會忽略多餘參數。
         rendered = template.format(
-            col=quote_ident(column),
+            col=quote_ident(scoped_column(column, report_scope)),
             group_col=group_col,
-            table=qualified_table_name(definition.source_table),
+            table=qualified_table_name(table_name),
             # 未給第四元素時 extra_col 回落到 col 本身——模板裡的
             # COALESCE(主欄, 備援欄) 就退化成單欄，單欄與雙欄共用同一組模板。
-            extra_col=quote_ident(extra_column) if extra_column else quote_ident(column),
+            extra_col=(
+                quote_ident(scoped_column(extra_column, report_scope))
+                if extra_column
+                else quote_ident(scoped_column(column, report_scope))
+            ),
         )
         parts.append(f"{rendered} AS {quote_ident(alias)}")
     return (", " + ", ".join(parts)) if parts else ""
@@ -153,6 +200,7 @@ def output_alias(column: str) -> str:
 def build_filter_clause(
     filters: dict[str, Any] | None,
     allowed_columns: set[str] | None = None,
+    report_scope: str = REPORT_SCOPE_COMPANY,
 ) -> tuple[str, dict[str, Any]]:
     """依允許欄位建立 WHERE 條件；allowed_columns 未給時沿用全域白名單。"""
     if not filters:
@@ -165,7 +213,7 @@ def build_filter_clause(
     for column, value in filters.items():
         if column not in usable_columns:
             raise ValueError(f"Unsupported report filter column: {column}")
-        column_sql = quote_ident(column)
+        column_sql = quote_ident(scoped_column(column, report_scope))
         if isinstance(value, dict):
             if "from" in value:
                 param_name = f"filter_{index}"
@@ -200,8 +248,14 @@ def build_filter_clause(
     return " AND ".join(clauses), params
 
 
-def build_exclude_blank_clause(columns: tuple[str, ...]) -> str:
-    clauses = [f"NULLIF(BTRIM({quote_ident(column)}::text), '') IS NOT NULL" for column in columns]
+def build_exclude_blank_clause(
+    columns: tuple[str, ...],
+    report_scope: str = REPORT_SCOPE_COMPANY,
+) -> str:
+    clauses = [
+        f"NULLIF(BTRIM({quote_ident(scoped_column(column, report_scope))}::text), '') IS NOT NULL"
+        for column in columns
+    ]
     return " AND ".join(clauses)
 
 
@@ -276,8 +330,10 @@ def build_report_sql(
     filters: dict[str, Any] | None,
     limit: int | None,
     patent_ids: list[Any] | None = None,
+    report_scope: str = REPORT_SCOPE_COMPANY,
 ) -> tuple[str, dict[str, Any]]:
-    blank_clause = build_exclude_blank_clause(definition.exclude_blank_columns)
+    validate_report_scope(report_scope)
+    blank_clause = build_exclude_blank_clause(definition.exclude_blank_columns, report_scope)
     pattern_clause, pattern_params = build_value_pattern_clause(
         getattr(definition, "value_pattern_columns", ()) or ()
     )
@@ -285,6 +341,7 @@ def build_report_sql(
         filter_clause, params = build_filter_clause(
             filters,
             allowed_filter_columns_for_report(definition),
+            report_scope,
         )
         patent_ids_clause = ""
         if patent_ids is not None:
@@ -304,16 +361,19 @@ def build_report_sql(
     if pattern_clause:
         params.update(pattern_params)
     where_sql = " WHERE " + " AND ".join(where_parts) if where_parts else ""
-    table_sql = qualified_table_name(definition.source_table)
+    table_sql = qualified_table_name(scoped_source_table(definition.source_table, report_scope))
 
     if definition.report_type == "aggregate":
         select_columns = ", ".join(
-            f"{quote_ident(column)} AS {quote_ident(output_alias(column))}" for column in definition.group_by
+            f"{quote_ident(scoped_column(column, report_scope))} AS {quote_ident(output_alias(column))}"
+            for column in definition.group_by
         )
-        group_columns = ", ".join(quote_ident(column) for column in definition.group_by)
+        group_columns = ", ".join(
+            quote_ident(scoped_column(column, report_scope)) for column in definition.group_by
+        )
         sql = (
             f"SELECT {select_columns}, COUNT({quote_ident(definition.count_column)})::int AS patent_count"
-            f"{build_aggregate_columns(definition)} "
+            f"{build_aggregate_columns(definition, report_scope)} "
             f"FROM {table_sql}"
             f"{where_sql} "
             f"GROUP BY {group_columns}"
@@ -321,7 +381,8 @@ def build_report_sql(
         )
     elif definition.report_type == "detail":
         select_columns = ", ".join(
-            f"{quote_ident(column)} AS {quote_ident(output_alias(column))}" for column in definition.columns
+            f"{quote_ident(scoped_column(column, report_scope))} AS {quote_ident(output_alias(column))}"
+            for column in definition.columns
         )
         sql = f"SELECT {select_columns} FROM {table_sql}{where_sql}{build_order_clause(definition)}"
     else:
@@ -339,6 +400,7 @@ def run_report(
     filters: dict[str, Any] | None = None,
     limit: int | None = None,
     patent_ids: list[Any] | None = None,
+    report_scope: str = REPORT_SCOPE_COMPANY,
 ) -> dict[str, Any]:
     definition = REPORT_DEFINITIONS.get(report_name)
     if not definition:
@@ -356,7 +418,7 @@ def run_report(
 
     from backend.app.db.connection import get_connection_kwargs
 
-    sql, params = build_report_sql(definition, filters, limit, patent_ids)
+    sql, params = build_report_sql(definition, filters, limit, patent_ids, report_scope)
     with psycopg.connect(**get_connection_kwargs(), connect_timeout=15) as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(sql, params)
@@ -368,6 +430,7 @@ def run_report(
         "label_zh": definition.label_zh,
         "report_type": definition.report_type,
         "filters": filters or {},
+        "aggregation_scope": validate_report_scope(report_scope),
         "row_count": len(rows),
         "rows": rows,
     }
@@ -378,6 +441,7 @@ def run_reports_batch(
     filters: dict[str, Any] | None = None,
     limit: int | None = None,
     patent_ids: list[Any] | None = None,
+    report_scope: str = REPORT_SCOPE_COMPANY,
 ) -> dict[str, Any]:
     """一次執行多張報表——報表引擎的對外調用契約。
 
@@ -405,7 +469,13 @@ def run_reports_batch(
             # 家族層級報表：filters/快照經引擎轉譯成家族集合，口徑以註記現形。
             note = "家族層級口徑：篩選／快照圈定家族集合，佈局計入家族全體成員（可能含篩選外的國家）"
         try:
-            report = run_report(name, filters=filters or None, limit=limit, patent_ids=patent_ids)
+            report = run_report(
+                name,
+                filters=filters or None,
+                limit=limit,
+                patent_ids=patent_ids,
+                report_scope=report_scope,
+            )
         except ValueError as exc:
             results[name] = {"label_zh": definition.label_zh, "skipped_reason": str(exc)}
             continue
@@ -413,6 +483,7 @@ def run_reports_batch(
             "label_zh": report["label_zh"],
             "label": report["label"],
             "report_type": report["report_type"],
+            "aggregation_scope": report["aggregation_scope"],
             "row_count": report["row_count"],
             "rows": report["rows"],
         }

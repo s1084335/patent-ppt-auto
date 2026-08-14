@@ -33,11 +33,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.app.worker.ai_narrative_runner import (
-    CliResult,
-    NarrativeRunnerError,
-    run_narrative,
-)
+from backend.app.worker.ai_narrative_runner import NarrativeRunnerError, run_narrative
+from backend.app.worker.cli_gateway import CliResult
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -319,26 +316,22 @@ class CliResultNoneSafetyTests(unittest.TestCase):
 
     @staticmethod
     def _result(exit_code=0, stdout=None, stderr=None):
-        from backend.app.worker.ai_narrative_runner import CliResult
+        from backend.app.worker.cli_gateway import CliResult
 
         return CliResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
 
     def test_none_stdout_raises_runner_error(self):
         """stdout=None 要拋 NarrativeRunnerError，不得是 AttributeError。"""
-        from backend.app.worker.ai_narrative_runner import (
-            NarrativeRunnerError,
-            parse_cli_result,
-        )
+        from backend.app.worker.ai_narrative_runner import NarrativeRunnerError
+        from backend.app.worker.cli_gateway import parse_cli_result
 
         with self.assertRaises(NarrativeRunnerError):
             parse_cli_result(self._result(stdout=None))
 
     def test_none_on_failure_path(self):
         """⚠ exit != 0 且兩者皆 None——原本會在組錯誤訊息時就 AttributeError。"""
-        from backend.app.worker.ai_narrative_runner import (
-            NarrativeRunnerError,
-            parse_cli_result,
-        )
+        from backend.app.worker.ai_narrative_runner import NarrativeRunnerError
+        from backend.app.worker.cli_gateway import parse_cli_result
 
         with self.assertRaises(NarrativeRunnerError) as ctx:
             parse_cli_result(self._result(exit_code=1, stdout=None, stderr=None))
@@ -346,10 +339,8 @@ class CliResultNoneSafetyTests(unittest.TestCase):
 
     def test_message_is_actionable(self):
         """錯誤訊息要看得出是「CLI 沒有輸出」，不是一個裸的 AttributeError。"""
-        from backend.app.worker.ai_narrative_runner import (
-            NarrativeRunnerError,
-            parse_cli_result,
-        )
+        from backend.app.worker.ai_narrative_runner import NarrativeRunnerError
+        from backend.app.worker.cli_gateway import parse_cli_result
 
         with self.assertRaises(NarrativeRunnerError) as ctx:
             parse_cli_result(self._result(stdout=None))

@@ -398,6 +398,26 @@ def _run_ai_company_zh_name_job(payload: dict[str, Any], context: JobContext) ->
 
 # job_type → 執行函式。值存「函式名」而非函式物件，讓 execute_ai_job 在呼叫當下才解析到
 # 模組屬性——測試以 mock.patch.object 換掉 _run_ai_* 時才會生效（存物件會綁死原函式）。
+def _run_ai_company_group_suggestion_job(
+    payload: dict[str, Any], context: JobContext
+) -> dict[str, Any]:
+    """執行手動公司集團連網查證，結果只寫入待審核建議。"""
+    from . import ai_company_group_suggestion_runner
+
+    context.heartbeat("準備集團查證", 1)
+    return ai_company_group_suggestion_runner.run_company_group_suggestions(
+        cli_kind=str(payload.get("cli_kind") or "claude"),
+        model=payload.get("model") or None,
+        cli_runner=payload.get("_cli_runner"),
+        limit=int(payload["limit"]) if payload.get("limit") else None,
+        timeout_seconds=float(
+            payload.get("cli_timeout_seconds")
+            or ai_company_group_suggestion_runner.DEFAULT_CLI_TIMEOUT_SECONDS
+        ),
+        progress=lambda stage, percent: context.heartbeat(stage, percent),
+    )
+
+
 def _source_field_for_filter(payload: dict[str, Any]) -> str:
     """決定不相干篩選要用哪個通道的主題來挑候選。
 
@@ -524,19 +544,11 @@ def _run_ai_topic_backfill_job(payload: dict[str, Any], context: JobContext) -> 
 
     cli = payload.get("_cli_runner")
     if cli is None:
-        from .ai_narrative_runner import (
-            _subprocess_cli_runner,
-            build_cli_command,
-            parse_cli_result,
-        )
-
-        def cli(prompt: str, *, timeout_seconds: float) -> str:
-            argv = build_cli_command(cli_kind, prompt, model=model)
-            # ⚠ --output-format json 的 stdout 是 envelope（type/result/…），
-            # AI 內文在 "result" 欄——直接回 stdout 會讓 runner 解析到外殼
-            # 而非建議 JSON（2026-08-07 真資料首跑即踩）。
-            parsed = parse_cli_result(_subprocess_cli_runner(argv, timeout_seconds))
-            return str(parsed.get("result") or "")
+        # ⚠ 2026-08-13：argv 組裝搬回 runner（與其餘六支 AI 線同款）。原本這段
+        # closure 從 `ai_narrative_runner` 借 build_cli_command，那是取證等級
+        # （`partial(tools=RESEARCH_TOOLS)`），本線因此靜默拿到 12 支工具＋
+        # `--mcp-config`；權限應由使用它的 runner 自己宣告，不從別條線借。
+        cli = ai_topic_backfill_runner.build_cli_runner(cli_kind, model)
 
     result = ai_topic_backfill_runner.run_topic_backfill(
         workspace_id=int(workspace_id),
@@ -561,6 +573,7 @@ _AI_JOB_RUNNERS: dict[str, str] = {
     "ai:patent_note": "_run_ai_patent_note_job",
     "ai:candidate_explanation": "_run_ai_candidate_explanation_job",
     "ai:company_zh_name": "_run_ai_company_zh_name_job",
+    "ai:company_group_suggestion": "_run_ai_company_group_suggestion_job",
     "ai:irrelevant_filter": "_run_ai_irrelevant_filter_job",
 }
 

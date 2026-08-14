@@ -243,7 +243,7 @@ class AiRunnerFourColumnTests(unittest.TestCase):
         store = FakeStore()
 
         def fake_cli(argv, timeout):
-            from backend.app.worker.ai_narrative_runner import CliResult
+            from backend.app.worker.cli_gateway import CliResult
 
             return CliResult(
                 exit_code=0,

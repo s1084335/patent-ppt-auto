@@ -26,7 +26,7 @@ from unittest import mock
 from backend.app.db import job_repository
 from backend.app.worker import ai_candidate_explanation_runner as runner_mod
 from backend.app.worker import handlers, runner
-from backend.app.worker.ai_narrative_runner import CliResult
+from backend.app.worker.cli_gateway import CliResult
 from backend.app.clustering import workspace_service
 from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL
 

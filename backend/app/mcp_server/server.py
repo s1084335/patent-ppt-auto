@@ -53,7 +53,8 @@ mcp.tool()(tools_reporting.run_report_analysis)
 mcp.tool()(tools_reporting.get_data_status)
 mcp.tool()(tools_reporting.save_workflow_output)
 mcp.tool()(tools_reporting.refresh_derived_data)
-mcp.tool()(tools_reporting.generate_report_ppt)
+# ⚠ 2026-08-13 移除 generate_report_ppt：它回報成功卻排了一筆重產全部報表的 job
+# （payload 的 version／artifact 兩鍵下游都不消費）。理由詳見 tools_reporting 同名註解。
 
 # ── AI 任務工具（取數口＋敘述型回存）────────────────────────────
 mcp.tool()(tools_ai.get_report_payload)

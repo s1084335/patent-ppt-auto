@@ -3491,6 +3491,7 @@ class ChartContext:
     cpc_levels: tuple[int, ...]
     patent_ids: list[int] | None
     filters: dict[str, Any] | None
+    report_scope: str
     analysis_id: int | None
     sections: list[dict[str, Any]] = field(default_factory=list)
     chart_rows: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
@@ -3515,7 +3516,11 @@ class ChartContext:
         if name not in self._report_cache:
             limit = self.ranking_limit if name in RANKING_LIMIT_REPORTS else None
             self._report_cache[name] = run_report(
-                name, filters=self.filters, limit=limit, patent_ids=self.patent_ids
+                name,
+                filters=self.filters,
+                limit=limit,
+                patent_ids=self.patent_ids,
+                report_scope=self.report_scope,
             )
         return self._report_cache[name]
 
@@ -4739,6 +4744,7 @@ def run_chart_trial(
     filters: dict[str, Any] | None = None,
     cluster_data: dict[str, Any] | None = None,
     patent_ids: list[int] | None = None,
+    report_scope: str = "company",
     workspace_name: str | None = None,
     workspace_id: int | None = None,
 ) -> dict[str, Any]:
@@ -4771,6 +4777,7 @@ def run_chart_trial(
         cpc_levels=tuple(dict.fromkeys(cpc_levels)),
         patent_ids=patent_ids,
         filters=filters or None,
+        report_scope=report_scope,
         analysis_id=analysis_id,
         cluster_data=cluster_data,
     )
@@ -4787,6 +4794,7 @@ def run_chart_trial(
         "cpc_levels": list(ctx.cpc_levels),
         "reports_selected": sorted(set(report_names)) if report_names is not None else "all",
         "filters": filters or None,
+        "report_scope": report_scope,
         "generated_at": generated_at,
         "version": version,
         "analysis_id": analysis_id,
@@ -4990,6 +4998,7 @@ def main() -> None:
     parser.add_argument("--analysis-id", type=int, help="Bind charts to an app_layer analysis: use its patent snapshot and record files into export_runs.")
     parser.add_argument("--reports", help="Comma-separated report keys to render selectively (default: full battery).")
     parser.add_argument("--filters", help="JSON object of report filters (whitelist columns; family reports stay full-DB scope).")
+    parser.add_argument("--report-scope", choices=("company", "group"), default="company", help="Aggregation scope for company/group reports.")
     parser.add_argument(
         "--refresh-index", type=Path, metavar="RUN_DIR",
         help="不出圖：從 RUN_DIR/report_data.json 的 sections 重建 index.html（narratives.json 有就嵌入解讀）。",
@@ -5014,6 +5023,7 @@ def main() -> None:
             analysis_id=args.analysis_id,
             report_names=report_names,
             filters=parse_json_arg(args.filters),
+            report_scope=args.report_scope,
         )
     except Exception as exc:  # noqa: BLE001 - CLI boundary: emit a clean error, exit non-zero
         print(json.dumps({"status": "error", "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False), file=sys.stderr)

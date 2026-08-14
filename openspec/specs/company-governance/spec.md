@@ -3,9 +3,7 @@
 ## Purpose
 
 定義申請人／專利權人代碼歸戶、名稱收斂、中文名確認與顯示優先序，讓 importer、derived、API 與報表共用一致公司身分，同時保留來源原文、AI 草稿與人工正式值之間的追溯邊界。
-
 ## Requirements
-
 ### Requirement: CMP-001 有代碼依代碼歸戶
 
 系統 SHALL 將具有 WIPS 公司代碼的名稱依代碼歸戶；未建組代碼可自動建立待確認群組，但不得自動填入臆測中文名。
@@ -53,3 +51,106 @@
 - **WHEN** 使用者完成公司治理寫入
 - **THEN** 系統 SHALL 觸發或要求 derived refresh
 - **AND** 後續顯示使用更新後的唯一收斂結果
+
+### Requirement: CMP-006 待審集團建議證據可讀呈現
+
+The system SHALL present persisted CLI/AI company-group suggestion evidence in a readable review format without changing its review-only status or confirmation workflow.
+
+#### Scenario: User reviews readable CLI AI evidence in the browser
+
+- **GIVEN** CLI/AI has persisted a review-only group suggestion
+- **WHEN** an internal browser user opens group normalization
+- **THEN** each suggested member SHALL show its company name, optional company code, and localized confidence
+- **AND** each evidence source SHALL show a compact link with the fixed text `來源` and its supporting claim
+- **AND** warnings SHALL be shown separately from evidence sources
+- **AND** raw evidence JSON SHALL NOT be displayed
+- **AND** AI-provided text SHALL be HTML escaped and only HTTPS evidence URLs SHALL be linked
+- **AND** missing optional evidence fields SHALL show a readable fallback
+- **AND** the existing confirm and reject actions SHALL remain available
+
+### Requirement: CMP-007 集團正規化可完整復原
+
+The system SHALL let an internal browser user reverse confirmed company-group mappings without changing normalized company records or patent records.
+
+#### Scenario: User undoes a confirmed AI suggestion
+
+- **GIVEN** an AI-suggested member was confirmed by a user and still has its evidence sources
+- **WHEN** the user selects `撤銷確認`
+- **THEN** the member SHALL return to `suggested`
+- **AND** its evidence SHALL remain unchanged
+- **AND** the parent group review status SHALL be recomputed from its remaining members
+- **AND** the member SHALL reappear in pending review
+
+#### Scenario: User removes one group member
+
+- **GIVEN** a confirmed group contains one or more members
+- **WHEN** the user removes one member
+- **THEN** only that member mapping SHALL be deleted
+- **AND** normalized company records and patent records SHALL remain unchanged
+
+#### Scenario: User dissolves a group
+
+- **GIVEN** a group mapping exists
+- **WHEN** the user confirms `解散集團`
+- **THEN** the group and all of its member mappings SHALL be deleted
+- **AND** normalized company records and patent records SHALL remain unchanged
+
+#### Scenario: Reversal refreshes open browsers
+
+- **WHEN** an AI confirmation is undone, one member is removed, or a group is dissolved
+- **THEN** the committed transaction SHALL publish a `companyGroups` SSE refresh event
+
+### Requirement: CMP-009 AI 可建議加入受控既有集團
+
+The system SHALL let the manually triggered company-group research job suggest that an ungrouped
+confirmed company belongs to an existing confirmed group without directly activating the mapping.
+
+#### Scenario: CLI suggests an existing confirmed group
+
+- **GIVEN** the backend supplies an ungrouped company and a controlled list of confirmed groups
+- **WHEN** the CLI returns a whitelisted `target_group_id` with HTTPS evidence
+- **THEN** the system SHALL add only a `suggested` member mapping under that existing group
+- **AND** it SHALL NOT create or rename a parent group
+- **AND** reports SHALL remain unchanged until a browser user confirms the member
+
+#### Scenario: CLI invents or targets an unavailable group
+
+- **WHEN** the CLI returns a group ID absent from the backend-controlled confirmed-group list
+- **THEN** the system SHALL reject the result before persistence
+
+#### Scenario: User reviews an existing-group target
+
+- **WHEN** an existing-group membership suggestion is shown in the browser
+- **THEN** the existing group name SHALL be displayed as a read-only target
+- **AND** confirming SHALL change only the selected member mapping
+- **AND** rejecting SHALL preserve the existing group and its confirmed members
+
+#### Scenario: CLI proposes a new group
+
+- **WHEN** evidence supports a group not present in the controlled confirmed-group list
+- **THEN** the existing new-group suggestion workflow SHALL remain available
+- **AND** its pending group name SHALL remain editable before confirmation
+
+### Requirement: CMP-008 待審集團名稱可於確認前編輯
+
+The system SHALL let an internal browser user edit a CLI/AI-suggested group name before confirming
+an individual member mapping.
+
+#### Scenario: User confirms a suggestion with a shortened group name
+
+- **GIVEN** a pending CLI/AI group suggestion has an overly long group name
+- **WHEN** the user edits the pending name and confirms one suggested member
+- **THEN** the trimmed edited name and that member confirmation SHALL be persisted atomically
+- **AND** other suggested members SHALL retain their existing review status
+- **AND** the committed transaction SHALL publish the existing `companyGroups` SSE refresh event
+
+#### Scenario: Edited name is invalid
+
+- **WHEN** the submitted group name is blank or exceeds 255 characters
+- **THEN** the system SHALL reject the request without confirming the member or renaming the group
+
+#### Scenario: Existing decision clients remain compatible
+
+- **WHEN** a client confirms without a request body or rejects a suggestion
+- **THEN** the existing group name SHALL remain unchanged
+- **AND** the selected member decision SHALL follow the existing workflow

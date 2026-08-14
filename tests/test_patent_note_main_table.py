@@ -26,7 +26,7 @@ from alembic import command
 from alembic.config import Config
 
 from backend.app.worker import ai_patent_note_runner, handlers
-from backend.app.worker.ai_narrative_runner import CliResult
+from backend.app.worker.cli_gateway import CliResult
 
 
 TEST_DB = "patent_ppt_notemain"

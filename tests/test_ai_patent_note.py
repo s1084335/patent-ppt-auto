@@ -25,7 +25,7 @@ from unittest import mock
 
 from backend.app.db import job_repository
 from backend.app.worker import ai_bridge, ai_patent_note_runner, runner
-from backend.app.worker.ai_narrative_runner import CliResult
+from backend.app.worker.cli_gateway import CliResult
 from backend.app.worker.queue_client import ProcessingJob
 
 
