@@ -103,6 +103,9 @@ class MinimalPrivilegePreservedTests(unittest.TestCase):
         "ai:company_zh_name": "READ_ONLY_TOOLS",
         "ai:company_group_suggestion": "WEB_RESEARCH_TOOLS",
         "ai:irrelevant_filter": "READ_ONLY_TOOLS",
+        # 簡報產製（撰稿＋逐頁目視）：與 narrative 同級（design §2 定案）——
+        # 讀素材、唯讀 MCP 取證、寫 content.json／verdict；無 Bash。
+        "ai:report_deck": "RESEARCH_TOOLS",
     }
 
     DATA_FILE_RUNNERS: ClassVar[dict[str, tuple[str, str]]] = {
@@ -139,6 +142,9 @@ class MinimalPrivilegePreservedTests(unittest.TestCase):
         if job_type == "ai:narrative":
             from backend.app.worker import ai_narrative_runner as module
             return module.build_cli_command("claude", "test")
+        if job_type == "ai:report_deck":
+            from backend.app.worker import ai_report_deck_runner as module
+            return module.build_deck_cli_command("claude", "test")
         if job_type == "ai:topic_backfill":
             from unittest import mock
 

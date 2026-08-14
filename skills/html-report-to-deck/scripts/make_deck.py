@@ -23,6 +23,12 @@ def main() -> int:
     for k in ("read_me", "chart_rule"):
         content[k] = tuple(content[k])
     bad = build(content, sys.argv[2], sys.argv[3])
+    # 可選第 4 參數：頁面 SVG 輸出目錄（B 案目視截圖的來源；runner 產線用）。
+    # ⚠ build 與 build_svg 共用 _compose（唯一落點），兩者輸出的是同一份版面。
+    if len(sys.argv) > 4:
+        from deck_layout import build_svg
+        pages = build_svg(content, sys.argv[2], sys.argv[4])
+        print(f"SVG：{len(pages)} 頁 → {sys.argv[4]}")
     if bad:
         # ⚠ 涵蓋兩類：版面溢出與圖內字級不足。上方 build 已逐項印出是哪一種。
         print(f"\n⚠ 有 {bad} 個問題（版面溢出或圖內字級不足），"

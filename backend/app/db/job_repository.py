@@ -72,6 +72,10 @@ AI_JOB_TYPES: frozenset[str] = frozenset(
         # c-TF-IDF keywords/分數/主題 label；各筆獨立判讀、不混批。CLI 白名單為空。
         "ai:irrelevant_filter",
         # ⚠ ai:report_ppt 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
+        # 簡報產製（add-deck-delivery-line）：runner 驅動機械步（intake→排頁→fit→
+        # 組版→截圖），CLI 只接撰稿與逐頁目視迴圈；產物落 DECK_ARTIFACT_ROOT，
+        # manifest（相對 key＋SHA-256＋逐輪目視紀錄）隨 job result 落 workflow_outputs。
+        "ai:report_deck",
     }
 )
 
@@ -262,8 +266,8 @@ def get_job(job_id: int) -> ProcessingJob | None:
 
 
 def list_jobs(*, workspace_id: int | None = None, status: str | None = None,
-              limit: int = 50) -> list[ProcessingJob]:
-    """列出工作（新到舊＝run_id DESC），可依 workspace 或狀態過濾。"""
+              job_type: str | None = None, limit: int = 50) -> list[ProcessingJob]:
+    """列出工作（新到舊＝run_id DESC），可依 workspace、狀態或類型過濾。"""
     if limit < 1:
         raise ValueError("limit must be >= 1")
     conditions: list[str] = []
@@ -274,6 +278,11 @@ def list_jobs(*, workspace_id: int | None = None, status: str | None = None,
     if status is not None:
         conditions.append("status = %s")
         params.append(status)
+    if job_type is not None:
+        # deck 紀錄清單（deck_exports API）只要 ai:report_deck 一種；DB 端過濾，
+        # 不撈全部回來在 Python 篩——job 表會一直長。
+        conditions.append("run_type = %s")
+        params.append(job_type)
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     params.append(int(limit))
     with get_pool().connection() as conn:

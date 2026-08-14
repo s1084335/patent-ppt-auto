@@ -4094,9 +4094,116 @@ function renderExport() {
   m.innerHTML = '<h2 class="panel-title">匯出報告</h2>'
     + '<p class="hint" style="padding:0 0 0.7rem">'
     + '交付物中心：簡報（deck）產製與下載。報表本身的產製與 HTML 匯出在「報表種類」頁。</p>'
-    + '<div class="placeholder-box">簡報產製功能規劃中'
-    + '<div class="hint" style="padding:0.4rem 0 0">'
-    + '完成後這裡會顯示：產製簡報入口、deck 紀錄、逐頁預覽，以及下載 pptx。</div></div>';
+    + '<div class="report-generate-box" style="margin-bottom:0.9rem">'
+    +   '<div class="reports-header" style="margin-bottom:0">'
+    +     '<span class="reports-header-label">報表版本</span>'
+    +     '<select id="deck-version-select" class="select"><option value="">（載入中…）</option></select>'
+    +     '<button id="btn-make-deck" class="btn" onclick="runDeckExport()">產製簡報</button>'
+    +     '<span class="hint">產製會由 AI 撰稿並逐頁目視，需數分鐘；完成後在下方紀錄直接預覽。</span>'
+    +   '</div>'
+    + '</div>'
+    + '<div id="deck-records"><div class="hint">deck 紀錄載入中…</div></div>';
+  loadDeckVersionSelect();
+  refreshDeckExports();
+}
+
+// 匯出頁的版本下拉：與報表種類頁**同源**（GET /reports/versions），不另存第二份清單。
+async function loadDeckVersionSelect() {
+  const sel = el('deck-version-select');
+  if (!sel) return;
+  try {
+    const data = await getJson(API + '/reports/versions?limit=20'
+      + (state.workspaceId ? '&workspace_id=' + state.workspaceId : ''));
+    const items = data.versions || [];
+    if (!items.length) {
+      sel.innerHTML = '<option value="">（尚無報表版本，請先在報表種類頁產製）</option>';
+      return;
+    }
+    sel.innerHTML = items.map(function (v) {
+      const marks = (v.is_latest ? '｜最新' : '') + (v.has_narratives ? '｜含 AI 解讀' : '');
+      return '<option value="' + escHtml(v.version) + '" title="' + escHtml(v.version) + '">'
+        + escHtml(fmtReportVersionLabel(v.version, v.generated_at) + marks) + '</option>';
+    }).join('');
+  } catch (e) {
+    sel.innerHTML = '<option value="">（版本載入失敗：' + escHtml(e.message) + '）</option>';
+  }
+}
+
+// 產製簡報：走既有 POST /ai-tasks（泛型 task_type），不另造第二條建 job 的路。
+async function runDeckExport() {
+  const sel = el('deck-version-select');
+  const version = sel && sel.value;
+  if (!version) { alert('請先選擇報表版本（尚無版本時先到報表種類頁產製）。'); return; }
+  const btn = el('btn-make-deck');
+  if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
+  try {
+    const resp = await fetch(API + '/ai-tasks', {
+      method: 'POST',
+      headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ task_type: 'ai:report_deck', based_on_version: version }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert('產製簡報失敗：' + (err.detail || ('HTTP ' + resp.status)));
+      return;
+    }
+    await fetchTasks();       // 右欄立刻看得到任務進度
+    refreshDeckExports();     // 紀錄清單立刻多一張「產製中」卡
+  } catch (e) {
+    alert('連線錯誤：' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '產製簡報'; }
+  }
+}
+
+// deck 紀錄清單：先看到（逐頁預覽）、再下載（使用者主動按「下載 pptx」，不自動下載）。
+async function refreshDeckExports() {
+  const box = el('deck-records');
+  if (!box) return;
+  let items = [];
+  try {
+    items = (await getJson(API + '/deck-exports?limit=20')).items || [];
+  } catch (e) {
+    box.innerHTML = '<div class="hint">deck 紀錄載入失敗（' + escHtml(e.message) + '）。</div>';
+    return;
+  }
+  if (!items.length) {
+    box.innerHTML = '<div class="placeholder-box">尚無簡報產出：'
+      + '選擇報表版本後按「產製簡報」。</div>';
+    return;
+  }
+  box.innerHTML = items.map(renderDeckRecordCard).join('');
+}
+
+function renderDeckRecordCard(it) {
+  const head = '<div style="display:flex;gap:0.6rem;align-items:baseline;flex-wrap:wrap">'
+    + '<strong>#' + it.run_id + '</strong>'
+    + '<span>' + escHtml(it.based_on_version || '（版本不明）') + '</span>'
+    + '<span class="hint">' + escHtml(it.status) + '</span></div>';
+  let body = '';
+  if (it.status === 'succeeded') {
+    // 逐頁預覽＝產線目視那批 PNG（backend 自 artifact root 供圖）。
+    const pages = (it.page_urls || []).map(function (u) {
+      return '<a href="' + escHtml(u) + '" target="_blank" rel="noopener">'
+        + '<img src="' + escHtml(u) + '" loading="lazy" '
+        + 'style="width:200px;border:1px solid var(--border);border-radius:4px"></a>';
+    }).join('');
+    body = '<div class="hint" style="padding:0.25rem 0">'
+      + '共 ' + (it.page_count || 0) + ' 頁｜逐頁目視 ' + (it.visual_rounds || '?') + ' 輪'
+      + (it.size_bytes ? '｜' + Math.round(it.size_bytes / 1024) + ' KB' : '') + '</div>'
+      + '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:0.35rem 0">' + pages + '</div>'
+      + (it.pptx_url
+        ? '<a class="btn" href="' + escHtml(it.pptx_url) + '">下載 pptx</a>'
+        : '');
+  } else if (it.status === 'failed' || it.status === 'cancelled') {
+    body = '<div class="hint" style="color:var(--danger,#b0123c);padding:0.25rem 0">'
+      + escHtml(it.error_message || '失敗（無錯誤訊息）') + '</div>';
+  } else {
+    // queued / running：顯示誠實進度（heartbeat 階段文字＋百分比；SSE 會刷新本清單）。
+    body = '<div class="hint" style="padding:0.25rem 0">'
+      + escHtml(it.current_stage || '等待中') + '（' + (it.progress_percent || 0) + '%）</div>';
+  }
+  return '<div class="report-generate-box" style="margin-bottom:0.6rem">' + head + body + '</div>';
 }
 
 // 報表內容的共用檢視狀態。
@@ -5317,6 +5424,8 @@ const JOB_REFRESH_TARGETS = {
   // job_id 去重，由 fetchTasks 觸發；updateTaskFromEvent 終結時本來就 fetchTasks）
   // ——不重複接第二條刷新線。
   'ai:narrative': [],
+  // 簡報產製：完成／失敗都刷新匯出頁的 deck 紀錄（design §6：落點改頁後刷新目標跟著改）。
+  'ai:report_deck': ['deckExports'],
   'embeddings': [],          // 無可見面（供之後的分群消費）
   'ai:company_zh_name': [],  // 草稿區已移除（2026-07-29 使用者定案）
   'ai:company_group_suggestion': ['companyGroups'],
@@ -5333,6 +5442,7 @@ const RESOURCE_REFRESHERS = {
   'reports': { navs: ['reports'], run: refreshReportsArea },
   'workspaces': { navs: null, run: loadWorkspaces },  // 頂列下拉；自恢復上次選定
   'companyGroups': { navs: ['browse'], run: renderCompanyGroupRegistry },
+  'deckExports': { navs: ['export'], run: refreshDeckExports },
 };
 
 const REFRESH_DEBOUNCE_MS = 1500;   // design.md「合併」：同資源事件 1.5 秒窗合併
