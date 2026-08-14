@@ -135,6 +135,18 @@ def _cover_tech_name(work: Path) -> str:
     return str(meta.get("workspace_name") or meta.get("h1") or "").strip()
 
 
+def _workspace_id(work: Path) -> int | None:
+    """版本綁定的 workspace（取證範圍用）。來源＝report.json report_meta
+    （intake 自 version_meta 解出）——與封面素材同一唯一定義處。缺＝不綁。"""
+    try:
+        meta = json.loads((work / "report.json").read_text(encoding="utf-8")) \
+            .get("report_meta") or {}
+        raw = meta.get("workspace_id")
+        return int(raw) if raw is not None else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def build_deck_cli_command(cli_kind: str, prompt: str, *,
                            model: str | None = None) -> list[str]:
     """deck 線（撰稿與目視共用）的 CLI argv——權限層級的**唯一定義處**。
@@ -174,7 +186,9 @@ def build_writing_prompt(work: Path, version: str, *, scripts: Path,
             "plan.json 的 structure_checklist 要逐項處理完。")
     lines.append(
         "顆粒度不足時可用唯讀 MCP 取證工具查請求項原文；只讀不寫、"
-        "只補敘述不補統計、新名詞標來源專利號、斷言範圍＝證據範圍。")
+        "只補敘述不補統計、新名詞標來源專利號、斷言範圍＝證據範圍。"
+        "取證已綁定本 workspace：查 patents／patent_attributes 時"
+        "JOIN workspace_scope（欄位 patent_id）過濾，該 CTE 由系統注入。")
     return "\n".join(lines)
 
 
@@ -272,11 +286,18 @@ def run_deck(
                   str(work / "charts"), str(work / "png")])
 
     # ── 3. CLI 撰稿：唯一輸出＝content.json ────────────────────────
+    # 取證範圍綁定（2026-08-14 使用者裁決）：CLI（含其 MCP 子行程）只在
+    # workspace_scope_env 內起——query_database 據此注入成員 CTE＋join 閘門。
+    # ⚠ 逐呼叫點包而不是包整段：env 只需在「起 CLI 的瞬間」正確（子行程
+    # 繼承後就與父行程無關），窄範圍不汙染機械步。
+    from backend.app.mcp_server.report_research import workspace_scope_env
+    ws_id = _workspace_id(work)
     _progress("cli_writing", 30)
     content_path = work / "content.json"
     prompt = build_writing_prompt(work, version, scripts=scripts)
     argv = build_deck_cli_command(cli_kind, prompt, model=model)
-    parse_cli_result(runner(argv, timeout_seconds))
+    with workspace_scope_env(ws_id):
+        parse_cli_result(runner(argv, timeout_seconds))
     if not content_path.is_file():
         raise DeckRunnerError(f"CLI 正常結束但未產出 {content_path}")
     _progress("cli_writing", 55)
@@ -295,7 +316,8 @@ def run_deck(
         fix_prompt = build_writing_prompt(work, version, scripts=scripts,
                                           gate_output=gate_output)
         fix_argv = build_deck_cli_command(cli_kind, fix_prompt, model=model)
-        parse_cli_result(runner(fix_argv, timeout_seconds))
+        with workspace_scope_env(ws_id):
+            parse_cli_result(runner(fix_argv, timeout_seconds))
         if _sha256(content_path) == before:
             raise DeckRunnerError(
                 f"{source} 未通過且 CLI 未修改 content.json（停滯）：{gate_output[:300]}")
@@ -332,7 +354,8 @@ def run_deck(
         verdict_path.unlink(missing_ok=True)
         review_argv = build_deck_cli_command(
             cli_kind, build_review_prompt(work, shots_dir, round_no), model=model)
-        parse_cli_result(runner(review_argv, timeout_seconds))
+        with workspace_scope_env(ws_id):
+            parse_cli_result(runner(review_argv, timeout_seconds))
         if not verdict_path.is_file():
             raise DeckRunnerError(f"目視第 {round_no} 輪未產出 {verdict_path}")
         verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
