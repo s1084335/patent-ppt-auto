@@ -928,4 +928,6 @@ def build(content: dict, png_dir, out_path) -> int:
             print(f"  P{i:>2} {n} {pt:.1f}pt：{act}")
     print(f"已輸出：{out_path}  {out_path.stat().st_size // 1024} KB  "
           f"共 {len(prs.slides._sldIdLst)} 頁")
-    return len(bad)
+    # 🔴 字級不足**必須計入回傳值**：只 print 不擋，等於門檻沒有牙齒。
+    #    make_deck 以非零 exit 短路，runner 才知道這一步失敗。
+    return len(bad) + len(weak)

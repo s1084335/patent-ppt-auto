@@ -24,7 +24,9 @@ def main() -> int:
         content[k] = tuple(content[k])
     bad = build(content, sys.argv[2], sys.argv[3])
     if bad:
-        print(f"\n⚠ 有 {bad} 個區域溢出，請縮短該處文字後重跑；不要直接交付。")
+        # ⚠ 涵蓋兩類：版面溢出與圖內字級不足。上方 build 已逐項印出是哪一種。
+        print(f"\n⚠ 有 {bad} 個問題（版面溢出或圖內字級不足），"
+              f"請依上方逐項建議處理後重跑；不要直接交付。")
     return 1 if bad else 0
 
 
