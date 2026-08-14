@@ -112,10 +112,17 @@ class VocabularyTests(unittest.TestCase):
         self.assertEqual(prs, 1)
 
     def test_unknown_element_fails_loud(self):
-        """⚠ 詞彙外**不得靜默略過**——那會讓版面少一塊而沒人發現。"""
-        for body in ('<circle cx="10" cy="10" r="5"/>',
-                     '<path d="M0 0 L10 10"/>',
-                     '<polygon points="0,0 10,0 5,10"/>'):
+        """⚠ 詞彙外**不得靜默略過**——那會讓版面少一塊而沒人發現。
+
+        ⚠ 2026-08-14：`<circle>` 從本清單移出——tasks 2.1b 圖表原生繪製把它
+        納入詞彙（實掃 108 個，散點圖與象限圖的資料點），契約改在
+        `test_svg_chart_vocabulary.py`。
+        🔴 這道測試因此紅過一次，那正是它的作用：**擴充詞彙必須明確更新它**，
+        不能在轉換器裡偷偷放行。`<path>`／`<polygon>` 仍在詞彙外。
+        """
+        for body in ('<path d="M0 0 L10 10"/>',
+                     '<polygon points="0,0 10,0 5,10"/>',
+                     '<ellipse cx="10" cy="10" rx="5" ry="3"/>'):
             with self.subTest(body=body):
                 with self.assertRaises(self.mod.UnsupportedElement):
                     self.mod.build([_svg(body)])

@@ -105,9 +105,47 @@
         ②轉換器原本以 cwd 解析相對圖檔路徑——已修為**相對於 SVG 檔所在目錄**，
         並補測試；不修的話 runner 從別的目錄呼叫會靜默找不到圖。
 - [ ] 2.1b 🆕 **圖表原生繪製**（design 4-0d，2026-08-13 使用者裁決）：
-      窄轉換器詞彙擴充四種元素——`<circle>`→`MSO_SHAPE.OVAL`、`<line>`→連接線、
-      `<polyline>`→`build_freeform()`、屬性補 `text-anchor`／`stroke-width`／`rx`。
-      ⚠ 實掃 14 張真實圖表 SVG，**只多這四種**（引擎自己畫的圖詞彙本來就窄）。
+      窄轉換器詞彙擴充。
+
+      🔴 **2026-08-14 完整掃描推翻「只多這四種」**——上次只掃元素標籤沒掃
+      屬性值形式。重掃 14 張真實圖表 SVG（元素＋屬性＋**值的形式**）：
+
+      **元素**（4 種新增）：
+      | SVG | 次數 | → pptx |
+      |---|---|---|
+      | `<circle>` | 108 | `MSO_SHAPE.OVAL` |
+      | `<line>` | 19 | ✅ **全部水平／垂直，0 條斜線** → 照既有原則走細 rect 退化形，**不需 `add_connector`** |
+      | `<polyline>` | 2 | `build_freeform()` |
+      | `<defs>`＋`<pattern>` | 1 | 🔴 見下方 hatch |
+
+      **🔴 五個屬性值形式缺口**（每一個都會讓轉換器當場炸或靜默畫錯）：
+      | # | 形式 | 次數 | 處置 |
+      |---|---|---|---|
+      | 1 | `width="100%" height="100%"` | 13/14 張 | 相對 viewBox 解析；`_px()` 只吃絕對 px，**第一張就炸** |
+      | 2 | `fill="white"` | 14 | 顏色**關鍵字**；`_color()` 只收 `#RRGGBB`，會 raise |
+      | 3 | `fill="url(#hatch)"` | 3 | 🔴 pattern 引用，**不可退化**，見下 |
+      | 4 | `transform="rotate(...)"` | 2（`<text>`）＋1（`patternTransform`） | `shape.rotation` |
+      | 5 | `stroke-dasharray="6 4"` | 2 | 虛線 |
+
+      **其餘要一起補的屬性**：`text-anchor`（**198 次**：middle 152／end 46
+      ——不做則所有置中與右對齊文字全部偏移）、`fill-opacity` 22、
+      `stroke-opacity` 1、`font-style="italic"` 1、`rx` 66、`stroke-width` 79。
+
+      🔴 **hatch 不可退化成純色**：實查 `chart_runner.py:826` ——
+      「顏色分段＝申請結構（solo/joint），**斜紋疊加＝已轉讓**」，
+      是**第二個視覺通道**承載獨立資訊。退化就讓「已轉讓」消失，
+      而且**不會有任何東西報錯**（缺席型失敗）。改用 `fill.patterned()`
+      取最接近的 45° MSO pattern。
+
+      ✅ **`<style>` 只有字型宣告**（`text{font-family:...}`，8 張都是），
+      沒有 fill／stroke／class 規則 → CSS 不影響幾何與顏色，**窄轉換器仍然窄**。
+      ⚠ 但因此 `font-family` 是**繼承來的**（`<style>` 或 `<svg>` 根元素 6 次），
+      不是每個 `<text>` 都有屬性——現行 `_add_text` 只讀 `el.get("font-family")`
+      會拿不到，字型靜默變成 pptx 預設。
+
+      ⚠ `<title>` 65 個是 tooltip（`<circle>`／`<rect>` 的子元素）、
+      `data-*`（`data-value-band`／`data-cell`／`data-topic`／`data-on-fill`
+      ／`pointer-events`）是 HTML 互動用 → 明確忽略並補測試，不得靜默略過。
       🔴 圖表文字改原生後字型走 `chart_sizing.FONT_FAMILY`，不得從 SVG 的
       `<style>` 另抓一份。
       ⚠ 未知屬性維持 fail loud，`data-*`（HTML 互動用）要明確決定轉換或忽略並補測試。
@@ -120,8 +158,10 @@
       B 幾何對帳（座標尺寸逐一比，容忍 1 EMU）、C 數值正確**屬引擎不屬轉換器**。
       ⚠ 轉換器的錯是**靜默**的——長條少一根、短 5%、標籤配錯，看起來都合理，
       目視抓不到，必須機械對帳。
-      ⚠ 未驗：`add_connector`／`build_freeform` 在 python-pptx 1.0.2 的行為；
+      ⚠ 未驗：`build_freeform`／`fill.patterned()` 在 python-pptx 1.0.2 的行為；
+      viewBox 非 1:1 時的座標換算（1120×837 與 949×460 兩種尺寸並存）；
       原生化後 pptx 體積與開檔速度；`fit_render_charts` 的角色重新定義。
+      ✅ `add_connector` 已消除（`<line>` 全為水平／垂直）。
 - [x] 2.2 Green：`deck_layout` 輸出層改組 SVG＋窄轉換器；逐頁截圖產出（目視 PNG）。
       **2026-08-13 完成，三塊到齊**：①引擎自行斷行（`wrap_lines`＋避頭尾，
       8 支綠／438 subtests）②SVG 輸出層（`svg_canvas` ＋ `_compose` 抽出頁型
