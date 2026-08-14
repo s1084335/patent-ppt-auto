@@ -140,6 +140,10 @@ class DeckRunnerTests(unittest.TestCase):
         self.root = base / "reports"
         self.run_dir = self.root / "report_trial_20990101_000000"
         _write(self.run_dir / "report_data.json", "{}")
+        # 預設情境＝版本已有解讀（narrative 前置只在缺檔時觸發，專測另控）
+        _write(self.run_dir / "narratives.json", "{}")
+        _write(self.run_dir / "version_meta.json",
+               json.dumps({"workspace_id": 3, "workspace_name": "滑雪機"}))
         self.work_root = base / "deck_work"
         self.artifact_root = base / "artifacts"
         self.work = self.work_root / self.run_dir.name
@@ -279,6 +283,47 @@ class DeckRunnerTests(unittest.TestCase):
         self.assertEqual(summary["page_keys"],
                          [f"{self.run_dir.name}/pages/{p.name}" for p in pages])
 
+    # ── narrative 前置（2026-08-14 使用者裁決「未產解讀要先產解讀」）──────
+
+    def test_missing_narratives_triggers_narrative_first(self):
+        """版本沒有 narratives.json → 先跑 narrative 線再繼續 deck。
+
+        deck 的判讀素材（report.json texts）來自 narratives.json；缺了不擋
+        會產出判讀帶空洞的簡報——**靜默品質損失**，比 fail 難發現。
+        """
+        (self.run_dir / "narratives.json").unlink()   # 本測情境：尚無解讀
+        produced: list[str] = []
+
+        def fake_narrative(version, **kw):
+            produced.append(version)
+            _write(self.run_dir / "narratives.json", "{}")
+            return {"based_on_version": version}
+
+        summary, _, _ = self._run(ensure_narrative=fake_narrative)
+        self.assertEqual(produced, [self.run_dir.name])
+        self.assertTrue(summary["narrative_chained"])
+
+    def test_existing_narratives_not_reproduced(self):
+        """已有解讀就不重跑——narrative 燒 CLI token，重跑要由使用者主動按。"""
+        _write(self.run_dir / "narratives.json", "{}")
+        called: list[str] = []
+        summary, _, _ = self._run(
+            ensure_narrative=lambda v, **kw: called.append(v))
+        self.assertEqual(called, [])
+        self.assertFalse(summary["narrative_chained"])
+
+    def test_narrative_chain_failure_short_circuits(self):
+        """前置 narrative 失敗＝素材不完整，deck 不得帶著空判讀繼續。"""
+        (self.run_dir / "narratives.json").unlink()
+
+        def boom(version, **kw):
+            raise RuntimeError("CLI 解讀失敗")
+
+        with self.assertRaises(deck.DeckRunnerError) as ctx:
+            self._run(ensure_narrative=boom)
+        self.assertIn("解讀", str(ctx.exception))
+        self.assertFalse(self.artifact_root.exists())
+
     # ── 封面素材（tasks 2.4）──────────────────────────────
 
     def test_workspace_name_injected_into_prompt(self):
@@ -308,6 +353,7 @@ class BridgeDispatchTests(unittest.TestCase):
         self.root = base / "reports"
         self.run_dir = self.root / "report_trial_20990101_000000"
         _write(self.run_dir / "report_data.json", "{}")
+        _write(self.run_dir / "narratives.json", "{}")   # 已有解讀，不觸發前置
         self.work = base / "deck_work" / self.run_dir.name
         self.artifact_root = base / "artifacts"
 

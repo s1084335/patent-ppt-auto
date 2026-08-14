@@ -113,18 +113,11 @@ class DeckRunnerScopeTests(unittest.TestCase):
         root = base / "reports"
         run_dir = root / "report_trial_20990101_000000"
         _write(run_dir / "report_data.json", "{}")
+        _write(run_dir / "narratives.json", "{}")   # 已有解讀，不觸發前置
+        # scope 來源＝version_meta.json（workspace_id 的起點；report_meta 是衍生）
+        _write(run_dir / "version_meta.json",
+               json.dumps({"workspace_id": 3, "workspace_name": "滑雪機"}))
         work = base / "deck_work" / run_dir.name
-
-        class ScopeProbeSteps(FakeSteps):
-            def __call__(self, step, argv):
-                code, out = super().__call__(step, argv)
-                if step == "assemble":
-                    # 蓋掉 report.json，帶 workspace_id（intake 真的會給）
-                    _write(self.work / "report.json", json.dumps({
-                        "report_meta": {"workspace_name": "滑雪機",
-                                        "workspace_id": 3},
-                        "sections": []}))
-                return code, out
 
         seen: list[str | None] = []
 
@@ -136,7 +129,7 @@ class DeckRunnerScopeTests(unittest.TestCase):
         deck.run_deck(
             run_dir.name, root=root, work_root=work.parent,
             artifact_root=base / "artifacts",
-            step_runner=ScopeProbeSteps(work),
+            step_runner=FakeSteps(work),
             cli_runner=ScopeProbeCli(work))
         # 撰稿與目視兩次 CLI 都要帶 scope
         self.assertEqual(seen, ["3", "3"])

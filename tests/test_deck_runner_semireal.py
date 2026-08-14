@@ -57,9 +57,23 @@ class DeckRunnerSemiRealTests(unittest.TestCase):
                 json.dumps({"pass": True, "findings": []}), encoding="utf-8")
             return CliResult(0, '{"result": "pass"}', "")
 
+        chained: list[str] = []
+
+        def fake_narrative(version, **kw):
+            """真版本目錄沒有 narratives.json → 前置會觸發；注入假產生器，
+            否則會真跑 narrative（真 CLI、燒 token）。寫空殼 `{}` 進真目錄
+            讓鏈繼續，addCleanup 負責清掉、不留污染。"""
+            chained.append(version)
+            (OUTPUT / VERSION / "narratives.json").write_text("{}", encoding="utf-8")
+            return {}
+
+        self.addCleanup(
+            lambda: (OUTPUT / VERSION / "narratives.json").unlink(missing_ok=True))
         summary = deck.run_deck(
             VERSION, root=OUTPUT, work_root=work_root,
-            artifact_root=artifact_root, cli_runner=semi_real_cli)
+            artifact_root=artifact_root, cli_runner=semi_real_cli,
+            ensure_narrative=fake_narrative)
+        self.assertEqual(chained, [VERSION])   # 前置真的被觸發且只一次
 
         self.assertEqual(summary["based_on_version"], VERSION)
         self.assertGreaterEqual(summary["page_count"], 10)

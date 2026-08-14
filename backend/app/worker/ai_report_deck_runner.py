@@ -135,12 +135,13 @@ def _cover_tech_name(work: Path) -> str:
     return str(meta.get("workspace_name") or meta.get("h1") or "").strip()
 
 
-def _workspace_id(work: Path) -> int | None:
-    """版本綁定的 workspace（取證範圍用）。來源＝report.json report_meta
-    （intake 自 version_meta 解出）——與封面素材同一唯一定義處。缺＝不綁。"""
+def _workspace_id(run_dir: Path) -> int | None:
+    """版本綁定的 workspace（取證範圍用）。來源＝run_dir 的 version_meta.json
+    ——它是 workspace_id 的**起點**（report_meta 也是從它解出的）。
+    ⚠ 讀起點而非 report.json：narrative 前置在 assemble 之前跑，
+    那時 report.json 還不存在。缺＝不綁（全庫版本）。"""
     try:
-        meta = json.loads((work / "report.json").read_text(encoding="utf-8")) \
-            .get("report_meta") or {}
+        meta = json.loads((run_dir / "version_meta.json").read_text(encoding="utf-8"))
         raw = meta.get("workspace_id")
         return int(raw) if raw is not None else None
     except (OSError, ValueError, TypeError):
@@ -224,6 +225,7 @@ def run_deck(
     artifact_root: Path | None = None,
     max_visual_rounds: int | None = None,
     resolve_run_dir: Callable[..., Path] | None = None,
+    ensure_narrative: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """整條 deck 產製：素材 → 機械步 → CLI 撰稿 → 目視迴圈 → 回存。
 
@@ -255,6 +257,32 @@ def run_deck(
     resolver = resolve_run_dir or _default_resolver
     run_dir = resolver(based_on_version, root=root)
     version = run_dir.name
+    ws_id = _workspace_id(run_dir)
+
+    # ── 1b. narrative 前置（2026-08-14 使用者裁決「未產解讀要先產解讀」）──
+    # deck 的判讀素材（report.json texts）來自 narratives.json；缺了不補會產出
+    # 判讀帶空洞的簡報——**靜默品質損失**，比 fail 難發現。已有解讀不重跑
+    # （narrative 燒 CLI token，重產由使用者在報表頁主動按）。
+    from backend.app.mcp_server.report_research import workspace_scope_env
+    narrative_chained = False
+    if not (run_dir / "narratives.json").exists():
+        _progress("narrative", 8)
+        producer = ensure_narrative
+        if producer is None:
+            from .ai_narrative_runner import run_narrative as producer
+        try:
+            with workspace_scope_env(ws_id):
+                producer(version, cli_kind=cli_kind, model=model,
+                         cli_runner=cli_runner, timeout_seconds=timeout_seconds,
+                         root=root)
+        except Exception as exc:
+            raise DeckRunnerError(
+                f"前置報表解讀失敗（版本 {version} 尚無 narratives.json，"
+                f"deck 不得帶著空判讀繼續）：{type(exc).__name__}: {exc}") from exc
+        if not (run_dir / "narratives.json").exists():
+            raise DeckRunnerError(
+                f"前置解讀正常結束但 {run_dir / 'narratives.json'} 仍不存在")
+        narrative_chained = True
 
     work_base = work_root if work_root is not None \
         else PROJECT_ROOT / "var" / "deck_work"
@@ -286,12 +314,9 @@ def run_deck(
                   str(work / "charts"), str(work / "png")])
 
     # ── 3. CLI 撰稿：唯一輸出＝content.json ────────────────────────
-    # 取證範圍綁定（2026-08-14 使用者裁決）：CLI（含其 MCP 子行程）只在
-    # workspace_scope_env 內起——query_database 據此注入成員 CTE＋join 閘門。
-    # ⚠ 逐呼叫點包而不是包整段：env 只需在「起 CLI 的瞬間」正確（子行程
-    # 繼承後就與父行程無關），窄範圍不汙染機械步。
-    from backend.app.mcp_server.report_research import workspace_scope_env
-    ws_id = _workspace_id(work)
+    # 取證範圍（ws_id 已於 resolve 後取自 version_meta）：CLI（含其 MCP 子行程）
+    # 只在 workspace_scope_env 內起——query_database 據此注入成員 CTE＋join 閘門。
+    # ⚠ 逐呼叫點包而不是包整段：env 只需在「起 CLI 的瞬間」正確。
     _progress("cli_writing", 30)
     content_path = work / "content.json"
     prompt = build_writing_prompt(work, version, scripts=scripts)
@@ -404,6 +429,7 @@ def run_deck(
         "visual_rounds": len({e["round"] for e in visual_log}),
         "visual_log": visual_log,
         "cli_kind": cli_kind,
+        "narrative_chained": narrative_chained,
     }
     (version_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
