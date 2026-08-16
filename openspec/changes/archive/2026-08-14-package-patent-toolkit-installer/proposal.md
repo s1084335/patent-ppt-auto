@@ -1,3 +1,17 @@
+> ⚠ **2026-08-14 作廢封存（未實作）**：使用者 2026-08-12 定案「使用者只拿 URL、
+> 零安裝件」，2026-08-14 確認作廢——中央 Web 平台直接以網址交付，不再打包
+> 本機安裝程式。原本要回答的問題現在由誰回答：
+> - 「使用者機器怎麼裝起來」→ 不裝。瀏覽器開中央平台 URL 即用。
+> - 「Companion 怎麼佈署」→ `scripts/companion_startup_install.ps1`
+>   （啟動資料夾捷徑，純使用者層級；deck design 4-0b 記載其為 CLI token
+>   可用性的前提）。
+> - 「deck skill 怎麼到使用者機器」→ 不需要：deck 產線在伺服器側
+>   （`skills/html-report-to-deck/` 隨 repo 部署），使用者只下載 pptx。
+> - 「字型／Chromium 等機器依賴」→ 屬部署前置（deck design 4-0b 環境清單），
+>   由架站方在伺服器側處理，非使用者端安裝件。
+> 留痕：`.agents/context/decisions.md` 2026-08-12「產物存放整合規劃」；
+> installer-spec.md 背景 context 保留於 `.agents/context/`（歷史參考）。
+
 ## Why
 
 目前已有 Companion 與 launcher 腳本，但尚未形成可在全新 Windows 機器交付的安裝包；MCP、CLI 偵測、啟動與移除流程仍依賴開發機背景。
