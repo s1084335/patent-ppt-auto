@@ -124,16 +124,19 @@ Ready gate:
 
 Primary changes:
 
+- `add-patent-search-terms-and-db-index-governance`
 - `harden-import-formats`
 - `complete-three-zone-e2e-acceptance`
 
 Goal:
 
-Make import behavior, normalized data, analysis, and the three-zone UI acceptance
-work as one product path.
+Make import behavior, normalized/searchable data, analysis, DB index governance,
+and the three-zone UI acceptance work as one product path.
 
 How to work:
 
+- Treat `add-patent-search-terms-and-db-index-governance` as the owner for
+  expanded patent browse search and DB index inventory/governance.
 - Preserve patent identifiers through importer, DB mappings, derived data, and
   reports.
 - Treat Supabase schema and live importer behavior as evidence to inspect before
@@ -142,6 +145,8 @@ How to work:
 
 Ready gate:
 
+- Multi-value patent search works through the shared search-term layer and
+  required search indexes are documented and verified.
 - Import format tests pass for supported real files.
 - Three-zone E2E verifies workspace load, patent browsing, analysis/report
   surfaces, and AI assistant/job status behavior.
