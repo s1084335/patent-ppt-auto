@@ -20,7 +20,7 @@ from backend.app.worker.cli_gateway import (
 )
 
 DEFAULT_CLI_TIMEOUT_SECONDS = 600.0
-PROMPT_VERSION = "company_normalization_suggestion_v1"
+PROMPT_VERSION = "company_normalization_suggestion_v2"
 
 SUGGESTION_KINDS = frozenset(
     {"map_existing", "update_names", "create_temp", "person_affiliation"}
@@ -29,6 +29,10 @@ NAME_BASES = frozenset({"market_common_name", "registered_legal_name"})
 CONFIDENCE_LEVELS = frozenset({"low", "medium", "high"})
 PERSON_ROLES = frozenset({"owner", "proprietor", "director"})
 FORBIDDEN_CODE_FIELDS = frozenset({"code", "wips_code", "company_code", "code_override"})
+
+
+class SkippableSuggestionError(ValueError):
+    """代表單筆 AI 建議可被跳過，但不應讓整個 job 失敗。"""
 
 
 class CompanyNormalizationSuggestionStore:
@@ -105,7 +109,8 @@ def build_prompt(
 5. 中文名必須有來源。zh_name_basis 只能是 market_common_name 或 registered_legal_name；翻譯、音譯、模型記憶不足以建立建議。
 6. person_affiliation 只接受 owner、proprietor、director；founder、CEO、經理、員工、發明人、聯絡人或同名都不足。
 7. evidence、person_identity_evidence、relationship_evidence 的 url 都必須是 https。
-8. 只輸出 JSON，不要 Markdown。格式：
+8. 每一筆 suggestion 必須提供 evidence 且至少 1 筆 HTTPS source；找不到證據就不要輸出該 suggestion。
+9. 只輸出 JSON，不要 Markdown。格式：
 {{"suggestions":[{{"suggestion_kind":"map_existing","candidate_refs":["..."],"target_ref":"...","suggested_zh_name":"...","suggested_normalized_name":"...","zh_name_basis":"market_common_name","confidence":"low|medium|high","reason":"...","evidence":[{{"url":"https://...","title":"...","claim":"..."}}],"warnings":[]}}]}}
 
 受控輸入：
@@ -173,6 +178,14 @@ def _https_evidence(value: Any, *, field: str, min_count: int = 1) -> list[dict[
     return rows
 
 
+def _skippable_required_evidence(value: Any, *, field: str) -> list[dict[str, str]]:
+    """驗證主建議 evidence；缺證據時跳過該筆，不中斷整批 job。"""
+    try:
+        return _https_evidence(value, field=field)
+    except ValueError as exc:
+        raise SkippableSuggestionError(str(exc)) from exc
+
+
 def _validate_person_fields(item: dict[str, Any]) -> dict[str, Any]:
     """驗證自然人關係角色與證據門檻。"""
     role = _clean_limited(item.get("relationship_role"), field="relationship_role", max_length=40)
@@ -207,13 +220,14 @@ def _validate_suggestion(
     if not isinstance(candidate_refs, list) or not candidate_refs:
         raise ValueError("candidate_refs must be a non-empty list")
     normalized_refs: list[str] = []
+    local_refs: set[str] = set()
     for ref in candidate_refs:
         ref_text = str(ref or "").strip()
         if ref_text not in candidates_by_ref:
             raise ValueError(f"unknown candidate_ref: {ref_text}")
-        if ref_text in seen_refs:
+        if ref_text in seen_refs or ref_text in local_refs:
             raise ValueError(f"candidate_ref appears in multiple suggestions: {ref_text}")
-        seen_refs.add(ref_text)
+        local_refs.add(ref_text)
         normalized_refs.append(ref_text)
 
     target_ref = clean_text(item.get("target_ref"))
@@ -250,7 +264,7 @@ def _validate_suggestion(
         "target_ref": target_ref,
         "confidence": confidence,
         "reason": _clean_limited(item.get("reason"), field="reason", max_length=1000),
-        "evidence": _https_evidence(item.get("evidence"), field="evidence"),
+        "evidence": _skippable_required_evidence(item.get("evidence"), field="evidence"),
         "warnings": [
             _clean_limited(w, field="warning", max_length=500)
             for w in (item.get("warnings") or [])
@@ -274,7 +288,7 @@ def _validate_suggestion(
         final_zh = zh_name
         final_en = normalized_name
 
-    return {
+    result = {
         "company_code": code,
         "zh_name": final_zh,
         "normalized_name": final_en,
@@ -284,26 +298,34 @@ def _validate_suggestion(
         "source_type": "ai_suggested",
         "metadata": metadata,
     }
+    seen_refs.update(normalized_refs)
+    return result
 
 
 def _validated_suggestions(
     suggestions: list[dict[str, Any]],
     candidates: list[dict[str, Any]],
     targets: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """鎖定 backend refs、禁止 code 欄位、驗證證據與 person role。"""
+) -> tuple[list[dict[str, Any]], int]:
+    """驗證 AI 建議；缺 evidence 的單筆建議跳過，其它契約錯誤維持硬失敗。"""
     candidates_by_ref = {str(item["candidate_ref"]): item for item in candidates}
     targets_by_ref = {str(item["target_ref"]): item for item in targets}
     seen_refs: set[str] = set()
-    return [
-        _validate_suggestion(
-            item,
-            candidates_by_ref=candidates_by_ref,
-            targets_by_ref=targets_by_ref,
-            seen_refs=seen_refs,
-        )
-        for item in suggestions
-    ]
+    validated: list[dict[str, Any]] = []
+    skipped_invalid = 0
+    for item in suggestions:
+        try:
+            validated.append(
+                _validate_suggestion(
+                    item,
+                    candidates_by_ref=candidates_by_ref,
+                    targets_by_ref=targets_by_ref,
+                    seen_refs=seen_refs,
+                )
+            )
+        except SkippableSuggestionError:
+            skipped_invalid += 1
+    return validated, skipped_invalid
 
 
 def _run_cli_research(
@@ -361,7 +383,9 @@ def run_company_normalization_suggestions(
         cli_runner=cli_runner,
         timeout_seconds=timeout_seconds,
     )
-    suggestions = _validated_suggestions(_extract_suggestions(raw), candidates, targets)
+    suggestions, skipped_invalid = _validated_suggestions(
+        _extract_suggestions(raw), candidates, targets
+    )
     _report_progress(progress, "寫入公司正規化待審建議", 85)
     write_result = (
         suggestion_store.ingest_suggestions(suggestions)
@@ -369,8 +393,11 @@ def run_company_normalization_suggestions(
         else {"inserted": 0}
     )
     _report_progress(progress, "公司正規化建議已產生", 100)
-    return {
+    result = {
         "candidate_count": len(candidates),
         "suggestion_count": len(suggestions),
         "inserted": int(write_result.get("inserted", 0)),
     }
+    if skipped_invalid:
+        result["skipped_invalid"] = skipped_invalid
+    return result

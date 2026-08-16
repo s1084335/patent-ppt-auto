@@ -1056,9 +1056,11 @@ def confirm_company_normalization_suggestions(
 ) -> dict[str, Any]:
     """把人工確認的 AI 建議轉成 confirmed mapping；正式寫入仍委派唯一 writer。"""
     confirm_ids = [int(getattr(item, "suggestion_id")) for item in decisions if getattr(item, "action") == "confirm"]
+    skip_ids = [int(getattr(item, "suggestion_id")) for item in decisions if getattr(item, "action") == "skip"]
     skipped = [item for item in decisions if getattr(item, "action") == "skip"]
     if not confirm_ids:
-        return {"confirmed": 0, "skipped": len(skipped), "written": {"inserted": 0}, "drafts_cleared": 0}
+        cleared = clear_company_normalization_suggestions(skip_ids)
+        return {"confirmed": 0, "skipped": len(skipped), "written": {"inserted": 0}, "drafts_cleared": cleared}
 
     drafts = list_company_normalization_suggestions(limit=1000, offset=0)["items"]
     drafts_by_id = {int(row["id"]): row for row in drafts}
@@ -1103,7 +1105,7 @@ def confirm_company_normalization_suggestions(
             entry["aliases"].append(raw_name)
 
     written = apply_confirmed_display_names(mapping, source_label)
-    cleared = clear_company_normalization_suggestions(confirm_ids)
+    cleared = clear_company_normalization_suggestions(confirm_ids + skip_ids)
     return {
         "confirmed": len(confirm_ids),
         "skipped": len(skipped),

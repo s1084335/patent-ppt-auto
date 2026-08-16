@@ -27,7 +27,7 @@
 - [x] 4.2 Red：person evidence 涵蓋人物同一性、公司、角色與 HTTPS 來源；日期／有效期與雙來源 fallback 保留到真 CLI 驗收。
 - [x] 4.3 Green：parser/persistence 標為 `person_affiliation`，保存角色與證據，不宣稱法律主體相同，不退化為名稱相似 mapping。
 - [x] 4.4 Red/Green：確認前統計警示、明確確認、確認後分析歸戶與 raw/source 追溯；略過不影響統計。
-- [ ] 4.5 Regression：同名、跨公司董事、任期過期、新證據重跑不得自動改 confirmed mapping。
+- [x] 4.5 Regression：同名、跨公司董事、任期過期、新證據重跑不得自動改 confirmed mapping。
 
 ## 5. Slice D：人工多選、修改與原子確認（CMP-011）
 

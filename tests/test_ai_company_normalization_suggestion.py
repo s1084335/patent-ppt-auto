@@ -115,6 +115,60 @@ def test_runner_uses_opaque_refs_and_writes_review_only_rows():
     assert store.written[0]["metadata"]["suggestion_kind"] == "map_existing"
 
 
+def test_runner_skips_suggestion_without_evidence_and_keeps_valid_later_row():
+    """單筆缺少 evidence 的 AI 建議不得讓整個 job 失敗。"""
+    from backend.app.worker import ai_company_normalization_suggestion_runner as runner
+
+    payload = json.loads(_valid_result())
+    invalid_item = dict(payload["suggestions"][0])
+    invalid_item.pop("evidence")
+    valid_item = dict(payload["suggestions"][0])
+    payload["suggestions"] = [invalid_item, valid_item]
+    store = FakeStore([_candidate()], [_target()])
+
+    result = runner.run_company_normalization_suggestions(
+        store=store,
+        cli_runner=lambda *_args, **_kwargs: json.dumps(payload, ensure_ascii=False),
+    )
+
+    assert result == {
+        "candidate_count": 1,
+        "suggestion_count": 1,
+        "inserted": 1,
+        "skipped_invalid": 1,
+    }
+    assert len(store.written) == 1
+    assert store.written[0]["metadata"]["evidence"][0]["url"] == "https://example.com/profile"
+
+
+def test_person_affiliation_is_review_only_before_confirmation():
+    """Person affiliation suggestions must stay ai_suggested until the user confirms."""
+    from backend.app.worker import ai_company_normalization_suggestion_runner as runner
+
+    payload = json.loads(_valid_result("person_affiliation"))
+    payload["suggestions"][0].update(
+        {
+            "relationship_role": "director",
+            "person_identity_evidence": [
+                {"url": "https://example.com/person", "title": "Registry", "claim": "same person"}
+            ],
+            "relationship_evidence": [
+                {"url": "https://example.com/director", "title": "Registry", "claim": "director"}
+            ],
+        }
+    )
+    store = FakeStore([_candidate(raw_name="Jane Chen")], [_target()])
+
+    runner.run_company_normalization_suggestions(
+        store=store,
+        cli_runner=lambda *_args, **_kwargs: json.dumps(payload, ensure_ascii=False),
+    )
+
+    assert store.written[0]["review_status"] == "ai_suggested"
+    assert store.written[0]["source_type"] == "ai_suggested"
+    assert store.written[0]["metadata"]["suggestion_kind"] == "person_affiliation"
+
+
 @pytest.mark.parametrize("bad_field", ["code", "wips_code", "company_code", "code_override"])
 def test_runner_rejects_any_ai_supplied_code_field(bad_field):
     """AI 回傳任何 code 欄位都必須整筆拒絕，不能拿文字推測或覆寫代碼。"""
@@ -298,3 +352,24 @@ def test_review_confirmation_can_override_target_with_backend_company_option():
     assert "UN109300" in mapping
     assert mapping["UN109300"]["zh_name"] == "美沃奇"
     assert mapping["UN109300"]["normalized_name"] == "Milwaukee Tool"
+
+
+def test_review_skip_only_clears_drafts_without_writing_confirmed_mapping():
+    """Rejecting AI suggestions must remove review rows and must not write confirmed aliases."""
+    from backend.app.api.company_aliases import CompanyNormalizationReviewDecision
+    from backend.app.derived import company_alias_importer as importer
+
+    decision = CompanyNormalizationReviewDecision(suggestion_id=10, action="skip")
+
+    with mock.patch.object(importer, "apply_confirmed_display_names") as writer, \
+            mock.patch.object(importer, "clear_company_normalization_suggestions", return_value=1) as clearer:
+        result = importer.confirm_company_normalization_suggestions([decision])
+
+    writer.assert_not_called()
+    clearer.assert_called_once_with([10])
+    assert result == {
+        "confirmed": 0,
+        "skipped": 1,
+        "written": {"inserted": 0},
+        "drafts_cleared": 1,
+    }
