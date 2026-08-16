@@ -9,11 +9,17 @@
 from __future__ import annotations
 
 import json
+import io
 import re
 import sys
 from pathlib import Path
 
 from PIL import Image
+
+if hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "buffer"):
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from deck_layout import (MIN_CHART_PT_MULTI, budget,   # noqa: E402
@@ -21,9 +27,10 @@ from deck_layout import (MIN_CHART_PT_MULTI, budget,   # noqa: E402
                          roadmap_page_overflow, units)
 
 REQUIRED = ["footer", "eyebrow", "deck_title", "subtitle", "meta", "stats", "stats_note",
-            "boundary", "read_me", "chart_rule", "rec_title", "rec_takeaway",
+            "boundary", "rec_title", "rec_takeaway",
             "recommendations", "pages", "roadmap_title", "roadmap_takeaway", "roadmap",
             "limits"]
+BLOCKED_SLIDE_TERMS = ("本簡報怎麼讀", "圖表原則", "待驗證", "降級")
 
 # ── 裸數字掃描 ────────────────────────────────────────────────
 # 簡報上的數量沒帶量詞，讀者會當成瑕疵指出來（2026-08-11 使用者回饋）。
@@ -202,6 +209,27 @@ def _check_figures(c: dict) -> list[str]:
     return bad
 
 
+def _check_p2_evidence_rules(c: dict) -> list[str]:
+    """P2 evidence gate：建議句要帶「依據：」，流程狀態不得印出。
+
+    閘門只驗標記存在與禁用流程字串，不判斷依據內容是否充分；充分性留給
+    逐頁目視與真 CLI 驗收。
+    """
+    bad: list[str] = []
+    for term in BLOCKED_SLIDE_TERMS:
+        for path, text in _walk_text(c, ""):
+            if term in text:
+                bad.append(f"{path} 含流程/規則字串「{term}」——不得印在投影片上")
+
+    for index, rec in enumerate(c.get("recommendations") or [], 1):
+        evidence = str(rec.get("evidence") or "")
+        lines = [str(line) for line in rec.get("lines") or []]
+        joined = "\n".join([evidence, *lines])
+        if "依據：" not in joined:
+            bad.append(f"建議卡第 {index} 張缺「依據：」——接不上依據的建議句不得放行")
+    return bad
+
+
 def main() -> int:
     c = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     png_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else None
@@ -209,6 +237,7 @@ def main() -> int:
     caliber_bad = _check_caliber_verbatim(c, work_dir / "caliber_facts.json")
     caliber_bad += _check_conclusions(c, work_dir / "topic_facts.json")
     caliber_bad += _check_figures(c)
+    caliber_bad += _check_p2_evidence_rules(c)
     fc = png_dir / "font_choice.json" if png_dir else None
     fonts = json.loads(fc.read_text(encoding="utf-8")) if fc and fc.is_file() else None
     B = budget()
@@ -235,6 +264,8 @@ def main() -> int:
         chk("封面文字", t, B["cover_line"])
     chk("封面邊界句", c["boundary"], B["boundary"])
     for k in ("read_me", "chart_rule"):
+        if k not in c:
+            continue
         body = c[k][1]
         chk(f"封面 {k}", body, B["cover_panel"])
         # 頁碼手寫必錯：頁數一改就忘了同步。一律用 {chart_first}/{chart_last}/{last}

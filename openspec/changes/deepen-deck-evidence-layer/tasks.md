@@ -24,11 +24,11 @@
 
 ## 0. 前置查證（未做完不得進 1.x）
 
-- [ ] 0.1 鎖定並記錄 `family_count` 三種語境，不得要求 implementer 自行定位家族演算法：
+- [x] 0.1 鎖定並記錄 `family_count` 三種語境，不得要求 implementer 自行定位家族演算法：
       `annual_trend.family_count`＝同一年 `COUNT(DISTINCT canonical_family_id)`；
       `family_country_layout`＝`derived_layer.report_family_country` 的現有保護國家佈局口徑；
       `applicant_strength_profile.family_count`＝同申請人去重 patent 後的 canonical family set size。
-- [ ] 0.2 確認設計專利 7/55 或 11/55 類推論只可作為本 change 的待驗收資料，
+- [x] 0.2 確認設計專利 7/55 或 11/55 類推論只可作為本 change 的待驗收資料，
       不作為 family algorithm 決策；`priority_number`／`priority_date`／`priority_country`
       不作為 v1 家族合併依據。
 - [ ] 0.3 追「台灣 9 件中 7 件已授權」的 7 是怎麼來的——兩個版本同錯，
@@ -60,16 +60,16 @@
 ## 3. 依據層級
 
 - [ ] 3.1 `plan.json` 帶獨立項證據：`claim_lookup.players[].patent_ids` 已有（現成）
-- [ ] 3.2 content schema 新增建議句的 `依據` 欄位
-- [ ] 3.3 閘門：建議句必須帶 `依據：`——**純字串比對，不驗內容**
-- [ ] 3.4 接不上依據的建議句**直接擋下**，不貼「待驗證」標籤放行（design §2.3）
+- [x] 3.2 content schema 新增建議句的 `依據` 欄位
+- [x] 3.3 閘門：建議句必須帶 `依據：`——**純字串比對，不驗內容**
+- [x] 3.4 接不上依據的建議句**直接擋下**，不貼「待驗證」標籤放行（design §2.3）
 - [ ] 3.5 版型：獨立項構型比對升為固定頁型，位置提到結論頁之後
 - [ ] 3.6 ❌ 不做層級對應期程的檢查（design §2.2）
 
 ## 4. 口徑與指令句
 
-- [ ] 4.1 content schema **移除** `read_me`／`chart_rule` 兩個封面欄位
-- [ ] 4.2 閘門：黑名單字串（`本簡報怎麼讀`／`圖表原則`／`待驗證`／`降級`）
+- [x] 4.1 content schema **移除** `read_me`／`chart_rule` 兩個封面欄位
+- [x] 4.2 閘門：黑名單字串（`本簡報怎麼讀`／`圖表原則`／`待驗證`／`降級`）
       ⚠ **有限清單**，不是模式比對
 - [ ] 4.3 版型：口徑集中到附錄
 - [ ] 4.4 改寫 `add-deck-delivery-line` design 7.5（資料口徑頁改附錄）
@@ -107,9 +107,9 @@
 
 ## 7. 驗收
 
-- [ ] 7.1 目標測試 + 範圍回歸
+- [x] 7.1 目標測試 + 範圍回歸
 - [ ] 7.2 HTML 報表實物驗收（外觀設計軸，**全部頁面目視**不抽樣）
 - [ ] 7.3 deck 實物驗收（同上）
-- [ ] 7.4 OpenSpec strict validation
-- [ ] 7.5 `openspec validate deepen-deck-evidence-layer --strict` 必須通過
-- [ ] 7.6 靜態檢查：本 change artifacts 不得再保留未決問題章節或未決問題條目
+- [x] 7.4 OpenSpec strict validation
+- [x] 7.5 `openspec validate deepen-deck-evidence-layer --strict` 必須通過
+- [x] 7.6 靜態檢查：本 change artifacts 不得再保留未決問題章節或未決問題條目

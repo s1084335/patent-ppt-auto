@@ -19,10 +19,11 @@ from deck_layout import build   # noqa: E402
 def main() -> int:
     content_path = Path(sys.argv[1])
     content = json.loads(content_path.read_text(encoding="utf-8"))
-    # JSON 沒有 tuple：把封面統計與兩個說明區塊還原成 (值, 標籤) 的形式
+    # JSON 沒有 tuple：把封面統計與相容舊 schema 的說明區塊還原成 tuple。
     content["stats"] = [tuple(x) for x in content["stats"]]
     for k in ("read_me", "chart_rule"):
-        content[k] = tuple(content[k])
+        if k in content:
+            content[k] = tuple(content[k])
     # 來源行蓋章（design §7.1，機械）：值取自同目錄 report.json 的
     # report_meta.source_file——**CLI 不參與**，content.json 自帶也蓋掉，
     # 不給 CLI 竄改來源的通道。report.json 不在（開發側直跑舊素材）就不印。

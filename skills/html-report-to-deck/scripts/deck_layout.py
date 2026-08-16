@@ -393,7 +393,7 @@ def budget() -> dict[str, float]:
         "deck_title":   _per_line(8.2, 24),
         "cover_line":   _per_line(8.1),          # subtitle / meta / stats_note
         "boundary":     _per_line(8.1) * 2 - 3,
-        "cover_panel":  _per_line(3.18) * 5,     # read_me / chart_rule 的說明
+        "cover_panel":  _per_line(3.18) * 5,     # 舊 schema 封面說明相容預算
         "stat_label":   _per_line(1.6),
         "page_title":   _per_line(CW - 0.4, 24),
         "takeaway":     _per_line(CW - 0.1) - 1,
@@ -635,10 +635,14 @@ def page_vars(c: dict) -> dict:
 def slide_cover(prs, c):
     s = base(prs, c["footer"], source=src_line(c))
     V = page_vars(c)
-    rect(s, 9.05, 1.15, 3.78, 5.25, fill=BG_PANEL, line=CARD_ED,
-         shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.05)
-    rect(s, 9.35, 1.52, 3.18, 0.05, fill=CYAN)
-    rect(s, 9.35, 3.95, 3.18, 0.05, fill=AMBER)
+    cover_panels = [(c[k], y0, col) for k, y0, col in
+                    (("read_me", 1.78, CYAN), ("chart_rule", 4.22, AMBER))
+                    if k in c]
+    if cover_panels:
+        rect(s, 9.05, 1.15, 3.78, 5.25, fill=BG_PANEL, line=CARD_ED,
+             shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.05)
+        for _panel, y0, col in cover_panels:
+            rect(s, 9.35, y0 - 0.26, 3.18, 0.05, fill=col)
     rect(s, ML, 1.32, 0.09, 1.55, fill=CYAN)
     textbox(s, ML + 0.28, 1.28, 8.2, 0.4, [(c["eyebrow"], {"color": CYAN})])
     textbox(s, ML + 0.28, 1.74, 8.2, 1.0,
@@ -658,7 +662,7 @@ def slide_cover(prs, c):
     textbox(s, ML, 6.00, 8.1, 0.9,
             [([("邊界　", {"color": ROSE, "bold": True}),
                (c["boundary"], {"color": MUTED})], {})])
-    for (head, body), y0, col in ((c["read_me"], 1.78, CYAN), (c["chart_rule"], 4.22, AMBER)):
+    for (head, body), y0, col in cover_panels:
         textbox(s, 9.35, y0, 3.18, 0.35, [(head, {"bold": True, "color": col})])
         textbox(s, 9.35, y0 + 0.42, 3.18, 1.6,
                 [(body.format(**V), {"color": MUTED if col is AMBER else TEXT})])

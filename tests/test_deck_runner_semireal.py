@@ -20,7 +20,6 @@ fake 版照樣全綠。2026-08-14 實際發生：runner 給 `make_deck.py` 第 4
 from __future__ import annotations
 
 import json
-import shutil
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -31,6 +30,22 @@ from backend.app.worker.cli_gateway import CliResult
 OUTPUT = Path(r"D:\力山\專案\專利_ppt自動\output")
 VERSION = "report_trial_20260811_094014"
 CONTENT_SRC = OUTPUT / "skill_verify" / "work" / "content.json"
+
+
+def _write_p2_content(path: Path) -> None:
+    """把既有半真素材轉成目前 P2 content contract，避免改動 output 原檔。"""
+    content = json.loads(CONTENT_SRC.read_text(encoding="utf-8"))
+    content.pop("read_me", None)
+    content.pop("chart_rule", None)
+    for rec in content.get("recommendations") or []:
+        lines = [str(line) for line in rec.get("lines") or []]
+        if "依據：" not in "\n".join(lines):
+            if lines and "情報依據" in lines[0]:
+                lines[0] = lines[0].replace("情報依據", "依據", 1)
+            else:
+                lines.insert(0, "依據：半真實測試素材")
+        rec["lines"] = lines
+    path.write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
 
 
 @unittest.skipUnless(
@@ -51,7 +66,7 @@ class DeckRunnerSemiRealTests(unittest.TestCase):
             prompts.append(argv[2])
             work = work_root / VERSION
             if len(prompts) == 1:
-                shutil.copy2(CONTENT_SRC, work / "content.json")
+                _write_p2_content(work / "content.json")
                 return CliResult(0, '{"result": "content copied"}', "")
             (work / "visual_verdict.json").write_text(
                 json.dumps({"pass": True, "findings": []}), encoding="utf-8")
