@@ -7,4 +7,4 @@
 - [x] Update narrative data-access prompts to describe the scoped evidence rule.
 - [x] Run targeted tests.
 - [x] Run OpenSpec strict validation.
-- [ ] Push branch and merge to master after validation.
+- [x] Push branch and merge to master after validation.
