@@ -49,6 +49,10 @@ POPULATION_REASONS: dict[str, str] = {
 #: 單位不是「件」的報表。
 #: ⚠ 機會四象限的一個點是**一個主題**不是一件專利——沿用件數句型會產出
 #: 「母體 7/55 件」這種語意錯誤的註記。這類報表不套用專利母體對帳。
+POPULATION_REASONS["design_protection_detail"] = (
+    "外觀策略只覆蓋可判定申請人與文獻種類的外觀/技術交叉資料"
+)
+
 NON_PATENT_UNIT_REPORTS = frozenset({
     "opportunity_quadrant",
 })

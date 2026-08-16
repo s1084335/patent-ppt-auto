@@ -3760,6 +3760,61 @@ def _build_applicant_ranking_section(ctx: ChartContext) -> None:
     })
 
 
+def design_strategy_chart_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        strategy_type = str(row.get("strategy_type") or "").strip()
+        if strategy_type:
+            counts[strategy_type] = counts.get(strategy_type, 0) + 1
+    return [
+        {"strategy_type": key, "patent_count": value}
+        for key, value in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+
+
+def _build_design_protection_section(ctx: ChartContext) -> None:
+    from backend.app.reports.content_blocks import (
+        design_protection_strategy,
+        design_tech_intersections,
+    )
+
+    report = ctx.report("design_protection_detail")
+    strategy_rows = design_protection_strategy(report["rows"])
+    intersection_rows = design_tech_intersections(report["rows"])
+    chart_rows = design_strategy_chart_rows(strategy_rows)
+    render_bar_chart(
+        ctx.run_dir / "design_protection_strategy.svg",
+        report["label_zh"],
+        chart_rows,
+        "strategy_type",
+    )
+    ctx.chart_rows["design_protection_strategy"] = chart_rows
+    ctx.chart_rows["design_protection_strategy_table"] = strategy_rows
+    ctx.chart_rows["design_tech_intersections"] = intersection_rows
+    ctx.sections.append({
+        "title": report["label_zh"],
+        "report_key": "design_protection_detail",
+        "rows": strategy_rows,
+        "variants": [
+            {
+                "label": "策略分布",
+                "file": "design_protection_strategy.svg",
+                "variant_key": "strategy",
+            },
+            {
+                "label": "技術交叉",
+                "file": "",
+                "variant_key": "intersections",
+                "rows": intersection_rows,
+            },
+        ],
+        "note": (
+            "外觀頁使用圖表呈現保護策略分布，表格列出技術與外觀交叉的申請人、"
+            "代表案與 evidence 摘要；不輸出 WIPS/PDF 連結。"
+        ),
+    })
+
+
 def shared_matrix_max(ctx: ChartContext, *report_names: str) -> int | None:
     """跨報表的共同色階基準（取各報表格值的最大值）。
 
@@ -4668,6 +4723,7 @@ SECTION_SPECS: tuple[SectionSpec, ...] = (
     SectionSpec("ipc", ("ipc_main_distribution",), _build_ipc_section),
     SectionSpec("cpc", ("cpc_main_distribution",), _build_cpc_section),
     SectionSpec("applicant_ranking", ("applicant_ranking",), _build_applicant_ranking_section),
+    SectionSpec("design_protection", ("design_protection_detail",), _build_design_protection_section),
     SectionSpec("applicant_year_matrix", ("applicant_year_matrix",), _build_applicant_year_matrix_section),
     SectionSpec("applicant_country", ("applicant_country_distribution",), _build_applicant_country_section),
     # ⚠ `lifecycle` section 2026-08-09 移除（使用者裁決刪報表）：申請人×法律狀態

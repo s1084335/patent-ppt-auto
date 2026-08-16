@@ -13,13 +13,24 @@
 
 ---
 
+## 2b. 外觀保護策略與技術交叉（2026-08-16）
+
+- [x] 2b.1 Red：新增 `S1` 外觀判定與外觀策略/技術交叉內容函式測試。
+- [x] 2b.2 Green：`document_kind IN ('S','S1')` 走唯一外觀判定函式。
+- [x] 2b.3 Green：新增 `design_protection_strategy` 與 `design_tech_intersections`，輸出可審核表格資料。
+- [x] 2b.4 Green：新增 `design_protection_detail` report key 與 `design_protection` section，產出策略分布圖與兩張表格資料。
+- [x] 2b.5 Green：前端 `REPORT_TYPES` 可選外觀保護策略，population/catalog 治理已登記。
+- [x] 2b.6 Guard：外觀策略資料不得輸出 WIPS/PDF 連結；代表圖只以本地主附圖或 patent_id 解析。
+
 ## 0. 前置查證（未做完不得進 1.x）
 
-- [ ] 0.1 定位家族合併演算法：`family_count` 從哪裡算出來、哪些欄位靠推定
-      ⚠ 已知 `report_engine` 無 `family_count`／`priority` 直接命中，要往
-      `chart_runner`／匯入層找。**沒定位出來就不知道覆蓋率要算哪些欄位**。
-- [ ] 0.2 驗證審閱者的「優先權號只有 7/55 有值」——在同一批資料上實測
-      ⚠ 那是審閱者的觀察，本 change 尚未驗證；意見書已有兩處與實測不符（design §3.4）。
+- [ ] 0.1 鎖定並記錄 `family_count` 三種語境，不得要求 implementer 自行定位家族演算法：
+      `annual_trend.family_count`＝同一年 `COUNT(DISTINCT canonical_family_id)`；
+      `family_country_layout`＝`derived_layer.report_family_country` 的現有保護國家佈局口徑；
+      `applicant_strength_profile.family_count`＝同申請人去重 patent 後的 canonical family set size。
+- [ ] 0.2 確認設計專利 7/55 或 11/55 類推論只可作為本 change 的待驗收資料，
+      不作為 family algorithm 決策；`priority_number`／`priority_date`／`priority_country`
+      不作為 v1 家族合併依據。
 - [ ] 0.3 追「台灣 9 件中 7 件已授權」的 7 是怎麼來的——兩個版本同錯，
       表示是**共同上游**（引擎或 prompt），不是 CLI 各寫各的
 
@@ -100,3 +111,5 @@
 - [ ] 7.2 HTML 報表實物驗收（外觀設計軸，**全部頁面目視**不抽樣）
 - [ ] 7.3 deck 實物驗收（同上）
 - [ ] 7.4 OpenSpec strict validation
+- [ ] 7.5 `openspec validate deepen-deck-evidence-layer --strict` 必須通過
+- [ ] 7.6 靜態檢查：本 change artifacts 不得再保留未決問題章節或未決問題條目

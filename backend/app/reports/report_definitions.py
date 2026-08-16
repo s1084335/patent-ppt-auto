@@ -290,6 +290,37 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
     # ⚠ 資料層報表，**不是簡報上的表格**——簡報形狀是象限座標與數字卡
     # （橫軸國數、縱軸主題數、泡泡家族數），見 content_standard.md。
     # cluster 型：需 join 分群指派取主題數，單表 SQL 出不來。
+    "design_protection_detail": ReportDefinition(
+        name="design_protection_detail",
+        report_type="detail",
+        label="Design Protection Strategy",
+        label_zh="外觀保護策略",
+        source_table=REPORT_SOURCE_TABLE,
+        columns=(
+            "patent_id",
+            "patent_type",
+            "document_kind",
+            "application_year",
+            "country_code",
+            "legal_status",
+            "applicant_display_name",
+            "title",
+            "主權項",
+        ),
+        default_order=(("applicant_display_name", "asc"), ("application_year", "asc")),
+        exclude_blank_columns=("applicant_display_name",),
+        allowed_filter_columns=(
+            "patent_id",
+            "application_year",
+            "country_code",
+            "applicant_display_name",
+            "current_assignee_display_name",
+        ),
+        data_source_note=(
+            "外觀策略使用 report_patent_base 的文獻種類、年度、申請人與本地代表案 id；"
+            "不產生 WIPS/PDF 連結。"
+        ),
+    ),
     "applicant_strength_profile": ReportDefinition(
         name="applicant_strength_profile",
         report_type="cluster",

@@ -1,5 +1,16 @@
 # Proposal: 簡報內容深化——依據層級與外觀設計軸（deepen-deck-evidence-layer）
 
+## 2026-08-16 Confirmed Decisions: design strategy narrative
+
+1. 外觀設計深化不只做指標。v1 SHALL 在報表與敘事中納入：
+   - 外觀保護策略：區分「只走外觀」與「技術+外觀」的申請人策略。
+   - 技術專利與外觀設計交叉：列出同一申請人同時有技術案與外觀案的 evidence。
+   - 敘事素材：讓 CLI 能描述外觀如何補足產品形態、防禦邊界與技術主張，不作法律結論。
+2. 輸出形態採「圖表 + 表格」：
+   - 圖表：外觀策略型態分布。
+   - 表格：外觀策略明細與技術交叉 evidence。
+3. v1 MAY 使用既有主附圖作代表圖，但 SHALL NOT 產生 WIPS/PDF 連結；原因是正式執行者不一定有 WIPS 帳號，PDF 連結不可作為可驗收證據來源。
+
 ## Why
 
 2026-08-13 收到外部審閱者對兩份自動生成簡報的意見
@@ -55,9 +66,13 @@
 - 語意層的自動判定（判讀句品質、圖文一致）——**刻意留給目視迴圈**，理由見 design
 - 非專利市場資料（審閱意見明訂「不得引用任何非專利資料當市場證據」）
 
-## Open Questions
+## Confirmed Decisions
 
-1. `add-deck-delivery-line` §7 的 3b.3（綜合結論頁）與 3b.5（撰稿 prompt）需要
-   納入依據層級與判讀句三型——**要等本 change 定案再做，還是先做再改？**
-2. 家族合併演算法尚未定位（`report_engine` 無 `family_count`／`priority` 命中），
-   要先查出哪些欄位算「推定」才能定覆蓋率的範圍。
+1. `add-deck-delivery-line` §7 的 3b.3（綜合結論頁）與 3b.5（撰稿 prompt）
+   已完成；本 change **不重開**這兩項實作，只補上依據層級、資料口徑與可驗證性規則。
+2. `add-deck-delivery-line` 7.5 的資料口徑頁在本 change 中改為**附錄／資料口徑說明**，
+   不作為正文主敘事頁。
+3. 家族 canonical key 採既有 `report_engine.FAMILY_ID_EXPRESSION`：
+   有 `WIPS同族ID` 時使用同族 ID，缺值時使用 `P{patent_id}` 作 surrogate family。
+4. `priority_number`／`priority_date`／`priority_country` **不作為 v1 家族合併依據**，
+   只能作為資料品質或取證輔助欄位；不得用 priority 推導新的家族歸屬。

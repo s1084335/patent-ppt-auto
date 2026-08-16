@@ -64,6 +64,10 @@ class PatentKindClassificationTests(unittest.TestCase):
         """document_kind 有 S 就是設計，不管 patent_type 有沒有值。"""
         self.assertEqual(self._kind(None, "S"), "設計")
 
+    def test_us_design_s1_is_design(self):
+        """美國設計案可能是 S1；不得只認 S。"""
+        self.assertEqual(self._kind("P", "S1"), "設計")
+
 
 class KindTallyTests(unittest.TestCase):
     """整批統計與母體說明。"""

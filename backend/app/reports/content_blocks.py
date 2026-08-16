@@ -21,6 +21,160 @@ from typing import Any
 TRAJECTORY_MIN_YEARS = 3
 # Key Player 取前幾大（與報表 CHART_ROW_LIMIT 的前十一致口徑同源語意）。
 KEY_PLAYER_LIMIT = 10
+DESIGN_STRATEGY_LIMIT = 20
+
+
+def _clean_text(value: Any) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _first_text(row: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        text = _clean_text(row.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _row_id(row: dict[str, Any]) -> int:
+    try:
+        return int(row.get("patent_id") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _row_year(row: dict[str, Any]) -> int | None:
+    try:
+        year = int(row.get("application_year") or 0)
+    except (TypeError, ValueError):
+        return None
+    return year or None
+
+
+def _has_main_figure(row: dict[str, Any]) -> bool:
+    if isinstance(row.get("has_main_figure"), bool):
+        return bool(row.get("has_main_figure"))
+    figure = _first_text(row, "main_figure", "主附圖", "主附图")
+    return bool(figure)
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        text = _clean_text(value)
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
+
+
+def _applicant_name(row: dict[str, Any]) -> str:
+    return _first_text(row, "applicant_display_name", "applicant", "申請人", "申请人")
+
+
+def _tech_label(row: dict[str, Any]) -> str:
+    return _first_text(row, "分類標籤", "分类标签", "topic_label", "topic_key", "label")
+
+
+def _evidence_text(row: dict[str, Any], limit: int = 120) -> str:
+    text = _first_text(
+        row,
+        "文獻備註",
+        "文献备注",
+        "source_summary",
+        "summary",
+        "主權項",
+        "主权项",
+        "title",
+    )
+    return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
+
+def _representative(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    return sorted(rows, key=lambda r: (_row_year(r) or 9999, _row_id(r)))[0]
+
+
+def _group_design_and_tech(
+    rows: list[dict[str, Any]],
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    from backend.app.transforms.patent_kind import is_design
+
+    grouped: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    seen: dict[str, set[int]] = defaultdict(set)
+    for row in rows:
+        applicant = _applicant_name(row)
+        if not applicant:
+            continue
+        pid = _row_id(row)
+        if pid and pid in seen[applicant]:
+            continue
+        seen[applicant].add(pid)
+        bucket = "design" if is_design(row) else "tech"
+        grouped.setdefault(applicant, {"design": [], "tech": []})[bucket].append(row)
+    return grouped
+
+
+def design_protection_strategy(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return reviewable design protection strategy rows.
+
+    Output deliberately carries representative patent ids and figure presence, not WIPS/PDF
+    links. The deck/runtime can use patent ids to resolve local main-figure assets.
+    """
+    out: list[dict[str, Any]] = []
+    for applicant, groups in _group_design_and_tech(rows).items():
+        designs = groups["design"]
+        tech = groups["tech"]
+        if not designs:
+            continue
+        years = sorted(y for row in designs if (y := _row_year(row)) is not None)
+        statuses = _dedupe([_first_text(row, "legal_status") for row in designs])
+        representative = _representative(designs) or {}
+        strategy_type = "技術+外觀" if tech else "只走外觀"
+        out.append({
+            "applicant": applicant,
+            "strategy_type": strategy_type,
+            "design_count": len(designs),
+            "tech_count": len(tech),
+            "first_design_year": years[0] if years else None,
+            "latest_design_year": years[-1] if years else None,
+            "design_years": years,
+            "legal_status_summary": "、".join(statuses),
+            "representative_design_patent_id": _row_id(representative),
+            "representative_design_title": _first_text(representative, "title", "標題", "标题"),
+            "has_figure": _has_main_figure(representative),
+        })
+    out.sort(key=lambda r: (-int(r["design_count"]), -int(r["tech_count"]), r["applicant"]))
+    return out[:DESIGN_STRATEGY_LIMIT]
+
+
+def design_tech_intersections(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return applicants that combine technical patents with design patents."""
+    out: list[dict[str, Any]] = []
+    for applicant, groups in _group_design_and_tech(rows).items():
+        designs = groups["design"]
+        tech = groups["tech"]
+        if not designs or not tech:
+            continue
+        design_row = _representative(designs) or {}
+        tech_row = _representative(tech) or {}
+        out.append({
+            "applicant": applicant,
+            "strategy_type": "技術+外觀",
+            "design_count": len(designs),
+            "tech_count": len(tech),
+            "tech_labels": _dedupe([_tech_label(row) for row in tech]),
+            "representative_design_patent_id": _row_id(design_row),
+            "representative_design_title": _first_text(design_row, "title", "標題", "标题"),
+            "representative_tech_patent_id": _row_id(tech_row),
+            "representative_tech_title": _first_text(tech_row, "title", "標題", "标题"),
+            "tech_evidence": _evidence_text(tech_row),
+            "has_figure": _has_main_figure(design_row),
+        })
+    out.sort(key=lambda r: (-int(r["design_count"]), -int(r["tech_count"]), r["applicant"]))
+    return out[:DESIGN_STRATEGY_LIMIT]
 
 
 def key_player_profiles(

@@ -2,6 +2,30 @@
 
 ## ADDED Requirements
 
+### Requirement: 外觀保護策略報表
+
+系統 SHALL 提供 `design_protection_detail` 報表與對應 section，用於輸出外觀保護策略與技術專利交叉 evidence。
+
+#### Scenario: 外觀判定包含 S 與 S1
+
+- **WHEN** 報表資料列的 `document_kind` 為 `S` 或 `S1`
+- **THEN** 系統 SHALL 將該列視為外觀設計
+- **AND** SHALL NOT 只以 `patent_type='P'` 判斷技術專利
+
+#### Scenario: 圖表與表格輸出
+
+- **WHEN** 報表產生外觀保護策略 section
+- **THEN** SHALL 輸出策略分布圖表
+- **AND** SHALL 輸出外觀策略明細表
+- **AND** SHALL 輸出技術專利與外觀設計交叉 evidence 表
+
+#### Scenario: 不輸出 WIPS/PDF 連結
+
+- **WHEN** 外觀策略列出代表外觀案或代表技術案
+- **THEN** SHALL 使用本地 `patent_id` 或既有主附圖資產作為代表圖解析依據
+- **AND** SHALL NOT 輸出 WIPS 連結
+- **AND** SHALL NOT 輸出 PDF 連結
+
 ### Requirement: 外觀設計不得被靜默排除
 
 分析母體 SHALL 包含外觀設計專利；技術分析軸若因主權項缺席而排除它們，

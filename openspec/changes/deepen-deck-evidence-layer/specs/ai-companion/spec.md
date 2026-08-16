@@ -2,6 +2,23 @@
 
 ## ADDED Requirements
 
+### Requirement: 外觀策略敘事使用報表 evidence
+
+AI companion SHALL 使用 `design_protection_detail`、`design_protection_strategy_table` 與 `design_tech_intersections` 作為外觀策略敘事 evidence。
+
+#### Scenario: 敘述外觀保護策略
+
+- **WHEN** content plan 包含外觀保護策略資料
+- **THEN** AI companion SHALL 說明申請人採「只走外觀」或「技術+外觀」的可觀察模式
+- **AND** SHALL 引用代表案、技術標籤或 evidence 摘要
+
+#### Scenario: 禁止外部 PDF/WIPS 補證
+
+- **WHEN** AI companion 產生外觀策略敘事
+- **THEN** SHALL NOT 產生 WIPS 連結
+- **AND** SHALL NOT 產生 PDF 連結
+- **AND** SHALL NOT 將外觀/技術交叉解讀為侵權、FTO 或法律確定性結論
+
 ### Requirement: 建議句須帶依據標記
 
 簡報中的建議句 SHALL 帶 `依據：<出處>` 標記；接不上依據的建議句

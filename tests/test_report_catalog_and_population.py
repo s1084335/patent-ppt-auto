@@ -52,14 +52,14 @@ class CatalogTests(unittest.TestCase):
         for name in ("application_trend", "publication_trend", "country_distribution",
                      "family_country_layout", "applicant_country_distribution",
                      "ipc_main_distribution", "cpc_main_distribution",
-                     "applicant_ranking", "applicant_year_matrix",
+                     "applicant_ranking", "design_protection_detail", "applicant_year_matrix",
                      "cluster_topic_table", "opportunity_quadrant"):
             self.assertIn(name, REPORT_DEFINITIONS)
 
     def test_catalog_size(self):
         """13 → 12（本批只刪 lifecycle）。⚠ applicant_strength_profile 待 2.3
         與 kp_quadrant 一起重新設計後才決定去留。"""
-        self.assertEqual(len(REPORT_DEFINITIONS), 12)
+        self.assertEqual(len(REPORT_DEFINITIONS), 13)
 
     def test_pending_redesign_still_present(self):
         """⚠ 對照組：待重新設計的報表現在必須還在——刪早了 Key Player 會沒資料。"""

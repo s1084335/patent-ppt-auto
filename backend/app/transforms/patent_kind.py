@@ -38,7 +38,7 @@ KIND_INVENTION = "發明"
 KIND_UNKNOWN = "未標示"
 
 # 設計案在 WIPS `文献种类` 的值。
-DESIGN_DOCUMENT_KIND = "S"
+DESIGN_DOCUMENT_KINDS = {"S", "S1"}
 # `发明专利/实用新型` 的兩個值。⚠ P 不等於發明——設計案也是 P，見模組說明。
 TYPE_INVENTION = "P"
 TYPE_UTILITY = "U"
@@ -55,7 +55,7 @@ def is_design(row: dict[str, Any]) -> bool:
     ⚠ 只看 `document_kind`。呼叫端不得自行寫 `document_kind == 'S'`——
     散開後改一處另一處不會報錯（見模組說明）。
     """
-    return _clean(row.get("document_kind")).upper() == DESIGN_DOCUMENT_KIND
+    return _clean(row.get("document_kind")).upper() in DESIGN_DOCUMENT_KINDS
 
 
 def patent_kind(row: dict[str, Any]) -> str:

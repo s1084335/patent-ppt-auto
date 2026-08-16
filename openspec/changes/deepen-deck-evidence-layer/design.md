@@ -10,6 +10,21 @@
 
 ---
 
+## 3b. 外觀保護策略與技術交叉
+
+v1 外觀設計頁輸出採「圖表 + 表格」：
+
+- 圖表：`design_protection_strategy.svg`，呈現申請人的外觀策略型態分布。策略型態至少包含「只走外觀」與「技術+外觀」。
+- 表格一：`design_protection_strategy_table`，列出申請人、策略型態、外觀件數、技術件數、首件/末件外觀年份、狀態摘要、代表外觀案 patent_id、是否有主附圖。
+- 表格二：`design_tech_intersections`，列出同一申請人同時有外觀案與技術案時的技術標籤、代表外觀案、代表技術案與 evidence 摘要。
+
+資料口徑：
+
+- 外觀判定 SHALL 使用唯一分類函式，`document_kind IN ('S','S1')` 視為外觀設計。
+- 技術案 SHALL 是同一申請人底下非外觀的專利資料，不用此結果改寫分群。
+- 代表圖只使用本地既有主附圖或 patent_id 解析，不產生 WIPS/PDF 連結。
+- CLI 敘事 SHALL 說明外觀保護策略與技術交叉可觀察到的產品保護方式；SHALL NOT 輸出侵權、FTO 或法律確定性結論。
+
 ## 1. 🔴 分層判準（本 change 最重要的一節）
 
 ### 1.1 為什麼要先立這條
@@ -224,14 +239,37 @@ Preservation gate（未動的 bytes 相同）——**沒有一個鎖人或 LLM �
 
 ## 5. 推定數字覆蓋率（意見書第 5 點）
 
+### 5.0 家族口徑決策
+
+家族 canonical key 採既有 `report_engine.FAMILY_ID_EXPRESSION`：
+
+```text
+COALESCE(NULLIF(BTRIM("WIPS同族ID"::text), ''), 'P' || patent_id::text)
+```
+
+也就是：有 `WIPS同族ID` 時使用 WIPS 同族 ID；缺值時使用 `P{patent_id}` 作
+surrogate family。`priority_number`／`priority_date`／`priority_country` 不作為 v1
+家族合併依據，只能作為資料品質或取證輔助欄位。
+
+三種 `family_count` 語境固定如下，後續實作不得自行重定義：
+
+| 語境 | 口徑 |
+|---|---|
+| `annual_trend.family_count` | 同一年 `COUNT(DISTINCT canonical_family_id)` |
+| `family_country_layout` | 讀 `derived_layer.report_family_country`，代表「現有保護國家佈局」的家族口徑，不等同全庫原始家族總數 |
+| `applicant_strength_profile.family_count` | 同申請人去重 patent 後的 canonical family set size |
+
+所有缺 `WIPS同族ID` 的 surrogate family、`family_incomplete`、unknown／pending legal status，
+必須能被 deck 的資料口徑 metadata 揭露；這些 metadata 是讓人判讀可靠度，不是拿來
+重算家族歸屬。
+
 | 層 | 做什麼 |
 |---|---|
 | ① 引擎 | 凡推定得到的欄位輸出 `來源欄位覆蓋率 N/M`，**跟著數字走**不放頁尾 |
 | ③ 目視 | 覆蓋率有沒有出現在該出現的地方 |
 
-⚠ **前置未完成**：家族合併演算法尚未定位（`report_engine` 無 `family_count`／
-`priority` 直接命中），要先查出哪些欄位算「推定」。意見書說「優先權號有值的
-只有 7 件」是審閱者的觀察，**本 change 尚未在同一批資料上驗證**。
+意見書說「優先權號有值的只有 7 件」是審閱者的觀察，只能作為本 change 的待驗收資料；
+即使實測為真，也**不改變** §5.0 的 family algorithm 決策。
 
 ---
 
@@ -255,5 +293,6 @@ Preservation gate（未動的 bytes 相同）——**沒有一個鎖人或 LLM �
 | 圖表原生繪製 | **add-deck-delivery-line**（4-0d／2.1b）| 改變正在實作的窄轉換器詞彙，晚改要翻掉已寫的轉換器與測試 |
 | 其餘五點 | 本 change | 內容品質與資料軸，可獨立驗收 |
 
-⚠ 現行 change 的 3b.3（綜合結論頁）與 3b.5（撰稿 prompt）需要納入依據層級，
-7.5（資料口徑頁）位置要改附錄——**順序未定，見 proposal 的 Open Questions**。
+`add-deck-delivery-line` 的 3b.3（綜合結論頁）與 3b.5（撰稿 prompt）已完成；
+本 change 不重開這兩項實作，只補依據層級、資料口徑與可驗證性規則。7.5
+（資料口徑頁）在本 change 中改為附錄／資料口徑說明，不作為正文主敘事頁。
