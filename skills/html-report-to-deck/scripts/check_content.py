@@ -31,6 +31,15 @@ REQUIRED = ["footer", "eyebrow", "deck_title", "subtitle", "meta", "stats", "sta
             "recommendations", "pages", "roadmap_title", "roadmap_takeaway", "roadmap",
             "limits"]
 BLOCKED_SLIDE_TERMS = ("本簡報怎麼讀", "圖表原則", "待驗證", "降級")
+VAGUE_EVIDENCE_TERMS = (
+    "整體統計",
+    "資料分析",
+    "報表結果",
+    "趨勢觀察",
+    "專利資料",
+    "AI 判斷",
+)
+INTERNAL_EVIDENCE_KEYS = ("family_country_layout",)
 
 # ── 裸數字掃描 ────────────────────────────────────────────────
 # 簡報上的數量沒帶量詞，讀者會當成瑕疵指出來（2026-08-11 使用者回饋）。
@@ -212,8 +221,8 @@ def _check_figures(c: dict) -> list[str]:
 def _check_p2_evidence_rules(c: dict) -> list[str]:
     """P2 evidence gate：建議句要帶「依據：」，流程狀態不得印出。
 
-    閘門只驗標記存在與禁用流程字串，不判斷依據內容是否充分；充分性留給
-    逐頁目視與真 CLI 驗收。
+    閘門只驗標記存在、有限空泛例句與內部欄位外洩，不判斷依據內容是否充分；
+    充分性留給逐頁目視與真 CLI 驗收，避免把語意判斷寫死成形式鎖。
     """
     bad: list[str] = []
     for term in BLOCKED_SLIDE_TERMS:
@@ -227,6 +236,12 @@ def _check_p2_evidence_rules(c: dict) -> list[str]:
         joined = "\n".join([evidence, *lines])
         if "依據：" not in joined:
             bad.append(f"建議卡第 {index} 張缺「依據：」——接不上依據的建議句不得放行")
+        for term in VAGUE_EVIDENCE_TERMS:
+            if f"依據：{term}" in joined:
+                bad.append(f"建議卡第 {index} 張含空泛依據「依據：{term}」——請改用可追錨點")
+        for key in INTERNAL_EVIDENCE_KEYS:
+            if key in joined:
+                bad.append(f"建議卡第 {index} 張含內部欄位「{key}」——投影片請改用中文顯示名稱")
     return bad
 
 

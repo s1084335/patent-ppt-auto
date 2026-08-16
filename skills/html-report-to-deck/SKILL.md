@@ -144,6 +144,13 @@ P2 evidence gate：每張 `recommendations` 卡片必須在 `evidence` 或 `line
 中帶 `依據：`；`本簡報怎麼讀`、`圖表原則`、`待驗證`、`降級` 是內部流程或規則字串，
 不得印在投影片上。
 
+`依據：` 後面必須是可追錨點，不能寫空泛依據。合格錨點至少要讓讀者知道它追到哪：
+專利號、claim 編號、topic code、申請人／權利人、family、country、年份區間、具體件數、
+圖表或表格的中文顯示名稱。禁止例句：`依據：整體統計`、`依據：資料分析`、`依據：報表結果`、
+`依據：趨勢觀察`、`依據：專利資料`、`依據：AI 判斷`。內部欄位 key 不得直接上投影片：
+例如 `family_country_layout` 要寫成 `家族國家布局`。如果找不到可追錨點，不要產生該建議；
+改併入 `limits` 或省略。
+
 `color` 可用：`cyan` / `blue` / `amber` / `rose` / `green`。
 
 ⚠ **建議卡用 4 張（2×2）**。字數閘門允許 3–5 張，但版面是硬兩欄，
@@ -457,8 +464,8 @@ uv run --no-project --python 3.12 python D:\vscode\ppt-tools\pptx_to_png.py <out
 |---|---|
 | `scripts/assemble_from_version.py` | **intake 正式入口**：報表版本目錄 → `report.json`＋`charts/` |
 | `scripts/extract_report.py` | HTML → SVG 圖表（內嵌 data URI）＋章節／表格／判讀文字（**HTML fallback**，正式路徑走上一列） |
-| `scripts/svg_to_pptx.py` | **窄 SVG→DrawingML 轉換器**：每頁 SVG → 原生 PPTX；詞彙外 fail loud |
 | `scripts/plan_deck.py` | 自動排頁＋**結構調整檢查表**＋玩家頁骨架＋解析 `patent_ids` 供補查 |
+| `scripts/apply_chart_marks.py` | 依 plan 的 chart marks 套用圖表標記；開發側輔助，不取代 runner 機械鏈 |
 | `scripts/fetch_claims.py` | 唯讀補查請求項（開發側；產品側改走 MCP） |
 | `scripts/regression.py` | **版面回歸測試**：合成素材跑完整組版鏈，逐像素比對 `regression_baseline/` |
 | `scripts/check_docs.py` | **文件稽核**：引用完整性、文件數字 vs 程式實際值、步驟編號一致 |

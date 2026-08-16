@@ -14,6 +14,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = PROJECT_ROOT / "skills" / "html-report-to-deck" / "scripts"
 PY = sys.executable
 BLOCKED_TEMPLATE_TERMS = ("本簡報怎麼讀", "圖表原則", "待驗證", "降級")
+VAGUE_EVIDENCE_EXAMPLES = ("依據：整體統計", "依據：資料分析", "依據：AI 判斷")
+INTERNAL_KEY_EXAMPLES = ("family_country_layout",)
 
 
 def _walk_text(value):
@@ -90,6 +92,24 @@ class EvidenceGateTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("待驗證", proc.stdout)
 
+    def test_vague_evidence_examples_are_blocked(self):
+        for phrase in VAGUE_EVIDENCE_EXAMPLES:
+            with self.subTest(phrase=phrase):
+                content = self._content()
+                content["recommendations"][0]["lines"][0] = phrase
+                proc = _run_check(content)
+                self.assertEqual(proc.returncode, 1)
+                self.assertIn("空泛依據", proc.stdout)
+
+    def test_internal_evidence_keys_are_not_user_facing(self):
+        for key in INTERNAL_KEY_EXAMPLES:
+            with self.subTest(key=key):
+                content = self._content()
+                content["recommendations"][0]["lines"][0] = f"依據：{key}"
+                proc = _run_check(content)
+                self.assertEqual(proc.returncode, 1)
+                self.assertIn("內部欄位", proc.stdout)
+
 
 class RetiredCoverRuleFieldsTests(unittest.TestCase):
     """P2 後 read_me/chart_rule 不再是必要 schema 欄位。"""
@@ -123,6 +143,16 @@ class TemplateContractTests(unittest.TestCase):
         template_text = "\n".join(_walk_text(template))
         for term in BLOCKED_TEMPLATE_TERMS:
             self.assertNotIn(term, template_text)
+
+    def test_skill_prompt_rejects_vague_evidence_examples(self):
+        skill_text = (PROJECT_ROOT / "skills" / "html-report-to-deck"
+                      / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("空泛依據", skill_text)
+        for phrase in VAGUE_EVIDENCE_EXAMPLES:
+            self.assertIn(phrase, skill_text)
+        self.assertIn("可追錨點", skill_text)
+        self.assertIn("中文顯示名稱", skill_text)
+        self.assertIn("家族國家布局", skill_text)
 
 
 if __name__ == "__main__":
