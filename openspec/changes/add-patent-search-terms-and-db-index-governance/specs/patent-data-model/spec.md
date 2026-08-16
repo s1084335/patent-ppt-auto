@@ -5,6 +5,15 @@
 The system SHALL maintain `derived_layer.patent_search_terms` as the single
 derived source for patent browse keyword search terms.
 
+#### Scenario: User-searchable multi-value patent fields are inventoried
+
+- **GIVEN** patent data contains fields that users may reasonably search from the
+  browse keyword input
+- **WHEN** a field can contain WIPS ` | ` separated values
+- **THEN** the field SHALL be included in the searchable-field allowlist
+- **OR** it SHALL be documented as intentionally excluded with a product reason
+- **AND** the allowlist SHALL be covered by search-term refresh tests
+
 #### Scenario: Multi-value people and company fields are split for search
 
 - **GIVEN** raw/core patent fields contain WIPS ` | ` separated people or company
@@ -19,6 +28,13 @@ derived source for patent browse keyword search terms.
   IPC/CPC Main/All classification values
 - **WHEN** derived search terms are refreshed
 - **THEN** those values SHALL be represented as searchable terms when non-empty
+
+#### Scenario: Unused raw attributes are not automatically searchable
+
+- **GIVEN** a raw source column is stored only as unused patent attribute data
+- **WHEN** it is not in the user-searchable field allowlist
+- **THEN** the search-term refresh SHALL NOT index it by default
+- **AND** adding it to browse search SHALL require an explicit allowlist update
 
 #### Scenario: Search term refresh is idempotent
 
@@ -57,4 +73,3 @@ to query paths and acceptance checks.
 - **WHEN** a search-related index is added
 - **THEN** the governance record SHALL describe its query path, purpose category,
   and verification SQL
-
