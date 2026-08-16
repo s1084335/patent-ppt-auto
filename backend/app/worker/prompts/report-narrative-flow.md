@@ -363,3 +363,9 @@ text`（範例已如此排列）。
 - 不得使用「值得關注」「具備潛力」等沒有指向的空話；若使用，必須說明基於哪個資料現象。
 - 不得在 narrative 或後續 PPT 文案中顯示「未選」「缺資料」「尚未產出」這類系統狀態；這些只屬於任務進度與 manifest。
 - 輸出完成後確認 `based_on_version` 等於報表版本目錄名稱。
+## Workspace Scoped Live DB Rule
+
+When the report version has `report_data.json.parameters.workspace_id`, live DB
+`query_database` is restricted to row-level patent evidence. Use
+`query_report_evidence()` / snapshot rows for aggregate claims, and do not
+recalculate full-database aggregates with raw SQL.
