@@ -1,7 +1,12 @@
 # 分類樹 PoC 規格書
 
-狀態：規格定稿，待使用者核可後動工。設計依據：`patent_taxonomy_design.md`（2026-07-10 版）。
-本文件是「設計 → 可執行」的工程規格：每階段定義輸入/處理/輸出/驗收，全部 CLI-first、可重跑。
+狀態：歷史封存（2026-08-17）。本文件不再作為目前專利專案待辦或實作依據。
+設計依據：`patent_taxonomy_design.md`（2026-07-10 版）。
+
+封存原因：P4 的 PatentSBERTa 嵌入路線與 P5 的骨架/box 訓練路線屬 taxonomy-v0
+舊方案，已不接續目前分類/報表主線。文字保留供追溯，不代表可直接動工。
+
+原定位：本文件是「設計 → 可執行」的工程規格：每階段定義輸入/處理/輸出/驗收，全部 CLI-first、可重跑。
 
 ---
 
@@ -51,8 +56,8 @@ LLM       Claude API（管線用：補漏/裁決/同義/命名）；金鑰走環
     ├── claims_split.jsonl      # P2
     ├── phrases.jsonl           # P3 詞庫
     ├── patent_phrase.jsonl     # P3 專利↔片語↔維度
-    ├── embeddings.npy          # P4
-    ├── skeleton.json / boxes.npz / tree.json   # P5~P6
+    ├── embeddings.npy          # P4（歷史封存；目前不產）
+    ├── skeleton.json / boxes.npz / tree.json   # P5~P6（歷史封存；目前不產）
     ├── classification.jsonl    # P7
     └── report/                 # P8 指標報告+樹狀輸出
 ```
@@ -98,6 +103,7 @@ LLM       Claude API（管線用：補漏/裁決/同義/命名）；金鑰走環
 
 ### P4 嵌入
 ```text
+狀態  已封存（2026-08-17），不再作為目前待辦或實作入口
 輸入  phrases.jsonl（canonical 形態）
 處理  PatentSBERTa 批次嵌入（CPU、batch 小、結果快取落盤，重跑不重嵌）
 輸出  embeddings.npy + phrase_id 索引
@@ -106,6 +112,7 @@ LLM       Claude API（管線用：補漏/裁決/同義/命名）；金鑰走環
 
 ### P5 骨架與 box 訓練（核心）
 ```text
+狀態  已封存（2026-08-17），骨架建構與 box 訓練不再作為目前待辦或實作入口
 輸入  embeddings.npy + nested_pairs + patent_phrase.jsonl
 處理  ① 骨架：每維度分開 —— 多組階層聚類（agglomerative/spherical k-means × 不同 K/種子）
          → 共識邊（低共識留白）→ 骨架 v0（目標深度 2~3 層）
@@ -117,7 +124,7 @@ LLM       Claude API（管線用：補漏/裁決/同義/命名）；金鑰走環
               AdamW lr=1e-3、epochs≤100、batch=100、早停 by 驗證 loss
       ④ 迭代精修 1 輪：box 空間 R_a 重疊圖 + Directed Leiden → 修骨架 → 再訓
 輸出  skeleton.json（v0 與精修後）、boxes.npz（三個 dim 各一組）、training_log
-驗收  訓練收斂（loss 曲線）；三個 dim 中至少一組 reconstruction acc ≥ 55%
+驗收  歷史驗收口徑，已封存；不得用來要求目前 agent 實作 P5
 ```
 
 ### P6 節點命名與節點盒
@@ -134,7 +141,7 @@ LLM       Claude API（管線用：補漏/裁決/同義/命名）；金鑰走環
 ```text
 輸入  tree.json + boxes + patent_phrase.jsonl
 處理  全詞庫片語 → 對節點算 R_a → 排序式掛節點（argmax+margin、同分取體積小）
-      分位數校準：已知片語 max R_a 分布 → τ_novel=P5、τ_class 由真邊分數分布定（起始值，記錄分布圖）
+      分位數校準：已知片語 max R_a 分布 → τ_novel=P5、τ_class 由真邊分數分布定（歷史口徑，已封存）
       專利 = 片語節點聯集（多標籤、雙維度）
 輸出  classification.jsonl（patent_no, node_id, dimension, score）+ thresholds.json + 未掛清單
 驗收  coverage（片語掛上率）≥ 70%；每件專利雙維度至少各一標籤的比例 ≥ 90%
@@ -176,11 +183,11 @@ LLM：P3 每件 1 call ×800 + P2 llm_split 少量 + P6 命名 ~100 節點級 �
 人工：P3 抽查 20 件(~1hr) + P6 看樹(~1hr) + P8 報告審閱
 ```
 
-## 5. 執行順序與檢核點
+## 5. 執行順序與檢核點（歷史封存）
 
 ```text
-P1→P2（首跑附格式分布報告）→ P3 →★人工抽查 20 件(過才續)→ P4→P5→P6 →★人工看樹→ P7→P8 →★PoC 報告
-每階段獨立可重跑；中間產物落盤，改後段不用重跑前段
+原規劃：P1→P2（首跑附格式分布報告）→ P3 →★人工抽查 20 件(過才續)→ P4→P5→P6 →★人工看樹→ P7→P8 →★PoC 報告
+現況：P4/P5 已封存，原規劃不得當作目前待辦；後續若重啟分類樹，需另開新規格重定 pipeline。
 ```
 
 ## 6. 與正式系統的關係

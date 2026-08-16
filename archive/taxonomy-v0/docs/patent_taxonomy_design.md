@@ -1,6 +1,10 @@
 # 專利多維度分類樹設計（Box 為主 + LLM 輔助）
 
-狀態：設計中（PoC 前）。本文件是「AI 產生分類建議、人工確認版本化」功能的分類樹核心設計，與侵權比對分開。靈感來源見 `obsidian learn/專利學習/分類樹研究/`（TaxoGen / TaxoExpan / TaxoCom / BoxTM / TaxoAdapt / BoxTaxo）。最後更新 2026-07-10。
+狀態：歷史封存（2026-08-17）。本文件保留 taxonomy-v0 的設計脈絡；其中 P4
+PatentSBERTa 嵌入、P5 骨架/box 訓練與後續 box completion 相關內容已過時，
+不再作為目前專利專案待辦或實作依據。
+
+原狀態：設計中（PoC 前）。本文件是「AI 產生分類建議、人工確認版本化」功能的分類樹核心設計，與侵權比對分開。靈感來源見 `obsidian learn/專利學習/分類樹研究/`（TaxoGen / TaxoExpan / TaxoCom / BoxTM / TaxoAdapt / BoxTaxo）。最後更新 2026-07-10。
 
 ---
 
