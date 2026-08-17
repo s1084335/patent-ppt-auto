@@ -4040,11 +4040,23 @@ def _build_classification_section(
             rows,
             source_column,
         )
-        variants.append({"label": f"{level} 階 · {level_label.split('(')[-1].rstrip(')')}", "file": filename, "variant_key": f"L{level}"})
+        variants.append({
+            "label": f"{level} 階 · {level_label.split('(')[-1].rstrip(')')}",
+            "file": filename,
+            "variant_key": f"L{level}",
+            # 🔴 2026-08-17：**每階自帶 rows**，切 tab 時圖與表一起換
+            #    （使用者：「都會看，所以圖和表都要能切換」）。
+            #    顯示層已支援 variant 級 rows（`sectionForReportView` 的
+            #    `picked.rows`，分群卡的 opportunity／timeline 同模式），
+            #    不必擴充契約。
+            "rows": rows,
+        })
     ctx.sections.append({
         "title": report["label_zh"],
-        # 🔴 2026-08-17：表要跟著 tab 的階層走。原本沒給 rows，顯示層退回
-        #    report_key 的原始 5 階明細——**圖切 4 階、表卻是 5 階**。
+        # 🔴 2026-08-17：section 級 rows＝預設階（前端未選 variant 時的退路）；
+        #    切 tab 時吃的是各 variant 自帶的 rows（見上方 variants.append）。
+        #    原本兩者都沒有，顯示層退回 report_key 的原始 5 階明細
+        #    ——**圖切 4 階、表卻是 5 階**。
         "rows": classification_variant_rows(ctx.chart_rows, report_key, levels),
         # ⚠ 顯式帶 registry 鍵（2026-08-10 修）：漏設時 `_section_report_name` 會
         # fallback 成第一個 variant 的檔名 `ipc_main_distribution_L4`——多了 `_L4`
