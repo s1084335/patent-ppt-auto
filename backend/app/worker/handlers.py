@@ -361,6 +361,54 @@ def _resolve_workspace_name(workspace_id: Any) -> str | None:
         return None
 
 
+def _fetch_workspace_row(workspace_id: int) -> dict[str, Any] | None:
+    """取 workspace 的成員與全庫旗標。
+
+    ⚠ 成員的唯一事實來源＝`app_layer.workspaces.patent_ids_json`
+    （`global_workspace.sync_global_workspace_patents` 也寫這裡）——
+    不另建第二份成員快照。查詢走 `workspace_id` 主鍵，不需額外索引。
+    """
+    from backend.app.db.connection import get_pool
+
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT is_global, patent_ids_json FROM app_layer.workspaces"
+            " WHERE workspace_id = %s",
+            (int(workspace_id),),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"is_global": bool(row[0]), "patent_ids_json": list(row[1] or [])}
+
+
+def _resolve_workspace_patent_ids(workspace_id: Any) -> list[int] | None:
+    """workspace → 報表母體（`run_chart_trial` 的 `patent_ids`）。
+
+    🔴 2026-08-17 實機 bug 的修正點：前端只送 `workspace_id`，而引擎的母體入口
+    是 `patent_ids`（見 `run_chart_trial` docstring：「worker 的 report_generate
+    payload 走這條」）。原本沒人把兩者接起來，於是選了 workspace 仍跑全庫——
+    **標題寫該 workspace、數字是全庫**，比整份壞掉更難察覺。
+
+    回 None＝全庫（未指定或 `is_global`）；⚠ 成員為空或 workspace 不存在時
+    **fail loud**：靜默退回全庫正是本 bug 的形態。
+    """
+    if workspace_id is None:
+        return None
+    row = _fetch_workspace_row(int(workspace_id))
+    if row is None:
+        raise ValueError(
+            f"report_generate 指定的 workspace_id={workspace_id} 不存在；"
+            "不得靜默改用全庫母體（報表會掛著錯的範圍）")
+    if row["is_global"]:
+        return None                      # 全庫＝不篩，傳整串 id 只會拖慢查詢
+    members = [int(i) for i in row["patent_ids_json"]]
+    if not members:
+        raise ValueError(
+            f"workspace {workspace_id} 沒有成員專利，無法產製該範圍的報表；"
+            "不得靜默改用全庫母體")
+    return members
+
+
 def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
     """產製完整報表：跑報表引擎、渲染圖表，並把整包產物落 DB 供 backend 容器讀取。
 
@@ -397,7 +445,11 @@ def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict
     chart_kwargs: dict[str, Any] = {
         "report_names": [str(name) for name in report_names],
         "filters": payload.get("filters"),
-        "patent_ids": payload.get("patent_ids"),
+        # 🔴 母體：payload 明給 patent_ids 以它為準；否則由 workspace 解出成員。
+        #    沒有這一行，選了 workspace 也會跑全庫（2026-08-17 實機 bug）。
+        "patent_ids": (payload.get("patent_ids")
+                       if payload.get("patent_ids") is not None
+                       else _resolve_workspace_patent_ids(payload.get("workspace_id"))),
         "report_scope": str(payload.get("report_scope") or "company"),
         "cluster_data": cluster_data,
         "workspace_name": _resolve_workspace_name(payload.get("workspace_id")),

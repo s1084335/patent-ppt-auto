@@ -519,6 +519,14 @@ def render_line_chart(
         if (year := _int_or_none(row.get("授權公告年"))) is not None
         if (count := _int_or_none(row.get("patent_count"))) is not None
     }
+    # 家族數（2026-08-17）：08-05 定案的「真爆發 vs 同族延伸」判別燃料原本只進
+    # 數據表，圖上讀不到。⚠ 缺鍵不補 0——沒有家族數與 0 族是兩件事。
+    fam = {
+        year: family
+        for row in application_rows
+        if (year := _int_or_none(row.get("application_year"))) is not None
+        if (family := _int_or_none(row.get("family_count"))) is not None
+    }
     years = sorted(set(app) | set(pub))
     max_count = max([*app.values(), *pub.values(), 1])
     width, height = _sizing_value("canvas_width"), _sizing_value("canvas_max_height")
@@ -559,7 +567,15 @@ def render_line_chart(
         svg.append(f'<polyline points="{points(pub)}" fill="none" stroke="{COLOR_PUBLICATION}" stroke-width="3"/>')
     for year in years:
         x = scale(year, years[0], years[-1], left, left + plot_w)
-        svg.append(f'<circle cx="{x:.1f}" cy="{scale(app.get(year, 0), 0, max_count, top + plot_h, top):.1f}" r="3.5" fill="{COLOR_APPLICATION}"/>')
+        app_y = scale(app.get(year, 0), 0, max_count, top + plot_h, top)
+        svg.append(f'<circle cx="{x:.1f}" cy="{app_y:.1f}" r="3.5" fill="{COLOR_APPLICATION}"/>')
+        # 家族數標註：⚠ 只標**與件數不同**的年份——相同時（1 件 1 族）標了是雜訊，
+        # 沒有家族數的年份也不標（缺鍵≠0 族）。標在點上方，不擋折線。
+        family = fam.get(year)
+        if family is not None and family != app.get(year):
+            svg.append(
+                f'<text x="{x:.1f}" y="{app_y - 9:.1f}" text-anchor="middle" '
+                f'font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">{family} 族</text>')
         if pub:
             svg.append(f'<circle cx="{x:.1f}" cy="{scale(pub.get(year, 0), 0, max_count, top + plot_h, top):.1f}" r="3.5" fill="{COLOR_PUBLICATION}"/>')
     # G-5：圖例中文化。⚠ F-9 那次只清了英文副題、沒清圖例——同一種問題只掃了一半。
@@ -569,6 +585,11 @@ def render_line_chart(
     if pub:
         svg.append(f'<rect x="{left + 148}" y="{top + 8}" width="12" height="12" fill="{COLOR_PUBLICATION}"/>'
                    f'<text x="{left + 166}" y="{top + 19}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">授權公告年</text>')
+    if any(fam.get(y) is not None and fam.get(y) != app.get(y) for y in years):
+        svg.append(
+            f'<text x="{left + plot_w}" y="{top + 19}" text-anchor="end" '
+            f'font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">'
+            f'點上數字＝該年家族數（與件數差距大＝同族延伸）</text>')
     svg.append("</svg>")
     _write_svg(path, svg)
 
@@ -3549,6 +3570,12 @@ def _build_trend_section(ctx: ChartContext) -> None:
         # 這裡原本寫死檔名，導致組版端拿 identity 前段去 artifact_manifest
         # （用 registry 鍵）反查落空 → 判定找不到圖 → 整頁降級成 stat_callout。
         "report_key": "application_trend",
+        # 🔴 2026-08-17：顯示層自 08-11 起**優先吃 section["rows"]**
+        # （見 SECTION_PERSIST_KEYS 註記，起因是受理局交叉表）。趨勢 section
+        # 原本沒給 rows，於是退回 report_key 的原始三欄報表——**授權公告件數
+        # 靜默消失**，使用者只看到申請年／件數／家族數。
+        # ⚠ 指向同一份 chart_rows["annual_trend"]，不重算第二次。
+        "rows": ctx.chart_rows["annual_trend"],
         "variants": [{"label": "Trend", "file": "annual_trend.svg", "variant_key": "default"}],
     })
 

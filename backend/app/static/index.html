@@ -721,7 +721,13 @@ const PATENTS_PAGE_SIZE = 100;
 const state = {
   workspaceId: null,
   // 全庫（下拉第一項）：選它時 isGlobalWs=true、workspaceId 落到全庫真實 id。
-  isGlobalWs: false,
+  // 🔴 2026-08-17：初值必須是 true。原本是 false，於是 loadWorkspaces 完成前
+  //    （或它失敗走 catch 時）isGlobalSelected() 回 false → 去打
+  //    /workspaces/null/patents，但選單顯示的是全庫——**顯示與資料不一致**，
+  //    使用者拿錯範圍的資料下判斷且無任何錯誤訊息。
+  //    ⚠ 同型前科見 onWorkspaceChange 的 R-2（#193）：那次修持久化，
+  //    這次修的是一致性。
+  isGlobalWs: true,
   globalWorkspaceId: null,   // 後端全庫 workspace 真實 id（loadWorkspaces 取得）
   nav: 'browse',
   // 分類區專利清單的分頁位移（2026-07-27 使用者定：與總覽一致都要分頁）。
@@ -862,8 +868,7 @@ async function loadWorkspaces() {
   if (saved && saved !== GLOBAL_WS_VALUE
       && Array.from(sel.options).some(o => o.value === saved)) {
     sel.value = saved;
-    state.isGlobalWs = false;
-    state.workspaceId = parseInt(saved, 10);
+    selectWorkspaceById(saved);
   } else {
     sel.value = GLOBAL_WS_VALUE;
     selectGlobalWorkspace();
@@ -873,8 +878,19 @@ async function loadWorkspaces() {
 }
 // 選全庫：旗標打開、workspaceId 落到全庫真實 id（尚未建立全庫時為 null）。
 function selectGlobalWorkspace() {
-  state.isGlobalWs = true;
-  state.workspaceId = state.globalWorkspaceId;
+  selectWorkspaceById(GLOBAL_WS_VALUE);
+}
+// 🔴 範圍設定的**唯一入口**（2026-08-17）：isGlobalWs 與 workspaceId 描述
+// 同一件事，分開賦值遲早分岔——那正是「選單顯示 A、資料是 B」的成因。
+// 傳 GLOBAL_WS_VALUE 或 falsy＝全庫；傳 id＝該 workspace。
+function selectWorkspaceById(value) {
+  if (!value || value === GLOBAL_WS_VALUE) {
+    state.isGlobalWs = true;
+    state.workspaceId = state.globalWorkspaceId;
+  } else {
+    state.isGlobalWs = false;
+    state.workspaceId = parseInt(value, 10);
+  }
 }
 function onWorkspaceChange() {
   // 切 workspace 先停掉所有輪詢：舊 workspace 的 job 不得繼續寫入新 workspace 的畫面。
@@ -883,12 +899,9 @@ function onWorkspaceChange() {
   // 🔴 R-2（2026-08-05）：選擇持久化。原本每次載入硬性重設回全庫——部署後重整
   // 頁面，使用者以為還在滑雪機、按「重新產製」實際送出全庫（#193 實案）。
   try { localStorage.setItem('workspaceSel', v); } catch (_) {}
+  selectWorkspaceById(v);
   if (v === GLOBAL_WS_VALUE) {
-    selectGlobalWorkspace();
     state.nav = 'browse';  // 選全庫→瀏覽專利（跨 workspace 全庫清單；總覽已刪）。
-  } else {
-    state.isGlobalWs = false;
-    state.workspaceId = v ? parseInt(v, 10) : null;
   }
   state.topicPatentsOffset = 0;   // 換 workspace 清單頁碼歸零
   state.topicFilterKey = null;
