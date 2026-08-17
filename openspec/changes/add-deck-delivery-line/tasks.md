@@ -433,7 +433,7 @@
       _compose，同一份版面）。
       🔴 **半真跑抓到 fake 測不到的洞**：runner 假設 make_deck 吃第 4 參數，
       當時腳本只吃 3 個——SVG 從沒產出，單元測試因 fake 假裝有而全綠。
-      	est_deck_runner_semireal.py 以真素材（滑雪機 14 頁）真 subprocess
+      test_deck_runner_semireal.py 以真素材（滑雪機 14 頁）真 subprocess
       全鏈 18 秒通過，作為 regression 常駐（素材不在時 skip）。
       ⚠ 半真跑驗不了 CLI 撰稿品質與目視判斷——4.2 用真 CLI。
 - [x] 3.3 Red→Green：**「匯出報告」頁**（design §6，非報表種類頁）填入

@@ -46,4 +46,3 @@ patent browse on one shared search-term predicate.
 - **WHEN** the user searches the same non-primary participant keyword in both
   scopes
 - **THEN** both scopes SHALL apply the same normalization and matching behavior
-

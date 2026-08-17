@@ -1,6 +1,6 @@
 # DB Index Governance
 
-更新：2026-08-17  
+更新：2026-08-17
 範圍：Supabase/PostgreSQL 正式資料庫、backend API、worker、MCP 取證查詢。
 
 ## 原則
