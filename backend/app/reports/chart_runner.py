@@ -536,14 +536,10 @@ def render_line_chart(
         if (year := _int_or_none(row.get("授權公告年"))) is not None
         if (count := _int_or_none(row.get("patent_count"))) is not None
     }
-    # 家族數（2026-08-17）：08-05 定案的「真爆發 vs 同族延伸」判別燃料原本只進
-    # 數據表，圖上讀不到。⚠ 缺鍵不補 0——沒有家族數與 0 族是兩件事。
-    fam = {
-        year: family
-        for row in application_rows
-        if (year := _int_or_none(row.get("application_year"))) is not None
-        if (family := _int_or_none(row.get("family_count"))) is not None
-    }
+    # 🔴 2026-08-17（晚）使用者定案：**家族數先從趨勢圖拿掉**。
+    #    當日稍早才加上（08-05 的「真爆發 vs 同族延伸」判別燃料），實機看過後
+    #    決定不放——兩條線再加點上數字，資訊密度過高。判別需求未消失，
+    #    家族數仍可由既有家族口徑報表取得；要回復看本行 git 記錄。
     years = sorted(set(app) | set(pub))
     max_count = max([*app.values(), *pub.values(), 1])
     width, height = _sizing_value("canvas_width"), _sizing_value("canvas_max_height")
@@ -586,13 +582,6 @@ def render_line_chart(
         x = scale(year, years[0], years[-1], left, left + plot_w)
         app_y = scale(app.get(year, 0), 0, max_count, top + plot_h, top)
         svg.append(f'<circle cx="{x:.1f}" cy="{app_y:.1f}" r="3.5" fill="{COLOR_APPLICATION}"/>')
-        # 家族數標註：⚠ 只標**與件數不同**的年份——相同時（1 件 1 族）標了是雜訊，
-        # 沒有家族數的年份也不標（缺鍵≠0 族）。標在點上方，不擋折線。
-        family = fam.get(year)
-        if family is not None and family != app.get(year):
-            svg.append(
-                f'<text x="{x:.1f}" y="{app_y - 9:.1f}" text-anchor="middle" '
-                f'font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">{family} 族</text>')
         if pub:
             svg.append(f'<circle cx="{x:.1f}" cy="{scale(pub.get(year, 0), 0, max_count, top + plot_h, top):.1f}" r="3.5" fill="{COLOR_PUBLICATION}"/>')
     # G-5：圖例中文化。⚠ F-9 那次只清了英文副題、沒清圖例——同一種問題只掃了一半。
@@ -602,11 +591,6 @@ def render_line_chart(
     if pub:
         svg.append(f'<rect x="{left + 148}" y="{top + 8}" width="12" height="12" fill="{COLOR_PUBLICATION}"/>'
                    f'<text x="{left + 166}" y="{top + 19}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">授權公告年</text>')
-    if any(fam.get(y) is not None and fam.get(y) != app.get(y) for y in years):
-        svg.append(
-            f'<text x="{left + plot_w}" y="{top + 19}" text-anchor="end" '
-            f'font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">'
-            f'點上數字＝該年家族數（與件數差距大＝同族延伸）</text>')
     svg.append("</svg>")
     _write_svg(path, svg)
 
@@ -862,6 +846,11 @@ def design_strategy_table_rows(
     return out
 
 
+#: 現行有效那條的顏色。⚠ 不重用 STATUS_COLORS["授權"]：那是堆疊裡的一段，
+#: 與整列的「現行有效」是不同層級的量，同色會被讀成同一件事。
+COLOR_LIVE_PROTECTION = "#0F766E"
+
+
 def design_year_matrix_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """外觀策略 → 申請人 × 年度矩陣（2026-08-17 使用者：「不如做矩陣給我」）。
 
@@ -937,14 +926,24 @@ def render_country_status_stack(
                             target_pt=_sizing_value("note_target_pt"))
     # 🔴 2026-08-17 使用者驗收「國家和 bar 分太開」：左欄寬**依標籤實際長度推導**，
     #    不用固定值。受理局代碼只有 2–3 個字元，固定 150px 會空掉一大片。
-    label_w = max((len(str(r.get("country_code") or "")) for r in rows), default=2)
-    left = max(52, int(label_w * label_px * 0.72) + 22)
-    # 右欄放兩個彙總：累計申請（歷史）與現存有效（當下權利）——後者是使用者
-    # 追問「現存有效跑去哪了」的那個決策口徑，改堆疊後不能只剩讀者自己加總。
+    # ⚠ 用 `_display_width` 不用 `len()`：收斂列的標籤是中文
+    #   （「EPC 指定國（24 國）」），CJK 每字約一個全形寬，用字元數會**低估一半**
+    #   ——實測那列的開頭被畫布左緣裁掉（同 G-3／H-3 的老症狀）。
+    label_w = max((_display_width(str(r.get("country_code") or "")) for r in rows),
+                  default=2.0)
+    left = max(52, int(label_w * label_px) + 22)
+    # 右欄放兩個彙總：累計申請（歷史）與現行有效（當下權利）。
     right, top = 196, 62
+    # 🔴 2026-08-17 使用者：「現行有效要整合進去，和歷史國家申請可以在同張圖
+    #    看到差異」——每列上條＝歷史申請（依狀態堆疊）、下條＝現行有效，
+    #    **共用同一把尺**（件 vs 件）才比得出長度差。
+    has_live = any(r.get("現行有效") is not None for r in rows)
     bar_h = max(18, int(row_h * 0.55))
+    live_h = max(7, int(bar_h * 0.38)) if has_live else 0
+    live_gap = 3 if has_live else 0
     gap = max(10, int(row_h * 0.35))
-    height = top + len(rows) * (bar_h + gap) + 24
+    row_span = bar_h + live_h + live_gap + gap
+    height = top + len(rows) * row_span + 24
     plot_w = width - left - right
     # ⚠ 尺標用「申請件數」（歷史累計）而非各狀態加總：兩者理應相等，
     #    不等就是資料有狀態沒收斂到——用申請件數當尺，缺口會**看得見**。
@@ -966,8 +965,14 @@ def render_country_status_stack(
                    f' fill="{COLOR_TEXT}">{xml_text(st)}</text>')
         lx += 34 + len(st) * note_px * 0.66
 
+    if has_live:
+        svg.append(f'<rect x="{lx:.1f}" y="46" width="12" height="8" rx="2"'
+                   f' fill="{COLOR_LIVE_PROTECTION}"/>')
+        svg.append(f'<text x="{lx + 17:.1f}" y="55" font-size="{note_px:.1f}"'
+                   f' fill="{COLOR_TEXT}">現行有效（EP 已展開至指定國）</text>')
+
     for idx, row in enumerate(rows):
-        y = top + idx * (bar_h + gap)
+        y = top + idx * row_span
         country = xml_text(str(row.get("country_code") or ""))
         svg.append(f'<text x="{left - 12}" y="{y + bar_h * 0.72:.1f}"'
                    f' text-anchor="end" font-size="{label_px:.1f}"'
@@ -989,15 +994,32 @@ def render_country_status_stack(
         svg.append(f'<text x="{left + plot_w + 8}" y="{y + bar_h * 0.72:.1f}"'
                    f' font-size="{label_px:.1f}" fill="{COLOR_TEXT}">'
                    f'{totals[idx]} 件</text>')
-        alive = _int_or_none(row.get("現存有效")) or 0
-        # 有效數用授權色，和堆疊裡的授權段視覺對得上。
-        svg.append(f'<text x="{left + plot_w + 104}" y="{y + bar_h * 0.72:.1f}"'
-                   f' font-size="{label_px:.1f}" font-weight="600"'
-                   f' fill="{STATUS_COLORS.get("授權", COLOR_TEXT)}">{alive}</text>')
+        if has_live:
+            live = _int_or_none(row.get("現行有效")) or 0
+            ly = y + bar_h + live_gap
+            live_w = plot_w * live / max_total
+            if live_w > 0:
+                svg.append(
+                    f'<rect data-role="live-bar" x="{left}" y="{ly:.1f}"'
+                    f' width="{live_w:.1f}" height="{live_h}" rx="2"'
+                    f' fill="{COLOR_LIVE_PROTECTION}">'
+                    f'<title>{country} 現行有效 {live} 件</title></rect>')
+            else:
+                # ⚠ 0 也要留痕：申請過但現在一件都沒有（EP 展開後就是這樣），
+                #   完全不畫會讀成「這列沒有這個維度」，而不是「這個維度是 0」。
+                svg.append(
+                    f'<rect data-role="live-bar" x="{left}" y="{ly:.1f}"'
+                    f' width="2" height="{live_h}" fill="{COLOR_TEXT_SOFT}"'
+                    f' opacity="0.45"><title>{country} 現行有效 0 件</title></rect>')
+            svg.append(f'<text x="{left + plot_w + 104}"'
+                       f' y="{y + bar_h * 0.72:.1f}"'
+                       f' font-size="{label_px:.1f}" font-weight="600"'
+                       f' fill="{COLOR_LIVE_PROTECTION}">{live}</text>')
     svg.append(f'<text x="{left + plot_w + 8}" y="{top - 8}"'
                f' font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">累計申請</text>')
-    svg.append(f'<text x="{left + plot_w + 104}" y="{top - 8}"'
-               f' font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">現存有效</text>')
+    if has_live:
+        svg.append(f'<text x="{left + plot_w + 104}" y="{top - 8}"'
+                   f' font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">現行有效</text>')
     svg.append("</svg>")
     _write_svg(path, svg)
 
@@ -3913,18 +3935,25 @@ def _build_country_map_section(ctx: ChartContext) -> None:
     #    且圖上的「現存有效」在表中根本沒有對應欄。
     #    ⚠ 實測驗證（CN 38／TW 9／US 6／EP 2）：六欄加總 == 申請件數，
     #      故堆疊總長＝歷史累計申請、各段＝當下狀態分布，一條看完兩種分析。
+    # 🔴 2026-08-17 晚使用者定案：現行有效**整合進同一張圖**（不開第二分頁），
+    #    每列上條＝歷史申請（依狀態堆疊）、下條＝現行有效，同一把尺看得出差異。
     status_pivot = country_status_display_pivot(report["rows"])
     render_country_status_stack(
         ctx.run_dir / "jurisdiction_distribution.svg", report["label_zh"], status_pivot)
+    notes.append(
+        "「現行有效」＝該受理局申請案中，法律狀態桶為已授權者；"
+        "EP 授權案計在 EP 名下，不展開至各 EPC 指定國。")
     # chart_rows 與 section rows 指向同一份——下游（deck／表格）不會拿到另一套語意。
     ctx.chart_rows["jurisdiction_distribution"] = status_pivot
+
     ctx.sections.append({
         "title": report["label_zh"],
         "report_key": "country_distribution",
         # 🔴 數據表吃顯示用交叉表（2026-08-11 使用者：「狀態做橫向欄位、縱向放國家」）
         # ——section 自帶 rows＝顯示轉置（分群卡既有慣例），不帶才回 reports 桶的長格式。
         "rows": status_pivot,
-        "variants": [{"label": "Bar", "file": "jurisdiction_distribution.svg", "variant_key": "default"}],
+        "variants": [{"label": "Bar", "file": "jurisdiction_distribution.svg",
+                      "variant_key": "default"}],
         "note": " ".join(notes),
     })
 
@@ -4343,9 +4372,11 @@ def country_status_display_pivot(rows: list[dict[str, Any]]) -> list[dict[str, A
     return [
         {"country_code": country,
          "申請件數": sum(buckets.values()),
-         # 現存有效放在申請件數之後、字面欄之前：兩個彙總口徑相鄰，
-         # 讀者一眼看到「申請 38／有效 24」，字面明細在右邊展開。
-         "現存有效": alive_by_country.get(country, 0),
+         # 現行有效緊接申請件數（兩個彙總口徑相鄰），狀態字面欄在其後展開。
+         # ⚠ 2026-08-17 晚使用者定案「EP 國家不用展開，用 EP 就好」：
+         #   本欄＝**該受理局**歷史申請中，法律狀態桶為已授權者。EP 授權案算在
+         #   EP 名下，不展開成各 EPC 指定國（實測展開會讓一件 EP 案生出 24 列）。
+         "現行有效": alive_by_country.get(country, 0),
          **{t: (buckets.get(t) or "") for t in ordered_terms}}
         for country, buckets in ranked
     ]
@@ -5110,7 +5141,8 @@ SECTION_SPECS: tuple[SectionSpec, ...] = (
     SectionSpec("annual_trend", ("application_trend", "publication_trend"), _build_trend_section),
     # 合併頁：country_map 同時吃 family_country_layout（家族數降為註記），
     # 兩鍵任一被選都渲染本卡；family_layout 獨立卡已刪（2026-08-07）。
-    SectionSpec("country_map", ("country_distribution", "family_country_layout"), _build_country_map_section),
+    SectionSpec("country_map", ("country_distribution", "family_country_layout"),
+                _build_country_map_section),
     SectionSpec("ipc", ("ipc_main_distribution",), _build_ipc_section),
     SectionSpec("cpc", ("cpc_main_distribution",), _build_cpc_section),
     SectionSpec("applicant_ranking", ("applicant_ranking",), _build_applicant_ranking_section),

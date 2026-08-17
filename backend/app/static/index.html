@@ -4483,23 +4483,33 @@ function switchReportSourceField(sourceField) {
 function sectionForReportView(section, option, sourceField) {
   option = option || {};
   if (!isClusterSection(section)) {
-    if (option.variantIndex === undefined || option.variantIndex === null) return section;
-    const variant = (section.variants || [])[option.variantIndex];
-    // 🔴 2026-08-17：非分群 section 也要吃 variant 級 rows／column_labels。
-    //    原本只換 variants，rows 一律留 section 那份——IPC/CPC 切 4 階時
-    //    **圖換了、表還是 5 階**，外觀頁切「技術交叉」也還是策略表。
-    //    ⚠ 判長度不判 truthy：空陣列／空物件不得蓋掉 section 那份完整資料
-    //    （分群分支早就這樣寫了，這裡先前漏掉）。
-    const variantRows = (variant && Array.isArray(variant.rows) && variant.rows.length)
+    // 🔴 2026-08-17（第三修）：非分群 section 的 variant 有**兩條**切換路徑，
+    //    先前只認其中一條，所以 IPC/CPC 切階層時圖換了、表沒換。
+    //    ①下拉逐 variant（`option.variantIndex`）——分群家族在用
+    //    ②卡片內分頁鈕（`reportVariantPick[sectionIndex]`）——IPC/CPC、外觀在用。
+    //      `buildReportViewOptions` 對非分群 section **一個 section 只給一項**、
+    //      不帶 variantIndex，所以①那條對它們是死碼。
+    //    ⚠ 圖早就用 ②（`reportSingleHtml` 的 `pick`）選 variant；表必須同源，
+    //      否則就是「兩個地方各自決定顯示哪一版」。
+    const explicit = (option.variantIndex !== undefined && option.variantIndex !== null);
+    const idx = explicit
+      ? option.variantIndex
+      : (reportVariantPick[option.sectionIndex || 0] || 0);
+    const variant = (section.variants || [])[idx];
+    if (!variant) return section;
+    // ⚠ 判長度不判 truthy：空陣列／空物件不得蓋掉 section 那份完整資料。
+    const variantRows = (Array.isArray(variant.rows) && variant.rows.length)
       ? variant.rows : (section.rows || []);
     return Object.assign({}, section, {
       title: option.label || section.title,
       rows: variantRows,
-      report_key: (variant && variant.report_key) || section.report_key,
-      column_labels: (variant && variant.column_labels
+      report_key: variant.report_key || section.report_key,
+      column_labels: (variant.column_labels
         && Object.keys(variant.column_labels).length)
         ? variant.column_labels : section.column_labels,
-      variants: variant ? [variant] : [],
+      // ⚠ 只有①（下拉已指定唯一 variant）才收斂成一個；②必須留完整清單，
+      //   否則 `reportVariantTabsHtml` 少於 2 個就**不畫分頁鈕**——切換入口消失。
+      variants: explicit ? [variant] : section.variants,
     });
   }
   const reportKey = option.report_key || 'cluster_topic_table';

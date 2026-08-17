@@ -132,10 +132,16 @@ class _DbRunSource:
     一次撈整版檔名集合（只查 filename，一趟往返），exists 查集合。
     """
 
-    def __init__(self, version: str, *, has_narratives: bool | None = None):
+    #: 未提供 hint 的哨兵——None 是合法值（＝不歸屬任何 workspace），不能拿它當「沒帶」。
+    _NO_HINT = object()
+
+    def __init__(self, version: str, *, has_narratives: bool | None = None,
+                 workspace_id=_NO_HINT):
         self.name = version
         # list_versions 已用 SQL 聚合算出有無解讀；帶進來讓列表端點不必為一個布林值撈內容。
         self.has_narratives_hint = has_narratives
+        # 同理，workspace 歸屬也由同一趟聚合帶回（2026-08-17）——不逐版讀 meta 小檔。
+        self.workspace_id_hint = workspace_id
         self._cache: dict[str, bytes | None] = {}
         self._filenames: set[str] | None = None
 
@@ -190,7 +196,14 @@ def _list_run_sources():
         for entry in report_artifact_store.list_versions():
             sources.setdefault(
                 entry["version"],
-                _DbRunSource(entry["version"], has_narratives=bool(entry.get("has_narratives"))),
+                _DbRunSource(
+                    entry["version"],
+                    has_narratives=bool(entry.get("has_narratives")),
+                    # ⚠ 用 `in` 判斷而非 `.get()`：workspace_id 為 None 是**有意義的值**
+                    # （不歸屬任何 workspace），與「這批資料沒帶這個欄位」必須分得開。
+                    workspace_id=(entry["workspace_id"] if "workspace_id" in entry
+                                  else _DbRunSource._NO_HINT),
+                ),
             )
     except Exception:  # noqa: BLE001 - DB 不可用時仍回本機版本，不讓報表頁整個掛掉
         pass
@@ -483,9 +496,16 @@ def _version_workspace_id(source) -> int | None:
     """讀版本歸屬的 workspace_id（version_meta.json，~120B 小檔）。
 
     無 meta（舊版本）或無鍵＝不歸屬任何 workspace → 回 None。
+
+    🔴 DB 來源優先用 `list_versions` 同一趟聚合帶回的 hint（2026-08-17）——
+    逐版讀這個小檔要兩趟往返，48 版就是 96 趟、開頁 4.3 秒。同 `_has_narratives`
+    的作法。本機目錄來源仍直接讀檔（本機 I/O，不是瓶頸）。
     """
     import json as _json
 
+    hint = getattr(source, "workspace_id_hint", _DbRunSource._NO_HINT)
+    if hint is not _DbRunSource._NO_HINT:
+        return hint
     raw = source.read_bytes("version_meta.json")
     if raw is None:
         return None

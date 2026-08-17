@@ -1,20 +1,14 @@
-"""趨勢折線圖要在資料點上帶家族數（2026-08-17 使用者定案）。
+"""趨勢折線圖**不放**家族數（2026-08-17 晚，使用者實機看過後定案反轉）。
 
-## 為什麼
+## 沿革（同一天內兩次定案，兩次都是使用者實機決定）
 
-`family_count`（08-05 定案的「真爆發 vs 同族延伸判別燃料」）只活在表格裡，
-圖上完全讀不到——`_build_trend_section` 的註解自己寫著「圖不改（仍是件數雙線），
-四欄只進數據表」。那正是審閱意見第 6 點抓的「表格有一個維度、圖上讀不到」。
+1. 早上：`family_count` 只活在表格、圖上讀不到，於是在申請點旁標註家族數。
+2. 晚上：實機看過後「申請與公告趨勢的圖，家族數先拿掉」——兩條線再加點上
+   數字，資訊密度過高。
 
-實測數字說明它的判讀力：2021 (36 件/28 族)、2022 (61/47)、2023 (60/52)
-——**件數與家族數的差距逐年縮小＝近年更接近真爆發而非同族延伸**。
-
-## 做法
-
-不畫第三條線（三條線的圖會擠），改在**申請點旁標註家族數**——
-一眼可比「這一點是幾件、其中幾族」。
-
-⚠ 只標**有家族數且與件數不同**的年份：相同時（1 件 1 族）標了是雜訊。
+⚠ 這支測試沒有刪，而是**反轉判準**並保留沿革：直接刪掉會讓下一個人（包含我）
+看不出「圖上沒有家族數」是定案還是漏做，很可能又加回去。08-05 的「真爆發 vs
+同族延伸」判別需求沒有消失，只是不由這張圖承擔。
 """
 from __future__ import annotations
 
@@ -25,12 +19,12 @@ from pathlib import Path
 from backend.app.reports import chart_runner
 
 
-class TrendFamilyLabelTests(unittest.TestCase):
+class TrendChartHasNoFamilyLabelTests(unittest.TestCase):
     APP = [
         {"application_year": 2021, "patent_count": 36, "family_count": 28},
         {"application_year": 2022, "patent_count": 61, "family_count": 47},
-        {"application_year": 2023, "patent_count": 1, "family_count": 1},   # 相同→不標
-        {"application_year": 2024, "patent_count": 34},                      # 無家族數→不標
+        {"application_year": 2023, "patent_count": 1, "family_count": 1},
+        {"application_year": 2024, "patent_count": 34},
     ]
     PUB = [{"授權公告年": 2022, "patent_count": 30}]
 
@@ -39,21 +33,19 @@ class TrendFamilyLabelTests(unittest.TestCase):
         chart_runner.render_line_chart(out, "趨勢", self.APP, self.PUB)
         return out.read_text(encoding="utf-8")
 
-    def test_family_labels_rendered(self):
-        """🔴 核心：家族數要出現在圖上。"""
+    def test_no_family_annotation_on_chart(self):
+        """🔴 核心：即使資料帶了 family_count，圖上也不得出現家族數。"""
         svg = self._render()
-        self.assertIn("28 族", svg, "2021 的家族數沒標在圖上")
-        self.assertIn("47 族", svg, "2022 的家族數沒標在圖上")
+        self.assertNotIn("族", svg, "趨勢圖仍有家族數標註／圖例")
+        for n in ("28", "47"):
+            self.assertNotIn(f">{n} ", svg)
 
-    def test_same_count_not_labelled(self):
-        """件數＝家族數時不標——那是雜訊不是資訊。"""
+    def test_two_series_still_drawn(self):
+        """⚠ 拿掉標註不得動到兩條線本體——申請年與授權公告年都要在。"""
         svg = self._render()
-        self.assertNotIn("1 族", svg)
-
-    def test_missing_family_not_labelled(self):
-        """沒有家族數的年份不得標成 0 族（缺鍵≠0，混同會誤導）。"""
-        svg = self._render()
-        self.assertNotIn("0 族", svg)
+        self.assertIn("申請年", svg)
+        self.assertIn("授權公告年", svg)
+        self.assertEqual(svg.count("<polyline"), 2, "應仍是兩條折線")
 
     def test_chart_still_valid_svg(self):
         import xml.etree.ElementTree as ET

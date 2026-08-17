@@ -1,4 +1,4 @@
-"""受理局「申請 vs 現存有效」合併頁（2026-08-07 使用者定案）。
+"""受理局「申請 vs 現行有效」合併頁（2026-08-07 使用者定案）。
 
 p04（受理局分布，件）＋ p06（國家佈局現有保護，存活家族數）合成一張：
 每國兩條 bar、口徑「件 vs 件」（申請件數 vs 狀態桶「已授權」件數）、
@@ -88,7 +88,7 @@ class DataTableUsesPivotTests(unittest.TestCase):
 
     機制收斂為一條：**section 自帶 `rows` ＝ 顯示用轉置**（分群卡既有慣例），
     index 產表優先吃它；沒帶才回 reports 桶查。
-    ⚠ 圖不受影響：兩條 bar 的「現存有效」仍走狀態桶 pivot（分析口徑），
+    ⚠ 圖不受影響：兩條 bar 的「現行有效」仍走狀態桶 pivot（分析口徑），
     表格走 11 項詞彙（顯示口徑）——兩者語意不同，各自引用各自的唯一來源。
     """
 
@@ -124,13 +124,13 @@ class DataTableUsesPivotTests(unittest.TestCase):
         cols = list(rows[0])
         self.assertEqual(cols[0], "country_code")
         self.assertEqual(cols[1], "申請件數")
-        # 2026-08-17：兩個彙總口徑相鄰（申請件數／現存有效），字面明細接在後面。
-        self.assertEqual(cols[2], "現存有效")
+        # 2026-08-17：兩個彙總口徑相鄰（申請件數／現行有效），字面明細接在後面。
+        self.assertEqual(cols[2], "現行有效")
         # 有件數的狀態依 11 項詞彙序出現；未知（未登錄）殿後
         self.assertEqual(cols[3:], ["審查中", "授權", "撤回", "到期", "未知"])
         cn = next(r for r in rows if r["country_code"] == "CN")
         self.assertEqual((cn["申請件數"], cn["授權"], cn["到期"], cn["審查中"]), (38, 20, 15, 3))
-        self.assertEqual(cn["現存有效"], 20, "現存有效＝狀態桶已授權，與授權欄在此測資相等")
+        self.assertEqual(cn["現行有效"], 20, "現行有效＝狀態桶已授權，與授權欄在此測資相等")
         tw = next(r for r in rows if r["country_code"] == "TW")
         self.assertEqual((tw["授權"], tw["未知"]), (2, 7), "已核准應折疊進授權；未登錄以未知現形")
 
@@ -180,13 +180,13 @@ class PairedBarChartTests(unittest.TestCase):
         chart_runner.render_paired_bar_chart(
             path, "專利受理局分布", chart_runner.country_status_pivot(ROWS),
             label_key="country_code",
-            series=(("申請件數", "申請件數"), ("現存有效", "已授權")),
+            series=(("申請件數", "申請件數"), ("現行有效", "已授權")),
         )
         return path.read_text(encoding="utf-8")
 
     def test_two_bars_per_country_with_values(self):
         svg = self._render()
-        # CN 兩條：申請 38、現存有效 20；值以「N 件」標示。
+        # CN 兩條：申請 38、現行有效 20；值以「N 件」標示。
         self.assertIn("38 件", svg)
         self.assertIn("20 件", svg)
         # TW：申請 9、有效 2。
@@ -196,7 +196,7 @@ class PairedBarChartTests(unittest.TestCase):
     def test_legend_defines_both_series(self):
         svg = self._render()
         self.assertIn("申請件數", svg)
-        self.assertIn("現存有效", svg)
+        self.assertIn("現行有效", svg)
 
 
 class StackReplacesPairedBarTests(unittest.TestCase):
@@ -242,7 +242,7 @@ class StackReplacesPairedBarTests(unittest.TestCase):
                  if isinstance(e, ast.Constant) and isinstance(e.value, str)]
         self.assertTrue(texts, "notes 取不到字串")
         for text in texts:
-            for stale in ("兩條", "現存有效"):
+            for stale in ("兩條", "現行有效"):
                 self.assertNotIn(stale, text,
                                  f"輸出給使用者的備註仍在描述已被取代的兩條 bar：{text}")
 

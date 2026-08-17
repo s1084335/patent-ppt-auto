@@ -46,6 +46,9 @@ class VariantRowsDisplayTests(unittest.TestCase):
             raise unittest.SkipTest("node 不在 PATH，也不在 D:/vscode/node.js")
         cls.html = INDEX.read_text(encoding="utf-8")
 
+    #: 分頁鈕狀態，預設空（＝第 0 個）；個別測試可覆寫。
+    pick: dict = {}
+
     def _run(self, section: dict, option: dict) -> dict:
         deps = "\n".join(
             _extract(self.html, fn) for fn in
@@ -54,6 +57,9 @@ class VariantRowsDisplayTests(unittest.TestCase):
         script = (
             "const CLUSTER_REPORT_NAMES = new Set(['cluster_topic_table','opportunity_quadrant',"
             "'topic_timeline']);\n"
+            # 分頁鈕的選擇狀態（正式碼在 index.html 同名 const）——非分群 section
+            # 沒帶 option.variantIndex 時就是靠它決定顯示哪個 variant。
+            f"const reportVariantPick = {json.dumps(self.pick)};\n"
             f"{deps}\n"
             "function reportLabelForKey(k) { return k; }\n"
             f"const out = sectionForReportView({json.dumps(section)}, {json.dumps(option)}, null);\n"
@@ -98,8 +104,15 @@ class VariantRowsDisplayTests(unittest.TestCase):
         out = self._run(section, {"variantIndex": 0, "label": "4 階"})
         self.assertEqual(len(out["rows"]), 3)
 
-    def test_no_variant_index_keeps_section_rows(self):
-        out = self._run(self._ipc_section(), {})
+    def test_no_variant_index_follows_tab_pick(self):
+        """🔴 契約更正（2026-08-17 第三修）：沒帶 variantIndex **不是**「用 section
+        rows」，而是「跟著分頁鈕」——非分群 section 的下拉本來就不帶 variantIndex，
+        照舊契約表格永遠停在預設階（實機症狀）。分頁鈕未點過時預設第 0 個。"""
+        self.pick = {}
+        out = self._run(self._ipc_section(), {"sectionIndex": 0})
+        self.assertEqual([r["code"] for r in out["rows"]], ["A63B", "F03G"])
+        self.pick = {"0": 1}
+        out = self._run(self._ipc_section(), {"sectionIndex": 0})
         self.assertEqual(len(out["rows"]), 3)
 
     def test_variant_column_labels_win_when_non_empty(self):
