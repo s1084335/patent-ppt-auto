@@ -123,13 +123,22 @@ class DesignStrategyChartTests(unittest.TestCase):
     ]
 
     def test_chart_shows_applicants_not_just_two_bars(self):
-        """🔴 圖要能看出「誰用什麼策略」，不是只有兩條總數。"""
+        """🔴 圖要能看出「誰用什麼策略」，不是只有兩條總數。
+
+        2026-08-17 二輪：長條改矩陣（使用者「不如做矩陣給我」）——這批資料
+        外觀件數幾乎全是 1，兩條長條看不出東西。判準不變：圖上要有申請人。
+        """
+        rows = chart_runner.design_year_matrix_rows([
+            {**r, "design_years": [2019, 2022] if r["design_count"] == 2 else [2018]}
+            for r in self.STRATEGY_ROWS])
         out = Path(tempfile.mkdtemp()) / "design.svg"
-        chart_runner.render_design_strategy_chart(out, "外觀保護策略",
-                                                  self.STRATEGY_ROWS)
+        chart_runner.render_matrix_chart(
+            out, "外觀保護策略", rows, row_key="applicant_strategy", col_key="year",
+            col_order=tuple(sorted({r["year"] for r in rows})))
         svg = out.read_text(encoding="utf-8")
-        self.assertIn("帝瑪斯", svg, "圖上看不到申請人——只有兩條總數看不出東西")
+        self.assertIn("帝瑪斯", svg, "圖上看不到申請人")
         self.assertIn("上海波迪貿易", svg)
+        self.assertIn("技+外", svg, "列標籤要帶策略型，否則答不了「策略」")
 
     def test_table_columns_trimmed(self):
         """表精簡：PPT 放得下。⚠ 資訊不丟，只是併欄與移到敘述。"""

@@ -862,80 +862,48 @@ def design_strategy_table_rows(
     return out
 
 
-def render_design_strategy_chart(
-    path: Path,
-    title: str,
-    rows: list[dict[str, Any]],
-) -> None:
-    """申請人 × 策略型交叉圖（2026-08-17 取代「只有兩條總數」的策略分布）。
+def design_year_matrix_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """外觀策略 → 申請人 × 年度矩陣（2026-08-17 使用者：「不如做矩陣給我」）。
 
-    每個申請人一列，外觀件數與技術件數並排——一眼看出**誰只做外觀、
-    誰兩邊都做、各做多少**。原圖只畫策略型的總數（只走外觀 6／技術+外觀 4），
-    看不出是哪些人、也看不出投入規模。
+    原本兩條長條（外觀件數／技術件數）在這批資料上幾乎全是 1，看不出東西。
+    矩陣答得了三件事：誰、什麼時候佈外觀、用哪種策略。
 
-    ⚠ 依「外觀件數」排序而非總量：這張圖的主題是外觀保護，
-    技術件數是對照維度不是排序依據。
+    ⚠ 列標籤帶策略型（技+外／純外觀），否則它只是年度分布、答不了「策略」。
+    技術件數不進矩陣（技術案沒有逐年資料），留在表格與敘述。
     """
-    if not rows:
-        return
-    ordered = sorted(
-        rows,
-        key=lambda r: (-(_int_or_none(r.get("design_count")) or 0),
-                       -(_int_or_none(r.get("tech_count")) or 0),
-                       str(r.get("applicant") or "")),
-    )
-    width = _sizing_value("canvas_width")
-    row_h = _sizing_value("row_height")
-    label_px = chart_font_px(width, row_h * max(len(ordered), 1))
-    note_px = chart_font_px(width, row_h * max(len(ordered), 1),
-                            target_pt=_sizing_value("note_target_pt"))
-    # 同上：申請人名長度差異大，依最長者推導但設上限（避免一個超長名字壓縮圖寬）。
-    name_w = max((len(str(r.get("applicant") or "")) for r in ordered), default=6)
-    left = min(230, max(90, int(name_w * label_px * 0.72) + 20))
-    right, top = 96, 62
-    bar_h = max(11, int(row_h * 0.30))
-    gap = max(12, int(row_h * 0.40))
-    height = top + len(ordered) * (bar_h * 2 + gap) + 24
-    plot_w = width - left - right
-    max_v = max([_int_or_none(r.get("design_count")) or 0 for r in ordered]
-                + [_int_or_none(r.get("tech_count")) or 0 for r in ordered] + [1])
-
-    svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
-        f' viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
-        '<rect width="100%" height="100%" fill="white"/>',
-        f'<text data-role="chart-title" x="{left}" y="30" font-size="{label_px:.1f}"'
-        f' font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<rect x="{left}" y="44" width="12" height="12" fill="{COLOR_SEGMENT}"/>'
-        f'<text x="{left + 17}" y="55" font-size="{note_px:.1f}"'
-        f' fill="{COLOR_TEXT}">外觀件數</text>'
-        f'<rect x="{left + 110}" y="44" width="12" height="12" fill="{COLOR_BAR}"/>'
-        f'<text x="{left + 127}" y="55" font-size="{note_px:.1f}"'
-        f' fill="{COLOR_TEXT}">技術件數</text>',
-    ]
-    for idx, row in enumerate(ordered):
-        y = top + idx * (bar_h * 2 + gap)
-        name = xml_text(str(row.get("applicant") or ""))
-        strategy = xml_text(str(row.get("strategy_type") or ""))
-        svg.append(f'<text x="{left - 12}" y="{y + bar_h:.1f}" text-anchor="end"'
-                   f' font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{name}</text>')
-        # 策略型標在名字下方——那是分類不是數量，不佔長條
-        svg.append(f'<text x="{left - 12}" y="{y + bar_h * 2 + 2:.1f}"'
-                   f' text-anchor="end" font-size="{note_px:.1f}"'
-                   f' fill="{COLOR_TEXT_SOFT}">{strategy}</text>')
-        for offset, key, color in ((0, "design_count", COLOR_SEGMENT),
-                                   (bar_h, "tech_count", COLOR_BAR)):
-            count = _int_or_none(row.get(key)) or 0
-            if count <= 0:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        marker = "技+外" if row.get("strategy_type") == "技術+外觀" else "純外觀"
+        label = f'{row.get("applicant")}·{marker}'
+        for year in (row.get("design_years") or []):
+            if year is None:
                 continue
-            bar_w = plot_w * count / max_v
-            svg.append(f'<rect x="{left}" y="{y + offset}" width="{bar_w:.1f}"'
-                       f' height="{bar_h}" fill="{color}"/>')
-            svg.append(f'<text x="{left + bar_w + 6:.1f}"'
-                       f' y="{y + offset + bar_h * 0.82:.1f}"'
-                       f' font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{count}</text>')
-    svg.append("</svg>")
-    _write_svg(path, svg)
+            out.append({
+                "applicant_strategy": label,
+                "year": str(year),
+                "patent_count": 1,
+            })
+    return out
+
+
+def design_intersection_table_rows(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """技術交叉表的**精簡欄位**（2026-08-17 使用者：「欄位能更精簡吧」）。
+
+    11 欄 → 5 欄。砍掉的都是不幫決策的：
+    - `strategy_type`：這張表每列都是「技術+外觀」，整欄同值等於沒資訊
+    - 兩個 `representative_*_patent_id`：內部識別碼
+    - `tech_evidence`：長句，擠掉整張表的可讀性；屬單筆細節
+    - `has_figure`：資產有無是產製端的事，不是決策資訊
+    """
+    return [{
+        "applicant": row.get("applicant"),
+        "design_count": row.get("design_count"),
+        "tech_count": row.get("tech_count"),
+        "tech_labels": "、".join(row.get("tech_labels") or []),
+        "representative_tech_title": row.get("representative_tech_title"),
+    } for row in rows]
 
 
 def render_country_status_stack(
@@ -971,7 +939,9 @@ def render_country_status_stack(
     #    不用固定值。受理局代碼只有 2–3 個字元，固定 150px 會空掉一大片。
     label_w = max((len(str(r.get("country_code") or "")) for r in rows), default=2)
     left = max(52, int(label_w * label_px * 0.72) + 22)
-    right, top = 110, 62
+    # 右欄放兩個彙總：累計申請（歷史）與現存有效（當下權利）——後者是使用者
+    # 追問「現存有效跑去哪了」的那個決策口徑，改堆疊後不能只剩讀者自己加總。
+    right, top = 196, 62
     bar_h = max(18, int(row_h * 0.55))
     gap = max(10, int(row_h * 0.35))
     height = top + len(rows) * (bar_h + gap) + 24
@@ -1019,8 +989,15 @@ def render_country_status_stack(
         svg.append(f'<text x="{left + plot_w + 8}" y="{y + bar_h * 0.72:.1f}"'
                    f' font-size="{label_px:.1f}" fill="{COLOR_TEXT}">'
                    f'{totals[idx]} 件</text>')
-    svg.append(f'<text x="{width - right + 8}" y="{top - 8}"'
+        alive = _int_or_none(row.get("現存有效")) or 0
+        # 有效數用授權色，和堆疊裡的授權段視覺對得上。
+        svg.append(f'<text x="{left + plot_w + 104}" y="{y + bar_h * 0.72:.1f}"'
+                   f' font-size="{label_px:.1f}" font-weight="600"'
+                   f' fill="{STATUS_COLORS.get("授權", COLOR_TEXT)}">{alive}</text>')
+    svg.append(f'<text x="{left + plot_w + 8}" y="{top - 8}"'
                f' font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">累計申請</text>')
+    svg.append(f'<text x="{left + plot_w + 104}" y="{top - 8}"'
+               f' font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">現存有效</text>')
     svg.append("</svg>")
     _write_svg(path, svg)
 
@@ -2003,6 +1980,12 @@ def bubble_legend_spans(max_value: int) -> list[tuple[str, str, str]]:
     任何泡泡，硬印出來只會讓讀者對照不到東西——正確作法是不列。
     ⚠ 同時：`lo == hi` 時寫單一數字，不寫「1–1」這種假區間（實機 p16）。
     """
+    # 🔴 2026-08-17：max_value == 1 時色階退化——每一格都是「最高」，整張圖
+    #    畫成一片 #DC2626（本套配色裡紅＝到期／風險），讀者會誤讀成警訊，
+    #    而實際上只是「這格有一件」。沒有級距可分時就不要假裝有：
+    #    改用最低階的藍、標籤講事實（有申請）。
+    if max_value <= 1:
+        return [(YEAR_BUBBLE_COLOR_BANDS[0][1], "有申請", "1")]
     spans: list[tuple[str, str, str]] = []
     previous = 0.0
     for upper_bound, color, label in YEAR_BUBBLE_COLOR_BANDS:
@@ -2016,7 +1999,13 @@ def bubble_legend_spans(max_value: int) -> list[tuple[str, str, str]]:
 
 
 def year_bubble_color(value: int, max_value: int) -> tuple[str, str]:
-    """依全體前 20 家的共同尺度回傳明顯色階，確保上下兩區可直接比較。"""
+    """依全體前 20 家的共同尺度回傳明顯色階，確保上下兩區可直接比較。
+
+    ⚠ max_value <= 1 時沒有級距可分，全部回最低階的藍——與
+    `bubble_legend_spans` 的退化處理必須一致，否則圖例說藍、格子畫紅。
+    """
+    if max_value <= 1:
+        return YEAR_BUBBLE_COLOR_BANDS[0][1], "有申請"
     ratio = value / max(max_value, 1)
     for upper_bound, color, label in YEAR_BUBBLE_COLOR_BANDS:
         if ratio <= upper_bound:
@@ -2766,6 +2755,16 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "patent_ids": "專利 ID（供查證）",
     "granted_count": "已授權",
     "pending_count": "審查中",
+    # 2026-08-17：外觀策略／技術交叉兩張表的欄名（實機表頭曾整排印英文 key）。
+    "applicant": "申請人",
+    "strategy_type": "策略型",
+    "design_count": "外觀件數",
+    "tech_count": "技術件數",
+    "design_years": "外觀申請年",
+    "legal_status_summary": "法律狀態",
+    "tech_labels": "技術主題",
+    "representative_tech_title": "代表技術案",
+    "applicant_strategy": "申請人·策略",
     "dead_count": "已失效",
     "kind_summary": "種類組成",
     # 年度四欄（問題 9）
@@ -4133,17 +4132,30 @@ def _build_design_protection_section(ctx: ChartContext) -> None:
     #    ——「這樣看得出啥？」改為**申請人 × 策略型交叉**，看得出誰用什麼策略、
     #    各投入多少；策略型總數留在 chart_rows 供口徑對照，不再單獨出圖。
     chart_rows = design_strategy_chart_rows(strategy_rows)
-    render_design_strategy_chart(
+    # 🔴 2026-08-17（二輪）使用者：「策略分布你不如做矩陣給我」——這批資料的
+    #    外觀件數幾乎全是 1，兩條長條看不出東西。改申請人 × 年度矩陣：
+    #    誰、何時佈外觀、用哪種策略（列標籤帶策略型）三件事一次看到。
+    matrix_rows = design_year_matrix_rows(strategy_rows)
+    # ⚠ 欄序必須給：預設是按欄總量排，但這裡每欄都只有 1–2 件，排出來的年份
+    #   會是 2019/2022/2015/2018… 這種亂序（實測）。年份是**語意序**，同狀態桶。
+    render_matrix_chart(
         ctx.run_dir / "design_protection_strategy.svg",
         report["label_zh"],
-        strategy_rows,
+        matrix_rows,
+        row_key="applicant_strategy",
+        col_key="year",
+        col_order=tuple(sorted({str(r["year"]) for r in matrix_rows})),
     )
     ctx.chart_rows["design_protection_strategy"] = chart_rows
     # ⚠ 表格用精簡欄位（10 → 6）：使用者「PPT 一定放不下」。
     #    資訊不丟——年份三欄併區間、內部 patent_id 移除、代表案名進敘述。
-    ctx.chart_rows["design_protection_strategy_table"] = design_strategy_table_rows(
-        strategy_rows)
-    ctx.chart_rows["design_tech_intersections"] = intersection_rows
+    strategy_table = design_strategy_table_rows(strategy_rows)
+    ctx.chart_rows["design_protection_strategy_table"] = strategy_table
+    # 🔴 交叉表也精簡（11 → 5，使用者二輪指正）。原本 section/variant 都給
+    #    未精簡的原始 rows，精簡結果只躺在 chart_rows 裡沒人顯示——
+    #    **函式有被呼叫≠畫面有變**，這正是上一輪自我稽核放過去的地方。
+    intersection_table = design_intersection_table_rows(intersection_rows)
+    ctx.chart_rows["design_tech_intersections"] = intersection_table
     # 🔴 2026-08-17：代表案名從表格移出後**要真的落在敘述**——
     #    先前只在註解裡寫「進敘述」而沒接，那是半套（欄位刪了、資訊沒了）。
     representative_note = "；".join(
@@ -4153,18 +4165,19 @@ def _build_design_protection_section(ctx: ChartContext) -> None:
     ctx.sections.append({
         "title": report["label_zh"],
         "report_key": "design_protection_detail",
-        "rows": strategy_rows,
+        "rows": strategy_table,
         "variants": [
             {
                 "label": "策略分布",
                 "file": "design_protection_strategy.svg",
                 "variant_key": "strategy",
+                "rows": strategy_table,
             },
             {
                 "label": "技術交叉",
                 "file": "",
                 "variant_key": "intersections",
-                "rows": intersection_rows,
+                "rows": intersection_table,
             },
         ],
         "note": (
@@ -4301,15 +4314,24 @@ def country_status_display_pivot(rows: list[dict[str, Any]]) -> list[dict[str, A
         TW_LEGAL_STATUS_ALLOWED,
         status_display_term,
     )
+    from backend.app.transforms.legal_status import BUCKET_GRANTED, status_bucket
 
     by_country: dict[str, dict[str, int]] = {}
+    # 🔴 2026-08-17 使用者「現存有效跑去哪了？」：改六欄字面後這個決策口徑消失了。
+    #    ⚠ 不得用「抓『授權』欄」代替——中文資料上剛好相等，換一批英文登錄
+    #    （granted／registered／active）就會少算，因為那些詞在字面表自成一欄。
+    #    唯一判定處是 transforms.legal_status.status_bucket，此處只消費。
+    alive_by_country: dict[str, int] = {}
     for row in rows:
         country = str(row.get("country_code") or "").strip()
         if not country:
             continue
         term = status_display_term(row.get("legal_status"))
+        count = int(row.get("patent_count") or 0)
         entry = by_country.setdefault(country, {})
-        entry[term] = entry.get(term, 0) + int(row.get("patent_count") or 0)
+        entry[term] = entry.get(term, 0) + count
+        if status_bucket(row.get("legal_status")) == BUCKET_GRANTED:
+            alive_by_country[country] = alive_by_country.get(country, 0) + count
 
     present = {term for buckets in by_country.values() for term, n in buckets.items() if n}
     vocab_rank = {term: i for i, term in enumerate(TW_LEGAL_STATUS_ALLOWED)}
@@ -4321,6 +4343,9 @@ def country_status_display_pivot(rows: list[dict[str, Any]]) -> list[dict[str, A
     return [
         {"country_code": country,
          "申請件數": sum(buckets.values()),
+         # 現存有效放在申請件數之後、字面欄之前：兩個彙總口徑相鄰，
+         # 讀者一眼看到「申請 38／有效 24」，字面明細在右邊展開。
+         "現存有效": alive_by_country.get(country, 0),
          **{t: (buckets.get(t) or "") for t in ordered_terms}}
         for country, buckets in ranked
     ]
