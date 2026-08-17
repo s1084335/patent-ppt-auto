@@ -836,14 +836,24 @@ def _refresh_family_only() -> dict[str, Any]:
     return refresh_report_family_country()
 
 
+def _refresh_search_terms_only() -> dict[str, Any]:
+    """只刷搜尋 terms。依賴 report_patent_base 的顯示名，所以必須排在其後。"""
+    from backend.app.derived.patent_search_terms import refresh_patent_search_terms
+
+    return refresh_patent_search_terms()
+
+
 def _refresh_all_derived(context: JobContext | None = None) -> dict[str, Any]:
-    """刷新全部 derived 產出：report_patent_base ＋ 家族兩張表。
+    """刷新全部 derived 產出：report_patent_base + 搜尋 terms + 家族兩張表。
 
     ⚠ 失敗隔離：兩者是獨立產出，家族計算掛掉不該讓已完成的 report_patent_base 刷新
     一起報廢（公司名收斂是匯入後顯示的必要條件，優先度更高）。家族失敗以
     family_error 明確回報，不靜默吞掉——靜默正是這兩張表空了這麼久沒被發現的原因。
     """
     result: dict[str, Any] = {"report_patent_base": _refresh_patent_base_only()}
+    if context is not None:
+        context.heartbeat("刷新專利搜尋索引", 45)
+    result["patent_search_terms"] = _refresh_search_terms_only()
     if context is not None:
         context.heartbeat("刷新家族國別報表視圖", 60)
     try:

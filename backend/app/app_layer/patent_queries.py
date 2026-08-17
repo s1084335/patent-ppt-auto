@@ -208,13 +208,31 @@ LIMIT %(limit)s
 """
 
 
-# 全庫清單過濾：keyword 為 NULL 時不過濾；否則對 patent_number／title／applicant_display_name
-# 做 ILIKE（傳入值已包 %），與 workspace 專利清單同一組可搜欄位。
+def keyword_lookup_pattern(keyword: str | None) -> str | None:
+    """將使用者 keyword 正規化成 search_terms 的 LIKE pattern。"""
+    cleaned = " ".join((keyword or "").strip().lower().split())
+    return f"%{cleaned}%" if cleaned else None
+
+
+def search_terms_exists_sql(candidate_alias: str, patent_id_column: str = "patent_id") -> str:
+    """回傳以 derived_layer.patent_search_terms 命中的共用 SQL predicate。
+
+    這是一般瀏覽、workspace 瀏覽與 topic 專利清單的同一個搜尋入口；不要在各查詢
+    重新列 applicant/title/IPC 欄位，否則多值欄位會再次漏掉第二人或第二分類碼。
+    """
+    return (
+        "EXISTS ("
+        "SELECT 1 FROM derived_layer.patent_search_terms st "
+        f"WHERE st.patent_id = {candidate_alias}.{patent_id_column} "
+        "AND st.term_lookup LIKE %(kw_lookup)s"
+        ")"
+    )
+
+
+# 全庫清單過濾：keyword 為 NULL 時不過濾；否則走 derived_layer.patent_search_terms。
 _LIST_WHERE = (
-    "WHERE (%(kw)s::text IS NULL "
-    "OR patent_number ILIKE %(kw)s "
-    "OR title ILIKE %(kw)s "
-    "OR applicant_display_name ILIKE %(kw)s)"
+    "WHERE (%(kw_lookup)s::text IS NULL "
+    f"OR {search_terms_exists_sql('candidates')})"
 )
 
 _PATENT_LIST_ITEMS_SQL = f"""
@@ -430,6 +448,11 @@ def _classify_tw_status_failure(patent_id: int) -> None:
 
 def enqueue_tw_legal_status_refresh(*, workspace_id: int | None = None) -> dict[str, Any]:
     """只排入法律狀態相關報表的刷新，不重寫狀態或 history。"""
+    search_job = job_repository.create_job(
+        "refresh_derived",
+        {"reason": "tw_legal_status"},
+        workspace_id=workspace_id,
+    )
     # ⚠ 2026-08-09：原本刷新 `lifecycle`（已刪）。狀態登錄後要更新的是「法律狀態」
     # 相關報表，由 `country_distribution`（國別×法律狀態）承接。
     payload: dict[str, Any] = {"report_names": ["country_distribution"]}
@@ -440,7 +463,11 @@ def enqueue_tw_legal_status_refresh(*, workspace_id: int | None = None) -> dict[
         payload,
         workspace_id=workspace_id,
     )
-    return {"refresh_status": "queued", "refresh_job_id": job.job_id}
+    return {
+        "refresh_status": "queued",
+        "refresh_job_id": job.job_id,
+        "search_refresh_job_id": search_job.job_id,
+    }
 
 
 def register_tw_legal_status(
@@ -527,11 +554,10 @@ def list_patents(
     純量子查詢隨 items SQL 一起求值，不逐筆補查；主附圖 bytea 不進清單。
     歸屬與分類標籤在 Python 層以 dict 合併回清單。
     """
-    cleaned = keyword.strip() if keyword else None
-    kw = f"%{cleaned}%" if cleaned else None
-    params = {"kw": kw, "limit": limit, "offset": offset}
+    kw_lookup = keyword_lookup_pattern(keyword)
+    params = {"kw_lookup": kw_lookup, "limit": limit, "offset": offset}
     with get_pool().connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(_PATENT_LIST_COUNT_SQL, {"kw": kw})
+        cur.execute(_PATENT_LIST_COUNT_SQL, {"kw_lookup": kw_lookup})
         total = int(cur.fetchone()["total"])
         cur.execute(_PATENT_LIST_ITEMS_SQL, params)
         items = cur.fetchall()
