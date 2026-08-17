@@ -3104,8 +3104,9 @@ CHART_ENCODING_NOTES: dict[str, str] = {
     # ——那些看圖看不出來，而誤讀的代價很大。
     "application_trend": "兩線分別為申請與授權公告（同尺）",
     "publication_trend": "以授權公告年計，非申請年",
-    "country_distribution": "上下兩條同尺｜下＝現存有效（已授權）",
-    "jurisdiction_distribution": "上下兩條同尺｜下＝現存有效（已授權）",
+    # 2026-08-17 改單條堆疊：總長是累計、各段是當下——這兩件事看圖看不出來。
+    "country_distribution": "堆疊總長＝累計申請｜各段＝當下狀態字面",
+    "jurisdiction_distribution": "堆疊總長＝累計申請｜各段＝當下狀態字面",
     "ipc_main_distribution": "本頁為單一階層，另一階層見對頁",
     "cpc_main_distribution": "本頁為單一階層，另一階層見對頁",
     "opportunity_quadrant": "點＝技術主題（單位是主題不是件）",
@@ -3876,30 +3877,26 @@ def _build_trend_section(ctx: ChartContext) -> None:
 
 
 def _build_country_map_section(ctx: ChartContext) -> None:
-    """受理局「申請 vs 現存有效」合併頁（2026-08-07 使用者定案）。
+    """受理局 × 法律狀態堆疊頁（2026-08-17 使用者定案，取代 08-07 的兩條 bar）。
 
-    原 p04（受理局分布，件）與 p06（國家佈局現有保護，存活家族數）合成一張：
-    每國兩條 bar、口徑「件 vs 件」——申請件數（全部匯入案件含死案）對
-    現存有效件數（狀態桶「已授權」）。家族數（同族合併）降為頁尾註記一行。
+    原 p04（受理局分布，件）與 p06（國家佈局現有保護，存活家族數）先合成
+    「申請 vs 現存有效」兩條 bar；08-17 使用者要求「表六欄字面、圖也畫那六欄」，
+    改為單條堆疊：**總長＝歷史累計申請、各段＝當下狀態分布**，一條看完兩種分析。
+    家族數（同族合併）維持頁尾註記一行。
     """
     from backend.app.transforms.legal_status import BUCKET_UNKNOWN
 
     report = ctx.report("country_distribution")
-    pivot = country_status_pivot(report["rows"])
-    render_paired_bar_chart(
-        ctx.run_dir / "jurisdiction_distribution.svg",
-        report["label_zh"],
-        pivot,
-        label_key="country_code",
-        series=(("申請件數", "申請件數"), ("現存有效", "已授權")),
-    )
-    ctx.chart_rows["jurisdiction_distribution"] = pivot
-    unknown_total = sum(int(r.get(BUCKET_UNKNOWN) or 0) for r in pivot)
-    # 🔴 備註要寫清楚定義（使用者原話）：兩條 bar 的口徑、有效的判定、
-    # 未知件數點名（誠實呈現，不虛增授權率）。
+    # 四大桶 pivot 只用來數「未知」（狀態桶語意），不上圖也不進 chart_rows
+    # ——⚠ 上圖與表都吃 status_pivot 的六欄字面，兩套語意不得並存。
+    bucket_pivot = country_status_pivot(report["rows"])
+    unknown_total = sum(int(r.get(BUCKET_UNKNOWN) or 0) for r in bucket_pivot)
+    # 🔴 備註只寫圖上看不出來的口徑：總長的意義、未知件數點名（誠實呈現，
+    # 不虛增授權率）。⚠ 08-17 改堆疊後這裡曾殘留兩條 bar 的說明——
+    # 改版時「只加新的、沒拆舊的」，讀者會拿到與畫面不符的定義。
     notes = [
-        "申請件數＝全部匯入案件（含死案）；現存有效＝法律狀態桶「已授權」。",
-        "審查中／已失效／未知不計入現存有效；狀態桶定義見專利狀態分析頁。",
+        "堆疊總長＝該受理局全部匯入案件（含死案）；各段＝當下法律狀態字面。",
+        "狀態字面直接取自來源登錄值，未做桶收斂；桶定義見專利狀態分析頁。",
     ]
     if unknown_total:
         notes.append(f"其中 {unknown_total} 件狀態未知（未登錄），不計入有效——待補登錄後件數會變。")
@@ -3920,6 +3917,8 @@ def _build_country_map_section(ctx: ChartContext) -> None:
     status_pivot = country_status_display_pivot(report["rows"])
     render_country_status_stack(
         ctx.run_dir / "jurisdiction_distribution.svg", report["label_zh"], status_pivot)
+    # chart_rows 與 section rows 指向同一份——下游（deck／表格）不會拿到另一套語意。
+    ctx.chart_rows["jurisdiction_distribution"] = status_pivot
     ctx.sections.append({
         "title": report["label_zh"],
         "report_key": "country_distribution",

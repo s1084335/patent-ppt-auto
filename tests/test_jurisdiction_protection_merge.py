@@ -6,6 +6,7 @@ p04（受理局分布，件）＋ p06（國家佈局現有保護，存活家族�
 """
 from __future__ import annotations
 
+import textwrap
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -193,6 +194,60 @@ class PairedBarChartTests(unittest.TestCase):
         svg = self._render()
         self.assertIn("申請件數", svg)
         self.assertIn("現存有效", svg)
+
+
+class StackReplacesPairedBarTests(unittest.TestCase):
+    """🔴 2026-08-17：堆疊圖取代兩條 bar 後，舊路徑的殘留必須清乾淨。
+
+    改版時只「加上新的」不「拆掉舊的」，會留下三種看不見的殘留：
+    ①同一個檔被寫兩次（前一次白做，讀 code 的人以為兩張圖都交付了）
+    ②`chart_rows` 存四大狀態桶、section 顯示六欄字面——**兩套語意並存**
+    ③備註仍在描述已經不存在的「兩條 bar」。
+    ⚠ 三者都不會報錯，只會讓下游與讀者拿到與畫面不符的東西。
+    """
+
+    def _source(self) -> str:
+        import inspect
+        return inspect.getsource(chart_runner._build_country_map_section)
+
+    def test_svg_written_once(self):
+        src = self._source()
+        renders = [ln for ln in src.splitlines() if "render_" in ln and "(" in ln
+                   and not ln.strip().startswith("#")]
+        self.assertEqual(
+            len(renders), 1,
+            f"同一個 jurisdiction_distribution.svg 被多個 renderer 寫：{renders}")
+
+    def test_chart_rows_same_source_as_section_rows(self):
+        src = self._source()
+        self.assertIn('ctx.chart_rows["jurisdiction_distribution"] = status_pivot', src,
+                      "chart_rows 必須與 section 顯示的 status_pivot 同源，不得留四大桶那份")
+
+    def test_notes_describe_the_stack_not_two_bars(self):
+        """⚠ 只驗**實際輸出的 note 字串**，不掃整段原始碼。
+
+        初版掃全函式，連「取代 08-07 的兩條 bar」這種正確的沿革註解都判紅
+        ——那是拿代理指標當判準，滿足它的方法包含「把歷史說明刪掉」，反而更糟。
+        """
+        import ast
+        tree = ast.parse(textwrap.dedent(self._source()))
+        notes = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Assign)
+                 and any(getattr(t, "id", None) == "notes" for t in n.targets)]
+        self.assertEqual(len(notes), 1, "notes 賦值不只一處，判準會失準")
+        texts = [e.value for e in notes[0].value.elts
+                 if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+        self.assertTrue(texts, "notes 取不到字串")
+        for text in texts:
+            for stale in ("兩條", "現存有效"):
+                self.assertNotIn(stale, text,
+                                 f"輸出給使用者的備註仍在描述已被取代的兩條 bar：{text}")
+
+    def test_encoding_note_matches_stack(self):
+        for key in ("country_distribution", "jurisdiction_distribution"):
+            note = chart_runner.CHART_ENCODING_NOTES.get(key, "")
+            self.assertNotIn("上下兩條同尺", note,
+                             f"{key} 的口徑註記還停在兩條 bar 的版本")
 
 
 # ⚠ BuilderIntegrationTests 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
