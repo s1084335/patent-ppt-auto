@@ -934,15 +934,16 @@ def render_country_status_stack(
     left = max(52, int(label_w * label_px) + 22)
     # 右欄放兩個彙總：累計申請（歷史）與現行有效（當下權利）。
     right, top = 196, 62
-    # 🔴 2026-08-17 使用者：「現行有效要整合進去，和歷史國家申請可以在同張圖
-    #    看到差異」——每列上條＝歷史申請（依狀態堆疊）、下條＝現行有效，
-    #    **共用同一把尺**（件 vs 件）才比得出長度差。
+    # 🔴 2026-08-17 使用者定案（同晚第三次）：**一條 bar 就夠**。
+    #    現行有效與申請件數來自同兩個欄位（country_code + legal_status），
+    #    前者恆為後者的子集合——堆疊裡的「授權」段已經在講同一件事，
+    #    再畫第二條是把同一份資料畫兩次。現行有效改為右欄數字保留。
+    #    ⚠ 數字不能一起拿掉：它走狀態桶，與字面「授權」欄在英文登錄
+    #      （granted／registered）時會不同，那時堆疊段看不出真正的有效數。
     has_live = any(r.get("現行有效") is not None for r in rows)
     bar_h = max(18, int(row_h * 0.55))
-    live_h = max(7, int(bar_h * 0.38)) if has_live else 0
-    live_gap = 3 if has_live else 0
     gap = max(10, int(row_h * 0.35))
-    row_span = bar_h + live_h + live_gap + gap
+    row_span = bar_h + gap
     height = top + len(rows) * row_span + 24
     plot_w = width - left - right
     # ⚠ 尺標用「申請件數」（歷史累計）而非各狀態加總：兩者理應相等，
@@ -964,12 +965,6 @@ def render_country_status_stack(
         svg.append(f'<text x="{lx + 17:.1f}" y="55" font-size="{note_px:.1f}"'
                    f' fill="{COLOR_TEXT}">{xml_text(st)}</text>')
         lx += 34 + len(st) * note_px * 0.66
-
-    if has_live:
-        svg.append(f'<rect x="{lx:.1f}" y="46" width="12" height="8" rx="2"'
-                   f' fill="{COLOR_LIVE_PROTECTION}"/>')
-        svg.append(f'<text x="{lx + 17:.1f}" y="55" font-size="{note_px:.1f}"'
-                   f' fill="{COLOR_TEXT}">現行有效（EP 已展開至指定國）</text>')
 
     for idx, row in enumerate(rows):
         y = top + idx * row_span
@@ -996,21 +991,6 @@ def render_country_status_stack(
                    f'{totals[idx]} 件</text>')
         if has_live:
             live = _int_or_none(row.get("現行有效")) or 0
-            ly = y + bar_h + live_gap
-            live_w = plot_w * live / max_total
-            if live_w > 0:
-                svg.append(
-                    f'<rect data-role="live-bar" x="{left}" y="{ly:.1f}"'
-                    f' width="{live_w:.1f}" height="{live_h}" rx="2"'
-                    f' fill="{COLOR_LIVE_PROTECTION}">'
-                    f'<title>{country} 現行有效 {live} 件</title></rect>')
-            else:
-                # ⚠ 0 也要留痕：申請過但現在一件都沒有（EP 展開後就是這樣），
-                #   完全不畫會讀成「這列沒有這個維度」，而不是「這個維度是 0」。
-                svg.append(
-                    f'<rect data-role="live-bar" x="{left}" y="{ly:.1f}"'
-                    f' width="2" height="{live_h}" fill="{COLOR_TEXT_SOFT}"'
-                    f' opacity="0.45"><title>{country} 現行有效 0 件</title></rect>')
             svg.append(f'<text x="{left + plot_w + 104}"'
                        f' y="{y + bar_h * 0.72:.1f}"'
                        f' font-size="{label_px:.1f}" font-weight="600"'

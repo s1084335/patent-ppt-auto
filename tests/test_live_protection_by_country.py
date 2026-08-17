@@ -78,23 +78,34 @@ class StackChartTests(unittest.TestCase):
             out, "專利受理局分布", chart_runner.country_status_display_pivot(ROWS))
         return out.read_text(encoding="utf-8")
 
-    def test_two_bars_per_row(self):
-        svg = self._svg()
-        self.assertIn('data-role="live-bar"', svg, "現行有效沒有畫成條")
-        self.assertEqual(svg.count('data-role="live-bar"'), 3, "每列都要有一條")
+    def test_single_bar_per_row(self):
+        """🔴 2026-08-17 定案：一條 bar 就夠。
 
-    def test_legend_and_headers(self):
+        現行有效恆為申請件數的子集合（同兩個欄位推導），堆疊裡的「授權」段
+        已經在講同一件事——第二條 bar 是把同一份資料畫兩次。
+        """
+        svg = self._svg()
+        self.assertNotIn('data-role="live-bar"', svg, "第二條 bar 應已移除")
+        # 資料條只有一種高度＝每列只有一組堆疊。⚠ 只看帶 <title> 的
+        # （圖例色塊沒有 title，混進來會誤判成第二條 bar）。
+        import re
+        heights = set(re.findall(r'height="(\d+)"[^>]*><title>', svg))
+        self.assertEqual(len(heights), 1, f"資料條出現多種高度（多條 bar）：{heights}")
+
+    def test_live_number_kept_at_right(self):
+        """⚠ 數字不能一起拿掉：它走狀態桶，英文登錄時與字面「授權」段不同，
+        那時只看堆疊會看不出真正的有效數。"""
         svg = self._svg()
         self.assertIn("現行有效", svg)
         self.assertIn("累計申請", svg)
+        self.assertIn(">24<", svg, "CN 的現行有效數字不見了")
 
-    def test_zero_live_still_marked(self):
-        """⚠ 0 也要留痕：完全不畫會被讀成「這列沒有這個維度」。"""
+    def test_zero_live_renders(self):
         rows = chart_runner.country_status_display_pivot(
             [{"country_code": "JP", "legal_status": "审查中", "patent_count": 2}])
         out = Path(tempfile.mkdtemp()) / "x.svg"
         chart_runner.render_country_status_stack(out, "t", rows)
-        self.assertIn('data-role="live-bar"', out.read_text(encoding="utf-8"))
+        self.assertIn(">0<", out.read_text(encoding="utf-8"))
 
     def test_valid_svg(self):
         import xml.etree.ElementTree as ET
