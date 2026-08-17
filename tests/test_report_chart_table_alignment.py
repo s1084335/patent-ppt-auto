@@ -124,9 +124,10 @@ class DesignStrategyChartTests(unittest.TestCase):
     def test_chart_shows_applicants_not_just_two_bars(self):
         """🔴 圖要能看出「誰用什麼策略」，不是只有兩條總數。
 
-        形式改過三輪，判準始終不變（圖上要有申請人、看得出策略）：
-        兩條總長條 → 申請人×年度矩陣（08-17）→ **申請人 × 技術／外觀／
-        技術+外觀**（08-18 使用者定案，年度那版退場、函式已移除）。
+        形式改過四輪，判準始終不變（圖上要有申請人、看得出策略）：
+        兩條總長條 → 申請人×年度矩陣（08-17）→ 申請人 × 技術／外觀／技術+外觀
+        → **申請人 × 技術／外觀兩欄**（08-18 二輪：這張圖只收有設計案的申請人，
+        合計欄恆等於兩欄相加，永遠不會出現只走技術那一類）。
         """
         rows = chart_runner.design_strategy_matrix_rows(self.STRATEGY_ROWS)
         out = Path(tempfile.mkdtemp()) / "design.svg"
@@ -137,7 +138,7 @@ class DesignStrategyChartTests(unittest.TestCase):
         svg = out.read_text(encoding="utf-8")
         self.assertIn("帝瑪斯", svg, "圖上看不到申請人")
         self.assertIn("上海波迪貿易", svg)
-        for axis in ("技術", "外觀", "技術+外觀"):
+        for axis in chart_runner.DESIGN_STRATEGY_AXIS:
             self.assertIn(axis, svg, f"欄「{axis}」沒出現")
 
     def test_table_columns_trimmed(self):

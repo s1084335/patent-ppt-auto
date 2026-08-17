@@ -70,21 +70,21 @@ class StackChartStillShowsStatusTests(unittest.TestCase):
 
 
 class DesignStrategyMatrixTests(unittest.TestCase):
-    """2026-08-18：矩陣改為申請人 × 技術／外觀／技術+外觀（年度版已退場）。"""
+    """2026-08-18：矩陣改為申請人 × 技術／外觀（年度版與合計欄都已退場）。"""
 
-    def test_three_axis_columns(self):
+    def test_axis_columns(self):
         rows = chart_runner.design_strategy_matrix_rows(STRATEGY_ROWS)
         self.assertEqual({r["strategy_axis"] for r in rows},
                          set(chart_runner.DESIGN_STRATEGY_AXIS))
 
-    def test_totals_are_sum_of_two(self):
+    def test_counts_match_source(self):
+        """⚠ 二輪拿掉「技術+外觀」合計欄，改驗兩欄各自等於來源件數。"""
         by = {(r["applicant"], r["strategy_axis"]): r["patent_count"]
               for r in chart_runner.design_strategy_matrix_rows(STRATEGY_ROWS)}
-        for applicant in {r["applicant"] for r in STRATEGY_ROWS}:
-            self.assertEqual(
-                by[(applicant, "技術+外觀")],
-                by[(applicant, "技術")] + by[(applicant, "外觀")],
-                f"{applicant} 的合計欄與兩欄不符")
+        for row in STRATEGY_ROWS:
+            a = row["applicant"]
+            self.assertEqual(by[(a, "技術")], row["tech_count"])
+            self.assertEqual(by[(a, "外觀")], row["design_count"])
 
 
 class IntersectionTableTrimTests(unittest.TestCase):
@@ -97,9 +97,15 @@ class IntersectionTableTrimTests(unittest.TestCase):
 
     def test_all_columns_have_chinese_labels(self):
         """表頭不得印英文 key——缺鍵是靜默失敗（實機看到 design_count）。"""
+        # ⚠ 隱藏欄不需要中文欄名（它不上表頭）——`design_patent_ids` 是給
+        #   解讀 CLI 取證用的，顯示層以 DATA_TABLE_EXCLUDED_COLUMNS 排除。
+        hidden = set(chart_runner.DATA_TABLE_EXCLUDED_COLUMNS.get(
+            "design_protection_detail", ()))
         for rows in (chart_runner.design_strategy_table_rows(STRATEGY_ROWS),
                      chart_runner.design_intersection_table_rows(INTERSECTION_ROWS)):
             for col in rows[0]:
+                if col in hidden:
+                    continue
                 with self.subTest(col=col):
                     self.assertIn(col, chart_runner.DATA_COLUMN_LABELS)
 

@@ -846,8 +846,11 @@ def design_strategy_table_rows(
     return out
 
 
-#: 外觀策略矩陣的欄序（語意序，不按量排）。⚠ 第三欄是**合計**不是第三種策略。
-DESIGN_STRATEGY_AXIS = ("技術", "外觀", "技術+外觀")
+#: 外觀策略矩陣的欄序（語意序，不按量排）。
+#: ⚠ 2026-08-18 拿掉「技術+外觀」第三欄：`design_protection_strategy` 只收
+#: 有設計案的申請人（`if not designs: continue`），第三欄**恆等於前兩欄相加**，
+#: 永遠不會出現只走技術那一類。策略改由「技術欄是否為 0」直接讀出。
+DESIGN_STRATEGY_AXIS = ("技術", "外觀")
 
 
 def design_strategy_matrix_rows(
@@ -870,8 +873,7 @@ def design_strategy_matrix_rows(
         design = _int_or_none(row.get("design_count")) or 0
         tech = _int_or_none(row.get("tech_count")) or 0
         applicant = str(row.get("applicant") or "")
-        for axis, value in (("技術", tech), ("外觀", design),
-                            ("技術+外觀", tech + design)):
+        for axis, value in (("技術", tech), ("外觀", design)):
             out.append({"applicant": applicant, "strategy_axis": axis,
                         "patent_count": value})
     return out
@@ -882,26 +884,60 @@ def design_intersection_table_rows(
 ) -> list[dict[str, Any]]:
     """技術交叉表的**精簡欄位**（2026-08-17 使用者：「欄位能更精簡吧」）。
 
-    12 欄 → 5 欄。砍掉的都是不幫決策的：
-    - `strategy_type`：這張表每列都是「技術+外觀」，整欄同值等於沒資訊
-    - 兩個 `representative_*_patent_id`：內部識別碼
-    - `tech_evidence`：長句，擠掉整張表的可讀性；屬單筆細節
-    - `has_figure`：資產有無是產製端的事，不是決策資訊
-    - 🔴 `tech_labels`：**永遠是空的**。`_tech_label` 找 分類標籤／topic_label／
-      topic_key／label，而 `design_protection_detail` 報表沒有任何一個
-      ——空欄比沒有欄更糟，讀者會以為「這些申請人沒有技術主題」（實機截圖）。
-      主題歸屬要接分群指派，屬另一條線，不在這張表硬湊。
+    🔴 2026-08-18 改為**逐家時序表**（使用者選方案 A）。原表把外觀清單與技術
+    代表案並排，「交叉」是假的——沒有任何欄位表達兩者的關係。實資料裡關係很
+    清楚（帝瑪斯外觀 2019 先於技術 2020；康樂佳與澳瑞特同年同步，且標題顯示
+    是同一產品的雙重保護），那才是這張表該答的事。
 
-    🔴 2026-08-18 新增 `design_subjects`（使用者：「要能在表格呈現外觀內容所
-    保護的點」）：設計專利沒有請求項，`title` 就是它保護的標的敘述，全部列出。
+    四欄＋一個隱藏欄：
+    - 外觀／技術：件數與年份區間
+    - 佈局順序：⚠ **算術不是判斷**（比較首次申請年）。用詞守在事實層，
+      不寫「產品化訊號」那種超譯
+    - `design_patent_ids`：給 CLI 讀 `patents."文獻備註"` 自行撰寫保護標的
+      （2026-08-10 定案：資料層不預先算好餵過去，否則 CLI 無法追問）
+
+    退場的欄與理由：`strategy_type`（整欄同值）、兩個 `representative_*_patent_id`
+    （內部識別碼）、`tech_evidence`（長句擠爆表）、`has_figure`（產製端的事）、
+    `tech_labels`（**永遠是空的**——`_tech_label` 找的四個鍵在本報表都不存在，
+    空欄比沒有欄更糟，讀者會以為這些申請人沒有技術主題）。
     """
     return [{
         "applicant": row.get("applicant"),
-        "design_count": row.get("design_count"),
-        "tech_count": row.get("tech_count"),
-        "design_subjects": "；".join(row.get("design_subjects") or []),
-        "representative_tech_title": row.get("representative_tech_title"),
+        "design_summary": _count_year_summary(row.get("design_years")),
+        "tech_summary": _count_year_summary(row.get("tech_years")),
+        "filing_order": _filing_order(row.get("design_years"),
+                                      row.get("tech_years")),
+        "design_patent_ids": row.get("design_patent_ids") or [],
     } for row in rows]
+
+
+def _count_year_summary(years: list[int] | None) -> str:
+    """`2 件（2019、2022）`／`5 件（2020–2024）`——連續多年用區間，少數列舉。"""
+    ys = sorted(years or [])
+    if not ys:
+        return "0 件"
+    uniq = sorted(set(ys))
+    if len(uniq) == 1:
+        span = str(uniq[0])
+    elif len(uniq) == 2:
+        span = "、".join(str(y) for y in uniq)
+    else:
+        span = f"{uniq[0]}–{uniq[-1]}"
+    return f"{len(ys)} 件（{span}）"
+
+
+def _filing_order(design_years: list[int] | None,
+                  tech_years: list[int] | None) -> str:
+    """比較兩邊的**首次**申請年。⚠ 只陳述先後與年差，不解釋動機。"""
+    d = sorted(design_years or [])
+    t = sorted(tech_years or [])
+    if not d or not t:
+        return ""
+    if d[0] < t[0]:
+        return f"外觀先行 {t[0] - d[0]} 年"
+    if t[0] < d[0]:
+        return f"技術先行 {d[0] - t[0]} 年"
+    return "同年同步"
 
 
 def render_country_status_stack(
@@ -2739,7 +2775,10 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "representative_tech_title": "代表技術案",
     "applicant_strategy": "申請人·策略",
     "strategy_axis": "策略面向",
-    "design_subjects": "外觀保護標的",
+    # 技術交叉時序表（2026-08-18 方案 A）
+    "design_summary": "外觀（件數／年）",
+    "tech_summary": "技術（件數／年）",
+    "filing_order": "佈局順序",
     # 🔴 2026-08-18 使用者「單位是甚麼要標清楚」：
     #   `granted_pending` 先前**完全沒有中文欄名**，實機表頭直接印英文 key；
     #   `kind_summary` 的值是「新型8／發明5／設計1」，不標單位讀不出是件數。
@@ -2855,6 +2894,9 @@ DATA_TABLE_EXCLUDED_COLUMNS: dict[str, tuple[str, ...]] = {
     # segment_key 畫藍色區段（轉出件數），移掉資料會讓圖表退化成單色長條。
     # 使用者定案：「欄位移除，圖表保留分段」。
     "applicant_ranking": ("recent_assignee_count",),
+    # 技術交叉表同理（2026-08-18）：id 只給解讀 CLI 逐件讀「文獻備註」寫保護標的
+    # ——沿用 2026-08-10「資料層不預先算好餵過去」定案；顯示層一定要藏。
+    "design_protection_detail": ("design_patent_ids",),
 }
 
 # 總計列可加總的欄（加總有意義＝件數類）；其餘一律「—」——applicant_count 跨主題

@@ -80,17 +80,17 @@ class StrategyMatrixTests(unittest.TestCase):
         return chart_runner.design_strategy_matrix_rows(
             design_protection_strategy(DETAIL))
 
-    def test_three_columns(self):
+    def test_two_columns(self):
+        """⚠ 2026-08-18 二輪定案：拿掉「技術+外觀」。這張圖只收有設計案的
+        申請人，第三欄恆等於前兩欄相加，永遠不會出現只走技術那一類。"""
         cols = {r["strategy_axis"] for r in self._rows()}
-        self.assertEqual(cols, {"技術", "外觀", "技術+外觀"})
+        self.assertEqual(cols, {"技術", "外觀"})
 
     def test_counts_per_applicant(self):
         by = {(r["applicant"], r["strategy_axis"]): r["patent_count"]
               for r in self._rows()}
         self.assertEqual(by[("廈門帝瑪斯健康科技", "外觀")], 2)
         self.assertEqual(by[("廈門帝瑪斯健康科技", "技術")], 1)
-        self.assertEqual(by[("廈門帝瑪斯健康科技", "技術+外觀")], 3,
-                         "第三欄＝兩者合計")
 
     def test_design_only_applicant_has_no_tech_cell(self):
         """只走外觀者技術欄應為 0——不得憑空生出技術件數。"""
@@ -100,28 +100,22 @@ class StrategyMatrixTests(unittest.TestCase):
         self.assertEqual(by[("Zhou Zheng", "外觀")], 1)
 
 
-class IntersectionShowsDesignSubjectTests(unittest.TestCase):
-    """3. 技術交叉表要看得到外觀保護的標的。"""
+class IntersectionTableSupersededTests(unittest.TestCase):
+    """⚠ 本輪的「外觀保護標的」欄已於同日二輪移交解讀（使用者：「應該納入解讀
+    讓 CLI 去讀來寫」）——表格改為逐家時序表，判準見
+    `test_design_cross_timeline.py`。這裡只留兩條防回頭的斷言。
+    """
 
     def _rows(self):
         return chart_runner.design_intersection_table_rows(
             design_tech_intersections(DETAIL))
 
-    def test_design_subject_column_present(self):
-        row = self._rows()[0]
-        self.assertIn("design_subjects", row)
-        self.assertIn("Fan skiing training ware", row["design_subjects"])
-        self.assertIn("Ski simulator handle", row["design_subjects"],
-                      "外觀不只一件時要全部列出，不能只給代表案")
+    def test_subjects_not_in_table(self):
+        self.assertNotIn("design_subjects", self._rows()[0])
 
-    def test_always_empty_tech_labels_dropped(self):
-        """⚠ 空欄比沒有欄更糟：讀者會以為「這些申請人沒有技術主題」。"""
+    def test_always_empty_tech_labels_stay_dropped(self):
+        """空欄比沒有欄更糟：讀者會以為「這些申請人沒有技術主題」。"""
         self.assertNotIn("tech_labels", self._rows()[0])
-
-    def test_all_columns_labelled(self):
-        for col in self._rows()[0]:
-            with self.subTest(col=col):
-                self.assertIn(col, chart_runner.DATA_COLUMN_LABELS)
 
 
 class TimelineTableMatchesChartTests(unittest.TestCase):
