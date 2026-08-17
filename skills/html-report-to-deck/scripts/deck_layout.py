@@ -1143,7 +1143,14 @@ def build(content: dict, png_dir, out_path) -> int:
         print(f"  [溢出] {region:<24} 可用 {avail:.2f} / 需求 {need:.2f}")
     print(f"  溢出區域：{len(bad)} 個")
     print("── 圖表在投影片上的實際字級 ──")
-    weak = []
+    # 🔴 字級不足分兩類（2026-08-16 #400 首跑修正）：
+    #   fixable   ＝ CLI 改內容能解（雙圖頁可拆、判讀帶佔 >2 行擠掉圖）→ 計入失敗
+    #   structural＝ 原圖結構所限（判讀帶已精簡、非 chip）→ **只揭露不擋**
+    # ⚠ 為什麼不能一律擋：structural 那類 CLI 怎麼改內容都不會變好，逼它過閘門
+    #   只能刪判讀帶（缺席型偏差），圖還是不會變大——正是 deepen design §1.2
+    #   三問第 3 題要防的 v5 同型錯誤。SKILL.md 對這類的處置本來就是「揭露」。
+    weak = []          # 可修的：計入回傳值，走修稿輪
+    structural = []    # 結構所限：只揭露，不擋交付
     for i, spec in enumerate(content["pages"], start=3):
         for n in spec.get("charts") or []:
             src_w = Image.open(png_dir / f"{n}.png").size[0] / 3   # PNG 為 3 倍解析
@@ -1152,9 +1159,17 @@ def build(content: dict, png_dir, out_path) -> int:
             print(f"  P{i:>2} {n:<32} 圖內 {fonts[n]:>4} → 投影片 {pt:.1f}pt"
                   f"{'  ⚠ 低於 %.0fpt' % floor if pt < floor else ''}")
             if pt < floor:
-                weak.append((i, n, pt, spec))
+                multi = len(spec.get("charts") or []) > 1
+                band_lines = est_lines(" ".join(spec["lines"]), CW - 0.52)
+                (weak if (multi or band_lines > 2) else structural).append(
+                    (i, n, pt, spec))
 
     # 依 SKILL.md 的優先順序，直接算出該頁該怎麼處理——可讀性排在頁數精簡之前
+    if structural:
+        print("── 圖內字級不足但屬原圖結構所限：**交付時必須揭露** ──")
+        for i, n, pt, spec in structural:
+            print(f"  P{i:>2} {n} {pt:.1f}pt：判讀帶已精簡、非 chip 型"
+                  "——改內容無法改善，不擋交付；完成回報要逐頁列出此字級")
     if weak:
         print("── 圖內字級不足的頁面：處理方式 ──")
         for i, n, pt, spec in weak:
@@ -1172,4 +1187,5 @@ def build(content: dict, png_dir, out_path) -> int:
           f"共 {len(prs.slides._sldIdLst)} 頁")
     # 🔴 字級不足**必須計入回傳值**：只 print 不擋，等於門檻沒有牙齒。
     #    make_deck 以非零 exit 短路，runner 才知道這一步失敗。
+    # 🔴 只計 weak（可修的）——structural 擋下去只會逼出缺席型偏差（見上方註記）。
     return len(bad) + len(weak)
