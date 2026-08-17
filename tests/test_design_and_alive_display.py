@@ -49,50 +49,42 @@ INTERSECTION_ROWS = [
 ]
 
 
-class AliveCountRestoredTests(unittest.TestCase):
-    """現行有效要在圖與表都看得到，且由狀態桶推導（不得在此另立一套判定）。"""
+class StackChartStillShowsStatusTests(unittest.TestCase):
+    """⚠ 「現行有效」欄已於 2026-08-18 依使用者定案移除（「看圖就知道了」）。
 
-    def test_pivot_carries_alive_count(self):
-        rows = chart_runner.country_status_display_pivot(COUNTRY_ROWS)
-        cn = next(r for r in rows if r["country_code"] == "CN")
-        self.assertEqual(cn["現行有效"], 24)
+    原本這裡三條測試在釘那一欄存在；反向契約已由
+    `test_review_round_20260818.py` 的 `LiveCountRemovedTests` 承接，
+    這裡只留「拿掉的是重複標示、不是資訊本身」這一條。
+    """
 
-    def test_alive_not_merely_the_granted_column(self):
-        """US 的 granted 是詞彙外的值、自成一欄——現行有效仍要算進去。
-
-        ⚠ 這條是防「直接抓『授權』欄當現行有效」的偷懶寫法：那在中文資料上
-        剛好相等，換一批英文登錄的資料就會少算。
-        """
-        rows = chart_runner.country_status_display_pivot(COUNTRY_ROWS)
-        us = next(r for r in rows if r["country_code"] == "US")
-        self.assertEqual(us["現行有效"], 3)
-        self.assertNotIn("授權", [k for k, v in us.items() if v])
-
-    def test_stack_chart_shows_alive_number(self):
+    def test_granted_segment_and_total_remain(self):
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / "jurisdiction_distribution.svg"
             chart_runner.render_country_status_stack(
                 path, "專利受理局分布",
                 chart_runner.country_status_display_pivot(COUNTRY_ROWS))
             svg = path.read_text(encoding="utf-8")
-        self.assertIn("現行有效", svg, "圖上看不到現行有效")
+        self.assertIn("授權", svg, "授權段是現在唯一的有效數來源，不得消失")
         self.assertIn("累計申請", svg)
-        self.assertIn(">24<", svg.replace(" ", ""))
+        self.assertIn("24", svg)
 
 
 class DesignStrategyMatrixTests(unittest.TestCase):
-    def test_matrix_rows_are_applicant_by_year(self):
-        rows = chart_runner.design_year_matrix_rows(STRATEGY_ROWS)
-        years = sorted({int(r["year"]) for r in rows})
-        self.assertEqual(years, [2019, 2021, 2022])
-        self.assertTrue(all(r["patent_count"] >= 1 for r in rows))
+    """2026-08-18：矩陣改為申請人 × 技術／外觀／技術+外觀（年度版已退場）。"""
 
-    def test_matrix_row_label_carries_strategy(self):
-        """列標籤要帶策略型——否則矩陣只是年度分布，答不了「策略」。"""
-        labels = {r["applicant_strategy"] for r
-                  in chart_runner.design_year_matrix_rows(STRATEGY_ROWS)}
-        self.assertTrue(any("技+外" in x for x in labels), labels)
-        self.assertTrue(any("純外觀" in x for x in labels), labels)
+    def test_three_axis_columns(self):
+        rows = chart_runner.design_strategy_matrix_rows(STRATEGY_ROWS)
+        self.assertEqual({r["strategy_axis"] for r in rows},
+                         set(chart_runner.DESIGN_STRATEGY_AXIS))
+
+    def test_totals_are_sum_of_two(self):
+        by = {(r["applicant"], r["strategy_axis"]): r["patent_count"]
+              for r in chart_runner.design_strategy_matrix_rows(STRATEGY_ROWS)}
+        for applicant in {r["applicant"] for r in STRATEGY_ROWS}:
+            self.assertEqual(
+                by[(applicant, "技術+外觀")],
+                by[(applicant, "技術")] + by[(applicant, "外觀")],
+                f"{applicant} 的合計欄與兩欄不符")
 
 
 class IntersectionTableTrimTests(unittest.TestCase):

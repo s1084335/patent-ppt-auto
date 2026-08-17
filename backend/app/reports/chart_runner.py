@@ -846,32 +846,34 @@ def design_strategy_table_rows(
     return out
 
 
-#: 現行有效那條的顏色。⚠ 不重用 STATUS_COLORS["授權"]：那是堆疊裡的一段，
-#: 與整列的「現行有效」是不同層級的量，同色會被讀成同一件事。
-COLOR_LIVE_PROTECTION = "#0F766E"
+#: 外觀策略矩陣的欄序（語意序，不按量排）。⚠ 第三欄是**合計**不是第三種策略。
+DESIGN_STRATEGY_AXIS = ("技術", "外觀", "技術+外觀")
 
 
-def design_year_matrix_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """外觀策略 → 申請人 × 年度矩陣（2026-08-17 使用者：「不如做矩陣給我」）。
+def design_strategy_matrix_rows(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """外觀保護策略：申請人 × 技術／外觀／技術+外觀（2026-08-18 使用者定案）。
 
-    原本兩條長條（外觀件數／技術件數）在這批資料上幾乎全是 1，看不出東西。
-    矩陣答得了三件事：誰、什麼時候佈外觀、用哪種策略。
+    取代 08-17 的「申請人 × 年度」矩陣。三欄各是**件數**：
+    - 技術：該申請人的技術案件數
+    - 外觀：外觀案件數
+    - 技術+外觀：兩者合計（＝該申請人在本主題的總投入）
 
-    ⚠ 列標籤帶策略型（技+外／純外觀），否則它只是年度分布、答不了「策略」。
-    技術件數不進矩陣（技術案沒有逐年資料），留在表格與敘述。
+    ⚠ 三欄不是三種互斥策略。每個申請人只有一個 `strategy_type`
+    （`技術+外觀` 或 `只走外觀`），若把 x 軸當策略歸屬，每列只會有一格有值、
+    看不出投入規模。此處取「件數」讀法：策略型由「技術欄是否為 0」直接讀出
+    ——0 就是只走外觀，不必另闢一欄。
     """
     out: list[dict[str, Any]] = []
     for row in rows:
-        marker = "技+外" if row.get("strategy_type") == "技術+外觀" else "純外觀"
-        label = f'{row.get("applicant")}·{marker}'
-        for year in (row.get("design_years") or []):
-            if year is None:
-                continue
-            out.append({
-                "applicant_strategy": label,
-                "year": str(year),
-                "patent_count": 1,
-            })
+        design = _int_or_none(row.get("design_count")) or 0
+        tech = _int_or_none(row.get("tech_count")) or 0
+        applicant = str(row.get("applicant") or "")
+        for axis, value in (("技術", tech), ("外觀", design),
+                            ("技術+外觀", tech + design)):
+            out.append({"applicant": applicant, "strategy_axis": axis,
+                        "patent_count": value})
     return out
 
 
@@ -880,17 +882,24 @@ def design_intersection_table_rows(
 ) -> list[dict[str, Any]]:
     """技術交叉表的**精簡欄位**（2026-08-17 使用者：「欄位能更精簡吧」）。
 
-    11 欄 → 5 欄。砍掉的都是不幫決策的：
+    12 欄 → 5 欄。砍掉的都是不幫決策的：
     - `strategy_type`：這張表每列都是「技術+外觀」，整欄同值等於沒資訊
     - 兩個 `representative_*_patent_id`：內部識別碼
     - `tech_evidence`：長句，擠掉整張表的可讀性；屬單筆細節
     - `has_figure`：資產有無是產製端的事，不是決策資訊
+    - 🔴 `tech_labels`：**永遠是空的**。`_tech_label` 找 分類標籤／topic_label／
+      topic_key／label，而 `design_protection_detail` 報表沒有任何一個
+      ——空欄比沒有欄更糟，讀者會以為「這些申請人沒有技術主題」（實機截圖）。
+      主題歸屬要接分群指派，屬另一條線，不在這張表硬湊。
+
+    🔴 2026-08-18 新增 `design_subjects`（使用者：「要能在表格呈現外觀內容所
+    保護的點」）：設計專利沒有請求項，`title` 就是它保護的標的敘述，全部列出。
     """
     return [{
         "applicant": row.get("applicant"),
         "design_count": row.get("design_count"),
         "tech_count": row.get("tech_count"),
-        "tech_labels": "、".join(row.get("tech_labels") or []),
+        "design_subjects": "；".join(row.get("design_subjects") or []),
         "representative_tech_title": row.get("representative_tech_title"),
     } for row in rows]
 
@@ -932,15 +941,11 @@ def render_country_status_stack(
     label_w = max((_display_width(str(r.get("country_code") or "")) for r in rows),
                   default=2.0)
     left = max(52, int(label_w * label_px) + 22)
-    # 右欄放兩個彙總：累計申請（歷史）與現行有效（當下權利）。
-    right, top = 196, 62
-    # 🔴 2026-08-17 使用者定案（同晚第三次）：**一條 bar 就夠**。
-    #    現行有效與申請件數來自同兩個欄位（country_code + legal_status），
-    #    前者恆為後者的子集合——堆疊裡的「授權」段已經在講同一件事，
-    #    再畫第二條是把同一份資料畫兩次。現行有效改為右欄數字保留。
-    #    ⚠ 數字不能一起拿掉：它走狀態桶，與字面「授權」欄在英文登錄
-    #      （granted／registered）時會不同，那時堆疊段看不出真正的有效數。
-    has_live = any(r.get("現行有效") is not None for r in rows)
+    # 右欄只放一個彙總：累計申請（歷史）。
+    right, top = 120, 62
+    # 🔴 2026-08-17→18 使用者定案（同一議題三次收斂）：先加第二條 bar、
+    #    再改右欄數字、最後**整個拿掉**——「看圖就知道了」，堆疊上的「授權」段
+    #    已經在講同一件事。這裡只留累計申請一個右欄彙總。
     bar_h = max(18, int(row_h * 0.55))
     gap = max(10, int(row_h * 0.35))
     row_span = bar_h + gap
@@ -989,17 +994,8 @@ def render_country_status_stack(
         svg.append(f'<text x="{left + plot_w + 8}" y="{y + bar_h * 0.72:.1f}"'
                    f' font-size="{label_px:.1f}" fill="{COLOR_TEXT}">'
                    f'{totals[idx]} 件</text>')
-        if has_live:
-            live = _int_or_none(row.get("現行有效")) or 0
-            svg.append(f'<text x="{left + plot_w + 104}"'
-                       f' y="{y + bar_h * 0.72:.1f}"'
-                       f' font-size="{label_px:.1f}" font-weight="600"'
-                       f' fill="{COLOR_LIVE_PROTECTION}">{live}</text>')
     svg.append(f'<text x="{left + plot_w + 8}" y="{top - 8}"'
                f' font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">累計申請</text>')
-    if has_live:
-        svg.append(f'<text x="{left + plot_w + 104}" y="{top - 8}"'
-                   f' font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">現行有效</text>')
     svg.append("</svg>")
     _write_svg(path, svg)
 
@@ -2445,32 +2441,9 @@ def _tech_year_topics(cluster_data: dict[str, Any]) -> dict[int, set[str]]:
     return year_topics
 
 
-def annual_topic_columns(cluster_data: dict[str, Any] | None) -> dict[int, dict[str, int]]:
-    """年度 ×（涉及技術群／首現技術群）——問題 9 四欄的分群那半。
-
-    ⚠ 只算**技術通道**：技術演進看的是技術線，功效主題混進來會虛增主題數。
-    無分群資料回空 dict——呼叫端據此**不補技術群欄**，
-    0（有分群沒觸及）與缺鍵（沒分群）是兩個不同的事實。
-    """
-    if not cluster_data:
-        return {}
-    year_topics = _tech_year_topics(cluster_data)
-    first_year = {}
-    for year in sorted(year_topics):
-        for code in year_topics[year]:
-            first_year.setdefault(code, year)
-    return {
-        year: {
-            "topic_count": len(codes),
-            "new_topic_count": sum(1 for c in codes if first_year[c] == year),
-        }
-        for year, codes in year_topics.items()
-    }
-
-
-def _trend_row(year: int, app: dict[int, dict[str, Any]], pub: dict[int, int],
-               topic_columns: dict[int, dict[str, int]] | None) -> dict[str, Any]:
-    """單一年份的合併列；family／技術群欄依「有資料才有鍵」原則組裝。"""
+def _trend_row(year: int, app: dict[int, dict[str, Any]],
+               pub: dict[int, int]) -> dict[str, Any]:
+    """單一年份的合併列；`family_count` 依「有資料才有鍵」原則組裝。"""
     row: dict[str, Any] = {
         "year": year,
         "application_count": app.get(year, {}).get("count", 0),
@@ -2481,21 +2454,19 @@ def _trend_row(year: int, app: dict[int, dict[str, Any]], pub: dict[int, int],
         row["family_count"] = family
     # ⚠ 2026-08-17 使用者實物驗收後移除「涉及／首現技術主題」兩欄：
     #    圖上沒有這個維度（趨勢圖是件數雙線），而「主題演進」另有專頁講同一件事。
-    #    表有圖沒有＝圖表脫節；同一件事兩頁講＝把統計拉厚。
-    #    ⚠ `topic_columns` 參數保留（呼叫端契約不變），只是不再產生欄位。
+    #    2026-08-18 續：連 `topic_columns` 參數與上游 `annual_topic_columns`
+    #    一併移除——留著會每次算一份 dict 丟掉，且讓人以為這條路還活著。
     return row
 
 
 def merge_annual_trend_rows(
     application_rows: list[dict[str, Any]],
     publication_rows: list[dict[str, Any]],
-    topic_columns: dict[int, dict[str, int]] | None = None,
 ) -> list[dict[str, int]]:
     """將申請年與授權公告年趨勢合併成前端表格可直接交叉對照的 rows。
 
-    年度四欄（問題 9）：`family_count` 由 SQL 聚合隨 application_rows 帶入；
-    `topic_columns` 有給（有分群）才補「涉及／首現技術群」兩欄——
-    ⚠ 沒分群時**缺鍵**而非補 0（0＝有分群沒觸及，缺鍵＝沒分群，混同會誤導解讀）。
+    `family_count` 由 SQL 聚合隨 application_rows 帶入；⚠ 缺資料時**缺鍵**
+    而非補 0——0 讀起來像「查過是 0」，缺鍵才是「沒有這筆資料」。
     """
     app: dict[int, dict[str, Any]] = {}
     for row in application_rows:
@@ -2509,7 +2480,7 @@ def merge_annual_trend_rows(
         if (year := _int_or_none(row.get("授權公告年"))) is not None
         if (count := _int_or_none(row.get("patent_count"))) is not None
     }
-    return [_trend_row(year, app, pub, topic_columns) for year in sorted(set(app) | set(pub))]
+    return [_trend_row(year, app, pub) for year in sorted(set(app) | set(pub))]
 
 
 def render_chart_embed(file: str) -> str:
@@ -2767,8 +2738,16 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "tech_labels": "技術主題",
     "representative_tech_title": "代表技術案",
     "applicant_strategy": "申請人·策略",
+    "strategy_axis": "策略面向",
+    "design_subjects": "外觀保護標的",
+    # 🔴 2026-08-18 使用者「單位是甚麼要標清楚」：
+    #   `granted_pending` 先前**完全沒有中文欄名**，實機表頭直接印英文 key；
+    #   `kind_summary` 的值是「新型8／發明5／設計1」，不標單位讀不出是件數。
+    "granted_pending": "已授權／審查中（件）",
+    "kind_summary": "種類組成（件）",
     "dead_count": "已失效",
-    "kind_summary": "種類組成",
+    # ⚠ 原本這裡還有一筆 "kind_summary": "種類組成"，與上方帶單位的那筆重複鍵。
+    #   Python dict 後者覆蓋前者，所以加了單位卻看不到效果（實測）。已移除。
     # 年度四欄（問題 9）
     "family_count": "家族數",
     # 🔴 2026-08-12 使用者定案術語：BERTopic 產物一律稱「技術主題」，不用「群」
@@ -3915,14 +3894,9 @@ def _build_country_map_section(ctx: ChartContext) -> None:
     #    且圖上的「現存有效」在表中根本沒有對應欄。
     #    ⚠ 實測驗證（CN 38／TW 9／US 6／EP 2）：六欄加總 == 申請件數，
     #      故堆疊總長＝歷史累計申請、各段＝當下狀態分布，一條看完兩種分析。
-    # 🔴 2026-08-17 晚使用者定案：現行有效**整合進同一張圖**（不開第二分頁），
-    #    每列上條＝歷史申請（依狀態堆疊）、下條＝現行有效，同一把尺看得出差異。
     status_pivot = country_status_display_pivot(report["rows"])
     render_country_status_stack(
         ctx.run_dir / "jurisdiction_distribution.svg", report["label_zh"], status_pivot)
-    notes.append(
-        "「現行有效」＝該受理局申請案中，法律狀態桶為已授權者；"
-        "EP 授權案計在 EP 名下，不展開至各 EPC 指定國。")
     # chart_rows 與 section rows 指向同一份——下游（deck／表格）不會拿到另一套語意。
     ctx.chart_rows["jurisdiction_distribution"] = status_pivot
 
@@ -4141,19 +4115,18 @@ def _build_design_protection_section(ctx: ChartContext) -> None:
     #    ——「這樣看得出啥？」改為**申請人 × 策略型交叉**，看得出誰用什麼策略、
     #    各投入多少；策略型總數留在 chart_rows 供口徑對照，不再單獨出圖。
     chart_rows = design_strategy_chart_rows(strategy_rows)
-    # 🔴 2026-08-17（二輪）使用者：「策略分布你不如做矩陣給我」——這批資料的
-    #    外觀件數幾乎全是 1，兩條長條看不出東西。改申請人 × 年度矩陣：
-    #    誰、何時佈外觀、用哪種策略（列標籤帶策略型）三件事一次看到。
-    matrix_rows = design_year_matrix_rows(strategy_rows)
-    # ⚠ 欄序必須給：預設是按欄總量排，但這裡每欄都只有 1–2 件，排出來的年份
-    #   會是 2019/2022/2015/2018… 這種亂序（實測）。年份是**語意序**，同狀態桶。
+    # 🔴 2026-08-18（三輪）使用者定案：**申請人 × 技術／外觀／技術+外觀**。
+    #    08-17 的「申請人 × 年度」矩陣退場（那版答的是「何時佈外觀」，
+    #    使用者要的是「各類投入多少」）。
+    # ⚠ 欄序給死：三欄是語意序，按量排會讓每份報告的欄序不同。
+    matrix_rows = design_strategy_matrix_rows(strategy_rows)
     render_matrix_chart(
         ctx.run_dir / "design_protection_strategy.svg",
         report["label_zh"],
         matrix_rows,
-        row_key="applicant_strategy",
-        col_key="year",
-        col_order=tuple(sorted({str(r["year"]) for r in matrix_rows})),
+        row_key="applicant",
+        col_key="strategy_axis",
+        col_order=DESIGN_STRATEGY_AXIS,
     )
     ctx.chart_rows["design_protection_strategy"] = chart_rows
     # ⚠ 表格用精簡欄位（10 → 6）：使用者「PPT 一定放不下」。
@@ -4323,14 +4296,7 @@ def country_status_display_pivot(rows: list[dict[str, Any]]) -> list[dict[str, A
         TW_LEGAL_STATUS_ALLOWED,
         status_display_term,
     )
-    from backend.app.transforms.legal_status import BUCKET_GRANTED, status_bucket
-
     by_country: dict[str, dict[str, int]] = {}
-    # 🔴 2026-08-17 使用者「現存有效跑去哪了？」：改六欄字面後這個決策口徑消失了。
-    #    ⚠ 不得用「抓『授權』欄」代替——中文資料上剛好相等，換一批英文登錄
-    #    （granted／registered／active）就會少算，因為那些詞在字面表自成一欄。
-    #    唯一判定處是 transforms.legal_status.status_bucket，此處只消費。
-    alive_by_country: dict[str, int] = {}
     for row in rows:
         country = str(row.get("country_code") or "").strip()
         if not country:
@@ -4339,8 +4305,6 @@ def country_status_display_pivot(rows: list[dict[str, Any]]) -> list[dict[str, A
         count = int(row.get("patent_count") or 0)
         entry = by_country.setdefault(country, {})
         entry[term] = entry.get(term, 0) + count
-        if status_bucket(row.get("legal_status")) == BUCKET_GRANTED:
-            alive_by_country[country] = alive_by_country.get(country, 0) + count
 
     present = {term for buckets in by_country.values() for term, n in buckets.items() if n}
     vocab_rank = {term: i for i, term in enumerate(TW_LEGAL_STATUS_ALLOWED)}
@@ -4352,11 +4316,11 @@ def country_status_display_pivot(rows: list[dict[str, Any]]) -> list[dict[str, A
     return [
         {"country_code": country,
          "申請件數": sum(buckets.values()),
-         # 現行有效緊接申請件數（兩個彙總口徑相鄰），狀態字面欄在其後展開。
-         # ⚠ 2026-08-17 晚使用者定案「EP 國家不用展開，用 EP 就好」：
-         #   本欄＝**該受理局**歷史申請中，法律狀態桶為已授權者。EP 授權案算在
-         #   EP 名下，不展開成各 EPC 指定國（實測展開會讓一件 EP 案生出 24 列）。
-         "現行有效": alive_by_country.get(country, 0),
+         # ⚠ 2026-08-18 使用者定案：**不再單獨列「現行有效」**——它恆為申請件數
+         #   的子集合（同兩個欄位推導），而堆疊上的「授權」段已經在講同一件事，
+         #   再標一次是把同一份資料呈現兩遍。08-17 的加法在此收回。
+         #   ⚠ 已知代價：英文登錄（granted／registered）在字面表自成一欄，
+         #     此時沒有任何地方給出桶層級的合計。使用者知情後仍選擇簡潔。
          **{t: (buckets.get(t) or "") for t in ordered_terms}}
         for country, buckets in ranked
     ]
@@ -5053,13 +5017,18 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
                     ctx.run_dir / timeline_file,
                     f"主題演進——{segment_label}（主題 × 申請年）",
                     layout, layout["top_rows"])
+                # 🔴 2026-08-18 使用者：「主題演進的表格和主題統計表視同一張」
+                #    ——原本掛的是 `timeline_rows`（＝主題統計表那份），
+                #    所以兩個分頁的表一模一樣。改掛**圖的同一份資料**轉成
+                #    主題 × 年交叉表（複用 pivot_year_matrix，不另寫轉置）。
+                timeline_table = pivot_year_matrix(ty_rows, "label")
                 variants.append({
                     "label": f"主題演進{tab_suffix}",
                     "file": timeline_file,
                     "variant_key": f"timeline{suffix}",
-                    "rows": timeline_rows,
+                    "rows": timeline_table,
                 })
-                ctx.chart_rows[f"topic_timeline{suffix}"] = timeline_rows
+                ctx.chart_rows[f"topic_timeline{suffix}"] = timeline_table
         # 🔴 痛點板已整個刪除（2026-08-04 使用者定案；07-29 起本就停產）。
 
     note = (

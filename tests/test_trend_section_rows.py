@@ -44,10 +44,10 @@ class TrendSectionRowsTests(unittest.TestCase):
                 return {"label_zh": "專利授權公告趨勢", "rows": pub_rows}
 
         ctx = Ctx()
-        # 圖與分群欄不是本測標的，替換掉避免依賴渲染與分群資料
-        with unittest.mock.patch.object(chart_runner, "render_line_chart"), \
-             unittest.mock.patch.object(chart_runner, "annual_topic_columns",
-                                        return_value=None):
+        # 圖不是本測標的，替換掉避免依賴渲染
+        # （原本還 patch 了 `annual_topic_columns`，該函式已於 2026-08-18 隨
+        #  「趨勢表不放技術主題」整段移除，故不再需要）
+        with unittest.mock.patch.object(chart_runner, "render_line_chart"):
             chart_runner._build_trend_section(ctx)
         return ctx
 

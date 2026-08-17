@@ -124,13 +124,12 @@ class DataTableUsesPivotTests(unittest.TestCase):
         cols = list(rows[0])
         self.assertEqual(cols[0], "country_code")
         self.assertEqual(cols[1], "申請件數")
-        # 2026-08-17：兩個彙總口徑相鄰（申請件數／現行有效），字面明細接在後面。
-        self.assertEqual(cols[2], "現行有效")
+        # ⚠ 2026-08-18：08-17 加的「現行有效」欄已依使用者定案移除
+        #   （「看圖就知道了」——授權那段已經在講同一件事）。
         # 有件數的狀態依 11 項詞彙序出現；未知（未登錄）殿後
-        self.assertEqual(cols[3:], ["審查中", "授權", "撤回", "到期", "未知"])
+        self.assertEqual(cols[2:], ["審查中", "授權", "撤回", "到期", "未知"])
         cn = next(r for r in rows if r["country_code"] == "CN")
         self.assertEqual((cn["申請件數"], cn["授權"], cn["到期"], cn["審查中"]), (38, 20, 15, 3))
-        self.assertEqual(cn["現行有效"], 20, "現行有效＝狀態桶已授權，與授權欄在此測資相等")
         tw = next(r for r in rows if r["country_code"] == "TW")
         self.assertEqual((tw["授權"], tw["未知"]), (2, 7), "已核准應折疊進授權；未登錄以未知現形")
 

@@ -28,8 +28,7 @@ class TrendTopicColumnsRemovedTests(unittest.TestCase):
     def test_topic_columns_not_in_merged_rows(self):
         rows = chart_runner.merge_annual_trend_rows(
             [{"application_year": 2022, "patent_count": 61, "family_count": 47}],
-            [{"授權公告年": 2022, "patent_count": 30}],
-            topic_columns={2022: {"topic_count": 3, "new_topic_count": 1}})
+            [{"授權公告年": 2022, "patent_count": 30}])
         self.assertNotIn("topic_count", rows[0],
                          "涉及技術主題欄未移除——圖上沒有這維度，且後面另有主題演進頁")
         self.assertNotIn("new_topic_count", rows[0])
@@ -125,20 +124,21 @@ class DesignStrategyChartTests(unittest.TestCase):
     def test_chart_shows_applicants_not_just_two_bars(self):
         """🔴 圖要能看出「誰用什麼策略」，不是只有兩條總數。
 
-        2026-08-17 二輪：長條改矩陣（使用者「不如做矩陣給我」）——這批資料
-        外觀件數幾乎全是 1，兩條長條看不出東西。判準不變：圖上要有申請人。
+        形式改過三輪，判準始終不變（圖上要有申請人、看得出策略）：
+        兩條總長條 → 申請人×年度矩陣（08-17）→ **申請人 × 技術／外觀／
+        技術+外觀**（08-18 使用者定案，年度那版退場、函式已移除）。
         """
-        rows = chart_runner.design_year_matrix_rows([
-            {**r, "design_years": [2019, 2022] if r["design_count"] == 2 else [2018]}
-            for r in self.STRATEGY_ROWS])
+        rows = chart_runner.design_strategy_matrix_rows(self.STRATEGY_ROWS)
         out = Path(tempfile.mkdtemp()) / "design.svg"
         chart_runner.render_matrix_chart(
-            out, "外觀保護策略", rows, row_key="applicant_strategy", col_key="year",
-            col_order=tuple(sorted({r["year"] for r in rows})))
+            out, "外觀保護策略", rows, row_key="applicant",
+            col_key="strategy_axis",
+            col_order=chart_runner.DESIGN_STRATEGY_AXIS)
         svg = out.read_text(encoding="utf-8")
         self.assertIn("帝瑪斯", svg, "圖上看不到申請人")
         self.assertIn("上海波迪貿易", svg)
-        self.assertIn("技+外", svg, "列標籤要帶策略型，否則答不了「策略」")
+        for axis in ("技術", "外觀", "技術+外觀"):
+            self.assertIn(axis, svg, f"欄「{axis}」沒出現")
 
     def test_table_columns_trimmed(self):
         """表精簡：PPT 放得下。⚠ 資訊不丟，只是併欄與移到敘述。"""
