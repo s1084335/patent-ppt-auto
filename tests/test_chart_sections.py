@@ -473,7 +473,7 @@ class PersistenceTruncationTests(unittest.TestCase):
     驗 report_data.json 落檔內容，不驗顯示（顯示已由 DisplaySpecTests 覆蓋）。"""
 
     @staticmethod
-    def _stub_run_report(name, filters=None, limit=None, patent_ids=None):
+    def _stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
         if name in ("ipc_main_distribution", "cpc_main_distribution"):
             # 2026-07-23 定案：分類來源改 Orig. Main，stub 的 row key 須跟著報表定義走
             source = REPORT_DEFINITIONS[name].columns[0]
@@ -759,7 +759,7 @@ class NarrativeRefreshTests(unittest.TestCase):
     版本不符顯示過期、舊 run 無 sections 鍵明確報錯不猜）。"""
 
     @staticmethod
-    def _stub_run_report(name, filters=None, limit=None, patent_ids=None):
+    def _stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
         rows = [{"applicant_display_name": f"App {i:02d}", "application_year": 2020,
                  "patent_count": 30 - i} for i in range(12)]
         return fake_report(name, rows)
@@ -855,7 +855,7 @@ class SelectiveRenderTests(unittest.TestCase):
     def test_application_trend_only(self):
         fetched: list[str] = []
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             fetched.append(name)
             rows = {
                 "application_trend": [
@@ -915,7 +915,7 @@ class SelectiveRenderTests(unittest.TestCase):
     def test_report_cache_deduplicates_fetch(self):
         calls: list[str] = []
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             calls.append(name)
             return fake_report(name, [{"application_year": 2020, "patent_count": 1}])
 
@@ -932,7 +932,7 @@ class SelectiveRenderTests(unittest.TestCase):
     def test_manifest_hash_and_snapshot_metadata(self):
         """小型 fixture 驗證 SVG、hash、filters 與 patent_ids 快照 metadata。"""
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             self.assertEqual(patent_ids, [7, 9])
             rows = {
                 "applicant_ranking": [
@@ -973,7 +973,7 @@ class SelectiveRenderTests(unittest.TestCase):
     def test_applicant_ranking_outputs_transfer_segment_and_detail_fields(self):
         """申請人排名圖表、JSON 保留最新受讓人統計與公司明細。"""
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             self.assertEqual(name, "applicant_ranking")
             return fake_report(name, [{
                 "applicant_display_name": "REXON",
@@ -1040,7 +1040,7 @@ class SelectiveRenderTests(unittest.TestCase):
             for index in range(1, 23)
         ]
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             self.assertEqual(name, "applicant_year_matrix")
             return fake_report(name, matrix_rows)
 
@@ -1082,7 +1082,7 @@ class SelectiveRenderTests(unittest.TestCase):
             for index in range(1, 23)
         ]
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             self.assertEqual(name, "applicant_year_matrix")
             return fake_report(name, matrix_rows)
 
@@ -1110,7 +1110,7 @@ class SelectiveRenderTests(unittest.TestCase):
             for index in range(30)
         ]
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             self.assertEqual(name, "applicant_year_matrix")
             return fake_report(name, matrix_rows)
 
@@ -1267,7 +1267,7 @@ class SectionReportKeyTests(unittest.TestCase):
         ],
     }
 
-    def _stub_run_report(self, name, filters=None, limit=None, patent_ids=None):
+    def _stub_run_report(self, name, filters=None, limit=None, patent_ids=None, **kwargs):
         return fake_report(name, self._ROWS.get(name, []))
 
     def _render(self, report_names):
