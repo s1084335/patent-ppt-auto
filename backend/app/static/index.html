@@ -873,7 +873,7 @@ async function loadWorkspaces() {
     sel.value = GLOBAL_WS_VALUE;
     selectGlobalWorkspace();
   }
-  state.nav = 'browse';
+  setNav('browse');
   renderMain();
 }
 // 選全庫：旗標打開、workspaceId 落到全庫真實 id（尚未建立全庫時為 null）。
@@ -901,7 +901,7 @@ function onWorkspaceChange() {
   try { localStorage.setItem('workspaceSel', v); } catch (_) {}
   selectWorkspaceById(v);
   if (v === GLOBAL_WS_VALUE) {
-    state.nav = 'browse';  // 選全庫→瀏覽專利（跨 workspace 全庫清單；總覽已刪）。
+    setNav('browse');  // 選全庫→瀏覽專利（跨 workspace 全庫清單；總覽已刪）。
   }
   state.topicPatentsOffset = 0;   // 換 workspace 清單頁碼歸零
   state.topicFilterKey = null;
@@ -909,13 +909,20 @@ function onWorkspaceChange() {
 }
 
 // ══════════ 左導覽切換 ══════════
-function navTo(nav) {
-  // 切導覽頁先停掉所有輪詢：離開的那頁不需要再更新，重畫也會生新的節點。
-  clearAllTimers();
+// 🔴 導覽狀態的**唯一設定入口**（2026-08-17）：state.nav 與側欄高亮描述同一件事，
+// 分開設定必然分岔——本 bug 即 loadWorkspaces 直接改 state.nav 繞過高亮，
+// 於是「進首頁內容是瀏覽專利、左側卻全白」。
+// ⚠ 與同日修的 workspace 顯示不一致（isGlobalWs 初值）同型：同一份狀態兩條設定路徑。
+function setNav(nav) {
   state.nav = nav;
   document.querySelectorAll('.nav-item').forEach(b => {
     b.classList.toggle('active', b.dataset.nav === nav);
   });
+}
+function navTo(nav) {
+  // 切導覽頁先停掉所有輪詢：離開的那頁不需要再更新，重畫也會生新的節點。
+  clearAllTimers();
+  setNav(nav);
   renderMain();
 }
 
@@ -5927,6 +5934,9 @@ async function approveTopicBackfill() {
 //   deck 若需要選圖，會依 deck 自己的版型契約重做，不沿用 PPT 的 `ppt_eligible` 判準。
 
 // ══════════ 初始化 ══════════
+// ⚠ 先套側欄高亮再載入：loadWorkspaces 要等網路往返，那段期間內容區已經是
+//    瀏覽專利，側欄不能是白的（使用者不知道自己在哪一區）。
+setNav(state.nav);
 loadWorkspaces();
 fetchTasks();
 connectSSE();
