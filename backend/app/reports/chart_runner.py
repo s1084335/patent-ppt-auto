@@ -289,6 +289,23 @@ COLOR_MAP = "#F8FAFC"
 COLOR_GRID = "#DCE3F2"          # theme bar_track：格線
 COLOR_TEXT = "#00094A"          # theme navy：標題與主文字
 COLOR_TEXT_SOFT = "#869FB2"     # 次要文字（刻度、副標）
+
+#: 法律狀態堆疊色（2026-08-17 受理局圖改狀態堆疊）。**唯一定義處**——
+#: 狀態語意固定，顏色不得各處各寫一份。
+#: 順序即堆疊順序：由「剛遞件」到「權利消滅」，一條看完生命週期。
+#: ⚠ 鍵＝表格的六欄字面（`country_status_display_pivot` 的輸出），
+#:   不是四大桶——圖與表因此逐欄對得上（使用者 2026-08-17 裁決）。
+STATUS_COLORS: dict[str, str] = {
+    "申請": "#93C5FD",
+    "公開": "#60A5FA",
+    "審查中": "#006DF5",
+    "授權": "#10B981",
+    "放棄": "#9CA3AF",
+    "到期": "#C62828",
+}
+
+#: 已轉讓（申請人排名圖）：2026-08-17 使用者實物驗收「斜線看不清」，改第三色。
+COLOR_TRANSFERRED = "#7C3AED"
 # 淺色填色上的圖元內文字色（見 readable_text_on）；不與 COLOR_TEXT 共用——
 # 那是「頁面文字」，這是「畫在圖元上的文字」，底色來源不同。
 TEXT_ON_LIGHT = "#1A1A1A"
@@ -732,6 +749,191 @@ def _paired_rows_svg(
     return parts
 
 
+def design_strategy_table_rows(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """外觀策略明細表的**精簡欄位**（2026-08-17 使用者：PPT 放不下）。
+
+    10 欄 → 6 欄。⚠ 資訊不丟，只改承載方式：
+    - 三個年份欄（first／latest／design_years）併成一欄區間
+    - `representative_design_patent_id` 移除——內部識別碼不給決策者看
+    - `representative_design_title` 移到敘述（代表案講一句比列一欄有用）
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        first = row.get("first_design_year")
+        latest = row.get("latest_design_year")
+        if first and latest and first != latest:
+            years = f"{first}–{latest}"
+        else:
+            years = str(first or latest or "")
+        out.append({
+            "applicant": row.get("applicant"),
+            "strategy_type": row.get("strategy_type"),
+            "design_count": row.get("design_count"),
+            "tech_count": row.get("tech_count"),
+            "design_years": years,
+            "legal_status_summary": row.get("legal_status_summary"),
+        })
+    return out
+
+
+def render_design_strategy_chart(
+    path: Path,
+    title: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    """申請人 × 策略型交叉圖（2026-08-17 取代「只有兩條總數」的策略分布）。
+
+    每個申請人一列，外觀件數與技術件數並排——一眼看出**誰只做外觀、
+    誰兩邊都做、各做多少**。原圖只畫策略型的總數（只走外觀 6／技術+外觀 4），
+    看不出是哪些人、也看不出投入規模。
+
+    ⚠ 依「外觀件數」排序而非總量：這張圖的主題是外觀保護，
+    技術件數是對照維度不是排序依據。
+    """
+    if not rows:
+        return
+    ordered = sorted(
+        rows,
+        key=lambda r: (-(_int_or_none(r.get("design_count")) or 0),
+                       -(_int_or_none(r.get("tech_count")) or 0),
+                       str(r.get("applicant") or "")),
+    )
+    width = _sizing_value("canvas_width")
+    row_h = _sizing_value("row_height")
+    label_px = chart_font_px(width, row_h * max(len(ordered), 1))
+    note_px = chart_font_px(width, row_h * max(len(ordered), 1),
+                            target_pt=_sizing_value("note_target_pt"))
+    left, right, top = 210, 96, 62
+    bar_h = max(11, int(row_h * 0.30))
+    gap = max(12, int(row_h * 0.40))
+    height = top + len(ordered) * (bar_h * 2 + gap) + 24
+    plot_w = width - left - right
+    max_v = max([_int_or_none(r.get("design_count")) or 0 for r in ordered]
+                + [_int_or_none(r.get("tech_count")) or 0 for r in ordered] + [1])
+
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
+        f' viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
+        '<rect width="100%" height="100%" fill="white"/>',
+        f'<text data-role="chart-title" x="{left}" y="30" font-size="{label_px:.1f}"'
+        f' font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+        f'<rect x="{left}" y="44" width="12" height="12" fill="{COLOR_SEGMENT}"/>'
+        f'<text x="{left + 17}" y="55" font-size="{note_px:.1f}"'
+        f' fill="{COLOR_TEXT}">外觀件數</text>'
+        f'<rect x="{left + 110}" y="44" width="12" height="12" fill="{COLOR_BAR}"/>'
+        f'<text x="{left + 127}" y="55" font-size="{note_px:.1f}"'
+        f' fill="{COLOR_TEXT}">技術件數</text>',
+    ]
+    for idx, row in enumerate(ordered):
+        y = top + idx * (bar_h * 2 + gap)
+        name = xml_text(str(row.get("applicant") or ""))
+        strategy = xml_text(str(row.get("strategy_type") or ""))
+        svg.append(f'<text x="{left - 12}" y="{y + bar_h:.1f}" text-anchor="end"'
+                   f' font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{name}</text>')
+        # 策略型標在名字下方——那是分類不是數量，不佔長條
+        svg.append(f'<text x="{left - 12}" y="{y + bar_h * 2 + 2:.1f}"'
+                   f' text-anchor="end" font-size="{note_px:.1f}"'
+                   f' fill="{COLOR_TEXT_SOFT}">{strategy}</text>')
+        for offset, key, color in ((0, "design_count", COLOR_SEGMENT),
+                                   (bar_h, "tech_count", COLOR_BAR)):
+            count = _int_or_none(row.get(key)) or 0
+            if count <= 0:
+                continue
+            bar_w = plot_w * count / max_v
+            svg.append(f'<rect x="{left}" y="{y + offset}" width="{bar_w:.1f}"'
+                       f' height="{bar_h}" fill="{color}"/>')
+            svg.append(f'<text x="{left + bar_w + 6:.1f}"'
+                       f' y="{y + offset + bar_h * 0.82:.1f}"'
+                       f' font-size="{note_px:.1f}" fill="{COLOR_TEXT}">{count}</text>')
+    svg.append("</svg>")
+    _write_svg(path, svg)
+
+
+def render_country_status_stack(
+    path: Path,
+    title: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    """受理局 × 法律狀態堆疊（2026-08-17 取代「申請 vs 現存有效」雙條）。
+
+    🔴 吃**表格同一份 rows**（`country_status_display_pivot` 的六欄字面），
+    圖與表逐欄對得上——原本圖用四大桶、表用字面折疊，兩套語意並存，
+    且圖上的「現存有效」在表中根本沒有對應欄。
+
+    🔴 保住原本的兩種分析：堆疊各段＝**當下**狀態分布，
+    每列右端的總計＝**歷史**累計申請件數。一張圖看得到兩者。
+
+    ⚠ 只畫實際有件數的狀態：全零的不佔圖例（EP 只有授權與到期時，
+    圖例就只列那兩項）。
+    """
+    if not rows:
+        return
+    present = [st for st in STATUS_COLORS
+               if any(_int_or_none(r.get(st)) for r in rows)]
+    if not present:
+        return
+
+    width = _sizing_value("canvas_width")
+    row_h = _sizing_value("row_height")
+    label_px = chart_font_px(width, row_h * max(len(rows), 1))
+    note_px = chart_font_px(width, row_h * max(len(rows), 1),
+                            target_pt=_sizing_value("note_target_pt"))
+    left, right, top = 150, 110, 62
+    bar_h = max(18, int(row_h * 0.55))
+    gap = max(10, int(row_h * 0.35))
+    height = top + len(rows) * (bar_h + gap) + 24
+    plot_w = width - left - right
+    # ⚠ 尺標用「申請件數」（歷史累計）而非各狀態加總：兩者理應相等，
+    #    不等就是資料有狀態沒收斂到——用申請件數當尺，缺口會**看得見**。
+    totals = [_int_or_none(r.get("申請件數")) or 0 for r in rows]
+    max_total = max([*totals, 1])
+
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
+        f' viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
+        '<rect width="100%" height="100%" fill="white"/>',
+        f'<text data-role="chart-title" x="{left}" y="30" font-size="{label_px:.1f}"'
+        f' font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+    ]
+    lx = float(left)
+    for st in present:
+        svg.append(f'<rect x="{lx:.1f}" y="44" width="12" height="12"'
+                   f' fill="{STATUS_COLORS[st]}"/>')
+        svg.append(f'<text x="{lx + 17:.1f}" y="55" font-size="{note_px:.1f}"'
+                   f' fill="{COLOR_TEXT}">{xml_text(st)}</text>')
+        lx += 34 + len(st) * note_px * 0.66
+
+    for idx, row in enumerate(rows):
+        y = top + idx * (bar_h + gap)
+        country = xml_text(str(row.get("country_code") or ""))
+        svg.append(f'<text x="{left - 12}" y="{y + bar_h * 0.72:.1f}"'
+                   f' text-anchor="end" font-size="{label_px:.1f}"'
+                   f' fill="{COLOR_TEXT}">{country}</text>')
+        x = float(left)
+        for st in present:
+            count = _int_or_none(row.get(st)) or 0
+            if count <= 0:
+                continue
+            seg_w = plot_w * count / max_total
+            svg.append(f'<rect x="{x:.1f}" y="{y}" width="{seg_w:.1f}"'
+                       f' height="{bar_h}" fill="{STATUS_COLORS[st]}">'
+                       f'<title>{country} {xml_text(st)} {count} 件</title></rect>')
+            if seg_w > note_px * 2.4:
+                svg.append(f'<text x="{x + seg_w / 2:.1f}" y="{y + bar_h * 0.72:.1f}"'
+                           f' text-anchor="middle" font-size="{note_px:.1f}"'
+                           f' fill="#FFFFFF">{count}</text>')
+            x += seg_w
+        svg.append(f'<text x="{left + plot_w + 8}" y="{y + bar_h * 0.72:.1f}"'
+                   f' font-size="{label_px:.1f}" fill="{COLOR_TEXT}">'
+                   f'{totals[idx]} 件</text>')
+    svg.append(f'<text x="{width - right + 8}" y="{top - 8}"'
+               f' font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">累計申請</text>')
+    svg.append("</svg>")
+    _write_svg(path, svg)
+
+
 def render_paired_bar_chart(
     path: Path,
     title: str,
@@ -887,13 +1089,19 @@ def structure_bar_svg(row: dict[str, Any], *, left: float, top: float,
     if joint_w > 0:
         out.append(f'<rect class="bar-segment" x="{left + solo_w:.1f}" y="{top}" '
                    f'width="{joint_w:.1f}" height="{BAR_HEIGHT_PX}" rx="2" fill="{COLOR_SEGMENT}"/>')
-    for hatch_count, seg_start, seg_len in ((seg["solo_hatch"], left, solo_w),
+    # 已轉讓：2026-08-17 使用者實物驗收「斜線看不清」→ 改**第三種顏色**（紫）。
+    # ⚠ 語意不變：仍是疊在各段右端的第二視覺通道（顏色分段＝申請結構、
+    #    這一段＝已轉讓），只是把 pattern 換成實色。
+    # ⚠ class 名保留 `bar-transferred`（原 `bar-hatch`）——deck 的窄轉換器
+    #    詞彙表與 pitfalls 都以 class 辨識這段，改名要一起改，不可只改一邊。
+    for moved_count, seg_start, seg_len in ((seg["solo_hatch"], left, solo_w),
                                             (seg["joint_hatch"], left + solo_w, joint_w)):
-        hatch_w = width_of(hatch_count)
-        if hatch_w > 0:
-            out.append(f'<rect class="bar-hatch" x="{seg_start + seg_len - hatch_w:.1f}" '
-                       f'y="{top}" width="{hatch_w:.1f}" height="{BAR_HEIGHT_PX}" '
-                       f'rx="2" fill="url(#hatch)"/>')
+        moved_w = width_of(moved_count)
+        if moved_w > 0:
+            out.append(f'<rect class="bar-transferred" '
+                       f'x="{seg_start + seg_len - moved_w:.1f}" '
+                       f'y="{top}" width="{moved_w:.1f}" height="{BAR_HEIGHT_PX}" '
+                       f'rx="2" fill="{COLOR_TRANSFERRED}"/>')
     return out
 
 
@@ -1016,9 +1224,6 @@ def render_segmented_bar_chart(
         f'<text data-role="chart-title" x="28" y="36" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         # #3 圖例：兩段色（申請結構）＋斜紋（已轉讓）。斜紋是**第二個通道**，
         # 疊在段色上——「共同且已轉讓」＝共同色＋斜紋，兩個屬性同時看得到。
-        (f'<defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" '
-         f'patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" '
-         f'stroke="{COLOR_TEXT}" stroke-width="2" stroke-opacity="0.55"/></pattern></defs>'),
         (f'<rect x="28" y="56" width="12" height="12" fill="{STRUCTURE_SOLO_COLOR}"/>'
          f'<text x="46" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">'
          f'{xml_text(structure_labels[0])}</text>'),
@@ -1028,7 +1233,7 @@ def render_segmented_bar_chart(
         # ⚠ 圖例色塊的底色要用**淺階**：深底配深斜紋等於看不見
         #   （2026-08-05 轉圖當場抓到，圖例那格是一片實心深藍）。
         *([(f'<rect x="236" y="56" width="12" height="12" fill="{STRUCTURE_SOLO_COLOR}"/>'
-            f'<rect x="236" y="56" width="12" height="12" fill="url(#hatch)"/>'
+            f'<rect x="236" y="56" width="12" height="12" fill="{COLOR_TRANSFERRED}"/>'
             f'<text x="254" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">'
             f'{xml_text(hatch_label)}</text>')]
           if hatch_label else []),
@@ -2192,10 +2397,10 @@ def _trend_row(year: int, app: dict[int, dict[str, Any]], pub: dict[int, int],
     family = app.get(year, {}).get("family")
     if family is not None:
         row["family_count"] = family
-    if topic_columns is not None:
-        info = topic_columns.get(year) or {}
-        row["topic_count"] = int(info.get("topic_count") or 0)
-        row["new_topic_count"] = int(info.get("new_topic_count") or 0)
+    # ⚠ 2026-08-17 使用者實物驗收後移除「涉及／首現技術主題」兩欄：
+    #    圖上沒有這個維度（趨勢圖是件數雙線），而「主題演進」另有專頁講同一件事。
+    #    表有圖沒有＝圖表脫節；同一件事兩頁講＝把統計拉厚。
+    #    ⚠ `topic_columns` 參數保留（呼叫端契約不變），只是不再產生欄位。
     return row
 
 
@@ -3558,9 +3763,8 @@ def _build_trend_section(ctx: ChartContext) -> None:
     trend_title = f'{application["label_zh"]}與{publication["label_zh"]}'
     render_line_chart(ctx.run_dir / "annual_trend.svg", trend_title, application["rows"], publication["rows"])
     # 年度四欄（問題 9）：圖不改（仍是件數雙線），四欄只進數據表與解讀素材。
-    topic_cols = annual_topic_columns(ctx.cluster_data) or None
     ctx.chart_rows["annual_trend"] = merge_annual_trend_rows(
-        application["rows"], publication["rows"], topic_columns=topic_cols)
+        application["rows"], publication["rows"])
     # report_key 指向 chart_rows.annual_trend，讓表格可同列對照申請年與授權公告年；
     # 圖檔仍由 application_trend + publication_trend 兩份報表共同產生。
     ctx.sections.append({
@@ -3617,12 +3821,20 @@ def _build_country_map_section(ctx: ChartContext) -> None:
     if quality_note:
         notes.append(quality_note)
     # 檔名 jurisdiction_distribution ≠ 報表鍵 country_distribution，須顯式宣告查找鍵。
+    # 🔴 2026-08-17：圖與表吃**同一份** pivot（使用者：表六欄字面、圖也畫那六欄）。
+    #    原本圖用四大狀態桶、表用 status_display_term 字面折疊，兩套語意並存，
+    #    且圖上的「現存有效」在表中根本沒有對應欄。
+    #    ⚠ 實測驗證（CN 38／TW 9／US 6／EP 2）：六欄加總 == 申請件數，
+    #      故堆疊總長＝歷史累計申請、各段＝當下狀態分布，一條看完兩種分析。
+    status_pivot = country_status_display_pivot(report["rows"])
+    render_country_status_stack(
+        ctx.run_dir / "jurisdiction_distribution.svg", report["label_zh"], status_pivot)
     ctx.sections.append({
         "title": report["label_zh"],
         "report_key": "country_distribution",
         # 🔴 數據表吃顯示用交叉表（2026-08-11 使用者：「狀態做橫向欄位、縱向放國家」）
         # ——section 自帶 rows＝顯示轉置（分群卡既有慣例），不帶才回 reports 桶的長格式。
-        "rows": country_status_display_pivot(report["rows"]),
+        "rows": status_pivot,
         "variants": [{"label": "Bar", "file": "jurisdiction_distribution.svg", "variant_key": "default"}],
         "note": " ".join(notes),
     })
@@ -3808,15 +4020,20 @@ def _build_design_protection_section(ctx: ChartContext) -> None:
     report = ctx.report("design_protection_detail")
     strategy_rows = design_protection_strategy(report["rows"])
     intersection_rows = design_tech_intersections(report["rows"])
+    # 🔴 2026-08-17 使用者實物驗收：原圖只有兩條總數（只走外觀 6／技術+外觀 4）
+    #    ——「這樣看得出啥？」改為**申請人 × 策略型交叉**，看得出誰用什麼策略、
+    #    各投入多少；策略型總數留在 chart_rows 供口徑對照，不再單獨出圖。
     chart_rows = design_strategy_chart_rows(strategy_rows)
-    render_bar_chart(
+    render_design_strategy_chart(
         ctx.run_dir / "design_protection_strategy.svg",
         report["label_zh"],
-        chart_rows,
-        "strategy_type",
+        strategy_rows,
     )
     ctx.chart_rows["design_protection_strategy"] = chart_rows
-    ctx.chart_rows["design_protection_strategy_table"] = strategy_rows
+    # ⚠ 表格用精簡欄位（10 → 6）：使用者「PPT 一定放不下」。
+    #    資訊不丟——年份三欄併區間、內部 patent_id 移除、代表案名進敘述。
+    ctx.chart_rows["design_protection_strategy_table"] = design_strategy_table_rows(
+        strategy_rows)
     ctx.chart_rows["design_tech_intersections"] = intersection_rows
     ctx.sections.append({
         "title": report["label_zh"],

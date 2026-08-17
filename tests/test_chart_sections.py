@@ -356,7 +356,7 @@ class DisplaySpecTests(unittest.TestCase):
         self.assertEqual(len(layout["years"]), 25, "年份軸最多最新 25 年")
         self.assertEqual(layout["years"][-1], 2019)
 
-    def test_segmented_bar_two_segments_and_hatch(self):
+    def test_segmented_bar_two_segments_and_transferred(self):
         """#3（2026-08-05）：兩段色（單獨／共同）＋各段右端斜紋（已轉讓）。
 
         ⚠ 契約反轉：舊版是「總長條＋青色區段靠右端」的單一屬性編碼，
@@ -378,8 +378,9 @@ class DisplaySpecTests(unittest.TestCase):
         self.assertAlmostEqual(float(total.group(1)) + float(total.group(2)),
                                float(seg.group(1)), delta=0.5,
                                msg="共同段應緊接單獨段右緣")
-        hatches = re.findall(r'class="bar-hatch" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"', svg)
-        self.assertEqual(len(hatches), 2, "單獨段與共同段各要有一段斜紋")
+        hatches = re.findall(r'class="bar-transferred" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"', svg)
+        self.assertEqual(len(hatches), 2,
+                         "單獨段與共同段各要有一段已轉讓（2026-08-17 由斜線改第三色）")
         for x, w in hatches:
             self.assertGreater(float(w), 0)
 
@@ -1019,7 +1020,7 @@ class SelectiveRenderTests(unittest.TestCase):
         self.assertAlmostEqual(
             float(total_rect.group(1)) + float(total_rect.group(2)),
             float(segment_rect.group(1)), delta=0.5)
-        self.assertEqual(len(re.findall(r'class="bar-hatch"', svg)), 2,
+        self.assertEqual(len(re.findall(r'class="bar-transferred"', svg)), 2,
                          "單獨段與共同段各要有一段已轉讓斜紋")
         self.assertIn("共同申請：Gamma 2件", svg)
         row = report_data["reports"]["applicant_ranking"]["rows"][0]
