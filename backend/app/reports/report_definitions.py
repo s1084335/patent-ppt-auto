@@ -235,7 +235,9 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         layout="stacked",  # 交叉表欄多，需滿寬
         report_type="aggregate",
         label="Applicant Year Matrix",
-        label_zh="申請人年度專利分布矩陣",
+        # 2026-08-17 使用者定案：圖已改跨度圖，名稱去掉「矩陣」。
+        # ⚠ report_key 不動（applicant_year_matrix）——既有解讀以 key 綁定。
+        label_zh="申請人年度專利分布",
         # 🔴 2026-08-06 再次推翻 07-31：改回 0042 展開口徑（共同申請人各自計數）。
         # 理由是**正確性不是偏好**——實測「曾晴」在 14 件／4 國具名為共同申請人，
         # 第一順位口徑只顯示 2 件／1 國，是報表在陳述不實資訊（問題 16）。

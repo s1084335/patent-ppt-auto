@@ -749,6 +749,90 @@ def _paired_rows_svg(
     return parts
 
 
+def classification_variant_rows(
+    chart_rows: dict[str, Any], report_key: str, levels: tuple[int, ...]
+) -> list[dict[str, Any]]:
+    """IPC／CPC 表格跟著 tab 的階層走（2026-08-17 使用者：圖是 4 階、表卻是 5 階）。
+
+    每階的 rows 已存在 `chart_rows[f"{report_key}_L{level}"]`，但 section 沒給
+    `rows`，顯示層退回原始報表（5 階明細）。這裡取**第一階**（預設顯示那個 tab）
+    的 rows 當 section 表格。
+
+    ⚠ 切 tab 時前端換的是圖；表格若要跟著換階，需要 variant 級的 rows——
+    那是顯示層契約的擴充，本函式先確保「預設 tab 與表一致」，
+    不再出現 4 階圖配 5 階表。
+    """
+    if not levels:
+        return []
+    return list(chart_rows.get(f"{report_key}_L{levels[0]}") or [])
+
+
+def kp_profile_table_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Key Players 表精簡（13 → 6 欄；2026-08-17 使用者驗收「PPT 放不下」）。
+
+    ⚠ `patent_ids` 是內部識別碼陣列（取證用），不給決策者看。
+    保留的六欄回答「這家是誰、投入多少、布局多廣、活著多少」。
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        granted = _int_or_none(row.get("granted_count")) or 0
+        pending = _int_or_none(row.get("pending_count")) or 0
+        out.append({
+            "applicant_display_name": row.get("applicant_display_name"),
+            "patent_count": row.get("patent_count"),
+            "family_count": row.get("family_count"),
+            "country_count": row.get("country_count"),
+            # 兩欄併一欄：授權/審查中——生命週期狀態一眼可比
+            "granted_pending": f"{granted}／{pending}",
+            "kind_summary": row.get("kind_summary"),
+        })
+    return out
+
+
+def topic_table_display_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """主題分析表精簡（21 → 7 欄；2026-08-17）。
+
+    21 欄多半是各種比例與內部欄位。決策者要的是：這個主題有多少件、
+    幾家在做、集中度多高、代表玩家是誰。
+    """
+    # ⚠ source_field 必留：前端靠它 filter 出技術／功效兩個通道，
+    #    少了它整張表會被篩成空（顯示層以 DATA_TABLE_EXCLUDED_COLUMNS 隱藏此欄，
+    #    所以它在資料裡但不佔版面——不算破壞精簡）。
+    keep = ("topic_code", "label", "source_field", "patent_count",
+            "applicant_count", "top3_share", "top_applicants")
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = {k: row.get(k) for k in keep if k in row}
+        out.append(item)
+    return out
+
+
+def year_matrix_summary_rows(pivot: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """年度矩陣表改摘要（16 欄年份展開 → 5 欄；2026-08-17 使用者：「誰看得懂」）。
+
+    原表把每個年份攤成一欄，大部分格子是空的——**稀疏矩陣不適合當表格**
+    （圖已改跨度圖，那才是看分布的地方）。表格改回答四件事：
+    誰、幾件、活躍區間、最近一次投入。
+    """
+    out: list[dict[str, Any]] = []
+    for row in pivot:
+        years = sorted(
+            int(k) for k, v in row.items()
+            if k.isdigit() and str(v).strip() and str(v).strip() != "0")
+        total = row.get("total")
+        if total is None:
+            total = sum(_int_or_none(row.get(str(y))) or 0 for y in years)
+        out.append({
+            "applicant_display_name": row.get("applicant_display_name"),
+            "patent_count": total,
+            "active_years": (f"{years[0]}–{years[-1]}"
+                             if len(years) > 1 else (str(years[0]) if years else "")),
+            "year_span": len(years),
+            "latest_year": years[-1] if years else "",
+        })
+    return out
+
+
 def design_strategy_table_rows(
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -805,7 +889,10 @@ def render_design_strategy_chart(
     label_px = chart_font_px(width, row_h * max(len(ordered), 1))
     note_px = chart_font_px(width, row_h * max(len(ordered), 1),
                             target_pt=_sizing_value("note_target_pt"))
-    left, right, top = 210, 96, 62
+    # 同上：申請人名長度差異大，依最長者推導但設上限（避免一個超長名字壓縮圖寬）。
+    name_w = max((len(str(r.get("applicant") or "")) for r in ordered), default=6)
+    left = min(230, max(90, int(name_w * label_px * 0.72) + 20))
+    right, top = 96, 62
     bar_h = max(11, int(row_h * 0.30))
     gap = max(12, int(row_h * 0.40))
     height = top + len(ordered) * (bar_h * 2 + gap) + 24
@@ -880,7 +967,11 @@ def render_country_status_stack(
     label_px = chart_font_px(width, row_h * max(len(rows), 1))
     note_px = chart_font_px(width, row_h * max(len(rows), 1),
                             target_pt=_sizing_value("note_target_pt"))
-    left, right, top = 150, 110, 62
+    # 🔴 2026-08-17 使用者驗收「國家和 bar 分太開」：左欄寬**依標籤實際長度推導**，
+    #    不用固定值。受理局代碼只有 2–3 個字元，固定 150px 會空掉一大片。
+    label_w = max((len(str(r.get("country_code") or "")) for r in rows), default=2)
+    left = max(52, int(label_w * label_px * 0.72) + 22)
+    right, top = 110, 62
     bar_h = max(18, int(row_h * 0.55))
     gap = max(10, int(row_h * 0.35))
     height = top + len(rows) * (bar_h + gap) + 24
@@ -1455,7 +1546,7 @@ def emit_kp_quadrant(ctx: ChartContext, rows: list[dict[str, Any]]) -> None:
             "label": definition.label_zh,
             "variant_key": "default",
             "file": KP_QUADRANT_FILENAME,
-            "rows": rows,
+            "rows": kp_profile_table_rows(rows),
         }],
     })
 
@@ -3952,6 +4043,9 @@ def _build_classification_section(
         variants.append({"label": f"{level} 階 · {level_label.split('(')[-1].rstrip(')')}", "file": filename, "variant_key": f"L{level}"})
     ctx.sections.append({
         "title": report["label_zh"],
+        # 🔴 2026-08-17：表要跟著 tab 的階層走。原本沒給 rows，顯示層退回
+        #    report_key 的原始 5 階明細——**圖切 4 階、表卻是 5 階**。
+        "rows": classification_variant_rows(ctx.chart_rows, report_key, levels),
         # ⚠ 顯式帶 registry 鍵（2026-08-10 修）：漏設時 `_section_report_name` 會
         # fallback 成第一個 variant 的檔名 `ipc_main_distribution_L4`——多了 `_L4`
         # 就查不到圖，還會組出 `ipc_main_distribution_L4:L5` 這種自相矛盾的 identity。
@@ -3994,6 +4088,10 @@ def _build_applicant_ranking_section(ctx: ChartContext) -> None:
     )
     ctx.sections.append({
         "title": report["label_zh"],
+        # 🔴 2026-08-17：補 rows。原本沒給，顯示層退回 report_key 推導的原始報表
+        #    ——圖畫的是前 10 名分段長條，表卻可能是另一份內容。
+        "rows": report["rows"],
+        "report_key": "applicant_ranking",
         "variants": [{"label": "Applicants", "file": "applicant_ranking.svg", "variant_key": "default"}],
         "note": "總長＝申請人全部專利；藍色區段＝轉讓他家（最新受讓人≠申請人）的專利，同名未離手不計。CSV/JSON 保留受讓人公司明細欄。",
     })
@@ -4035,6 +4133,12 @@ def _build_design_protection_section(ctx: ChartContext) -> None:
     ctx.chart_rows["design_protection_strategy_table"] = design_strategy_table_rows(
         strategy_rows)
     ctx.chart_rows["design_tech_intersections"] = intersection_rows
+    # 🔴 2026-08-17：代表案名從表格移出後**要真的落在敘述**——
+    #    先前只在註解裡寫「進敘述」而沒接，那是半套（欄位刪了、資訊沒了）。
+    representative_note = "；".join(
+        f'{r.get("applicant")}：{r.get("representative_design_title")}'
+        for r in strategy_rows[:5]
+        if r.get("representative_design_title"))
     ctx.sections.append({
         "title": report["label_zh"],
         "report_key": "design_protection_detail",
@@ -4115,9 +4219,13 @@ def _build_applicant_year_matrix_section(ctx: ChartContext) -> None:
     # 機制）——沒帶就退回 reports 桶長格式。同一份轉置同時掛兩處消費點。
     pivoted = pivot_year_matrix(report["rows"], "applicant_display_name")
     ctx.chart_rows["applicant_year_matrix"] = pivoted
+    # 🔴 2026-08-17 使用者驗收：「表格做那樣誰看得懂」——16 欄年份全展開、
+    #    多數格子是空的。**稀疏矩陣不適合當表格**（看分布請看跨度圖）。
+    #    表改摘要：誰、幾件、活躍區間、最近一次投入。
+    summary_rows = year_matrix_summary_rows(pivoted)
     ctx.sections.append({
         "title": report["label_zh"],
-        "rows": pivoted,
+        "rows": summary_rows,
         "variants": [{"label": f"Top {len(top_rows)}", "file": "applicant_year_matrix.svg",
                       "variant_key": "default"}],
         "note": (f"一列＝一家公司的投入期間（首件→末件），條上圓點＝該年實際有申請、"
@@ -4153,6 +4261,9 @@ def _build_applicant_country_section(ctx: ChartContext) -> None:
     ctx.sections.append({
         "title": report["label_zh"],
         "report_key": "applicant_country_distribution",
+        # 🔴 2026-08-17：補 rows——沒給的話顯示層退回原始報表，
+        #    表與圖（交叉表）講的不是同一件事。
+        "rows": report["rows"],
         "variants": [{"label": "Matrix", "file": "applicant_country_matrix.svg", "variant_key": "default"}],
         "note": note,
     })
@@ -4941,7 +5052,7 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
         # 切換自然沒有任何效果——這是靜默失敗：表格由另一條路徑顯示得出來，
         # 只有切換無反應，看起來像按鈕壞掉而不是資料沒給。
         # 每列本來就帶 source_field（實測技術 5 列／功效 8 列），帶上就能切。
-        "rows": topic_rows,
+        "rows": topic_table_display_rows(topic_rows),
         "variants": variants,
         "note": note,
     })
