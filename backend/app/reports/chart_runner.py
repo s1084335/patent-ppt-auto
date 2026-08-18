@@ -3938,10 +3938,21 @@ def _build_country_map_section(ctx: ChartContext) -> None:
     if unknown_total:
         notes.append(f"其中 {unknown_total} 件狀態未知（未登錄），不計入有效——待補登錄後件數會變。")
     # 家族視角降為一行註記：原「國家佈局（現有保護）」頁已併入本頁（刪 > 改版）。
+    # 🔴 2026-08-18 修：原本寫 `同族合併後存活家族共 {sum} 個`，而這張報表是
+    #    **依國家 group by**——每列是「該國有幾個家族」，相加等於同一家族跨幾國
+    #    就算幾次。實測滑雪機 40 個家族分布 4 國 → 相加得 46；割草機 144 → 159。
+    #    ⚠ 那個 46 已經以「存活 46」的形式傳進 deepen 的文件。
+    #    母體沒有問題（`ctx.report()` 一律傳 patent_ids，家族層由
+    #    build_family_scope_clause 翻譯成家族集合）——錯的是加總語意。
+    #    家族總數的權威口徑由封面數字供給（§2），這裡只講自己算得準的東西：
+    #    佈局點數與涵蓋國數，並明說跨國會重複計入。
     family_report = ctx.report("family_country_layout")
-    family_total = sum(int(r.get("patent_count") or 0) for r in family_report["rows"])
-    if family_total:
-        notes.append(f"同族合併後存活家族共 {family_total} 個（家族口徑細節不另出頁）。")
+    family_rows = family_report["rows"]
+    layout_points = sum(int(r.get("patent_count") or 0) for r in family_rows)
+    if layout_points:
+        notes.append(
+            f"同族合併後在 {len(family_rows)} 個受理局共有 {layout_points} 個家族佈局點"
+            "（同一家族跨國會重複計入，故大於家族總數；家族總數見封面）。")
     quality_note = family_quality_note(_fetch_family_quality_rows())
     if quality_note:
         notes.append(quality_note)
