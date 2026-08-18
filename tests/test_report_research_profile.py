@@ -123,6 +123,39 @@ class SnapshotScopeTests(unittest.TestCase):
                                      limit=rr.MAX_EVIDENCE_ROWS + 1)
 
 
+class NarrativeWorkspaceScopeTests(unittest.TestCase):
+    def test_scoped_query_database_rejects_aggregate_sql(self):
+        """scoped narrative 不允許用 raw SQL 產生全庫彙總證據。"""
+        with self.assertRaises(rr.ReportResearchError):
+            rr.validate_scoped_narrative_sql(
+                "SELECT count(*) AS total FROM core_layer.patents"
+            )
+
+    def test_scoped_query_database_requires_patent_identity(self):
+        """scoped narrative 的 raw SQL 必須回傳 patent_id/id 才能過濾。"""
+        with self.assertRaises(rr.ReportResearchError):
+            rr.validate_scoped_narrative_sql(
+                "SELECT title FROM core_layer.patents"
+            )
+
+    def test_scoped_row_filter_keeps_only_workspace_patents(self):
+        """查詢結果會依 workspace patent ids 做最後一道 row-level 過濾。"""
+        rows = [(1, "A"), (2, "B"), (3, "C")]
+        filtered = rr._filter_rows_to_workspace(["patent_id", "title"], rows, {1, 3})
+        self.assertEqual(filtered, [(1, "A"), (3, "C")])
+
+    def test_narrative_report_scope_restores_environment(self):
+        """scope context 結束後不能污染下一個 CLI job。"""
+        import os
+
+        self.assertIsNone(os.environ.get(rr.NARRATIVE_WORKSPACE_ID_ENV))
+        with rr.narrative_report_scope(workspace_id=42, snapshot_id="report_trial_x"):
+            self.assertEqual(os.environ.get(rr.NARRATIVE_WORKSPACE_ID_ENV), "42")
+            self.assertEqual(os.environ.get(rr.NARRATIVE_SNAPSHOT_ID_ENV), "report_trial_x")
+        self.assertIsNone(os.environ.get(rr.NARRATIVE_WORKSPACE_ID_ENV))
+        self.assertIsNone(os.environ.get(rr.NARRATIVE_SNAPSHOT_ID_ENV))
+
+
 class CatalogTests(unittest.TestCase):
     def test_catalog_reuses_report_definitions(self):
         """目錄沿用 REPORT_DEFINITIONS，不另維護一份報表清單。"""

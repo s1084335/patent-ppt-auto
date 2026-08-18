@@ -254,9 +254,13 @@ class CompanyZhNameStore:
     """
 
     # 草稿收斂：同代碼既有草稿列先刪再插，保證一代碼一草稿列（不堆疊）。
+    # 🔴 2026-08-18：必須限定 source_file。所有 AI 線的草稿共用
+    #    `review_status='ai_suggested'`，只用代碼刪會把該代碼的**正規化待審建議**
+    #    一起清掉——重跑一次中文名建議就靜默吃掉別條線的查證成果。
     _DELETE_DRAFT_SQL = (
         "DELETE FROM derived_layer.company_aliases "
-        "WHERE \"申請人代碼\" = %s AND review_status = 'ai_suggested'"
+        "WHERE \"申請人代碼\" = %s AND review_status = 'ai_suggested' "
+        f"  AND source_file = '{DRAFT_SOURCE_FILE}'"
     )
     # ⚠ 草稿的中文名寫進 `公司中文名稱`（2026-07-28 拆四欄）；`keep_original`
     # 時該值為 None → **中文欄留空**，不把英文塞進中文欄（使用者第④點）。

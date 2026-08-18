@@ -3,24 +3,33 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from backend.app.mcp_server import report_research as rr
 from backend.app.worker import ai_narrative_runner as runner
 from backend.app.worker import ai_narrative_runner
 from backend.app.worker.ai_narrative_runner import NarrativeRunnerError
 from backend.app.worker.cli_gateway import CliResult
 
 
-def _write_run_dir(base: Path, version: str, *, with_report_data: bool = True) -> Path:
+def _write_run_dir(
+    base: Path,
+    version: str,
+    *,
+    with_report_data: bool = True,
+    workspace_id: int | None = None,
+) -> Path:
     """建立一個假的報表版本目錄（含 report_data.json）供解析測試使用。"""
     run_dir = base / version
     run_dir.mkdir(parents=True)
     if with_report_data:
+        parameters = {} if workspace_id is None else {"workspace_id": workspace_id}
         (run_dir / "report_data.json").write_text(
-            json.dumps({"sections": []}), encoding="utf-8"
+            json.dumps({"sections": [], "parameters": parameters}), encoding="utf-8"
         )
     return run_dir
 
@@ -300,6 +309,38 @@ class RunNarrativeOrchestrationTests(unittest.TestCase):
             # runner 內 CLI 進度階段：cli_running 30 → 85。
             self.assertIn(("cli_running", 30), stages)
             self.assertIn(("cli_running", 85), stages)
+
+    def test_run_narrative_scopes_research_tools_to_workspace(self):
+        """CLI 執行期間必須帶入 report_data.json 的 workspace scope。"""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            version = "report_trial_20260722_010000"
+            run_dir = _write_run_dir(base, version, workspace_id=7)
+            observed: dict[str, str | None] = {}
+
+            def _cli_with_scope(argv, timeout):
+                observed["workspace_id"] = os.environ.get(rr.NARRATIVE_WORKSPACE_ID_ENV)
+                observed["snapshot_id"] = os.environ.get(rr.NARRATIVE_SNAPSHOT_ID_ENV)
+                (run_dir / "narratives.json").write_text(
+                    json.dumps({"based_on_version": version, "reports": {}}),
+                    encoding="utf-8",
+                )
+                return CliResult(exit_code=0, stdout='{"result": "done"}', stderr="")
+
+            summary = runner.run_narrative(
+                version,
+                cli_runner=_cli_with_scope,
+                refresh_index=lambda rd: {"narrated": 0, "variants_total": 0, "pending": []},
+                root=base,
+                upload_run_dir=lambda rd: 1,
+            )
+
+            self.assertEqual(observed["workspace_id"], "7")
+            self.assertEqual(observed["snapshot_id"], version)
+            self.assertEqual(summary["workspace_id"], 7)
+            self.assertIsNone(os.environ.get(rr.NARRATIVE_WORKSPACE_ID_ENV))
 
     def test_run_narrative_missing_narratives_raises(self):
         """CLI 正常結束但未產出 narratives.json 時 raise。"""

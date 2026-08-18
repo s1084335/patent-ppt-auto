@@ -120,6 +120,49 @@ def get_query_audit() -> list[dict[str, Any]]:
 #: 寫 JSONL，任務結束再讀回。
 #: ⚠ 未設就只留記憶體：不該因為有人 import 這個模組就在檔案系統留下東西。
 AUDIT_PATH_ENV = "PATENT_QUERY_AUDIT_PATH"
+NARRATIVE_WORKSPACE_ID_ENV = "PATENT_REPORT_WORKSPACE_ID"
+NARRATIVE_SNAPSHOT_ID_ENV = "PATENT_REPORT_SNAPSHOT_ID"
+
+
+@contextlib.contextmanager
+def narrative_report_scope(
+    *,
+    workspace_id: int | None = None,
+    snapshot_id: str | None = None,
+):
+    """鎖定 narrative CLI 本輪可查詢的 workspace / snapshot 範圍。"""
+    previous_workspace = os.environ.get(NARRATIVE_WORKSPACE_ID_ENV)
+    previous_snapshot = os.environ.get(NARRATIVE_SNAPSHOT_ID_ENV)
+    if workspace_id is None:
+        os.environ.pop(NARRATIVE_WORKSPACE_ID_ENV, None)
+    else:
+        os.environ[NARRATIVE_WORKSPACE_ID_ENV] = str(int(workspace_id))
+    if snapshot_id is None:
+        os.environ.pop(NARRATIVE_SNAPSHOT_ID_ENV, None)
+    else:
+        os.environ[NARRATIVE_SNAPSHOT_ID_ENV] = str(snapshot_id)
+    try:
+        yield
+    finally:
+        if previous_workspace is None:
+            os.environ.pop(NARRATIVE_WORKSPACE_ID_ENV, None)
+        else:
+            os.environ[NARRATIVE_WORKSPACE_ID_ENV] = previous_workspace
+        if previous_snapshot is None:
+            os.environ.pop(NARRATIVE_SNAPSHOT_ID_ENV, None)
+        else:
+            os.environ[NARRATIVE_SNAPSHOT_ID_ENV] = previous_snapshot
+
+
+def active_narrative_workspace_id() -> int | None:
+    """讀取目前 narrative MCP scope；沒有 scope 時維持一般唯讀查詢行為。"""
+    value = os.environ.get(NARRATIVE_WORKSPACE_ID_ENV)
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ReportResearchError("narrative workspace scope is invalid") from exc
 
 
 @contextlib.contextmanager
@@ -465,6 +508,10 @@ _FORBIDDEN_SQL = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|COPY|VACUUM|CALL|DO)\b",
     re.IGNORECASE,
 )
+_SCOPED_SQL_AGGREGATE = re.compile(
+    r"\b(COUNT|SUM|AVG|MIN|MAX|STRING_AGG|ARRAY_AGG|JSONB_AGG|JSON_AGG)\s*\(|\bGROUP\s+BY\b|\bOVER\s*\(",
+    re.IGNORECASE,
+)
 
 # 查詢逾時（毫秒）：防拖垮 DB 的保險絲。
 # 🔴 2026-08-12 使用者裁決放寬 30s→120s：複雜 JOIN 取證不該被砍在半路，
@@ -528,6 +575,61 @@ def validate_sql(sql: str) -> str:
     return text
 
 
+def validate_scoped_narrative_sql(sql: str) -> str:
+    """限制 scoped narrative 只能查 row-level patent evidence，避免全庫彙總外洩。"""
+    text = validate_sql(sql)
+    if _SCOPED_SQL_AGGREGATE.search(text):
+        raise ReportResearchError(
+            "scoped narrative query_database only allows row-level patent evidence; "
+            "use snapshot report evidence for aggregate claims"
+        )
+    if not re.search(r"\b(patent_id|id)\b", text, re.IGNORECASE):
+        raise ReportResearchError(
+            "scoped narrative query_database must return patent_id or id for workspace filtering"
+        )
+    return text
+
+
+def _workspace_patent_ids(cur, workspace_id: int) -> set[int]:
+    """讀取 workspace 允許的 patent ids；資料庫仍在同一個 read-only transaction。"""
+    cur.execute(
+        """
+        SELECT COALESCE(array_agg((item.value)::int), ARRAY[]::int[])
+        FROM app_layer.workspaces AS w
+        CROSS JOIN LATERAL jsonb_array_elements_text(
+            COALESCE(w.patent_ids_json, '[]'::jsonb)
+        ) AS item(value)
+        WHERE w.workspace_id = %s
+        """,
+        (workspace_id,),
+    )
+    row = cur.fetchone()
+    return {int(value) for value in (row[0] if row else [])}
+
+
+def _filter_rows_to_workspace(
+    columns: list[str],
+    rows: list,
+    allowed_patent_ids: set[int],
+) -> list:
+    """依查詢結果中的 patent_id/id 欄位做 workspace 過濾。"""
+    lookup = {name.lower(): index for index, name in enumerate(columns)}
+    column_index = lookup.get("patent_id", lookup.get("id"))
+    if column_index is None:
+        raise ReportResearchError(
+            "scoped narrative query_database result must include patent_id or id"
+        )
+    filtered = []
+    for row in rows:
+        try:
+            patent_id = int(row[column_index])
+        except (TypeError, ValueError):
+            continue
+        if patent_id in allowed_patent_ids:
+            filtered.append(row)
+    return filtered
+
+
 def query_database(sql: str, limit: int | None = SQL_DEFAULT_ROWS) -> dict[str, Any]:
     """唯讀 SQL 取證：查專利、申請人、法律狀態等原始資料。
 
@@ -540,11 +642,13 @@ def query_database(sql: str, limit: int | None = SQL_DEFAULT_ROWS) -> dict[str, 
     列數無硬上限（2026-08-12 使用者裁決）；limit 是呼叫端自選的分頁，
     傳 None＝要全部；效能保護＝逾時＋回應量保險絲（觸發即明示截斷）。
     """
+    workspace_id = active_narrative_workspace_id()
+    snapshot_id = os.environ.get(NARRATIVE_SNAPSHOT_ID_ENV)
     try:
-        text = validate_sql(sql)
+        text = validate_scoped_narrative_sql(sql) if workspace_id is not None else validate_sql(sql)
     except ReportResearchError as exc:
-        _audit("query_database", snapshot_id=None, sql=str(sql),
-               rows=0, truncated=False, error=str(exc), row_hash=None)
+        _audit("query_database", snapshot_id=snapshot_id, workspace_id=workspace_id,
+               sql=str(sql), rows=0, truncated=False, error=str(exc), row_hash=None)
         raise
 
     import psycopg
@@ -561,8 +665,16 @@ def query_database(sql: str, limit: int | None = SQL_DEFAULT_ROWS) -> dict[str, 
     with psycopg.connect(get_database_url()) as conn, conn.cursor() as cur:
         cur.execute("SET TRANSACTION READ ONLY")
         cur.execute(f"SET LOCAL statement_timeout = {_SQL_TIMEOUT_MS}")
-        # workspace 參數過濾（2026-08-14）：任務綁 workspace 時，成員 CTE 注入
-        # 每條查詢＋join 閘門。成員在同一筆唯讀交易內取，不另開連線。
+        # 🔴 2026-08-18 合併 deck 線與主線時發現：**兩條線各自實作了 workspace 隔離**，
+        #    讀的還是不同的環境變數——
+        #      · deck：`PATENT_RESEARCH_WORKSPACE_ID` → 改寫 SQL（成員 CTE ＋ join 閘門），
+        #        在**彙總之前**就把範圍限住，且查 patent 級表卻沒引用 scope 會被拒絕
+        #      · 主線：`PATENT_REPORT_WORKSPACE_ID` → 執行後**過濾回傳列**
+        #    ⚠ 兩者不是等價的：post-filter 擋不住 `SELECT count(*)` 這類彙總——
+        #      數字會用全庫算完再濾列，結果是錯的但看起來很正常。
+        #    合併時**兩層都保留**（誰的環境變數有設誰就生效），不弱化任何一邊；
+        #    但「這個任務綁哪個 workspace」有兩個來源是同一份知識的兩個定義處，
+        #    待收斂成一個（見 work-log 2026-08-18）。
         scope_ws = _scope_workspace_id()
         if scope_ws is not None:
             try:
@@ -572,11 +684,14 @@ def query_database(sql: str, limit: int | None = SQL_DEFAULT_ROWS) -> dict[str, 
                 _audit("query_database", snapshot_id=None, sql=text,
                        rows=0, truncated=False, error=str(exc), row_hash=None)
                 raise
+        allowed_patent_ids = _workspace_patent_ids(cur, workspace_id) if workspace_id is not None else None
         cur.execute(text)
         columns = [d.name for d in cur.description] if cur.description else []
         rows, truncated = _collect_rows(cur.fetchmany, limit, SQL_PAYLOAD_FUSE_BYTES)
+        if allowed_patent_ids is not None:
+            rows = _filter_rows_to_workspace(columns, rows, allowed_patent_ids)
         conn.rollback()   # 唯讀交易，不需要 commit
-    _audit("query_database", snapshot_id=None, sql=text,
+    _audit("query_database", snapshot_id=snapshot_id, workspace_id=workspace_id, sql=text,
            rows=len(rows), truncated=truncated, error=None,
            row_hash=rows_fingerprint(rows))
     return {
