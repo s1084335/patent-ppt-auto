@@ -55,7 +55,7 @@
 
 ## 完成狀態（2026-08-18）
 
-- 1.x–3.x、4.1／4.2 完成；	est_unified_workspace_scope.py 新增，既有 scope 測試改寫
+- 1.x–3.x、4.1／4.2 完成；`test_unified_workspace_scope.py` 新增，既有 scope 測試改寫
 - 目標測試 71 passed（unified／report_research_profile／ai_narrative_runner）
 - **實庫實測 4／4**（唯讀）：成員數 226 = 宣告數；綁定後 `count(*)` 得 **226 而非全庫 281**；
   未 JOIN 的彙總被拒；未綁定時不改寫
