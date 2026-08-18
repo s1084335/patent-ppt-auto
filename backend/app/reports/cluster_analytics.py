@@ -314,12 +314,53 @@ def build_topic_effect_table(
                 "recent_count": recent[0], "recent_applicants": recent[1], "concentration_recent": recent[2],
             })
             row.update(_pick_representative(patents_of_topic, patents, app_by_patent, top3))
+            row.update(_status_breakdown(patents_of_topic, patents))
         result.append(row)
 
     if patents is not None:
         _attach_topic_status(result)
     _attach_technical_means(result, topic_patents, topic_map)
     return result
+
+
+def _status_breakdown(
+    patent_ids: set[int],
+    patents: dict[int, dict[str, Any]],
+) -> dict[str, int]:
+    """該主題的法律狀態分解（2026-08-18，§7e）：審查中／已授權／失效／未知。
+
+    用途：結論頁拿掉期程後，改依**外部訊號**排序——該主題有多少件他人的審查中
+    案件。那是對手給的時間壓力，可查證；`短期 0–3 個月` 則是系統編的。
+
+    ⚠ 桶收斂一律走 `mappings/legal_status.normalize_legal_status`（唯一定義處），
+    本函式**不比對任何狀態字面**。
+
+    ⚠ 沒有狀態的算進「未知」而**不是不算**——不算的話分解合計會對不上件數，
+    而讀者不會發現少了什麼（缺席型偏差）。
+
+    ⚠ 分母是**分群母體**（滑雪機 44）不是 workspace 成員（55）：外觀設計案沒有
+    獨立項文字，分不了群。合計寫成 55 等於把「11 件被靜默排除」偽裝成
+    「全都算到了」。這裡只保證合計＝該主題件數；整體 44 vs 55 的揭露見 chart_runner。
+    """
+    from backend.app.mappings.legal_status import (
+        STATUS_ALIVE,
+        STATUS_DEAD,
+        STATUS_PENDING,
+        normalize_legal_status,
+    )
+
+    tally = {"pending_count": 0, "granted_count": 0,
+             "inactive_count": 0, "unknown_status_count": 0}
+    bucket_key = {
+        STATUS_PENDING: "pending_count",
+        STATUS_ALIVE: "granted_count",
+        STATUS_DEAD: "inactive_count",
+    }
+    for pid in patent_ids:
+        raw = (patents.get(pid) or {}).get("legal_status")
+        key = bucket_key.get(normalize_legal_status(raw), "unknown_status_count")
+        tally[key] += 1
+    return tally
 
 
 def _attach_technical_means(

@@ -103,6 +103,11 @@ def load_cluster_workspace_data(
         cur.execute(
             f'SELECT DISTINCT b.patent_id, b.applicant_display_name, b.application_year, '
             f'       {display_number_sql("b")} AS patent_number, b.title, '
+            # 法律狀態（2026-08-18，§7e）：供主題表的狀態分解與結論頁排序用。
+            # ⚠ 併進這一趟查詢，不另開一趟——loader 註解明訂 patents 是單一入口，
+            #   多一趟就是第二份 patent 對照表。桶收斂在 Python 端走
+            #   mappings/legal_status 唯一定義處，SQL 只回原值。
+            f'       b.legal_status AS legal_status, '
             f'       p."文獻備註" AS patent_note '
             "FROM derived_layer.report_patent_base b "
             "LEFT JOIN core_layer.patents p ON p.id = b.patent_id "
@@ -127,6 +132,8 @@ def load_cluster_workspace_data(
             "number": r.get("patent_number") or "",
             "title": r.get("title") or "",
             "note": r.get("patent_note") or "",
+            # 原值不收斂——桶定義只能有一個定義處（mappings/legal_status）。
+            "legal_status": r.get("legal_status"),
         }
         for r in applicant_rows
     }

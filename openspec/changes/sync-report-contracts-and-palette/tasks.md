@@ -237,15 +237,15 @@ if topic in facts: ...    # ③ 主題名不在 facts 就整個跳過逐字比�
 
 ### 7e. 引擎供給外部訊號
 
-- [ ] 7e.1 `cluster_topic_table` 加法律狀態分解（審查中／已授權／失效件數）
+- [x] 7e.1 `cluster_topic_table` 加法律狀態分解（`_status_breakdown`）
       ⚠ 走 `mappings/legal_status` 唯一定義處，不在此重判
-- [ ] 7e.2 母體閘門同樣適用（本 change §1）——新彙總要吃 `patent_ids`
-- [ ] 7e.3 Red：兩個 workspace 的分解數字不得相等
-- [ ] 7e.4 🔴 **合計必須對上 cluster 母體，不是 workspace 成員數**
+- [x] 7e.2 不新增查詢——法律狀態併進 loader 既有的申請人查詢（loader 註解明訂 patents 是單一入口）；範圍沿用 cluster 的 workspace scope
+- [x] 7e.3 ⚠ **無法用兩 workspace 比對**：只有滑雪機有分群資料（割草機 0 主題）。改以「合計 == 分群母體」與「每主題合計 == 該主題件數」兩條驗
+- [x] 7e.4 🔴 **合計對上 cluster 母體**——實測合計 44、成員 55，未把排除的算進來
       實測滑雪機：workspace 成員 55、cluster 指派 **44**（11 件外觀設計分不了群）。
       分解件數合計要等於 **44**；寫成 55 就是把「刻意排除」偽裝成「全都算到了」，
       那才是真的新種一個同型錯。
-- [ ] 7e.5 輸出要帶母體字串（讓讀者知道這張表的分母是 44 不是 55）
+- [x] 7e.5 主題分析 section 的 note 帶母體字串（分群 44／workspace 55，並說明設計案不進分群）
       ⚠ 這是揭露不是修正——「為什麼是 44」由 deepen §3 處理
 
 ## 8. 驗收

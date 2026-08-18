@@ -2827,6 +2827,12 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "patent_ids": "專利 ID（供查證）",
     "granted_count": "已授權",
     "pending_count": "審查中",
+    # 主題表的法律狀態分解（2026-08-18，§7e）。上面兩個 KP 表已在用，補齊另外兩個。
+    # ⚠ 這四欄目前**不進主題表版面**（`topic_table_display_rows` 的 keep 白名單擋著）
+    #   ——它們是給結論頁排序與 CLI 取證用的訊號。登記標籤是為了「哪天被加進
+    #   白名單時不會印出英文欄名」，不是宣告要顯示。
+    "inactive_count": "失效",
+    "unknown_status_count": "狀態未知",
     # 2026-08-17：外觀策略／技術交叉兩張表的欄名（實機表頭曾整排印英文 key）。
     "applicant": "申請人",
     "strategy_type": "策略型",
@@ -5171,6 +5177,23 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     )
     if backfill_n:
         note += f" 其中 {backfill_n} 件為 AI 建議、人工核准之補分指派。"
+    # 🔴 母體揭露（2026-08-18，§7e.5）：本表的分母是**分群母體**，不是封面的件數。
+    #    外觀設計案沒有獨立項文字，分不了群——實測滑雪機 workspace 55 件、
+    #    分群指派只有 44 件。不講出來的話，讀者看到封面 55、這裡 44 只會覺得數字錯，
+    #    而真相是「11 件被排除」從來沒有人說。
+    #    ⚠ 這裡只負責**揭露**；「為什麼排除、要不要改」是 deepen §3 的事。
+    clustered_ids = {
+        int(a["patent_id"]) for a in (data.get("assignments") or [])
+        if isinstance(a, dict) and a.get("patent_id") is not None
+    }
+    # ⚠ `getattr` 是為了測試的假 ctx（SimpleNamespace）；正式路徑的 `ChartContext`
+    #   是 dataclass、`patent_ids` 必有此欄，不會靜默少掉這段揭露。
+    ctx_patent_ids = getattr(ctx, "patent_ids", None)
+    cover_total = len(ctx_patent_ids) if ctx_patent_ids is not None else None
+    if clustered_ids and cover_total and len(clustered_ids) != cover_total:
+        note += (f" ⚠ 本表母體為分群涵蓋的 {len(clustered_ids)} 件"
+                 f"（workspace 共 {cover_total} 件）；"
+                 "無獨立項文字者（如設計案）不進分群，故與封面件數不同。")
     # 顯示規格（2026-07-21 二次修正）：板狀佈局完成，象限圖回歸 index——
     # cluster 卡片＝主題統計表＋各來源機會矩陣 tabs。
     ctx.sections.append({
