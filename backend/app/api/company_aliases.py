@@ -83,6 +83,22 @@ class ZhNameConfirmRequest(BaseModel):
     items: list[ZhNameDecision] = Field(default_factory=list)
 
 
+class CompanyNormalizationReviewDecision(BaseModel):
+    """公司正規化 AI 建議的人工裁決。"""
+
+    suggestion_id: int = Field(ge=1)
+    action: Literal["confirm", "skip"]
+    target_code: str | None = Field(default=None, max_length=64)
+    zh_name: str | None = Field(default=None, max_length=200)
+    normalized_name: str | None = Field(default=None, max_length=200)
+
+
+class CompanyNormalizationReviewRequest(BaseModel):
+    """公司正規化待審建議的批次裁決。"""
+
+    items: list[CompanyNormalizationReviewDecision] = Field(default_factory=list)
+
+
 @router.get("/company-zh-drafts")
 def list_drafts(
     limit: int = Query(default=100, ge=1, le=500),
@@ -175,22 +191,29 @@ def confirm_drafts(body: ZhNameConfirmRequest) -> dict[str, Any]:
 
 
 def _clear_drafts(codes: list[str]) -> int:
-    """刪掉這批代碼的 ai_suggested 草稿列（已確認，草稿無用）。
+    """刪掉這批代碼的**中文名** ai_suggested 草稿列（已確認，草稿無用）。
 
     ⚠ 只在 confirm／edit 後呼叫；reject（略過）不得走這裡，草稿要留著。
     一次 `= ANY(%s)` 刪整批，不逐筆往返。
+
+    🔴 2026-08-18：必須限定 `source_file`。所有 AI 線的草稿共用
+    `review_status='ai_suggested'`，只用代碼刪會**跨線刪掉別人的待審建議**——
+    正規化建議「某別稱 → UN164421」還沒確認時，使用者去確認 UN164421 的中文名，
+    那筆正規化建議就靜默消失。分批查證後待審停留更久，撞上的機率更高。
     """
     if not codes:
         return 0
     import psycopg
 
     from backend.app.db.connection import get_connection_kwargs
+    from backend.app.worker.ai_company_zh_name_runner import DRAFT_SOURCE_FILE
 
     with psycopg.connect(**get_connection_kwargs()) as conn:
         cur = conn.execute(
             "DELETE FROM derived_layer.company_aliases "
-            "WHERE review_status = 'ai_suggested' AND \"申請人代碼\" = ANY(%s)",
-            (codes,),
+            "WHERE review_status = 'ai_suggested' AND source_file = %s "
+            "  AND \"申請人代碼\" = ANY(%s)",
+            (DRAFT_SOURCE_FILE, codes),
         )
         deleted = cur.rowcount
         conn.commit()
@@ -210,6 +233,85 @@ def generate_drafts() -> dict[str, Any]:
     """
     job_id = create_job("ai:company_zh_name", {})
     return {"job_id": job_id}
+
+
+@router.get("/company-normalization-suggestions")
+def list_company_normalization_review(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """列出公司正規化 AI 待審建議；前端負責可讀呈現，不顯示 raw JSON。
+
+    ⚠ 一併帶出最近一次 run 的跳過資訊（2026-08-18）：`skipped_invalid` 只存在
+    `workflow_outputs`，而任務清單 `/tasks` 對每筆 job 都回 `result: null`
+    ——前端若改讀任務清單，跳過的筆數**永遠顯示不出來**，而且任務清單只保留
+    最近幾筆 succeeded，被擠掉後會再靜默消失一次。揭露屬於「這批建議」，
+    就跟建議走同一條資料流。
+    """
+    from backend.app.db import job_repository
+    from backend.app.derived.company_alias_importer import (
+        count_company_normalization_queue,
+        list_company_normalization_suggestions,
+    )
+
+    result = list_company_normalization_suggestions(limit=limit, offset=offset)
+    # ⚠ 一個 job 只處理 BATCH_SIZE 個候選；不把剩餘量講出來，
+    #   使用者會把「這批做完」讀成「全部做完」。
+    queue = count_company_normalization_queue()
+    last_run = None
+    recent = job_repository.list_jobs(
+        job_type="ai:company_normalization_suggestion", status="succeeded", limit=1)
+    if recent:
+        job = recent[0]
+        run_result = job_repository.fetch_job_result(job.job_id, job.job_type) or {}
+        last_run = {
+            "run_id": job.job_id,
+            "skipped_invalid": int(run_result.get("skipped_invalid") or 0),
+            "skipped_details": run_result.get("skipped_details") or [],
+            "failed_chunks": run_result.get("failed_chunks") or [],
+        }
+    return {**result, "last_run": last_run, "queue": queue,
+            "limit": limit, "offset": offset}
+
+
+@router.post("/company-normalization-suggestions/generate")
+def generate_company_normalization_suggestions() -> dict[str, Any]:
+    """手動觸發公司正規化 AI 建議；不在 page load、匯入或 refresh 時自動建立。"""
+    job_id = create_job("ai:company_normalization_suggestion", {})
+    return {"job_id": job_id}
+
+
+@router.post("/company-normalization-suggestions/confirm")
+def confirm_company_normalization_review(
+    body: CompanyNormalizationReviewRequest,
+) -> dict[str, Any]:
+    """確認或略過公司正規化 AI 建議。
+
+    `confirm` 才轉成正式 `confirmed` mapping；`skip` 保留待審列。正式寫入委派
+    `apply_confirmed_display_names`，本端點只負責裁決與刷新排程。
+    """
+    from backend.app.derived.company_alias_importer import (
+        confirm_company_normalization_suggestions,
+    )
+
+    from psycopg.errors import UniqueViolation
+
+    try:
+        result = confirm_company_normalization_suggestions(body.items)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except UniqueViolation as exc:
+        # 🔴 0052 的「一個別稱只屬於一個代碼」擋下來的。⚠ 不翻譯的話使用者會看到
+        #    500 與英文堆疊，不知道是撞名還是系統壞了。
+        raise HTTPException(
+            status_code=409,
+            detail=("此建議的別稱已屬於另一個公司代碼。"
+                    "請改指向該代碼，或修改別稱後再確認。"),
+        ) from exc
+    refresh_job_id = None
+    if result.get("confirmed"):
+        refresh_job_id = create_job("refresh_derived", {})
+    return {**result, "refresh_job_id": refresh_job_id}
 
 
 # ══════════════ 專利權人代碼補齊（2026-07-28 使用者需求）══════════════
@@ -925,14 +1027,31 @@ def delete_company_group(code: str) -> dict[str, Any]:
 
     DELETE **必須帶代碼條件**，否則會清掉整張對照表（company_aliases 是長期資產）。
     刪完 enqueue refresh_derived，專利表的收斂名才會退回原字面。
+
+    🔴 2026-08-18：先刪 `companies` 那一列。若該代碼仍是集團成員，外鍵
+    `ON DELETE RESTRICT` 會擋下整個交易（0053）——刪代碼與退出集團是兩件事，
+    分兩步才看得見自己在改什麼。⚠ 順序不可顛倒：先刪別稱再刪 companies 的話，
+    被擋時別稱已經沒了。
     """
+    from psycopg.errors import ForeignKeyViolation
+
     with _connect_dict_rows() as conn:
-        cur = conn.execute(
-            'DELETE FROM derived_layer.company_aliases WHERE "申請人代碼" = %s',
-            (code,),
-        )
-        deleted = int(cur.rowcount or 0)
-        conn.commit()
+        try:
+            conn.execute(
+                "DELETE FROM derived_layer.companies WHERE company_code = %s", (code,))
+            cur = conn.execute(
+                'DELETE FROM derived_layer.company_aliases WHERE "申請人代碼" = %s',
+                (code,),
+            )
+            deleted = int(cur.rowcount or 0)
+            conn.commit()
+        except ForeignKeyViolation as exc:
+            conn.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail=(f"無法刪除 {code}：它仍是集團成員。"
+                        f"請先在集團區把它移出集團，再刪除代碼。"),
+            ) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail=f"找不到代碼 {code}")
     return {"code": code, "deleted": deleted,
@@ -948,6 +1067,10 @@ def promote_company_code(code: str, body: PromoteCodeRequest) -> dict[str, Any]:
 
     一句 UPDATE 換整組（不逐列往返）。目標代碼已存在時擋下（409）——那是把兩組
     合併，語意不同，應由使用者在代碼區用同一代碼重建，才會走 writer 的去重規則。
+
+    🔴 2026-08-18：同時更新 `companies`。集團成員的外鍵帶 `ON UPDATE CASCADE`，
+    所以改那一列就會自動連動——原本 promote 只改別稱表、集團成員仍指舊代碼，
+    那家公司會從集團統計消失且不報錯（0053 讓這個 bug 寫不出來）。
     """
     new_code = body.new_code.strip()
     if not new_code:
@@ -964,6 +1087,13 @@ def promote_company_code(code: str, body: PromoteCodeRequest) -> dict[str, Any]:
             raise HTTPException(
                 status_code=409,
                 detail=f"代碼 {new_code} 已存在；合併兩組請在代碼區以同一代碼重建。")
+        # ⚠ 先換 companies：集團成員靠 ON UPDATE CASCADE 跟著換。
+        #   companies 沒有那一列時（惰性補齊的代碼）就沒有集團成員要連動，跳過即可。
+        conn.execute(
+            "UPDATE derived_layer.companies SET company_code = %s "
+            "WHERE company_code = %s",
+            (new_code, code),
+        )
         cur = conn.execute(
             'UPDATE derived_layer.company_aliases SET "申請人代碼" = %s, updated_at = now() '
             'WHERE "申請人代碼" = %s',

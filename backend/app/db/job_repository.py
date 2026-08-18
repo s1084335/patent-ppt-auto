@@ -64,6 +64,9 @@ AI_JOB_TYPES: frozenset[str] = frozenset(
         "ai:company_zh_name",
         # 集團歸屬查證：手動啟動、CLI 僅能連網取證，結果只進 suggested 審核列。
         "ai:company_group_suggestion",
+        # 公司正規化查證：手動啟動、CLI 僅能連網取證，結果只進 ai_suggested 待審列；
+        # WIPS code 由 Backend target map / TEMP 規則決定，AI 不可產生代碼。
+        "ai:company_normalization_suggestion",
         # 市場資料摘要：AI 讀 workspace 的市場 PDF（pymupdf 抽文字內嵌 prompt），產「結構化
         # ＋敘述」摘要草稿（accepted_at=NULL 待逐筆確認）。CLI 白名單為空（不讀檔/不連網）；
         # 全庫 workspace 不提供市場資料，runner 拒為全庫產。報表只讀已確認現行版。
@@ -262,8 +265,12 @@ def get_job(job_id: int) -> ProcessingJob | None:
 
 
 def list_jobs(*, workspace_id: int | None = None, status: str | None = None,
-              limit: int = 50) -> list[ProcessingJob]:
-    """列出工作（新到舊＝run_id DESC），可依 workspace 或狀態過濾。"""
+              job_type: str | None = None, limit: int = 50) -> list[ProcessingJob]:
+    """列出工作（新到舊＝run_id DESC），可依 workspace、狀態或型別過濾。
+
+    ⚠ `job_type` 過濾（2026-08-18 新增）：呼叫端要「最近一筆某型 job」時，
+    沒有這個條件就得先撈一大批再自己篩——撈得不夠多就靜默拿不到。
+    """
     if limit < 1:
         raise ValueError("limit must be >= 1")
     conditions: list[str] = []
@@ -274,6 +281,9 @@ def list_jobs(*, workspace_id: int | None = None, status: str | None = None,
     if status is not None:
         conditions.append("status = %s")
         params.append(status)
+    if job_type is not None:
+        conditions.append("run_type = %s")
+        params.append(job_type)
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     params.append(int(limit))
     with get_pool().connection() as conn:

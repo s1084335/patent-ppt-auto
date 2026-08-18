@@ -102,6 +102,12 @@ class MinimalPrivilegePreservedTests(unittest.TestCase):
         "ai:candidate_explanation": "NO_TOOLS",
         "ai:company_zh_name": "READ_ONLY_TOOLS",
         "ai:company_group_suggestion": "WEB_RESEARCH_TOOLS",
+        # 2026-08-18 補複審：`eaeefa4`（08-14）註冊了這條 job type 卻沒登記等級，
+        # 本測試自那時起一直紅——它存在的目的正是逼人做這個複審。
+        # 複審結論：runner 的 `build_company_normalization_cli_command` 只放行
+        # WebSearch／WebFetch（`WEB_RESEARCH_TOOLS`），與姊妹 job 同級；查證公司
+        # 歸屬本來就要連外查公開資料，但不得碰檔案系統或 Bash。
+        "ai:company_normalization_suggestion": "WEB_RESEARCH_TOOLS",
         "ai:irrelevant_filter": "READ_ONLY_TOOLS",
     }
 
@@ -162,6 +168,11 @@ class MinimalPrivilegePreservedTests(unittest.TestCase):
         if job_type == "ai:company_group_suggestion":
             from backend.app.worker import ai_company_group_suggestion_runner as module
             return module.build_company_group_cli_command("claude", "test")
+        if job_type == "ai:company_normalization_suggestion":
+            from backend.app.worker import (
+                ai_company_normalization_suggestion_runner as module,
+            )
+            return module.build_company_normalization_cli_command("claude", "test")
         self.fail(f"沒有 {job_type} 的實際 argv 取樣器")
 
     def test_every_registered_job_uses_reviewed_actual_argv_tier(self):
