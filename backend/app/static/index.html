@@ -1698,10 +1698,44 @@ function companyNormalizationSuggestionHtml(suggestion) {
     + '</div></div>';
 }
 
+// 🔴 2026-08-18：跳過的筆數與理由要現形（後端 result 的 skipped_invalid／
+// skipped_details）。⚠ 不揭露的話，使用者看到 5 筆會讀成「AI 只找到 5 個」，
+// 實際可能是「找到 8 個、3 個查不到證據」——後者代表那幾家值得人工去查。
+// 這是缺席型偏差：多出來的東西看得見，被丟掉的沒人會發現。
+function companyNormalizationSkippedHtml() {
+  const job = taskListCache.find(t =>
+    t.job_type === 'ai:company_normalization_suggestion'
+      && t.status === 'succeeded' && t.result && t.result.skipped_invalid);
+  if (!job) return '';
+  const n = job.result.skipped_invalid;
+  const details = Array.isArray(job.result.skipped_details) ? job.result.skipped_details : [];
+  const rows = details.map(function (d) {
+    const refs = Array.isArray(d.candidate_refs) ? d.candidate_refs.join('、') : '';
+    return '<div class="company-group-evidence-row"><div>' + escHtml(refs || '未指名')
+      + '</div><div>' + escHtml(d.reason || '') + '</div></div>';
+  }).join('');
+  return '<div class="company-group-warning" style="margin:.35rem 0;padding:.4rem">'
+    + '<strong>另有 ' + n + ' 筆因查不到證據被跳過</strong>'
+    + '<div class="hint">這些候選 AI 找不到可佐證的來源，未列入待審；'
+    + '若仍需歸戶，請人工查證後手動處理。</div>'
+    + (rows ? '<details style="margin-top:.3rem"><summary>看是哪幾筆</summary>'
+        + rows + '</details>' : '')
+    + '</div>';
+}
+
 function renderCompanyNormalizationReview() {
-  if (!companyNormalizationSuggestions.length) return '';
+  const skipped = companyNormalizationSkippedHtml();
+  // ⚠ 即使一筆建議都沒有，只要有跳過就要顯示——「零筆建議」與
+  //   「找到的都沒證據所以全被跳過」是兩件完全不同的事。
+  if (!companyNormalizationSuggestions.length) {
+    return skipped
+      ? '<details id="company-normalization-review" open style="margin-top:.6rem">'
+        + '<summary>AI 公司正規化建議待審核（0）</summary>' + skipped + '</details>'
+      : '';
+  }
   return '<details id="company-normalization-review" open style="margin-top:.6rem">'
     + '<summary>AI 公司正規化建議待審核（' + companyNormalizationSuggestions.length + '）</summary>'
+    + skipped
     + '<div class="toolbar" style="margin:.35rem 0">'
     + '<button class="btn-mini" onclick="confirmSelectedCompanyNormalizationSuggestions()">確認選取</button>'
     + '<span id="company-normalization-msg" class="hint"></span></div>'

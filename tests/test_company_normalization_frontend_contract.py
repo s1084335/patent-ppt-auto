@@ -21,11 +21,18 @@ def test_company_normalization_ai_review_ui_is_single_manual_entry():
 
 
 def test_company_normalization_pending_review_is_hidden_when_empty_and_readable():
-    """無建議時整段隱藏；有建議時顯示可讀資訊，不輸出 raw JSON。"""
+    """無建議**且無跳過**時整段隱藏；有建議時顯示可讀資訊，不輸出 raw JSON。
+
+    🔴 2026-08-18 契約更新：原本是「無建議就一律隱藏」。但
+    「零筆建議」與「找到的都沒證據所以全被跳過」是**兩件完全不同的事**——
+    後者代表那幾家值得人工去查，整段藏起來等於把這個訊息吃掉。
+    """
     src = STATIC_INDEX.read_text(encoding="utf-8")
 
     assert "company-normalization-review" in src
-    assert "if (!companyNormalizationSuggestions.length) return ''" in src
+    assert "if (!companyNormalizationSuggestions.length)" in src
+    assert "companyNormalizationSkippedHtml" in src, "跳過的揭露函式不見了"
+    assert "被跳過" in src, "跳過的情形沒有寫給使用者看"
     assert "function companyNormalizationSuggestionHtml" in src
     assert "function companyNormalizationEvidenceHtml" in src
     assert "原始變體" in src

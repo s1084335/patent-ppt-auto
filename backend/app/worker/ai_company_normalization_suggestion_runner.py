@@ -187,16 +187,23 @@ def _skippable_required_evidence(value: Any, *, field: str) -> list[dict[str, st
 
 
 def _validate_person_fields(item: dict[str, Any]) -> dict[str, Any]:
-    """驗證自然人關係角色與證據門檻。"""
+    """驗證自然人關係角色與證據門檻。
+
+    ⚠ 2026-08-18：兩個 evidence 欄位改為**可跳過**，與主 evidence 一致。
+    原本走 `_https_evidence` 硬失敗——AI 只要輸出一筆缺證據的
+    person_affiliation，整個 job 就 failed、使用者拿到零筆（#396／#397 實例）。
+    「找不到證據就不寫」的目標用跳過同樣達成，而且其餘有效建議還在。
+    ⚠ 角色不合法仍是硬失敗：那是協定被破壞，不是「這筆查不到證據」。
+    """
     role = _clean_limited(item.get("relationship_role"), field="relationship_role", max_length=40)
     if role not in PERSON_ROLES:
         raise ValueError(f"unsupported relationship_role: {role}")
     return {
         "relationship_role": role,
-        "person_identity_evidence": _https_evidence(
+        "person_identity_evidence": _skippable_required_evidence(
             item.get("person_identity_evidence"), field="person_identity_evidence"
         ),
-        "relationship_evidence": _https_evidence(
+        "relationship_evidence": _skippable_required_evidence(
             item.get("relationship_evidence"), field="relationship_evidence"
         ),
     }
@@ -312,7 +319,7 @@ def _validated_suggestions(
     targets_by_ref = {str(item["target_ref"]): item for item in targets}
     seen_refs: set[str] = set()
     validated: list[dict[str, Any]] = []
-    skipped_invalid = 0
+    skipped: list[dict[str, Any]] = []
     for item in suggestions:
         try:
             validated.append(
@@ -323,9 +330,20 @@ def _validated_suggestions(
                     seen_refs=seen_refs,
                 )
             )
-        except SkippableSuggestionError:
-            skipped_invalid += 1
-    return validated, skipped_invalid
+        except SkippableSuggestionError as exc:
+            # ⚠ 留下**理由與是哪一筆**：三個 evidence 欄位共用同一句訊息，
+            #   不指名的話跳過了也查不出為什麼（#396／#397 就是這樣查不下去）。
+            skipped.append({
+                "candidate_refs": [
+                    str(r or "").strip()
+                    for r in (item.get("candidate_refs") or [])
+                    if isinstance(item, dict)
+                ],
+                "suggestion_kind": (item.get("suggestion_kind")
+                                    if isinstance(item, dict) else None),
+                "reason": str(exc),
+            })
+    return validated, skipped
 
 
 def _run_cli_research(
@@ -383,7 +401,7 @@ def run_company_normalization_suggestions(
         cli_runner=cli_runner,
         timeout_seconds=timeout_seconds,
     )
-    suggestions, skipped_invalid = _validated_suggestions(
+    suggestions, skipped = _validated_suggestions(
         _extract_suggestions(raw), candidates, targets
     )
     _report_progress(progress, "寫入公司正規化待審建議", 85)
@@ -398,6 +416,9 @@ def run_company_normalization_suggestions(
         "suggestion_count": len(suggestions),
         "inserted": int(write_result.get("inserted", 0)),
     }
-    if skipped_invalid:
-        result["skipped_invalid"] = skipped_invalid
+    if skipped:
+        # ⚠ 跳過必須被揭露：使用者看到 5 筆會以為「AI 只找到 5 個」，
+        #   實際可能是「找到 8 個、3 個沒證據」——後者代表那 3 家值得人工查。
+        result["skipped_invalid"] = len(skipped)
+        result["skipped_details"] = skipped
     return result

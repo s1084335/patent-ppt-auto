@@ -131,12 +131,15 @@ def test_runner_skips_suggestion_without_evidence_and_keeps_valid_later_row():
         cli_runner=lambda *_args, **_kwargs: json.dumps(payload, ensure_ascii=False),
     )
 
-    assert result == {
+    # ⚠ 2026-08-18 起 result 另帶 skipped_details（跳過的理由與是哪一筆）——
+    #   跳過若不揭露，使用者會把「找到 8 個丟掉 3 個」讀成「只找到 5 個」。
+    assert {k: v for k, v in result.items() if k != "skipped_details"} == {
         "candidate_count": 1,
         "suggestion_count": 1,
         "inserted": 1,
         "skipped_invalid": 1,
     }
+    assert result["skipped_details"][0]["reason"].startswith("evidence")
     assert len(store.written) == 1
     assert store.written[0]["metadata"]["evidence"][0]["url"] == "https://example.com/profile"
 
