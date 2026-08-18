@@ -265,8 +265,12 @@ def get_job(job_id: int) -> ProcessingJob | None:
 
 
 def list_jobs(*, workspace_id: int | None = None, status: str | None = None,
-              limit: int = 50) -> list[ProcessingJob]:
-    """列出工作（新到舊＝run_id DESC），可依 workspace 或狀態過濾。"""
+              job_type: str | None = None, limit: int = 50) -> list[ProcessingJob]:
+    """列出工作（新到舊＝run_id DESC），可依 workspace、狀態或型別過濾。
+
+    ⚠ `job_type` 過濾（2026-08-18 新增）：呼叫端要「最近一筆某型 job」時，
+    沒有這個條件就得先撈一大批再自己篩——撈得不夠多就靜默拿不到。
+    """
     if limit < 1:
         raise ValueError("limit must be >= 1")
     conditions: list[str] = []
@@ -277,6 +281,9 @@ def list_jobs(*, workspace_id: int | None = None, status: str | None = None,
     if status is not None:
         conditions.append("status = %s")
         params.append(status)
+    if job_type is not None:
+        conditions.append("run_type = %s")
+        params.append(job_type)
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     params.append(int(limit))
     with get_pool().connection() as conn:

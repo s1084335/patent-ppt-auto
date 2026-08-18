@@ -113,10 +113,18 @@ def test_non_evidence_contract_errors_still_hard_fail():
 
 
 def test_frontend_surfaces_skipped_count():
-    """前端要看得到「有幾筆因缺證據被跳過」，否則跳過等於沒發生。"""
+    """前端要看得到「有幾筆因缺證據被跳過」，否則跳過等於沒發生。
+
+    ⚠ 2026-08-18 改寫：本測試原本只斷言 `"skipped_invalid" in html`——函式在、
+    字串在，但資料從來沒送到前端（`/tasks` 對每筆 job 都回 `result: null`），
+    實機驗收才發現這塊揭露從未顯示過。**只斷言字串出現**擋不住斷掉的資料流。
+    真正的行為驗證移到 `test_normalization_skip_transport.py`（node 實際執行函式
+    ＋ API 帶出 last_run），這裡只留「前端確實從建議 payload 取用」這條接線。
+    """
     from pathlib import Path
 
     html = (Path(__file__).resolve().parents[1]
             / "backend/app/static/index.html").read_text(encoding="utf-8")
-    assert "skipped_invalid" in html, "前端沒有讀 skipped_invalid"
+    assert "companyNormalizationLastRun = normalization.last_run" in html, \
+        "前端沒有從建議 payload 取用 last_run——跳過揭露會回到永遠不顯示"
     assert "跳過" in html, "前端沒有把跳過的情形寫給使用者看"

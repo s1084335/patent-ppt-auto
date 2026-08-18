@@ -1200,6 +1200,7 @@ async function renderCompanyCodeRegistry() {
     pendingCodeNames = pending.items || [];
     notGroupedNames = notGrouped.items || [];
     companyNormalizationSuggestions = normalization.items || [];
+    companyNormalizationLastRun = normalization.last_run || null;
     renderCompanyCodeBody(existing.items || []);
   } catch (e) {
     const body = el('company-code-body');
@@ -1588,6 +1589,8 @@ function unsavedCodeGroupCount() {
 // ⚠ 顯示**完全不變**：後端把「正規化名稱」填成該名稱本身，報表反查照樣顯示原名。
 let notGroupedNames = [];
 let companyNormalizationSuggestions = [];
+// 最近一次建議 run 的摘要（含跳過筆數與理由），由 /company-normalization-suggestions 供給。
+let companyNormalizationLastRun = null;
 let companyNormalizationSuggestionStarting = false;
 
 function renderNotGroupedNames() {
@@ -1712,13 +1715,15 @@ function companyNormalizationSuggestionHtml(suggestion) {
 // skipped_details）。⚠ 不揭露的話，使用者看到 5 筆會讀成「AI 只找到 5 個」，
 // 實際可能是「找到 8 個、3 個查不到證據」——後者代表那幾家值得人工去查。
 // 這是缺席型偏差：多出來的東西看得見，被丟掉的沒人會發現。
+// ⚠ 2026-08-18 實機驗收修正：原本讀 taskListCache（來源 /tasks），而 /tasks 對每筆
+//    job 都回 result: null（結果落 workflow_outputs，需要時才讀回）——這段揭露
+//    **從來沒顯示過**。且任務清單只保留最近 RECENT_DONE_KEEP 筆 succeeded，
+//    就算補上 result 也會在被擠掉後再靜默消失一次。改由建議端點的 last_run 供給。
 function companyNormalizationSkippedHtml() {
-  const job = taskListCache.find(t =>
-    t.job_type === 'ai:company_normalization_suggestion'
-      && t.status === 'succeeded' && t.result && t.result.skipped_invalid);
-  if (!job) return '';
-  const n = job.result.skipped_invalid;
-  const details = Array.isArray(job.result.skipped_details) ? job.result.skipped_details : [];
+  const run = companyNormalizationLastRun;
+  if (!run || !run.skipped_invalid) return '';
+  const n = run.skipped_invalid;
+  const details = Array.isArray(run.skipped_details) ? run.skipped_details : [];
   const rows = details.map(function (d) {
     const refs = Array.isArray(d.candidate_refs) ? d.candidate_refs.join('、') : '';
     return '<div class="company-group-evidence-row"><div>' + escHtml(refs || '未指名')

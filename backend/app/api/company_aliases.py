@@ -233,13 +233,32 @@ def list_company_normalization_review(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    """列出公司正規化 AI 待審建議；前端負責可讀呈現，不顯示 raw JSON。"""
+    """列出公司正規化 AI 待審建議；前端負責可讀呈現，不顯示 raw JSON。
+
+    ⚠ 一併帶出最近一次 run 的跳過資訊（2026-08-18）：`skipped_invalid` 只存在
+    `workflow_outputs`，而任務清單 `/tasks` 對每筆 job 都回 `result: null`
+    ——前端若改讀任務清單，跳過的筆數**永遠顯示不出來**，而且任務清單只保留
+    最近幾筆 succeeded，被擠掉後會再靜默消失一次。揭露屬於「這批建議」，
+    就跟建議走同一條資料流。
+    """
+    from backend.app.db import job_repository
     from backend.app.derived.company_alias_importer import (
         list_company_normalization_suggestions,
     )
 
     result = list_company_normalization_suggestions(limit=limit, offset=offset)
-    return {**result, "limit": limit, "offset": offset}
+    last_run = None
+    recent = job_repository.list_jobs(
+        job_type="ai:company_normalization_suggestion", status="succeeded", limit=1)
+    if recent:
+        job = recent[0]
+        run_result = job_repository.fetch_job_result(job.job_id, job.job_type) or {}
+        last_run = {
+            "run_id": job.job_id,
+            "skipped_invalid": int(run_result.get("skipped_invalid") or 0),
+            "skipped_details": run_result.get("skipped_details") or [],
+        }
+    return {**result, "last_run": last_run, "limit": limit, "offset": offset}
 
 
 @router.post("/company-normalization-suggestions/generate")
