@@ -62,6 +62,14 @@ class CompanyNormalizationSuggestionStore:
 
         return ingest_company_normalization_suggestions(suggestions)
 
+    def mark_asked(self, entries: list[dict[str, Any]]) -> dict[str, Any]:
+        """蓋章：這批候選問過了。⚠ 只有完成的段才會走到這裡。"""
+        from backend.app.derived.company_alias_importer import (
+            mark_company_normalization_asked,
+        )
+
+        return mark_company_normalization_asked(entries)
+
 
 def _require_supported_cli(cli_kind: str) -> None:
     """連網查證只能使用可強制工具白名單的 Claude CLI。"""
@@ -75,6 +83,50 @@ def build_company_normalization_cli_command(
     """建立只允許 WebSearch/WebFetch 的 CLI 命令。"""
     _require_supported_cli(cli_kind)
     return build_cli_command(cli_kind, prompt, model=model, tools=WEB_RESEARCH_TOOLS)
+
+
+#: 一個 job 最多處理幾個候選（2026-08-18 使用者裁決）。
+BATCH_SIZE = 20
+#: 每段送幾個候選給 CLI。⚠ 段愈大，一次契約錯誤損失愈多。
+CHUNK_SIZE = 5
+
+#: 送給 CLI 的候選欄位白名單。⚠ 內部鍵（lookup_key）不得外洩——它一旦出現在
+#: prompt 裡，AI 就可能在輸出裡引用它，之後就會有人拿 AI 回傳的值去 JOIN，
+#: 受控輸入的邊界就破了。
+_PUBLIC_CANDIDATE_FIELDS = (
+    "candidate_ref", "raw_name", "candidate_type", "source_fields", "patent_count",
+    "current_code", "current_zh_name", "current_normalized_name",
+)
+
+
+def _public_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """只留 CLI 需要引用的欄位；與 `_public_targets` 對稱。"""
+    return [
+        {k: v for k, v in item.items() if k in _PUBLIC_CANDIDATE_FIELDS}
+        for item in candidates
+    ]
+
+
+def _chunk_stamps(
+    chunk: list[dict[str, Any]], suggestions: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """把一段的候選轉成蓋章紀錄；有無建議分開記。
+
+    ⚠ outcome 本輪不參與判斷（重新入列只看件數），但必須存——「查無證據」與
+    「有建議但沒被確認」在畫面上長得一樣，不分開事後查不出來。
+    """
+    hit_refs: set[str] = set()
+    for suggestion in suggestions:
+        hit_refs.update(suggestion.get("candidate_refs") or [])
+    return [
+        {
+            "lookup_key": item["lookup_key"],
+            "patent_count": int(item.get("patent_count") or 0),
+            "outcome": "suggested" if item["candidate_ref"] in hit_refs else "no_evidence",
+        }
+        for item in chunk
+        if item.get("lookup_key")
+    ]
 
 
 def _public_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -95,7 +147,8 @@ def build_prompt(
 ) -> str:
     """將受控候選與 target refs 組成嚴格 JSON 查證任務。"""
     payload = json.dumps(
-        {"candidates": candidates, "confirmed_targets": _public_targets(targets)},
+        {"candidates": _public_candidates(candidates),
+         "confirmed_targets": _public_targets(targets)},
         ensure_ascii=False,
         indent=2,
     )
@@ -382,43 +435,78 @@ def run_company_normalization_suggestions(
     timeout_seconds: float = DEFAULT_CLI_TIMEOUT_SECONDS,
     progress: Callable[[str, int], None] | None = None,
 ) -> dict[str, int]:
-    """讀候選、連網查證、驗證結果，再寫入公司正規化待審建議。"""
+    """讀候選、分段連網查證、驗證結果，再寫入公司正規化待審建議。
+
+    分段（2026-08-18）：一個 job 取 `BATCH_SIZE` 個候選，切成每段 `CHUNK_SIZE` 個
+    各自呼叫。⚠ 分段的目的是**縮小爆炸半徑**不是加速——原本一次呼叫，
+    一個契約錯誤就讓整批零產出（#396／#397 就是這個形狀）。
+    """
     _require_supported_cli(cli_kind)
     suggestion_store = store if store is not None else CompanyNormalizationSuggestionStore()
     _report_progress(progress, "讀取公司正規化候選", 10)
-    candidates = suggestion_store.fetch_candidates(limit=limit)
+    candidates = suggestion_store.fetch_candidates(
+        limit=BATCH_SIZE if limit is None else limit)
     if not candidates:
         _report_progress(progress, "沒有待查證的公司變體", 100)
-        return {"candidate_count": 0, "suggestion_count": 0, "inserted": 0}
+        return {"candidate_count": 0, "suggestion_count": 0, "inserted": 0,
+                "batch_size": BATCH_SIZE, "chunk_size": CHUNK_SIZE}
 
     targets = suggestion_store.fetch_targets()
-    prompt = build_prompt(candidates, targets)
-    _report_progress(progress, "連網查證公司正規化", 35)
-    raw = _run_cli_research(
-        cli_kind=cli_kind,
-        prompt=prompt,
-        model=model,
-        cli_runner=cli_runner,
-        timeout_seconds=timeout_seconds,
-    )
-    suggestions, skipped = _validated_suggestions(
-        _extract_suggestions(raw), candidates, targets
-    )
-    _report_progress(progress, "寫入公司正規化待審建議", 85)
-    write_result = (
-        suggestion_store.ingest_suggestions(suggestions)
-        if suggestions
-        else {"inserted": 0}
-    )
+    chunks = [candidates[i:i + CHUNK_SIZE]
+              for i in range(0, len(candidates), CHUNK_SIZE)]
+    all_suggestions: list[dict[str, Any]] = []
+    all_skipped: list[dict[str, Any]] = []
+    failed_chunks: list[dict[str, Any]] = []
+    stamps: list[dict[str, Any]] = []
+    inserted = 0
+
+    for index, chunk in enumerate(chunks, start=1):
+        _report_progress(
+            progress, f"連網查證公司正規化（第 {index}／{len(chunks)} 段）",
+            10 + int(75 * (index - 1) / len(chunks)))
+        try:
+            raw = _run_cli_research(
+                cli_kind=cli_kind,
+                prompt=build_prompt(chunk, targets),
+                model=model,
+                cli_runner=cli_runner,
+                timeout_seconds=timeout_seconds,
+            )
+            suggestions, skipped = _validated_suggestions(
+                _extract_suggestions(raw), chunk, targets
+            )
+        except (ValueError, RuntimeError) as exc:
+            # ⚠ 契約錯誤只拒絕**這一段**（2026-08-18 修正舊決策「整批拒絕」——
+            #   那條成立於「一個 job＝一次呼叫」的時代）。原用意「不得靜默吞掉
+            #   協定錯誤」由下面的 failed_chunks 與畫面揭露承接，未被放寬。
+            #   失敗段**不蓋章**：協定壞了不等於這些候選查不到證據。
+            failed_chunks.append({"index": index, "reason": str(exc)[:300],
+                                  "candidate_count": len(chunk)})
+            continue
+
+        if suggestions:
+            write_result = suggestion_store.ingest_suggestions(suggestions)
+            inserted += int(write_result.get("inserted", 0))
+        all_suggestions.extend(suggestions)
+        all_skipped.extend(skipped)
+        stamps.extend(_chunk_stamps(chunk, suggestions))
+
+    if stamps:
+        suggestion_store.mark_asked(stamps)
+
     _report_progress(progress, "公司正規化建議已產生", 100)
     result = {
         "candidate_count": len(candidates),
-        "suggestion_count": len(suggestions),
-        "inserted": int(write_result.get("inserted", 0)),
+        "suggestion_count": len(all_suggestions),
+        "inserted": inserted,
+        "batch_size": BATCH_SIZE,
+        "chunk_size": CHUNK_SIZE,
     }
-    if skipped:
+    if all_skipped:
         # ⚠ 跳過必須被揭露：使用者看到 5 筆會以為「AI 只找到 5 個」，
         #   實際可能是「找到 8 個、3 個沒證據」——後者代表那 3 家值得人工查。
-        result["skipped_invalid"] = len(skipped)
-        result["skipped_details"] = skipped
+        result["skipped_invalid"] = len(all_skipped)
+        result["skipped_details"] = all_skipped
+    if failed_chunks:
+        result["failed_chunks"] = failed_chunks
     return result

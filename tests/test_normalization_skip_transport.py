@@ -60,10 +60,16 @@ class ApiCarriesSkipInfoTests(unittest.TestCase):
     def _call(self, jobs, result):
         from backend.app.api import company_aliases as api
 
-        # 端點是在函式內 import，patch 要下在來源模組上
+        # 端點是在函式內 import，patch 要下在來源模組上。
+        # ⚠ 剩餘數（queue）也是一次 DB 查詢，沒 mock 會撞上 conftest 指定的本機庫
+        # 而卡到 connection timeout——不是斷言失敗，是等到天荒地老。
         with mock.patch("backend.app.derived.company_alias_importer"
                         ".list_company_normalization_suggestions",
                         return_value={"items": [], "total": 0}), \
+                mock.patch("backend.app.derived.company_alias_importer"
+                           ".count_company_normalization_queue",
+                           return_value={"remaining": 0, "never_asked": 0,
+                                         "recheck": 0}), \
                 mock.patch("backend.app.db.job_repository.list_jobs",
                            return_value=jobs) as list_jobs, \
                 mock.patch("backend.app.db.job_repository.fetch_job_result",

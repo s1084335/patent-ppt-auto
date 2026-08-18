@@ -94,22 +94,43 @@ def test_skip_reason_names_field_and_candidate():
     assert details[0]["candidate_refs"], "沒有指出是哪一筆候選"
 
 
-def test_non_evidence_contract_errors_still_hard_fail():
-    """⚠ 不得把跳過擴大成「什麼錯都跳過」——契約錯誤仍要整批拒絕。
+def test_non_evidence_contract_errors_reject_the_chunk_and_are_reported():
+    """⚠ 不得把跳過擴大成「什麼錯都跳過」——契約錯誤要拒絕整段並回報。
 
     AI 供 code 欄位、未知 ref 這類是**協定被破壞**，不是「這筆查不到證據」，
     靜默跳過會讓錯誤的整合方式一直存在而沒人知道。
+
+    ⚠ 2026-08-18 改寫：原本斷言整個 job 丟 ValueError。分段之後
+    （`queue-normalization-candidates`）一個 job 有多段，整批拒絕會讓分段
+    完全失去意義。判準改為「拒絕該段」，但原用意——**不得靜默吞掉**——
+    由三件事承接，缺一不可：
+      ① 該段不產生任何建議
+      ② 失敗與原因出現在 `failed_chunks`
+      ③ 不得被混進 `skipped_invalid`（那是「查無證據」，語意完全不同）
     """
     from backend.app.worker import ai_company_normalization_suggestion_runner as runner
 
     payload = json.loads(_valid_result())
     payload["suggestions"][0]["target_ref"] = "unknown-ref"
 
-    with pytest.raises(ValueError):
-        runner.run_company_normalization_suggestions(
-            store=FakeStore([_candidate()], [_target()]),
-            cli_runner=lambda *_a, **_kw: json.dumps(payload, ensure_ascii=False),
-        )
+    candidate = _candidate()
+    candidate["lookup_key"] = "acme co."
+    candidate["patent_count"] = 1
+    store = FakeStore([candidate], [_target()])
+    store.mark_asked = lambda entries: {"stamped": len(entries)}
+
+    result = runner.run_company_normalization_suggestions(
+        store=store,
+        cli_runner=lambda *_a, **_kw: json.dumps(payload, ensure_ascii=False),
+    )
+
+    assert result["suggestion_count"] == 0, "協定違反的段不得產生建議"
+    failed = result.get("failed_chunks") or []
+    assert len(failed) == 1, "協定錯誤被靜默吞掉了"
+    assert "unknown-ref" in failed[0]["reason"] or failed[0]["reason"], \
+        "失敗沒有留下可診斷的原因"
+    assert not result.get("skipped_invalid"), \
+        "協定錯誤被算成『查無證據』——兩者語意不同，混在一起會誤導判斷"
 
 
 def test_frontend_surfaces_skipped_count():

@@ -835,8 +835,13 @@ _COMPANY_NORMALIZATION_CANDIDATES_SQL = r"""
            n.lookup_key,
            min(n.raw_name) AS raw_name,
            array_agg(DISTINCT n.source_field ORDER BY n.source_field) AS source_fields,
-           count(DISTINCT n.patent_id) AS patent_count
+           count(DISTINCT n.patent_id) AS patent_count,
+           a.last_asked_at
     FROM names n
+    -- 排隊（2026-08-18）：候選是即時算出來的，沒有實體列可蓋章，所以查不到證據的
+    -- 候選每跑一次就再燒一次。蓋章表補上這個事實。
+    LEFT JOIN derived_layer.company_normalization_asked a
+           ON a.lookup_key = n.lookup_key
     WHERE NOT EXISTS (
         SELECT 1 FROM derived_layer.company_aliases ca
         WHERE ca.review_status = 'confirmed'
@@ -848,8 +853,17 @@ _COMPANY_NORMALIZATION_CANDIDATES_SQL = r"""
           AND lower(regexp_replace(BTRIM(ca."別稱"), '\s+', ' ', 'g')) = n.lookup_key
           AND ca.source_file = 'ai:company_normalization_suggestion'
     )
-    GROUP BY n.lookup_key
-    ORDER BY count(DISTINCT n.patent_id) DESC, min(n.raw_name)
+    GROUP BY n.lookup_key, a.last_asked_at, a.asked_patent_count
+    -- 資格（使用者裁決「乙」）：問過的只有在該名稱又有新專利進來時才重問。
+    -- ⚠ 少了這一段就只是「延後重問」——輪完一圈後那批結構性查不到的
+    --   （多為自然人）會再燒一次。
+    HAVING a.asked_patent_count IS NULL
+        OR count(DISTINCT n.patent_id) > a.asked_patent_count
+    -- 順序：沒問過的一律排前面。⚠ NULLS FIRST 這一個子句就是
+    --   「全部輪過一遍才會有人被問第二次」的全部實作，不需要輪次計數器。
+    ORDER BY a.last_asked_at ASC NULLS FIRST,
+             count(DISTINCT n.patent_id) DESC,
+             min(n.raw_name)
     LIMIT %(limit)s
 """
 
@@ -912,6 +926,9 @@ def list_company_normalization_candidates(
     return [
         {
             "candidate_ref": f"cand:{row['ref_hash'][:16]}",
+            # ⚠ 內部鍵：蓋章時原樣寫回，不在 Python 重算正規化運算式。
+            #   送 CLI 前必須被 `_public_candidates` 投影掉（見 runner）。
+            "lookup_key": row["lookup_key"],
             "raw_name": row["raw_name"],
             "candidate_type": "company_or_person",
             "source_fields": row.get("source_fields") or [],
@@ -919,6 +936,74 @@ def list_company_normalization_candidates(
         }
         for row in rows
     ]
+
+
+def mark_company_normalization_asked(
+    entries: list[dict[str, Any]],
+    *,
+    run_id: int | None = None,
+    connect_kwargs: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    """蓋章：記下這批候選被問過、當時件數與結果。
+
+    ⚠ 只有**完成的段**才呼叫這裡。契約錯誤代表協定壞了，不是「這些候選查不到
+    證據」；蓋了章會把程式問題當成資料結論，而件數不變就再也回不到隊列——
+    一批候選因為一次程式錯誤永久消失，且沒有任何訊息。
+    """
+    if not entries:
+        return {"stamped": 0}
+    import psycopg
+
+    from backend.app.db.connection import get_connection_kwargs
+
+    with psycopg.connect(**(connect_kwargs or get_connection_kwargs())) as conn:
+        for entry in entries:
+            conn.execute(
+                """
+                INSERT INTO derived_layer.company_normalization_asked
+                    (lookup_key, last_asked_at, last_run_id,
+                     asked_patent_count, outcome)
+                VALUES (%s, now(), %s, %s, %s)
+                ON CONFLICT (lookup_key) DO UPDATE SET
+                    last_asked_at = now(),
+                    last_run_id = EXCLUDED.last_run_id,
+                    asked_patent_count = EXCLUDED.asked_patent_count,
+                    outcome = EXCLUDED.outcome
+                """,
+                (entry["lookup_key"], run_id,
+                 int(entry.get("patent_count") or 0),
+                 entry.get("outcome") or "no_evidence"),
+            )
+        conn.commit()
+    return {"stamped": len(entries)}
+
+
+def count_company_normalization_queue(
+    *,
+    connect_kwargs: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    """尚未查證的候選數量，分「從未查證」與「有新專利待重查」。
+
+    ⚠ 分批若不揭露剩餘量，使用者會把「這批做完」讀成「全部做完」——
+    與 2026-08-18 修掉的跳過靜默是同一類缺席型偏差。
+    """
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from backend.app.db.connection import get_connection_kwargs
+
+    # ⚠ 在 SQL 裡聚合，不要把整批候選撈回來再數——查詢本身約 450ms，
+    #   多傳幾百列只是白花。候選數會隨新資料成長，這裡不能用「先全撈再算」。
+    sql = (f"SELECT count(*) AS remaining, "
+           f"count(*) FILTER (WHERE last_asked_at IS NULL) AS never_asked "
+           f"FROM ({_COMPANY_NORMALIZATION_CANDIDATES_SQL}) AS q")
+    with psycopg.connect(**(connect_kwargs or get_connection_kwargs()),
+                         row_factory=dict_row) as conn:
+        row = conn.execute(sql, {"limit": None}).fetchone()
+    remaining = int(row["remaining"] or 0)
+    never = int(row["never_asked"] or 0)
+    return {"remaining": remaining, "never_asked": never,
+            "recheck": remaining - never}
 
 
 def list_company_normalization_targets(

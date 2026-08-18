@@ -106,7 +106,12 @@ def test_runner_uses_opaque_refs_and_writes_review_only_rows():
         cli_runner=lambda prompt, **_: prompts.append(prompt) or _valid_result(),
     )
 
-    assert result == {"candidate_count": 1, "suggestion_count": 1, "inserted": 1}
+    # ⚠ 2026-08-18 起 result 另帶分批參數（batch_size／chunk_size）——
+    #   要能從結果看出「這次只做了一批」，否則分批對讀結果的人是隱形的。
+    assert result["batch_size"] and result["chunk_size"]
+    assert {k: v for k, v in result.items()
+            if k not in ("batch_size", "chunk_size")} == {
+        "candidate_count": 1, "suggestion_count": 1, "inserted": 1}
     assert "UN164421" not in prompts[0]
     assert "target:1" in prompts[0]
     assert store.written[0]["review_status"] == "ai_suggested"
@@ -133,7 +138,8 @@ def test_runner_skips_suggestion_without_evidence_and_keeps_valid_later_row():
 
     # ⚠ 2026-08-18 起 result 另帶 skipped_details（跳過的理由與是哪一筆）——
     #   跳過若不揭露，使用者會把「找到 8 個丟掉 3 個」讀成「只找到 5 個」。
-    assert {k: v for k, v in result.items() if k != "skipped_details"} == {
+    assert {k: v for k, v in result.items()
+            if k not in ("skipped_details", "batch_size", "chunk_size")} == {
         "candidate_count": 1,
         "suggestion_count": 1,
         "inserted": 1,
@@ -172,21 +178,70 @@ def test_person_affiliation_is_review_only_before_confirmation():
     assert store.written[0]["metadata"]["suggestion_kind"] == "person_affiliation"
 
 
+def assert_chunk_rejected(payload: dict, *, match: str, raw_name: str | None = None):
+    """協定違反的共同判準：不寫、不蓋章、要回報，且原因對得上。
+
+    ⚠ 2026-08-18 起（`queue-normalization-candidates`）協定違反拒絕的是**該段**
+    而不是整個 job——分段之後整批拒絕會讓分段失去意義。這些測試的核心從來不是
+    「有沒有 raise」，而是「一個位元組都不准寫進去，而且必須有人看得見」。
+    集中在這裡是為了避免日後有人只改其中一處，讓其他護欄悄悄鬆掉。
+    """
+    from backend.app.worker import ai_company_normalization_suggestion_runner as runner
+
+    candidate = _candidate() if raw_name is None else _candidate(raw_name=raw_name)
+    candidate["lookup_key"] = "fixture lookup key"
+    candidate["patent_count"] = 1
+    store = FakeStore([candidate], [_target()])
+    stamped: list = []
+    store.mark_asked = lambda entries: stamped.extend(entries) or {"stamped": len(entries)}
+
+    result = runner.run_company_normalization_suggestions(
+        store=store,
+        cli_runner=lambda *_a, **_kw: json.dumps(payload, ensure_ascii=False),
+    )
+
+    assert store.written == [], "協定違反的內容被寫進資料庫了"
+    assert result["suggestion_count"] == 0
+    failed = result.get("failed_chunks") or []
+    assert len(failed) == 1, f"協定違反被靜默丟棄（預期原因含 {match!r}）"
+    assert match in failed[0]["reason"], failed[0]
+    assert not result.get("skipped_invalid"), \
+        "協定違反被算成『查無證據』——兩者語意不同"
+    assert stamped == [], "協定違反的段不得蓋章，否則該候選再也不會被查"
+    return result
+
+
 @pytest.mark.parametrize("bad_field", ["code", "wips_code", "company_code", "code_override"])
 def test_runner_rejects_any_ai_supplied_code_field(bad_field):
-    """AI 回傳任何 code 欄位都必須整筆拒絕，不能拿文字推測或覆寫代碼。"""
+    """AI 回傳任何 code 欄位都必須拒絕，不能拿文字推測或覆寫代碼。
+
+    ⚠ 2026-08-18：分段之後（`queue-normalization-candidates`）協定違反改為
+    拒絕**該段**而非丟出例外。本測試的核心從來不是「有沒有 raise」，而是
+    **一個位元組都不准寫進去**——那條維持原樣，另外補上「必須被回報」，
+    避免把安全護欄改成靜默丟棄。
+    """
     from backend.app.worker import ai_company_normalization_suggestion_runner as runner
 
     payload = json.loads(_valid_result())
     payload["suggestions"][0][bad_field] = "UN999999"
-    store = FakeStore([_candidate()], [_target()])
+    candidate = _candidate()
+    candidate["lookup_key"] = "acme co."
+    candidate["patent_count"] = 1
+    store = FakeStore([candidate], [_target()])
+    stamped: list = []
+    store.mark_asked = lambda entries: stamped.extend(entries) or {"stamped": len(entries)}
 
-    with pytest.raises(ValueError, match="code field"):
-        runner.run_company_normalization_suggestions(
-            store=store,
-            cli_runner=lambda *_args, **_kwargs: json.dumps(payload, ensure_ascii=False),
-        )
-    assert store.written == []
+    result = runner.run_company_normalization_suggestions(
+        store=store,
+        cli_runner=lambda *_args, **_kwargs: json.dumps(payload, ensure_ascii=False),
+    )
+
+    assert store.written == [], "AI 供給的 code 被寫進資料庫了"
+    assert result["suggestion_count"] == 0
+    failed = result.get("failed_chunks") or []
+    assert len(failed) == 1, "協定違反被靜默丟棄——沒有任何人會發現 AI 在供 code"
+    assert "code field" in failed[0]["reason"], failed[0]
+    assert stamped == [], "協定違反的段不得蓋章，否則該候選再也不會被查"
 
 
 def test_runner_rejects_unknown_candidate_or_target_ref():
@@ -195,19 +250,11 @@ def test_runner_rejects_unknown_candidate_or_target_ref():
 
     unknown_candidate = json.loads(_valid_result())
     unknown_candidate["suggestions"][0]["candidate_refs"] = ["cand:missing"]
-    with pytest.raises(ValueError, match="unknown candidate_ref"):
-        runner.run_company_normalization_suggestions(
-            store=FakeStore([_candidate()], [_target()]),
-            cli_runner=lambda *_args, **_kwargs: json.dumps(unknown_candidate, ensure_ascii=False),
-        )
+    assert_chunk_rejected(unknown_candidate, match="unknown candidate_ref")
 
     unknown_target = json.loads(_valid_result())
     unknown_target["suggestions"][0]["target_ref"] = "target:missing"
-    with pytest.raises(ValueError, match="unknown target_ref"):
-        runner.run_company_normalization_suggestions(
-            store=FakeStore([_candidate()], [_target()]),
-            cli_runner=lambda *_args, **_kwargs: json.dumps(unknown_target, ensure_ascii=False),
-        )
+    assert_chunk_rejected(unknown_target, match="unknown target_ref")
 
 
 @pytest.mark.parametrize("role", ["owner", "proprietor", "director"])
@@ -255,11 +302,8 @@ def test_person_affiliation_rejects_insufficient_roles(role):
         }
     )
 
-    with pytest.raises(ValueError, match="unsupported relationship_role"):
-        runner.run_company_normalization_suggestions(
-            store=FakeStore([_candidate(raw_name="Jane Chen")], [_target()]),
-            cli_runner=lambda *_args, **_kwargs: json.dumps(payload, ensure_ascii=False),
-        )
+    assert_chunk_rejected(payload, match="unsupported relationship_role",
+                          raw_name="Jane Chen")
 
 
 def test_review_confirmation_delegates_confirmed_writer_and_enqueues_one_refresh():

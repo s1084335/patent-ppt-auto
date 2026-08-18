@@ -191,22 +191,29 @@ def confirm_drafts(body: ZhNameConfirmRequest) -> dict[str, Any]:
 
 
 def _clear_drafts(codes: list[str]) -> int:
-    """刪掉這批代碼的 ai_suggested 草稿列（已確認，草稿無用）。
+    """刪掉這批代碼的**中文名** ai_suggested 草稿列（已確認，草稿無用）。
 
     ⚠ 只在 confirm／edit 後呼叫；reject（略過）不得走這裡，草稿要留著。
     一次 `= ANY(%s)` 刪整批，不逐筆往返。
+
+    🔴 2026-08-18：必須限定 `source_file`。所有 AI 線的草稿共用
+    `review_status='ai_suggested'`，只用代碼刪會**跨線刪掉別人的待審建議**——
+    正規化建議「某別稱 → UN164421」還沒確認時，使用者去確認 UN164421 的中文名，
+    那筆正規化建議就靜默消失。分批查證後待審停留更久，撞上的機率更高。
     """
     if not codes:
         return 0
     import psycopg
 
     from backend.app.db.connection import get_connection_kwargs
+    from backend.app.worker.ai_company_zh_name_runner import DRAFT_SOURCE_FILE
 
     with psycopg.connect(**get_connection_kwargs()) as conn:
         cur = conn.execute(
             "DELETE FROM derived_layer.company_aliases "
-            "WHERE review_status = 'ai_suggested' AND \"申請人代碼\" = ANY(%s)",
-            (codes,),
+            "WHERE review_status = 'ai_suggested' AND source_file = %s "
+            "  AND \"申請人代碼\" = ANY(%s)",
+            (DRAFT_SOURCE_FILE, codes),
         )
         deleted = cur.rowcount
         conn.commit()
@@ -243,10 +250,14 @@ def list_company_normalization_review(
     """
     from backend.app.db import job_repository
     from backend.app.derived.company_alias_importer import (
+        count_company_normalization_queue,
         list_company_normalization_suggestions,
     )
 
     result = list_company_normalization_suggestions(limit=limit, offset=offset)
+    # ⚠ 一個 job 只處理 BATCH_SIZE 個候選；不把剩餘量講出來，
+    #   使用者會把「這批做完」讀成「全部做完」。
+    queue = count_company_normalization_queue()
     last_run = None
     recent = job_repository.list_jobs(
         job_type="ai:company_normalization_suggestion", status="succeeded", limit=1)
@@ -257,8 +268,10 @@ def list_company_normalization_review(
             "run_id": job.job_id,
             "skipped_invalid": int(run_result.get("skipped_invalid") or 0),
             "skipped_details": run_result.get("skipped_details") or [],
+            "failed_chunks": run_result.get("failed_chunks") or [],
         }
-    return {**result, "last_run": last_run, "limit": limit, "offset": offset}
+    return {**result, "last_run": last_run, "queue": queue,
+            "limit": limit, "offset": offset}
 
 
 @router.post("/company-normalization-suggestions/generate")

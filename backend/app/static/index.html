@@ -1201,6 +1201,7 @@ async function renderCompanyCodeRegistry() {
     notGroupedNames = notGrouped.items || [];
     companyNormalizationSuggestions = normalization.items || [];
     companyNormalizationLastRun = normalization.last_run || null;
+    companyNormalizationQueue = normalization.queue || null;
     renderCompanyCodeBody(existing.items || []);
   } catch (e) {
     const body = el('company-code-body');
@@ -1591,6 +1592,8 @@ let notGroupedNames = [];
 let companyNormalizationSuggestions = [];
 // 最近一次建議 run 的摘要（含跳過筆數與理由），由 /company-normalization-suggestions 供給。
 let companyNormalizationLastRun = null;
+// 尚未查證的候選數（remaining／never_asked／recheck），同一個端點供給。
+let companyNormalizationQueue = null;
 let companyNormalizationSuggestionStarting = false;
 
 function renderNotGroupedNames() {
@@ -1738,8 +1741,41 @@ function companyNormalizationSkippedHtml() {
     + '</div>';
 }
 
+// 🔴 一個 job 只查 20 個候選。不把剩餘量講出來，「這批做完」會被讀成「全部做完」
+// ——與跳過靜默是同一類缺席型偏差：做掉的看得見，沒做的沒人會發現。
+function companyNormalizationQueueHtml() {
+  const q = companyNormalizationQueue;
+  if (!q || !q.remaining) return '';
+  const parts = [];
+  if (q.never_asked) parts.push('從未查證 ' + q.never_asked + ' 個');
+  if (q.recheck) parts.push('有新專利待重查 ' + q.recheck + ' 個');
+  return '<div class="company-group-warning" style="margin:.35rem 0;padding:.4rem">'
+    + '<strong>還有 ' + q.remaining + ' 個候選沒查</strong>'
+    + '<div class="hint">' + escHtml(parts.join('、'))
+    + '。一次查證只處理 20 個，按「產生建議」可以再跑下一批。</div>'
+    + '</div>';
+}
+
+// 失敗的段要現形：段隔離做了但失敗沒顯示，等於把「零產出」偽裝成「查無結果」。
+function companyNormalizationFailedChunksHtml() {
+  const run = companyNormalizationLastRun;
+  const chunks = (run && Array.isArray(run.failed_chunks)) ? run.failed_chunks : [];
+  if (!chunks.length) return '';
+  const rows = chunks.map(function (c) {
+    return '<div class="company-group-evidence-row"><div>第 ' + escHtml(c.index) + ' 段</div>'
+      + '<div>' + escHtml(c.reason || '') + '</div></div>';
+  }).join('');
+  return '<div class="company-group-warning" style="margin:.35rem 0;padding:.4rem">'
+    + '<strong>有 ' + chunks.length + ' 段查證失敗</strong>'
+    + '<div class="hint">這幾段的候選沒有被記為已查證，下次執行會再試一次。</div>'
+    + '<details style="margin-top:.3rem"><summary>看失敗原因</summary>' + rows + '</details>'
+    + '</div>';
+}
+
 function renderCompanyNormalizationReview() {
-  const skipped = companyNormalizationSkippedHtml();
+  const skipped = companyNormalizationSkippedHtml()
+    + companyNormalizationFailedChunksHtml()
+    + companyNormalizationQueueHtml();
   // ⚠ 即使一筆建議都沒有，只要有跳過就要顯示——「零筆建議」與
   //   「找到的都沒證據所以全被跳過」是兩件完全不同的事。
   if (!companyNormalizationSuggestions.length) {
