@@ -344,6 +344,24 @@ def _narrative_report_keys(narratives_path: Path) -> set[str]:
     return set(reports) if isinstance(reports, dict) else set()
 
 
+def _report_workspace_id(run_dir: Path) -> int | None:
+    """從 report_data.json 讀取產生該報表版本時鎖定的 workspace_id。"""
+    report_data_path = run_dir / "report_data.json"
+    try:
+        report_data = json.loads(report_data_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    value = (report_data.get("parameters") or {}).get("workspace_id")
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise NarrativeRunnerError(
+            f"report_data.json parameters.workspace_id={value!r} is invalid"
+        ) from exc
+
+
 def materialize_report_version(version: str) -> Path:
     """把 DB 內的報表版本落地到本機暫存目錄，回傳該目錄（跨容器讀那一段）。
 
@@ -630,6 +648,7 @@ def run_narrative(
     resolver = resolve_run_dir or globals()["resolve_run_dir"]
     run_dir = resolver(based_on_version, root=root)
     version = run_dir.name
+    workspace_id = _report_workspace_id(run_dir)
     narratives_path = run_dir / "narratives.json"
     # 重產前的 report_key 快照：限定範圍重產時，範圍外的解讀一張都不許少（見下方檢查）。
     keys_before = _narrative_report_keys(narratives_path)
@@ -643,9 +662,13 @@ def run_narrative(
     # ——它可以完全不查就寫出簡報每一頁的要點，而我們無從得知。落檔路徑由環境變數
     # 傳給 MCP server 子行程，任務結束讀回。⚠ 工具走 cli_gateway 的 RESEARCH_TOOLS
     # 同一份實作（`report_research`），不複製第二份稽核格式。
-    from backend.app.mcp_server.report_research import query_audit_file, read_query_audit
+    from backend.app.mcp_server.report_research import (
+        narrative_report_scope,
+        query_audit_file,
+        read_query_audit,
+    )
 
-    with query_audit_file() as audit_path:
+    with narrative_report_scope(workspace_id=workspace_id, snapshot_id=version), query_audit_file() as audit_path:
         cli_result = runner(argv, timeout_seconds)
         query_audit = read_query_audit(audit_path)
     parse_cli_result(cli_result)  # 退出碼／JSON 檢查；不硬用其內容，narratives.json 才是產物
@@ -736,6 +759,7 @@ def run_narrative(
     return {
         "artifacts_uploaded": uploaded,
         "based_on_version": version,
+        "workspace_id": workspace_id,
         "run_dir": str(run_dir),
         "narratives_path": str(narratives_path),
         "cli_kind": cli_kind,
