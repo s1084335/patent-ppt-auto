@@ -171,7 +171,15 @@ def _db_list_filenames(version: str) -> set:
     """
     from backend.app.db import report_artifact_store
 
-    return report_artifact_store.list_filenames(version)
+    # ⚠ DB 不可用時回空集合，讓呼叫端走「版本不存在 → 404」，不要把連線例外
+    #   往上丟成 500。同層的 `_db_read_artifact` 與 `_list_run_sources` 早就
+    #   這樣做了（「DB 不可用時仍回本機版本，不讓報表頁整個掛掉」），只有這支
+    #   在 3f48b8b 新增時漏了——於是 DB 連不上時 /reports/versions/{v}/content
+    #   會炸而不是 404，而錯誤訊息是 PoolTimeout，看不出是版本不存在。
+    try:
+        return report_artifact_store.list_filenames(version)
+    except Exception:  # noqa: BLE001 - 同 _db_read_artifact：不可用＝視為沒有
+        return set()
 
 
 def _db_read_artifact(version: str, filename: str):

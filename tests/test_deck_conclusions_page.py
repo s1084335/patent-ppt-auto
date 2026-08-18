@@ -114,11 +114,11 @@ class ConclusionsRenderTests(unittest.TestCase):
                 "rows": [
                     {"topic": "拉繩滑雪模擬機構",
                      "finding": "10件/9家｜最大持有 20%｜申請成長",
-                     "implication": "投入者眾，構型自由度縮小中。",
+                     "reading": "投入者眾，構型自由度縮小中。",
                      "action": "細讀比對"},
                     {"topic": "馬達自鎖阻力機構",
                      "finding": "6件/2家｜最大持有 83%｜集中持有",
-                     "implication": "單一玩家掌握，替代路線價值高。",
+                     "reading": "單一玩家掌握，替代路線價值高。",
                      "action": "迴避設計"},
                 ],
             }
@@ -138,7 +138,12 @@ class ConclusionsRenderTests(unittest.TestCase):
         self.assertIn("細讀比對", p2)
         # 取代不是並存：建議頁的內容不得出現
         self.assertNotIn("建議", p2.split("綜合結論")[0])
-        self.assertEqual(len(pages), 8, "取代建議頁，總頁數不變")
+        # 2026-08-18（§7d）：路線圖頁併入結論頁後移除，總頁數少一頁。
+        # ⚠ 原本斷言 8（「取代建議頁，總頁數不變」）——那個「不變」指的是
+        #   conclusions 取代 rec 不新增頁，仍然成立；變的是路線圖那一頁沒了。
+        self.assertEqual(
+            len(pages), 7,
+            "conclusions 仍是取代 rec（不新增頁）；路線圖頁已於 §7d 移除")
 
     def test_without_conclusions_rec_page_stays(self):
         pages = self._build(False)
@@ -168,7 +173,7 @@ class ConclusionsGateTests(unittest.TestCase):
             capture_output=True, text=True, encoding="utf-8", errors="replace")
 
     ROW_OK = {"topic": "甲", "finding": "6件/2家｜集中持有",
-              "implication": "說明", "action": "追蹤"}
+              "reading": "說明", "action": "追蹤"}
 
     def test_action_outside_verb_table_fails(self):
         proc = self._check([{**self.ROW_OK, "action": "立即提出申請"}])

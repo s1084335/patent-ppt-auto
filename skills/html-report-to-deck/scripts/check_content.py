@@ -16,19 +16,30 @@ from pathlib import Path
 
 from PIL import Image
 
-if hasattr(sys.stdout, "buffer"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "buffer"):
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+def _force_utf8_console() -> None:
+    """Windows 主控台輸出中文用；⚠ **只在當腳本執行時呼叫**。
+
+    原本這段寫在模組層，於是 `import check_content` 就會把呼叫端的 `sys.stdout`
+    換掉——pytest 的輸出攔截物件被替換後，teardown 會丟
+    `ValueError: I/O operation on closed file`，而失敗訊息指向測試本身，
+    完全看不出真因在這裡（2026-08-18 實際踩到）。
+    """
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "buffer"):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from deck_layout import (MIN_CHART_PT_MULTI, budget,   # noqa: E402
+from deck_layout import (LAYOUTS, MIN_CHART_PT_MULTI, budget,   # noqa: E402
                          label_page_fit, predict_chart_pt,
                          roadmap_page_overflow, units)
 
+# ⚠ 2026-08-18（§7d）：`roadmap_title`／`roadmap_takeaway`／`roadmap` 已移除
+#   ——路線圖頁併入結論頁、期程整個拿掉。留在必填清單裡會逼 CLI 生出一個
+#   不會被畫出來的區塊。
 REQUIRED = ["footer", "eyebrow", "deck_title", "subtitle", "meta", "stats", "stats_note",
             "boundary", "rec_title", "rec_takeaway",
-            "recommendations", "pages", "roadmap_title", "roadmap_takeaway", "roadmap",
+            "recommendations", "pages",
             "limits"]
 BLOCKED_SLIDE_TERMS = ("本簡報怎麼讀", "圖表原則", "待驗證", "降級")
 VAGUE_EVIDENCE_TERMS = (
@@ -147,6 +158,18 @@ def _check_caliber_verbatim(c: dict, facts_path: Path) -> list[str]:
     return bad
 
 
+def _bad_actions(row: dict) -> list[str]:
+    """該列宣告的行動裡，不在動詞表上的那幾個。
+
+    ⚠ 多值最容易漏的是「只驗第一個」——`["追蹤", "立即提出申請"]` 若只看
+    `[0]`，法律承諾就從第二個位置整條溜過去。解析走
+    `deck_layout.row_actions`（唯一定義處），這裡只負責比對白名單。
+    """
+    from deck_layout import ACTION_VERBS, row_actions
+
+    return [v for v in row_actions(row) if v not in ACTION_VERBS]
+
+
 def _check_conclusions(c: dict, facts_path: Path) -> list[str]:
     """結論頁閘門（design §7.7）：動詞白名單＋發現欄逐字＋三欄齊備。
 
@@ -155,33 +178,106 @@ def _check_conclusions(c: dict, facts_path: Path) -> list[str]:
     - 發現欄＝機械（intake topic_facts）——CLI 逐字引用，改寫即紅
       （與口徑閘門同一條紀律）。
     """
-    cc = c.get("conclusions")
-    if not cc:
-        return []
     from deck_layout import ACTION_VERBS
+    from deck_layout import row_actions as _row_actions
 
     bad: list[str] = []
     facts = {}
     if facts_path.is_file():
         facts = {f["topic"]: f["finding"]
                  for f in json.loads(facts_path.read_text(encoding="utf-8"))}
+
+    cc = c.get("conclusions")
+    if not cc:
+        # 🔴 破口①（2026-08-18 修）：原本 `if not cc: return []` 無條件放行。
+        #    結論頁的畫法（`slide_conclusions`）與本閘門都在，只有範本沒宣告，
+        #    於是那頁**根本不產出**而閘門一聲不吭。範本已補（§7a.4）。
+        #
+        #    ⚠ 判準是「**引擎有主題就必須有結論**」，不是無條件必要：
+        #    沒有主題事實就沒有結論可寫，要求它只是武斷。
+        #    `assemble_from_version` 一律寫出 topic_facts.json，所以正式路徑
+        #    不會因為「檔案剛好不在」而讓這頁悄悄消失。
+        if facts:
+            return [f"缺結論頁（conclusions），但引擎有 {len(facts)} 個主題——"
+                    "有主題就要有結論；範本有範例，宣告後會取代建議頁"]
+        return []
+
     rows = cc.get("rows") or []
     if not rows:
         bad.append("結論頁沒有任何列（conclusions.rows 空）")
     for i, r in enumerate(rows, 1):
-        for field in ("topic", "finding", "implication", "action"):
+        for field in ("topic", "finding", "reading"):
             if not str(r.get(field) or "").strip():
-                bad.append(f"結論頁第 {i} 列缺「{field}」——三欄與主題都要齊")
-        action = str(r.get("action") or "").strip()
-        if action and action not in ACTION_VERBS:
+                bad.append(f"結論頁第 {i} 列缺「{field}」——主題／發現／判讀／行動都要齊")
+        # ⚠ action 不能用 str() 判空：list 的 str() 恆為非空，空 list 會被放行。
+        actions = _row_actions(r)
+        if not actions:
+            bad.append("結論頁第 %d 列缺「action」——主題／發現／判讀／行動都要齊" % i)
+        for verb in _bad_actions(r):
             bad.append(
-                f"結論頁第 {i} 列行動「{action}」不在動詞表 {list(ACTION_VERBS)}"
+                f"結論頁第 {i} 列行動「{verb}」不在動詞表 {list(ACTION_VERBS)}"
                 "——CLI 只能選不能自創")
         topic = str(r.get("topic") or "").strip()
-        if topic in facts and str(r.get("finding") or "") != facts[topic]:
+        if not topic:
+            continue
+        if topic not in facts:
+            # 🔴 破口③：原本 `if topic in facts:` ——主題名不在 facts 就整個跳過
+            #    逐字比對。CLI 只要換個主題名，這道比對就完全失效。
+            bad.append(
+                f"結論頁「{topic}」不在引擎的主題清單裡——"
+                f"主題名必須與 topic_facts 一致（可用：{sorted(facts)[:4]}…）")
+        elif str(r.get("finding") or "") != facts[topic]:
             bad.append(
                 f"結論頁「{topic}」的發現欄未逐字使用引擎字串——"
                 f"應為「{facts[topic]}」；實際「{str(r.get('finding'))[:40]}」")
+
+    bad += _check_conclusion_coverage(cc, rows, facts)
+    return bad
+
+
+def _check_conclusion_coverage(cc: dict, rows: list, facts: dict) -> list[str]:
+    """🔴 破口②：涵蓋率對帳（2026-08-18，§7b.3）。
+
+    原本只驗 `rows` 非空——10 個主題只寫 1 列照樣全綠，讀者會以為
+    「只有這一個主題值得結論」。
+
+    ⚠ **不用最小列數**。規定「至少 N 列」是形式鎖，v5／v7／v9 三次同型失敗都是
+    這樣來的：CLI 為了過鎖而硬湊，或乾脆刪掉整段（缺席，目視兜不住）。
+    而且 design §2.3 已明訂「接不上依據的建議句直接擋下」——那等於規格授權了丟棄。
+
+    改為要求**沒寫的要現形**：宣告 `covered N/M` 與 `uncovered` 逐條原因。
+    它不規定要寫幾列，只把缺席型偏差轉成一份看得見的清單，讀者自己判斷是
+    資料不夠還是 CLI 偷懶。
+    """
+    if not facts:
+        return []          # 沒有引擎主題清單就無從對帳（例如未跑分群的版本）
+    total = len(facts)
+    written = {str(r.get("topic") or "").strip() for r in rows}
+    written = {t for t in written if t in facts}
+    if len(written) == total:
+        return []          # 全涵蓋：不需要對帳，也不得誤擋
+
+    bad: list[str] = []
+    covered = str(cc.get("covered") or "").strip()
+    uncovered = cc.get("uncovered") or []
+    if not covered or not uncovered:
+        return [f"結論頁只涵蓋 {len(written)}／{total} 個主題，"
+                "但沒有對帳——請宣告 `covered: \"N/M\"` 與 `uncovered`"
+                "（每筆含 topic 與 reason）。"
+                "⚠ 不是要你寫滿，是沒寫的要講出來"]
+
+    if covered != f"{len(written)}/{total}":
+        bad.append(f"結論頁對帳「{covered}」與實際不符，應為 "
+                   f"「{len(written)}/{total}」——對帳寫錯就只是裝飾")
+    listed = {str(u.get("topic") or "").strip() for u in uncovered}
+    missing = set(facts) - written - listed
+    if missing:
+        bad.append(f"這些主題既沒結論也沒列進 uncovered：{sorted(missing)}"
+                   "——它們就這樣消失了，沒有人會發現")
+    for u in uncovered:
+        if not str(u.get("reason") or "").strip():
+            bad.append(f"uncovered「{u.get('topic')}」沒寫原因——"
+                       "「資料不夠」與「沒寫」在畫面上分不出來")
     return bad
 
 
@@ -340,6 +436,33 @@ def main() -> int:
     for i, p in enumerate(c["pages"], start=3):
         chk(f"P{i} 標題", p["title"], B["page_title"])
         chk(f"P{i} 結論句", p["takeaway"], B["takeaway"])
+        # 版型必須是清單裡的（2026-08-18，§7a）。唯一定義處＝deck_layout.LAYOUTS；
+        # ⚠ 「chart」是隱式的（有 charts 就走圖表頁），仍要能被明寫，
+        #   否則 CLI 無從表達意圖，而閘門也擋不掉打錯的版型名。
+        declared = str(p.get("layout") or ("chart" if p.get("charts") else "text"))
+        if declared not in LAYOUTS:
+            bad.append(f"P{i} 版型「{declared}」不在版型庫 {sorted(LAYOUTS)}"
+                       "——CLI 只能用清單裡的版型")
+        if declared == "table":
+            # 表格頁（2026-08-18，§7c）：欄數／欄寬由版型算，這裡只擋結構錯。
+            # ⚠ 每列長度必須等於欄頭數——不等長會讓儲存格錯位，而轉圖後才看得出來。
+            tbl = p.get("table") or {}
+            heads = tbl.get("headers") or []
+            if not heads:
+                bad.append(f"P{i} 表格頁缺 table.headers")
+            for j, row in enumerate(tbl.get("rows") or [], 1):
+                if len(row) != len(heads):
+                    bad.append(f"P{i} 表格第 {j} 列有 {len(row)} 欄，"
+                               f"欄頭有 {len(heads)} 欄——欄數不符會讓儲存格錯位")
+            if heads:
+                try:
+                    from deck_layout import table_col_widths
+
+                    weights = tbl.get("weights")
+                    table_col_widths(len(heads), tuple(weights) if weights else None)
+                except ValueError as exc:
+                    bad.append(f"P{i} 表格欄寬算不出來：{exc}")
+            continue
         charts = p.get("charts") or []
         total = units(((p.get("tag") or "") and p["tag"] + "｜") + " ".join(p["lines"]))
         if not charts:
@@ -432,4 +555,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    _force_utf8_console()
     raise SystemExit(main())

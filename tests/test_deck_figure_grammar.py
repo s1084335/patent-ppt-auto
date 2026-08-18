@@ -84,7 +84,10 @@ class FigureRenderTests(unittest.TestCase):
         for ftype, nodes in FIGS.items():
             with self.subTest(type=ftype):
                 pages = self._build_with_figure({"type": ftype, "nodes": nodes})
-                fig_page = pages[-2]        # 附加頁在 roadmap 之前
+                # 2026-08-18（§7d）：路線圖頁併入結論頁後被移除，附加頁成為最後一頁。
+                # ⚠ 原本寫 `pages[-2]  # 附加頁在 roadmap 之前`——用相對位置定位頁面，
+                #   頁面組成一變就指到別頁，而錯誤訊息只會說「缺節點」，看不出真因。
+                fig_page = pages[-1]
                 text = self._texts(fig_page)
                 for node in nodes:
                     self.assertIn(node, text, f"{ftype} 缺節點 {node}")

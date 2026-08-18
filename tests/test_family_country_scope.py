@@ -63,14 +63,16 @@ class NoteDoesNotSumAcrossCountriesTests(unittest.TestCase):
     """🔴 核心：不得把各國家族數相加當成家族總數。"""
 
     @staticmethod
-    def _executable_lines(src: str) -> str:
+    def _executable_lines(src: str) -> str:   # noqa: D401 — 委派共用工具
         """剝掉 `#` 註解，只留會被執行的程式。
 
         ⚠ 2026-08-18：本測試第一版就被**自己的修正註解**餵飽——註解裡引述了舊字串
         「存活家族共」，測試照樣紅。與同日 migration 測試被 `-- UNION` 註解騙過
         是同一型：**只斷言字串出現在整份原始碼**，註解也算。
         """
-        return "\n".join(line.split("#", 1)[0] for line in src.splitlines())
+        from tests.source_assertions import executable_source
+
+        return executable_source(src)
 
     def test_note_does_not_claim_a_total_from_a_sum(self):
         src = self._executable_lines(inspect.getsource(chart_runner))

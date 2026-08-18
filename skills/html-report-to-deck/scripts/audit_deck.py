@@ -3,20 +3,35 @@
 ⚠ 圖片去重必須用**內容雜湊**：python-pptx 讀到的 `image.filename` 在 pptx 內會被統一
    改名成 image.png，用檔名判斷會得到「14 張全部重複」的假結果。
 
-用法：python audit_deck.py <pptx> [允許的字級,預設 24,16]
+用法：python audit_deck.py <pptx> [允許的字級；預設取 deck_layout.ALLOWED_SIZES]
 回傳碼：0 = 全部通過；1 = 有違規（字級不符或圖表重複）
 """
 from __future__ import annotations
 
 import sys
 from collections import Counter
+from pathlib import Path
 
 from pptx import Presentation
 
 
+def _default_allowed() -> set[float]:
+    """字級白名單取自 `deck_layout.ALLOWED_SIZES`（🔴 唯一定義處）。
+
+    ⚠ 原本這裡自帶字面 `"24,16"`，與 deck_layout 各自維護。2026-08-19 加了
+    註記小字 11pt：deck 側單元測試全綠、PPTX 也產得出來，一路到 audit 才紅，
+    而訊息只有一張「字級分布」看不出根因。同一份知識放兩處，不一致不會報錯。
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from deck_layout import ALLOWED_SIZES
+
+    return {s.pt for s in ALLOWED_SIZES}
+
+
 def main() -> int:
     prs = Presentation(sys.argv[1])
-    allowed = {float(x) for x in (sys.argv[2] if len(sys.argv) > 2 else "24,16").split(",")}
+    allowed = ({float(x) for x in sys.argv[2].split(",")} if len(sys.argv) > 2
+               else _default_allowed())
     sizes, imgs, bad = Counter(), Counter(), []
 
     for i, sl in enumerate(prs.slides, 1):

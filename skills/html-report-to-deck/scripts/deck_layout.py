@@ -30,7 +30,7 @@ from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
-from pptx.util import Inches, Pt
+from pptx.util import Inches, Length, Pt
 from PIL import Image
 
 # ── 淺色系（非純白）：頁面淺藍灰，圖表卡白色以襯出報表原圖 ─────────
@@ -50,6 +50,13 @@ TAG_COLOR = {"風險": ROSE, "機會": AMBER, "行動": GREEN, "依據": CYAN}
 
 FONT = FONT_FAMILY
 T_SIZE, B_SIZE = Pt(24), Pt(16)          # 規格鎖死：標題 24、內文 16
+#: 註記小字（2026-08-18 §7d）：唯一用途是把**已在別頁講過**的數據降級掛在主體
+#: 底下。⚠ 不是「塞不下就縮字」的後門——版面不夠一律拆頁，字級照舊只能量不能縮。
+S_SIZE = Pt(11)
+#: 🔴 字級白名單的唯一定義處。`audit_deck` 讀這一份，不自帶字面。
+#: 加一級字級只改這裡，輸出前閘門自動跟上——兩處各自維護時，不一致不會報錯，
+#: 只會在 audit 印出一張看不出根因的「字級分布」（2026-08-19 實際踩到）。
+ALLOWED_SIZES = (T_SIZE, B_SIZE, S_SIZE)
 LS = 1.22          # 設給 PowerPoint 的 line_spacing
 # ⚠ **量高度不能用 LS**。LS 是「單行行距的倍數」，而中文字型的單行行距本身就大於
 #   字級。2026-08-11 用 PowerPoint COM 的 TextRange.BoundHeight 量出「約 1.40 倍」，
@@ -414,8 +421,17 @@ def budget() -> dict[str, float]:
 
 # ── 繪圖低階工具 ─────────────────────────────────────────────────
 def _set_font(run, *, size, bold=False, color=TEXT):
+    # ⚠ 字級單位在兩條渲染路徑各有解讀：SVG 端讀 pt **數值**，PPTX 端要
+    #   `Length` 物件。裸 int 在 SVG 完全正常，到 PPTX 會被當成 EMU
+    #   （11 EMU → 0 centipoints → ValueError），而且只有真的產 .pptx 才炸
+    #   ——deck 側單元測試全綠。2026-08-19 被半真機械鏈抓到。
+    #   在這個唯一落點把 int 視為 pt，兩邊才對得起來；靠「記得寫 Pt()」是人治。
+    #   ⚠ 判斷要用 `Length` 不是 `int`：`Pt(16)` **是** int 的子類別，
+    #     用 `isinstance(size, int)` 會把已經換算好的值再換算一次
+    #     （Pt(16) → 20320000 centipoints，同一個 ValueError 換個數字）。
     f = run.font
-    f.size, f.bold, f.name = size, bold, FONT
+    f.size = size if isinstance(size, Length) else Pt(size)
+    f.bold, f.name = bold, FONT
     f.color.rgb = color
     rPr = run._r.get_or_add_rPr()
     for tag in ("ea", "cs"):     # 中文必須另外指定 east-asian typeface
@@ -966,12 +982,87 @@ def slide_text(prs, c, page, spec):
     return s
 
 
+#: 🔴 內容頁版型的唯一定義處（2026-08-18，§7a；比照下方 `ACTION_VERBS`）。
+#:
+#: 為什麼要這份清單：原本「能畫的」（本檔）、「會擋的」（check_content）、
+#: 「CLI 照抄的」（content-template.json）各自維護，於是 `conclusions` 有畫法、
+#: 有閘門，**範本裡卻沒有**——CLI 不宣告就靜默不產出那一頁，沒有人會發現。
+#:
+#: ⚠ 三處必須涵蓋本清單全部鍵（`tests/test_deck_layout_registry.py` 擋著）。
+#: 新增版型時漏在任何一處都會紅，而不是等實機發現 CLI 從來不用它。
+#:
+#: ⚠ 值是**用途說明**不是裝飾：沒寫用途，CLI 不知道何時該用，結果就是永遠不用
+#: ——那是缺席型偏差，目視兜不住。
+LAYOUTS: dict[str, str] = {
+    "chart": "有圖：`charts` 放一張 PNG，配 takeaway 與 lines。圖能表達趨勢或分布時用。",
+    "text": "無圖純文字頁：`charts` 留空。適合結構化敘述與逐點論證。",
+    "label": "無圖的標題卡片式：`lines` 每條是一張卡，適合並列數個對象的短敘述。",
+    "table": "表格頁：`table.headers` ＋ `table.rows`（每列一個字串陣列）。"
+             "多欄對照（逐家時序）、矩陣（主題×年）這類用它，不要硬塞成圖。"
+             "欄寬由欄數自動算，可用 `table.weights` 指定相對寬。",
+}
+
 #: 🔴 結論頁「專利行動」的有限動詞表（design §7.7，唯一定義處；check_content 引用）。
 #: CLI 只能選不能自創——避免 AI 寫出「應立即提出申請」這類法律／商業承諾，
 #: 越過「AI 只輔助、不做正式決策」的界線。擴充動詞走 openspec 留痕，不在 prompt 放寬。
 ACTION_VERBS = ("佈局", "追蹤", "迴避設計", "細讀比對", "暫不投入")
 
+#: 表格版型的水平內距（左右各一），沿用結論頁既有值。
+TABLE_PAD = 0.26
+#: 一欄至少要有的寬度（in）。窄於此放不下中文，畫出來也讀不了。
+TABLE_MIN_COL = 1.0
+
+
+def table_col_widths(
+    n_cols: int,
+    weights: tuple[float, ...] | None = None,
+) -> tuple[float, ...]:
+    """依欄數（與可選的相對權重）算欄寬（2026-08-18，§7c）。
+
+    ⚠ **欄寬計算的唯一定義處**。原本只有結論頁那份寫死的 `CONCL_COLS`；
+    抽出來之後結論頁也改用它，避免兩份各自演進（改一邊另一邊不動，不會報錯）。
+
+    ⚠ 總和一律 ≤ `CW - 2*TABLE_PAD`。超寬不會拋錯，只會**在轉圖後才發現被切掉**
+    ——那時已經產完一份簡報。故在這裡算，不在呼叫端各自估。
+
+    欄數過多時 `ValueError`：與其畫出每欄窄到讀不了的表，不如當場炸。
+    """
+    if n_cols < 1:
+        raise ValueError(f"欄數要 ≥ 1（收到 {n_cols}）")
+    usable = CW - 2 * TABLE_PAD
+    if n_cols * TABLE_MIN_COL > usable:
+        raise ValueError(
+            f"{n_cols} 欄放不下：每欄至少 {TABLE_MIN_COL}in，可用寬只有 {usable:.2f}in"
+            "——請減欄或拆表，不要縮到讀不了")
+    if weights is None:
+        weights = tuple(1.0 for _ in range(n_cols))
+    if len(weights) != n_cols:
+        raise ValueError(f"權重數 {len(weights)} 與欄數 {n_cols} 不符")
+    if any(w <= 0 for w in weights):
+        raise ValueError("權重必須為正")
+    total = float(sum(weights))
+    widths = [usable * (w / total) for w in weights]
+    # 權重極端時仍要守住最小寬：不足者拉到下限，其餘按比例讓出。
+    if min(widths) < TABLE_MIN_COL:
+        fixed = [i for i, w in enumerate(widths) if w < TABLE_MIN_COL]
+        rest = usable - TABLE_MIN_COL * len(fixed)
+        rest_total = sum(weights[i] for i in range(n_cols) if i not in fixed) or 1.0
+        widths = [TABLE_MIN_COL if i in fixed
+                  else rest * (weights[i] / rest_total) for i in range(n_cols)]
+    # ⚠ 無條件**捨去**到 0.001in，不用 round：四捨五入會讓總和超出可用寬
+    #   （實測 2 欄得 11.814 > 11.813）。1‰ 的溢出不會報錯，只會在轉圖後
+    #   發現最右欄被切掉——那時已經產完一份簡報。寧可少千分之一。
+    import math
+
+    return tuple(math.floor(w * 1000) / 1000 for w in widths)
+
+
+#: 結論頁行動分組標題的高度（in）。
+CONCL_GROUP_HEAD_H = 0.34
+
 #: 結論頁四欄（主題｜發現｜研發意涵｜專利行動）的欄寬（in）。
+#: ⚠ 2026-08-18 起結論頁改三欄（主題含發現小字｜判讀｜專利行動），本常數
+#:   已不被 `slide_conclusions` 使用，保留供追溯與舊 content 對照。
 #: ⚠ 總和必須 ≤ CW - 2×0.26（左右內距）；行動欄最窄——內容是動詞表單選。
 CONCL_COLS = (2.35, 3.35, 4.45, 1.35)
 
@@ -980,40 +1071,176 @@ def slide_conclusions(prs, c):
     """綜合結論頁（design §7.7）：一主題一列、三欄帶（§7.2 的應用）。
 
     發現＝機械（intake `topic_facts.json` 的字串，check_content 逐字閘門盯著）；
-    研發意涵＝CLI；專利行動＝CLI 從 `ACTION_VERBS` 單選。
+    判讀＝CLI；專利行動＝CLI 從 `ACTION_VERBS` 挑，可多選（見 `row_actions`）。
     ⚠ `conclusions` 存在時本頁**取代**建議頁（§7.10 頁數帳：取代不新增）。
     """
     cc = c["conclusions"]
     s = base(prs, c["footer"], 2, source=src_line(c))
     header(s, cc["title"], cc["takeaway"])
     top, bot = CHART_TOP, 7.06
-    x0 = ML + 0.26
-    widths = CONCL_COLS
-    heads = ("主題", "發現", "研發意涵", "專利行動")
-    # 欄頭列
+    x0 = ML + TABLE_PAD
+    # 🔴 2026-08-18 使用者裁決：「這頁數據要少點，更多的是根據數據判讀後
+    #    最終要轉到專利行動。」原本四欄，「發現」是純統計卻佔 3.35in——
+    #    結論頁在重述前面已經講過的統計，正是 deepen 主軸要打的「統計鋪陳」。
+    #    ⚠ 但「發現」是全頁**唯一被機械驗證**的內容（逐字比對引擎字串），
+    #      刪掉就沒有錨點擋 CLI 亂編。故**降級不刪除**：從一整欄變成主題底下
+    #      的灰小字，逐字比對照舊；釋出的版面全給判讀與行動。
+    #    ⚠ 欄名用「判讀」不用「研發意涵」：欄名就是對 CLI 的指令，
+    #      「意涵」容易寫成感想，「判讀」要求從資料推到結論。
+    heads = ("主題", "判讀", "專利行動")
+    widths = table_col_widths(len(heads), weights=(3.0, 6.4, 2.4))
     y = top + 0.06
     x = x0
     for head, w in zip(heads, widths):
         textbox(s, x, y, w - 0.14, 0.3, [(head, {"bold": True, "color": CYAN})])
         x += w
     y += 0.42
-    rows = cc["rows"]
-    # 每列高＝四欄實測需求的最大者（字級鎖死，只能量不能縮）
-    heights = []
+    groups = conclusion_groups(cc["rows"])
+    total_rows = sum(len(rs) for _v, rs in groups)
+    # 列高只能量不能縮（字級鎖死）。第一欄要容納主題＋發現兩行。
+    heights: list[float] = []
+    for verb, rs in groups:
+        for r in rs:
+            first = (text_h([(r.get("topic", ""), 16, 0)], widths[0] - 0.14)
+                     + text_h([(r.get("finding", ""), S_SIZE.pt, 0)], widths[0] - 0.14))
+            act = (text_h([(verb, 16, 0)], widths[2] - 0.14)
+                   + text_h([(_also_actions(verb, r), S_SIZE.pt, 0)], widths[2] - 0.14))
+            h = max(first,
+                    text_h([(r.get("reading", ""), 16, 0)], widths[1] - 0.14),
+                    act)
+            heights.append(h + ROW_PAD)
+    note("結論頁列高總和", bot - y,
+         sum(heights) + ROW_GAP * max(total_rows - 1, 0)
+         + CONCL_GROUP_HEAD_H * len(groups))
+    idx = 0
+    for verb, rs in groups:
+        # ⚠ 只畫**真的用到**的分組（使用者：「不能每次都固定全部行動都有」）。
+        #   五組固定列出會讓 CLI 覺得每組都要填——那是形式鎖逼出硬湊。
+        textbox(s, x0, y, CW - 2 * TABLE_PAD, CONCL_GROUP_HEAD_H,
+                [(verb, {"bold": True, "color": GREEN})], space_after=0)
+        y += CONCL_GROUP_HEAD_H
+        for r in rs:
+            h = heights[idx]
+            idx += 1
+            x = x0
+            textbox(s, x, y, widths[0] - 0.14, h,
+                    [(r.get("topic", ""), {"bold": True})], space_after=0)
+            textbox(s, x, y + 0.26, widths[0] - 0.14, h,
+                    [(r.get("finding", ""), {"color": MUTED, "size": S_SIZE})],
+                    space_after=0)
+            x += widths[0]
+            textbox(s, x, y, widths[1] - 0.14, h,
+                    [(r.get("reading", ""), {})], space_after=0)
+            x += widths[1]
+            # 行動格印**本分組**的動詞（不是整個 list）——同一列出現在兩組時，
+            # 兩處各自顯示自己那個動詞，另一個掛灰小字，讀者不會以為分組錯了。
+            textbox(s, x, y, widths[2] - 0.14, h,
+                    [(verb, {"bold": True, "color": GREEN})], space_after=0)
+            if (also := _also_actions(verb, r)):
+                textbox(s, x, y + 0.26, widths[2] - 0.14, h,
+                        [(also, {"color": MUTED, "size": S_SIZE})], space_after=0)
+            y += h + ROW_GAP
+            rect(s, x0, y - ROW_GAP / 2, CW - 2 * TABLE_PAD, RULE_W, fill=CARD_ED)
+    return s
+
+
+def row_actions(row: dict) -> list[str]:
+    """一列結論宣告的專利行動，一律回 list（🔴 解析的唯一定義處）。
+
+    2026-08-19 使用者裁決：「不是說行動就只能選擇一種而已。」一個主題可能同時
+    要「迴避設計」與「追蹤」——原本 `action` 是單一字串，會逼 CLI 二選一，
+    而被丟掉的那個**不會留下痕跡**（缺席型偏差，比多寫一個危險）。
+
+    ⚠ 字串與 list 都收：既有 content.json 與範例都是字串，改成只收 list 會讓
+    舊檔靜默變成「沒有行動」。
+    ⚠ 畫的（`conclusion_groups`）與擋的（`check_content._bad_actions`）必須讀
+    這一份——分成兩份解析後，list 在一邊被展開、在另一邊被 `str()` 成
+    `"['迴避設計', '追蹤']"` 當成一個假動詞，而且不會報錯。
+    """
+    raw = row.get("action")
+    if raw is None:
+        return []
+    items = raw if isinstance(raw, (list, tuple)) else [raw]
+    return [s for item in items if (s := str(item).strip())]
+
+
+def _also_actions(verb: str, row: dict) -> str:
+    """該列除了本分組動詞以外還宣告了什麼（給行動格的灰小字）。
+
+    沒有其他動詞時回空字串——單一行動的列（多數情況）版面完全不變。
+    """
+    rest = [v for v in row_actions(row) if v != verb]
+    return f"同時：{'、'.join(rest)}" if rest else ""
+
+
+def conclusion_groups(rows: list[dict]) -> list[tuple[str, list[dict]]]:
+    """結論列依專利行動分組，**只回真的用到的分組**（2026-08-18 使用者裁決）。
+
+    組序照 `ACTION_VERBS` 宣告序（不另定第二份順序）；組內依外部訊號
+    `pending_count`（他人審查中件數）由多到少——那是對手給的時間壓力、可查證，
+    取代原本 CLI 自己編的「短期 0–3 個月」。
+
+    ⚠ **不設「不得五組全有」的檢查**：十個主題真的可能用滿五種行動，
+    禁止它會逼 CLI 把合理的行動改掉。這是判斷不是規則。
+    """
+    order = {v: i for i, v in enumerate(ACTION_VERBS)}
+    buckets: dict[str, list[dict]] = {}
     for r in rows:
-        cells = (r["topic"], r["finding"], r["implication"], r["action"])
-        h = max(text_h([(t, 16, 0)], w - 0.14) for t, w in zip(cells, widths))
+        # 一列可宣告多個行動 → 在每個分組底下各出現一次（2026-08-19）。
+        for verb in row_actions(r):
+            buckets.setdefault(verb, []).append(r)
+    out: list[tuple[str, list[dict]]] = []
+    for verb in sorted(buckets, key=lambda v: (order.get(v, len(ACTION_VERBS)), v)):
+        out.append((verb, sorted(
+            buckets[verb],
+            key=lambda r: (-int(r.get("pending_count") or 0), str(r.get("topic") or "")))))
+    return out
+
+
+def slide_table(prs, c, page, spec):
+    """通用表格頁（2026-08-18，§7c）：參數化欄數與欄寬。
+
+    ⚠ 畫法與結論頁**同一份**——欄寬走 `table_col_widths`、列高走實測而非估算。
+    表格繪製本來就會（結論頁四欄表），只是綁死在那一頁；抽出來之後 CLI 才用得到。
+
+    內容契約：
+      `table.headers`  欄頭字串陣列
+      `table.rows`     每列一個字串陣列，長度須等於 headers
+      `table.weights`  （選填）相對欄寬
+
+    ⚠ 列高「只能量不能縮」：字級鎖死，量出來放不下就是要拆頁，不是縮字
+    （沿用結論頁的紀律；縮字會讓轉圖後才發現讀不了）。
+    """
+    tbl = spec.get("table") or {}
+    heads = [str(h) for h in (tbl.get("headers") or [])]
+    rows = [[str(cell) for cell in row] for row in (tbl.get("rows") or [])]
+    s = base(prs, c["footer"], page, source=src_line(c))
+    header(s, spec["title"], spec["takeaway"])
+    if not heads:
+        return s
+    weights = tbl.get("weights")
+    widths = table_col_widths(len(heads), tuple(weights) if weights else None)
+    top, bot = CHART_TOP, 7.06
+    x0 = ML + TABLE_PAD
+    y = top + 0.06
+    x = x0
+    for head, w in zip(heads, widths):
+        textbox(s, x, y, w - 0.14, 0.3, [(head, {"bold": True, "color": CYAN})])
+        x += w
+    y += 0.42
+    heights = []
+    for row in rows:
+        h = max(text_h([(t, 16, 0)], w - 0.14) for t, w in zip(row, widths))
         heights.append(h + ROW_PAD)
-    note("結論頁列高總和", bot - y, sum(heights) + ROW_GAP * (len(rows) - 1))
-    for r, h in zip(rows, heights):
+    note(f"表格頁 P{page} 列高總和", bot - y,
+         sum(heights) + ROW_GAP * max(len(rows) - 1, 0))
+    for row, h in zip(rows, heights):
         x = x0
-        cells = (r["topic"], r["finding"], r["implication"], r["action"])
-        styles = ({"bold": True}, {"color": MUTED}, {}, {"bold": True, "color": GREEN})
-        for t, w, st in zip(cells, widths, styles):
-            textbox(s, x, y, w - 0.14, h, [(t, st)], space_after=0)
+        for t, w in zip(row, widths):
+            textbox(s, x, y, w - 0.14, h, [(t, {})], space_after=0)
             x += w
         y += h + ROW_GAP
-        rect(s, x0, y - ROW_GAP / 2, CW - 0.52, RULE_W, fill=CARD_ED)
+        rect(s, x0, y - ROW_GAP / 2, CW - 2 * TABLE_PAD, RULE_W, fill=CARD_ED)
     return s
 
 
@@ -1089,11 +1316,17 @@ def _compose(deck, content: dict, png_dir: Path) -> dict:
         slide_rec(deck, content)
     widths = {}
     for i, spec in enumerate(content["pages"], start=3):
-        if spec.get("charts"):
+        if spec.get("layout") == "table":
+            slide_table(deck, content, i, spec)     # 表格頁：不佔圖表寬度
+        elif spec.get("charts"):
             widths[i] = slide_chart(deck, content, i, spec, png_dir)
         else:
             slide_text(deck, content, i, spec)      # 純文字頁：不佔圖表寬度
-    slide_roadmap(deck, content, len(content["pages"]) + 3)
+    # 🔴 2026-08-18（§7d）：路線圖頁**併入結論頁**、期程整個拿掉。
+    #    結論頁四欄每欄都有引擎來源，唯獨路線圖的時間桶沒有任何資料支撐——
+    #    系統不知道人力、預算與產品排程，`短期 0–3 個月` 是 CLI 憑空填的。
+    #    拿掉期程後兩頁功能重疊（結論頁已有 主題｜發現｜意涵｜行動），故合併。
+    #    `slide_roadmap` 暫留供舊 content 追溯，不再由 _compose 呼叫。
     return widths
 
 

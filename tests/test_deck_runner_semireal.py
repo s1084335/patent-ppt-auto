@@ -32,11 +32,47 @@ VERSION = "report_trial_20260811_094014"
 CONTENT_SRC = OUTPUT / "skill_verify" / "work" / "content.json"
 
 
+def _synth_conclusions(work: Path) -> dict | None:
+    """依 intake 的 `topic_facts.json` 造一份最小結論頁（假 CLI 的代打）。
+
+    2026-08-19：結論頁閘門改為「引擎有主題就必須有結論」（原本沒宣告會被無條件
+    放行，於是那頁根本不產出而閘門一聲不吭）。半真素材的 content.json 是那道
+    閘門之前錄的，所以缺 conclusions ——**這是閘門抓對了，不是誤擋**。
+    真 CLI 會寫這一段，假 CLI 就在這裡代打。
+
+    ⚠ 刻意**不涵蓋全部主題**：故意留幾個進 `uncovered`，讓機械鏈也跑到對帳
+    那條路徑。全涵蓋會讓覆蓋率閘門直接 return，等於沒驗到。
+    ⚠ 發現欄逐字取自 topic_facts，不自行改寫（逐字比對閘門盯著）。
+    """
+    facts_path = work / "topic_facts.json"
+    if not facts_path.is_file():
+        return None
+    facts = json.loads(facts_path.read_text(encoding="utf-8"))
+    if not facts:
+        return None
+    # 一列多動詞：讓半真鏈也涵蓋 2026-08-19 的多選格式，不只單字串。
+    actions = ["追蹤", ["迴避設計", "追蹤"], "細讀比對"]
+    written = facts[:len(actions)]
+    return {
+        "title": "綜合結論：各主題的研發意涵與專利行動",
+        "takeaway": "半真素材：機械鏈驗證用，判讀文字非真 CLI 產出。",
+        "covered": f"{len(written)}/{len(facts)}",
+        "uncovered": [{"topic": f["topic"], "reason": "半真測試素材未撰稿"}
+                      for f in facts[len(actions):]],
+        "rows": [{"topic": f["topic"], "finding": f["finding"],
+                  "reading": "半真素材佔位判讀句，不代表真實分析結論。",
+                  "action": a, "pending_count": 0}
+                 for f, a in zip(written, actions)],
+    }
+
+
 def _write_p2_content(path: Path) -> None:
     """把既有半真素材轉成目前 P2 content contract，避免改動 output 原檔。"""
     content = json.loads(CONTENT_SRC.read_text(encoding="utf-8"))
     content.pop("read_me", None)
     content.pop("chart_rule", None)
+    if (cc := _synth_conclusions(path.parent)) is not None:
+        content["conclusions"] = cc
     for rec in content.get("recommendations") or []:
         lines = [str(line) for line in rec.get("lines") or []]
         if "依據：" not in "\n".join(lines):
