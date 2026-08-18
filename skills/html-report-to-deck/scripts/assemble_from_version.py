@@ -211,6 +211,11 @@ def assemble(version_dir: Path | str, out_dir: Path | str) -> dict:
     (out_dir / "topic_facts.json").write_text(
         json.dumps(_topic_facts(report_data), ensure_ascii=False, indent=1),
         encoding="utf-8")
+    # 封面數字（2026-08-18，§2）：引擎產、CLI 逐字消費。
+    # ⚠ 只搬不算——deck 端自己算就會與引擎漂開，而且不會有任何東西報錯。
+    (out_dir / "cover_stats.json").write_text(
+        json.dumps(report_data.get("cover_stats") or {}, ensure_ascii=False, indent=1),
+        encoding="utf-8")
     return report
 
 

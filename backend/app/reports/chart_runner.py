@@ -80,6 +80,54 @@ def fetch_patent_kind_summary(*, patent_ids: list[int] | None) -> dict[str, Any]
     }
 
 
+def fetch_cover_stats(*, patent_ids: list[int] | None) -> dict[str, Any]:
+    """封面四個數字：件／族／受理局／專利類型三分法（2026-08-18，tasks §2）。
+
+    ⚠ **為什麼由引擎供給**：這四個數字原本是 deck 的 CLI 自己填（範本 `stats`
+    四格是 `["<N>", "件數"]` 占位）。CLI 手上沒有權威來源，只能從別處推——
+    封面顯示 281 件而母體實際 55 件，就是這樣來的。一方產生、一方消費。
+
+    ⚠ `patent_ids` 必填無預設，理由同 `fetch_patent_kind_summary`：
+    忘記傳要當場炸，不是靜默退回全庫。
+
+    家族口徑（§2.2）：`COUNT(DISTINCT FAMILY_ID_EXPRESSION)` 於母體。
+    缺同族 ID 的專利**各自算一族**（`COALESCE(..., 'P' || patent_id)`），
+    不得併成一族「未知」——沿用 `report_engine` 的唯一定義處，不另寫一份。
+
+    三分法（§2.3）：委派 `fetch_patent_kind_summary`（其判別走
+    `transforms/patent_kind.py` 唯一定義處）。本函式**不自行比對**任何欄位。
+    """
+    from backend.app.reports.report_engine import FAMILY_ID_EXPRESSION
+
+    where = ""
+    params: tuple = ()
+    if patent_ids is not None:
+        # ⚠ 空清單也要帶條件——「這個 workspace 沒有成員」與「全庫」不是同一件事。
+        where = " WHERE patent_id = ANY(%s)"
+        params = ([int(i) for i in patent_ids],)
+
+    with _app_layer_connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT count(*) AS n FROM derived_layer.report_patent_base{where}", params)
+        patent_count = int((cur.fetchone() or {}).get("n") or 0)
+        cur.execute(
+            f"SELECT count(DISTINCT {FAMILY_ID_EXPRESSION}) AS n "
+            f"FROM derived_layer.report_patent_base{where}", params)
+        family_count = int((cur.fetchone() or {}).get("n") or 0)
+        cur.execute(
+            f"SELECT count(DISTINCT country_code) AS n "
+            f"FROM derived_layer.report_patent_base{where}", params)
+        jurisdiction_count = int((cur.fetchone() or {}).get("n") or 0)
+
+    kind = fetch_patent_kind_summary(patent_ids=patent_ids)
+    return {
+        "patent_count": patent_count,
+        "family_count": family_count,
+        "jurisdiction_count": jurisdiction_count,
+        "kind_tally": kind.get("tally") or {},
+    }
+
+
 def fetch_analysis_patent_ids(analysis_id: int) -> list[int]:
     """Return the patent_id snapshot for an analysis, or raise if it is missing."""
     with _app_layer_connect() as conn:
@@ -5347,6 +5395,9 @@ def run_chart_trial(
             # 🔴 2026-08-18：必須把母體傳下去。原本沒傳（函式也沒有這個參數），
             #    封面顯示全庫 281 件而非本 workspace 的 55 件。
             "patent_kind": fetch_patent_kind_summary(patent_ids=ctx.patent_ids),
+            # 封面四個數字由引擎供給（2026-08-18，§2）：原本 deck 的 CLI 自己填，
+            # 手上沒有權威來源只能從別處推——封面 281 件（母體實際 55）就是這樣來的。
+            "cover_stats": fetch_cover_stats(patent_ids=ctx.patent_ids),
             # sections 持久化：--refresh-index 由此重建 index（解讀回填後重渲染）
             "sections": persistable_sections(ctx.sections),
             # 表格顯示規格（2026-07-31）：欄名對照、排除欄與儲存格呈現字串由引擎寫出，

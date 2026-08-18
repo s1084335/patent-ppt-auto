@@ -38,7 +38,8 @@ class RunChartTrialWorkspaceNameTests(unittest.TestCase):
             # ⚠ fetch_patent_kind_summary 是 A4 的 DB 接縫（刻意不軟退化）——
             # 本測試寫於 A4 之前漏補 stub，DB 不可達時整個 trial 炸（2026-08-07 補）。
             with mock.patch.object(chart_runner, "run_report", self._stub_run_report), \
-                 mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict):
+                 mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict), \
+                 mock.patch.object(chart_runner, "fetch_cover_stats", dict):
                 result = chart_runner.run_chart_trial(
                     output_dir=Path(tmp), report_names=["application_trend"],
                     workspace_name="拉繩訓練機")
@@ -50,7 +51,8 @@ class RunChartTrialWorkspaceNameTests(unittest.TestCase):
         """⚠ 不給＝不落鍵（封面端以「鍵不存在」走 fallback，不要落 null 混淆）。"""
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(chart_runner, "run_report", self._stub_run_report), \
-                 mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict):
+                 mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict), \
+                 mock.patch.object(chart_runner, "fetch_cover_stats", dict):
                 result = chart_runner.run_chart_trial(
                     output_dir=Path(tmp), report_names=["application_trend"])
             rd = json.loads((Path(result["output_dir"]) / "report_data.json")

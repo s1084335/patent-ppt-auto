@@ -245,12 +245,49 @@ def _check_p2_evidence_rules(c: dict) -> list[str]:
     return bad
 
 
+def _check_cover_stats(c: dict, stats_path: Path) -> list[str]:
+    """封面四格數字必須逐字取自引擎（§2，一方產生、一方消費）。
+
+    ⚠ 這四個數字原本由 CLI 自己填。CLI 手上沒有權威來源，只能從別的頁面反推——
+    封面顯示 281 件而母體實際 55 件就是這樣來的。引擎已在 `report_data.cover_stats`
+    供給，本閘門確保它真的被用上（與 `topic_facts` 的逐字比對同一條紀律）。
+
+    ⚠ 只比對**數字**不比對標籤：標籤是排版用語（「件專利」vs「件」），
+    鎖它會變成形式鎖；數字才是事實。
+    """
+    if not stats_path.is_file():
+        return []
+    engine = json.loads(stats_path.read_text(encoding="utf-8"))
+    if not engine:
+        return []
+    stats = c.get("stats") or []
+    if len(stats) != 4:
+        return [f"封面統計不是四格（實際 {len(stats)}）——"
+                "2026-08-18 定案為件／族／受理局／專利類型"]
+    written = [str(n).strip() for n, _label in stats]
+    tally = engine.get("kind_tally") or {}
+    expected = [
+        str(engine.get("patent_count", "")),
+        str(engine.get("family_count", "")),
+        str(engine.get("jurisdiction_count", "")),
+        "·".join(str(tally.get(k, 0)) for k in ("發明", "新型", "設計")),
+    ]
+    bad: list[str] = []
+    for i, (got, want) in enumerate(zip(written, expected), 1):
+        if got != want:
+            bad.append(
+                f"封面第 {i} 格數字「{got}」與引擎不符，應為「{want}」"
+                "——封面數字一律逐字取自 cover_stats.json，不得自行推算")
+    return bad
+
+
 def main() -> int:
     c = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     png_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else None
     work_dir = Path(sys.argv[1]).resolve().parent
     caliber_bad = _check_caliber_verbatim(c, work_dir / "caliber_facts.json")
     caliber_bad += _check_conclusions(c, work_dir / "topic_facts.json")
+    caliber_bad += _check_cover_stats(c, work_dir / "cover_stats.json")
     caliber_bad += _check_figures(c)
     caliber_bad += _check_p2_evidence_rules(c)
     fc = png_dir / "font_choice.json" if png_dir else None
