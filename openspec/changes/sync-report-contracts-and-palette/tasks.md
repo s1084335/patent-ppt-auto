@@ -74,11 +74,80 @@
 - [ ] 6.5 軟揭露：色票表列出每個色的語意用途，新增時必須填
 - [ ] 6.6 補回 `COLOR_TRANSFERRED`（2026-08-17 違反 deepen 5b.4 的新增）
 
-## 7. 驗收
+## 7. 版型庫收斂（2026-08-18 新增）
 
-- [ ] 7.1 OpenSpec strict validation
-- [ ] 7.2 三層範圍回歸（直接／整合／契約）
+⚠ 全部零自由度——只驗「有沒有、幾個」，不驗好壞。適用情境那類有自由度的，
+一律留在輪二。
+
+### 7a. 三份清單各說各話（根因）
+
+實查：能畫的（`deck_layout`）、會擋的（`check_content`）、CLI 照抄的
+（`content-template.json`）互不一致。`conclusions` 有畫法、有閘門，
+**範本裡沒有**——CLI 不宣告就 `if not cc: return []` 靜默放行，那頁根本不產出。
+
+- [ ] 7a.1 Red：版型清單唯一定義處 `deck_layout.LAYOUTS`（比照 `ACTION_VERBS`）
+- [ ] 7a.2 Red：**三處同步閘門**——`check_content` 認得的、範本示範的、
+      `narrative.md` 寫到的，三者集合必須等於 `LAYOUTS`；任一缺漏即紅
+- [ ] 7a.3 反向驗證：`LAYOUTS` 加一個不在範本裡的版型 → 閘門要紅
+      ⚠ 這條會**當場抓出還有哪些版型漏登記**，不要跳過
+- [ ] 7a.4 `conclusions` 補進 `content-template.json`
+
+### 7b. 結論頁閘門的三個破口
+
+現況 `_check_conclusions` 的三行：
+
+```python
+if not cc: return []      # ① 沒宣告就放行
+if not rows: ...          # ② 只驗非空——10 主題寫 1 列全綠
+if topic in facts: ...    # ③ 主題名不在 facts 就整個跳過逐字比對
+```
+
+- [ ] 7b.1 Red：`conclusions` 缺席時要紅（頁是必要的，不是可選的）
+- [ ] 7b.2 Red：主題名不在 `topic_facts` 時要紅（不得靜默略過比對）
+- [ ] 7b.3 Red：**涵蓋率對帳**——`conclusions` 要帶 `covered N/M` 與
+      未涵蓋主題的逐條原因；缺對帳即紅
+      ⚠ **不是最小列數**。規定列數是形式鎖（v5／v7／v9 三次的同型錯），
+      會逼出硬湊；涵蓋率只要求「沒寫的要現形」，偏差從缺席變成可見清單
+- [ ] 7b.4 反向驗證：把某主題從結論刪掉但不更新對帳 → 要紅
+
+### 7c. 表格通用版型
+
+表格繪製**已經會了**（`slide_conclusions` 的四欄表、`CONCL_COLS` 欄寬），
+只是綁死在那一頁。
+
+- [ ] 7c.1 抽成 `layout: "table"`：**參數化欄數與欄寬**（2026-08-18 使用者裁決）
+      欄寬由版型依欄數計算，總和不得超過可用寬（沿用 `CONCL_COLS` 的內距紀律）
+- [ ] 7c.2 Red：欄數與資料列的欄位數不符即紅；欄寬總和超寬即紅
+- [ ] 7c.3 `slide_conclusions` 改用通用表格版型，不留第二份畫法
+
+### 7d. 路線圖頁併入結論頁
+
+2026-08-18 使用者裁決：**期程欄整個拿掉**；路線圖頁與結論頁合併成一頁。
+
+⚠ 期程（`短期 0–3 個月` 等）是全份唯一沒有資料支撐的欄位——系統不知道人力、
+預算與產品排程，那個數字必然是編的。
+
+- [ ] 7d.1 移除 `content-template.json` 的 `roadmap*` 區塊與三期程
+- [ ] 7d.2 結論頁改為**依 `ACTION_VERBS` 分組**呈現（同一批 rows，換分組）
+- [ ] 7d.3 排序依**外部訊號**：該主題的他人審查中件數（多者在前）
+      ⚠ 這是對手給的時間壓力，有資料可查證；不是我們假設的月份
+- [ ] 7d.4 Red：`roadmap` 仍出現在 content 即紅（避免舊範本殘留）
+
+### 7e. 引擎供給外部訊號
+
+- [ ] 7e.1 `cluster_topic_table` 加法律狀態分解（審查中／已授權／失效件數）
+      ⚠ 走 `mappings/legal_status` 唯一定義處，不在此重判
+- [ ] 7e.2 母體閘門同樣適用（本 change §1）——新彙總要吃 `patent_ids`
+- [ ] 7e.3 Red：兩個 workspace 的分解數字不得相等
+
+## 8. 驗收
+
+- [ ] 8.1 OpenSpec strict validation
+- [ ] 8.2 三層範圍回歸（直接／整合／契約）
       ＋ **符號反查消費者**比對已跑清單（2026-08-18 實證：憑印象挑會漏 6 支）
-- [ ] 7.3 兩個 workspace 各產一份報表，逐項對 design §7 判準
-- [ ] 7.4 揭露未覆蓋範圍；⚠ 本 change **不含**版型與 deck 實物驗收（輪二）
-- [ ] 7.5 使用者接受後 archive；同步 main specs 與 migration ledger
+- [ ] 8.3 兩個 workspace 各產一份報表，逐項對 design §7 判準
+- [ ] 8.4 版型庫：`LAYOUTS` 三處同步閘門綠；`conclusions` 實際產得出來
+      （⚠ 不是「閘門沒紅」——要真的看到那一頁）
+- [ ] 8.5 揭露未覆蓋範圍；⚠ 本 change **不含**有自由度的閘門
+      （依據層級、行動對象、表格適用情境）——全在輪二
+- [ ] 8.6 使用者接受後 archive；同步 main specs 與 migration ledger
