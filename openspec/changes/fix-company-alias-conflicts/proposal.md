@@ -52,13 +52,28 @@ company_group_members（group_id=3 創科）
 3. 新增 partial unique index：`UNIQUE (alias_lookup_key) WHERE
    review_status='confirmed'`，讓 P1 在寫入當下就被擋。
 
-## Non-Goals
+## Capabilities
+
+### Modified Capabilities
+
+- `company-governance`：別稱歸戶從「依查詢順序而定」變成「寫入當下就唯一」；
+  創科集團成員補齊。
+
+## Scope
+
+- 依 WIPS 權威資料修正 `UN164421` 的一列別稱。
+- 補 `UN240278` 進 `group_id=3`（創科）。
+- 新增 partial unique index `ux_company_aliases_lookup_single_code`。
+- API 把索引違反翻成 409（AI 建議確認端點）。
+
+## Non-goals
 
 - **不禁止一家公司擁有多個 WIPS 代碼**——那是常態，集團層負責收攏。
   本 change 只禁「一個別稱對到多個代碼」。
 - 不建立公司實體表、不加外鍵——那是 `add-company-entity-table` 的範圍。
 - 不修改 `promote`／`delete` 端點的連動缺口（同上）。
 - 不動 `company_groups` 既有的四個集團定義，只補一個成員。
+- 不合併 `UN164421` 與 `UN240278`——它們是不同法人，只是同一集團。
 
 ## Impact
 
@@ -67,6 +82,32 @@ company_group_members（group_id=3 創科）
   `derived_layer.company_group_members`（新增 1 列）
 - Affected reports: 創科集團件數 39 → 44；申請人排名與集中度連帶變動
 - ⚠ 動到 `confirmed` 正式資料，執行前須存快照
+
+## Activation
+
+- 資料修正與 index 建立由 migration `0052_alias_lookup_single_code` 帶入，
+  `alembic upgrade head` 後即生效。
+- 集團件數變動需重跑 derived refresh 才會反映到報表
+  （修正資料的端點本身會排 `refresh_derived`）。
+- 後端需重啟以載入 409 翻譯。
+
+## Acceptance Gate
+
+1. `alias_lookup_key` 在 `confirmed` 範圍內全庫唯一（實測無重複）。
+2. **兩個方向都驗**：寫入重複別稱會被擋；合法的「一家公司多代碼」仍寫得進去。
+3. TTI Macao 那 5 件歸到 `UN240278`，且 `Chuang Ke Limited` 的公司層仍在（5 件）。
+4. 創科集團件數 39 → 44。
+5. 範圍回歸全綠。
+
+## Confirmed Decisions
+
+- 2026-08-18：唯一性鍵取 `alias_lookup_key`（不含代碼），
+  只禁「一個別稱對到多個代碼」，不禁「一家公司多個代碼」。
+  ⚠ 這是本 change 最容易做錯的一點——把代碼放進鍵裡就等於沒擋。
+- 2026-08-18：`apply_confirmed_display_names` 原註解寫的
+  「不同代碼可有同一別稱字面」自本輪起不再成立，已回寫更正（使用者裁決「甲」）。
+- 2026-08-18：TTI Macao 的歸屬以 WIPS 為權威（使用者提供畫面），
+  不以現有 DB 資料為準。
 
 ## Open Questions
 

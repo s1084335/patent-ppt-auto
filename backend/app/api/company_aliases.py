@@ -262,10 +262,20 @@ def confirm_company_normalization_review(
         confirm_company_normalization_suggestions,
     )
 
+    from psycopg.errors import UniqueViolation
+
     try:
         result = confirm_company_normalization_suggestions(body.items)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except UniqueViolation as exc:
+        # 🔴 0052 的「一個別稱只屬於一個代碼」擋下來的。⚠ 不翻譯的話使用者會看到
+        #    500 與英文堆疊，不知道是撞名還是系統壞了。
+        raise HTTPException(
+            status_code=409,
+            detail=("此建議的別稱已屬於另一個公司代碼。"
+                    "請改指向該代碼，或修改別稱後再確認。"),
+        ) from exc
     refresh_job_id = None
     if result.get("confirmed"):
         refresh_job_id = create_job("refresh_derived", {})
@@ -985,14 +995,31 @@ def delete_company_group(code: str) -> dict[str, Any]:
 
     DELETE **必須帶代碼條件**，否則會清掉整張對照表（company_aliases 是長期資產）。
     刪完 enqueue refresh_derived，專利表的收斂名才會退回原字面。
+
+    🔴 2026-08-18：先刪 `companies` 那一列。若該代碼仍是集團成員，外鍵
+    `ON DELETE RESTRICT` 會擋下整個交易（0053）——刪代碼與退出集團是兩件事，
+    分兩步才看得見自己在改什麼。⚠ 順序不可顛倒：先刪別稱再刪 companies 的話，
+    被擋時別稱已經沒了。
     """
+    from psycopg.errors import ForeignKeyViolation
+
     with _connect_dict_rows() as conn:
-        cur = conn.execute(
-            'DELETE FROM derived_layer.company_aliases WHERE "申請人代碼" = %s',
-            (code,),
-        )
-        deleted = int(cur.rowcount or 0)
-        conn.commit()
+        try:
+            conn.execute(
+                "DELETE FROM derived_layer.companies WHERE company_code = %s", (code,))
+            cur = conn.execute(
+                'DELETE FROM derived_layer.company_aliases WHERE "申請人代碼" = %s',
+                (code,),
+            )
+            deleted = int(cur.rowcount or 0)
+            conn.commit()
+        except ForeignKeyViolation as exc:
+            conn.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail=(f"無法刪除 {code}：它仍是集團成員。"
+                        f"請先在集團區把它移出集團，再刪除代碼。"),
+            ) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail=f"找不到代碼 {code}")
     return {"code": code, "deleted": deleted,
@@ -1008,6 +1035,10 @@ def promote_company_code(code: str, body: PromoteCodeRequest) -> dict[str, Any]:
 
     一句 UPDATE 換整組（不逐列往返）。目標代碼已存在時擋下（409）——那是把兩組
     合併，語意不同，應由使用者在代碼區用同一代碼重建，才會走 writer 的去重規則。
+
+    🔴 2026-08-18：同時更新 `companies`。集團成員的外鍵帶 `ON UPDATE CASCADE`，
+    所以改那一列就會自動連動——原本 promote 只改別稱表、集團成員仍指舊代碼，
+    那家公司會從集團統計消失且不報錯（0053 讓這個 bug 寫不出來）。
     """
     new_code = body.new_code.strip()
     if not new_code:
@@ -1024,6 +1055,13 @@ def promote_company_code(code: str, body: PromoteCodeRequest) -> dict[str, Any]:
             raise HTTPException(
                 status_code=409,
                 detail=f"代碼 {new_code} 已存在；合併兩組請在代碼區以同一代碼重建。")
+        # ⚠ 先換 companies：集團成員靠 ON UPDATE CASCADE 跟著換。
+        #   companies 沒有那一列時（惰性補齊的代碼）就沒有集團成員要連動，跳過即可。
+        conn.execute(
+            "UPDATE derived_layer.companies SET company_code = %s "
+            "WHERE company_code = %s",
+            (new_code, code),
+        )
         cur = conn.execute(
             'UPDATE derived_layer.company_aliases SET "申請人代碼" = %s, updated_at = now() '
             'WHERE "申請人代碼" = %s',

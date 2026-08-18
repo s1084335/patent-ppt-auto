@@ -624,8 +624,16 @@ def apply_confirmed_display_names(
     - **兩個正式名自身也納入別稱**，確保使用者填的中文名／英文名字面在專利表可精確
       命中（原本只納入單一 canonical；拆欄後兩個都要，否則另一個字面命不中）。
     - 批內按 (代碼, normalize_lookup(別稱)) 去重，與 DB 唯一索引
-      ux_company_aliases_code_lookup_confirmed 同一把 key。不同代碼可有同一別稱
-      字面，故去重**不再跨 code**——跨 code 去重會誤丟別家公司的合法別稱。
+      ux_company_aliases_code_lookup_confirmed 同一把 key。去重**不跨 code**
+      ——跨 code 去重會在同一批內誤丟別家公司的列。
+      🔴 2026-08-18 更正：本段原寫「不同代碼可有同一別稱字面」，那已**不再成立**。
+      migration 0052 加了 `ux_company_aliases_lookup_single_code`
+      （partial unique on alias_lookup_key WHERE confirmed）——一個別稱只能屬於
+      一個代碼，否則歸戶取決於查詢順序（實例：TTI Macao 同時掛在 UN164421 與
+      UN240278 下，WIPS 確認只屬後者）。
+      ⚠ 因此本函式寫入撞名時會拋 UniqueViolation；呼叫端負責翻成 409。
+      ⚠ 「一家公司多個代碼」仍完全合法（創科集團有 4 個），由 company_groups 收攏
+      ——被禁止的是「一個別稱多個代碼」，兩者不同。
     - (代碼, lookup key) 已存在 → UPDATE 該列 re-canonicalize：改掛新的中文／英文
       正式名與 source_file，review_status 一律轉 'confirmed'；不插新列，不撞唯一索引。
       查詢必須同時比對代碼，否則在「一別稱多公司」下會取到別家公司的列。

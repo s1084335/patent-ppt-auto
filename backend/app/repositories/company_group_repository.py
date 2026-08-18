@@ -59,6 +59,26 @@ def _sync_group_review_status(cur: Any, group_id: int) -> str:
     return row[0]
 
 
+def _ensure_company(cur: Any, company_code: str | None) -> None:
+    """確保代碼已登記於 `derived_layer.companies`（集團成員的外鍵目標）。
+
+    ⚠ 為什麼在這裡登記而不是在建立代碼的每一處：`companies` 這一版的用途只有
+    「當集團成員的外鍵目標」（0053，使用者裁決範圍「丙」）。別稱表沒有外鍵指過來，
+    所以不必在 12 處寫入點各補一次；集團成員是唯一需要它存在的地方。
+
+    ⚠ 代價（知情選擇）：`companies` 在回填後會**惰性補齊**——沒進過集團的新代碼
+    不在表裡。它是「外鍵層認得的代碼」而非「全部代碼」的完整登記簿。
+    要變成完整登記簿，得補上別稱寫入路徑，那是另一輪的事。
+    """
+    if not company_code or not str(company_code).strip():
+        return
+    cur.execute(
+        "INSERT INTO derived_layer.companies (company_code) VALUES (%s) "
+        "ON CONFLICT (company_code) DO NOTHING",
+        (str(company_code).strip(),),
+    )
+
+
 def normalize_group_name(value: str) -> str:
     """把集團名稱壓成一致 lookup key，避免大小寫與多空白造成重複。"""
     return " ".join((value or "").strip().lower().split())
@@ -356,6 +376,7 @@ def add_group_member(
     close_after = connection is None
     try:
         with conn.cursor() as cur:
+            _ensure_company(cur, company_code)
             cur.execute(sql, (group_id, company_code, display_name))
             member_id = cur.fetchone()[0]
             if notify:
@@ -443,6 +464,9 @@ def ingest_cli_suggestions(items: list[dict[str, Any]]) -> dict[str, Any]:
                     )
                     group_id = cur.fetchone()[0]
                 for member in suggestion["members"]:
+                    # AI 建議的成員同樣要有外鍵目標——建議階段就登記，
+                    # 否則使用者確認時才失敗（那時錯誤離成因已經很遠）。
+                    _ensure_company(cur, member["company_code"])
                     cur.execute(
                         """
                         INSERT INTO derived_layer.company_group_members

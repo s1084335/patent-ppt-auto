@@ -306,8 +306,18 @@ class DeleteGroupTests(unittest.TestCase):
 
         deletes = [(s, p) for s, p in sink if "DELETE" in s.upper()]
         self.assertTrue(deletes, "沒有送出 DELETE")
-        sql, params = deletes[0]
+        # ⚠ 2026-08-18 起會先刪 derived_layer.companies（外鍵 RESTRICT 會在該代碼
+        #   仍屬集團時擋下整個交易）。判準改為**指名別稱那一句**，而不是「第一句」
+        #   ——原判準綁在順序上，加一句前置就誤報。
+        alias_deletes = [(s, p) for s, p in deletes if "company_aliases" in s]
+        self.assertTrue(alias_deletes, "沒有刪除別稱表")
+        sql, params = alias_deletes[0]
         self.assertIn("申請人代碼", sql, "DELETE 未限定代碼——會清掉整張對照表")
+        company_deletes = [(s, p) for s, p in deletes if "companies" in s]
+        self.assertTrue(company_deletes, "沒有刪除 companies 那一列——外鍵擋不到")
+        self.assertIn("company_code", company_deletes[0][0], "companies 的 DELETE 未限定代碼")
+        self.assertLess(deletes.index(company_deletes[0]), deletes.index(alias_deletes[0]),
+                        "順序錯了：被外鍵擋下時別稱已經被刪掉")
         flat = list(params) if isinstance(params, (list, tuple)) else list(params.values())
         self.assertIn("TW-CHIHUA", flat)
 

@@ -42,36 +42,85 @@ cur = conn.execute('DELETE FROM company_aliases WHERE "申請人代碼" = %s', (
 
 ## What Changes
 
-1. 建立 `derived_layer.companies`（`company_code` 為主鍵），回填現有 80 個代碼。
-2. 兩條外鍵，語意各不相同：
-   - `company_aliases.申請人代碼` → `ON UPDATE CASCADE ON DELETE CASCADE`
-   - `company_group_members.company_code` → `ON UPDATE CASCADE ON DELETE RESTRICT`
+1. 建立 `derived_layer.companies`（`company_code` 為主鍵），回填現有代碼
+   （別稱表 ∪ 集團成員表，實測 80 筆）。
+2. **一條**外鍵：`company_group_members.company_code` →
+   `ON UPDATE CASCADE ON DELETE RESTRICT`。
 3. 三層擋：DB 約束保證、API 把違反翻成可行動的 409、前端顯示並指向下一步。
-4. `promote` 改為 `UPDATE companies`，連動交由 `ON UPDATE CASCADE`。
-5. 所有新增代碼的路徑補寫 `companies`。
+4. `promote` 改為 `UPDATE companies`，集團成員連動交由 `ON UPDATE CASCADE`。
+5. 新增代碼的路徑補寫 `companies`（`_ensure_company()`）。
 
-## Non-Goals
+## Capabilities
+
+### New Capabilities
+
+- `patent-data-model`：公司代碼成為可被參照的實體，且代碼改名時參照自動連動。
+
+### Modified Capabilities
+
+- `company-governance`：刪除代碼的行為改變——仍在集團中的代碼會被擋下並回 409。
+
+## Scope
+
+- 建 `derived_layer.companies` 與回填。
+- 加 `company_group_members.company_code` 外鍵。
+- `delete_company_group`、`promote_company_code`、`add_group_member`、
+  `ingest_cli_suggestions` 四處寫入路徑配合調整。
+- 前端沿用既有 `callGroupMaintenance` 的錯誤顯示通道（不新增 UI）。
+
+⚠ 2026-08-18 使用者裁決「丙」：**只做 `company_group_members` 那一條外鍵**。
+`company_aliases."申請人代碼"` 那條不做——它要動 12 處寫入點，效益低很多，
+而別稱唯一性已由 `fix-company-alias-conflicts`（0052）顧到。
+
+## Non-goals
 
 - **不搬中文名／正規化名進 `companies`**。它們目前活在每一列別稱上，
   搬動會牽動所有讀取路徑。第一版只回答「這個代碼存在嗎」。
-- 不改變「一家公司多個代碼」的既有結構。
+- 不改變「一家公司多個代碼」的既有結構——那是 WIPS 的常態，集團正規化正是為此而存在。
 - 不處理別稱唯一性（`fix-company-alias-conflicts` 已負責）。
 - 不合併既有重複代碼——那是資料決策，需逐筆判斷。
+- 不加 `company_aliases` 那條外鍵（見 Scope 的裁決）。
 
 ## Impact
 
 - Affected specs: `patent-data-model`（新實體與參照完整性）、
   `company-governance`（刪除／轉正的行為改變）
-- Affected code: `backend/app/api/company_aliases.py`（delete／promote／
-  code registry）、`backend/app/derived/company_alias_importer.py`、
-  `backend/app/worker/ai_company_normalization_suggestion_runner.py`（確認寫入）
-- Affected behaviour: **刪除仍在集團中的代碼會從「可以」變成「被擋」**
-- Migration: 建表＋回填＋兩條外鍵；downgrade 可還原
+- Affected code: `backend/app/api/company_aliases.py`（delete／promote／確認）、
+  `backend/app/repositories/company_group_repository.py`（`_ensure_company`）、
+  `backend/app/derived/company_alias_importer.py`
+- Affected behaviour: **刪除仍在集團中的代碼會從「可以」變成「被擋」**（回 409）
+- Migration: `0053_company_entity`——建表＋回填＋一條外鍵；downgrade 可還原
+  （已對實庫實跑一輪並 rollback 驗證）
+
+## Activation
+
+- Migration `alembic upgrade head` 後即生效，不需重跑 derived refresh
+  （不改任何既有欄位值）。
+- 後端需重啟以載入 API 變更；Companion 需重啟（確認流程的例外翻譯有變）。
+- 前端為 bind mount 的靜態檔，`git pull` 後重新整理即可。
+
+## Acceptance Gate
+
+1. `companies` 筆數＝別稱表的相異代碼數（實測 80 = 80）。
+2. `is_temp` 為衍生欄（GENERATED ... STORED），寫不進去。
+3. 反向驗證四條全過：刪集團中的代碼被擋、改代碼時集團成員連動、
+   集團成員不得指向不存在的代碼、**未入集團的代碼仍可正常刪除（不誤擋）**。
+4. downgrade 對實庫實跑可還原，重跑 upgrade 後筆數一致、外鍵語意不變。
+5. 範圍回歸（直接／整合／契約）全綠。
+6. 行為變更（刪代碼會被擋）已明確揭露給使用者。
+
+## Confirmed Decisions
+
+- 2026-08-18：`ON DELETE RESTRICT`——把靜默的副作用變成明確的動作。
+  刪代碼與改集團是兩件事，`CASCADE` 會讓一個動作偷偷做兩件。
+- 2026-08-18：`ON UPDATE CASCADE`——轉正時集團成員自動跟著換，
+  P3 那個 bug 從此**寫不出來**，不是靠記得去改。
+- 2026-08-18：範圍取「丙」，只做集團成員那一條外鍵（理由見 Scope）。
+- 2026-08-18：不用「先 SELECT 檢查再刪」取代外鍵——有競態，且新端點會漏。
 
 ## Open Questions
 
-無。`ON DELETE` 語意已於 2026-08-18 定案：別稱 CASCADE（公司沒了別稱無獨立意義）、
-集團成員 RESTRICT（把靜默的副作用變成明確的動作）。
+無。
 
-⚠ 但 4a「掃出所有會刪除或改動公司代碼的路徑」的結果未知，
-掃完才知道 API 層要改幾處——動工第一件事就是掃並回報範圍，不自行擴大。
+（原本掛在這裡的「掃出所有會刪除或改動公司代碼的路徑」已於動工第一件事完成：
+4 個檔、22 處 DML，結果記在 `tasks.md` 1.1。）
