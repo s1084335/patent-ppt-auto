@@ -11,6 +11,14 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any
 
+
+#: 母體範圍豁免（見 backend/app/db/population_scope.py）。
+#: ⚠ 理由是給複核的人看的——「忘了接母體」與「刻意全庫」在程式碼上長得一樣。
+POPULATION_SCOPE_EXEMPT = {
+    "_append":
+        "非報表彙總：job 輸出寫入，SQL 裡的 count 是版本序號不是統計",
+}
+
 # artifact 只准圖表圖檔與 PPT；CSV／表格數據必須走 data_json
 ALLOWED_ARTIFACT_SUFFIXES = {".png", ".svg", ".jpg", ".jpeg", ".pptx"}
 

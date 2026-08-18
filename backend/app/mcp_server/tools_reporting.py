@@ -22,6 +22,14 @@ from backend.app.reports.report_definitions import (
 )
 from backend.app.reports.report_engine import run_reports_batch
 
+
+#: 母體範圍豁免（見 backend/app/db/population_scope.py）。
+#: ⚠ 理由是給複核的人看的——「忘了接母體」與「刻意全庫」在程式碼上長得一樣。
+POPULATION_SCOPE_EXEMPT = {
+    "get_data_status":
+        "連線健檢：回答「連到的庫有沒有資料、derived 有沒有刷新」，全庫用途。⚠ 回傳值必須標明是全庫（見 tasks 1.7），否則 CLI 會誤讀為本報告母體",
+}
+
 # 回傳給 client 的預設列數上限：保護 LLM context 不被 detail 報表灌爆。
 # 完整數據（各報表自己的預設列數）在出圖時落在 report_data.json。
 DEFAULT_ROW_LIMIT = 50

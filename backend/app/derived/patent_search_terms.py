@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from typing import Any
 
 
+#: 母體範圍豁免（見 backend/app/db/population_scope.py）。
+#: ⚠ 理由是給複核的人看的——「忘了接母體」與「刻意全庫」在程式碼上長得一樣。
+POPULATION_SCOPE_EXEMPT = {
+    "refresh_patent_search_terms":
+        "derived 重建：整張搜尋詞表本來就要全庫刷新",
+}
+
+
 @dataclass(frozen=True)
 class SearchTermField:
     """定義一個可搜尋欄位與其 SQL 來源。"""

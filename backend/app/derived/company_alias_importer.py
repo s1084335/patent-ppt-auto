@@ -13,6 +13,16 @@ from openpyxl import load_workbook
 from backend.app.mappings.wips import PEOPLE_FIELD_COLUMNS
 from backend.app.transforms.text import clean_text
 
+
+#: 母體範圍豁免（見 backend/app/db/population_scope.py）。
+#: ⚠ 理由是給複核的人看的——「忘了接母體」與「刻意全庫」在程式碼上長得一樣。
+POPULATION_SCOPE_EXEMPT = {
+    "list_zh_name_drafts":
+        "公司治理跨 workspace：中文名草稿清單本來就是全庫，接母體反而看不到別包的待審",
+    "count_company_normalization_queue":
+        "同上：正規化候選池是全庫概念，不隸屬任一 workspace",
+}
+
 # 對照檔（xlsx/csv）表頭，2026-07-28 起與 DB 四欄一致（使用者：「對照檔也改四欄」）。
 # ⚠ 順序即使用者指定的順序，不得調換；中文名與英文正式名分兩格填，
 # 匯入不再以字元類別猜哪個是中文（混合字串會判錯且無人覆核）。

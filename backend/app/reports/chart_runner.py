@@ -32,8 +32,17 @@ def _app_layer_connect():
     return psycopg.connect(**get_connection_kwargs(), row_factory=dict_row, connect_timeout=15)
 
 
-def fetch_patent_kind_summary() -> dict[str, Any]:
+def fetch_patent_kind_summary(*, patent_ids: list[int] | None) -> dict[str, Any]:
     """取專利種類三分法的統計與說明字串（A4，2026-08-06）。
+
+    🔴 **2026-08-18 修：本函式原本沒有 WHERE，一律撈全庫。**
+    封面顯示 281 件（設計 21），滑雪機 workspace 實際是 55 件（設計 11）——
+    數字全錯而且不報錯。這是「母體沒接」同型錯誤的第 3 例。
+
+    ⚠ `patent_ids` **必填、無預設值**（keyword-only）。給預設值的話，呼叫端忘記傳
+    就會靜默退回全庫——那正是本 bug 的形狀，換個寫法重來一次。必填時「忘記傳」
+    是 `TypeError`，當場炸：不是「事後檢查有沒有做對」，而是「做不對就跑不起來」。
+    全庫用途仍可用，明確傳 `None` 表態即可，意圖寫在呼叫端而不是藏在預設值。
 
     ⚠ **為什麼要單獨查一次**：所有 aggregate 報表的 rows 都已經 group by 過，
     帶不到 `patent_type`／`document_kind` 這種逐件欄位；從別的報表反推
@@ -54,9 +63,15 @@ def fetch_patent_kind_summary() -> dict[str, Any]:
         kind_tally,
     )
 
+    sql = "SELECT patent_type, document_kind FROM derived_layer.report_patent_base"
+    params: tuple = ()
+    if patent_ids is not None:
+        # ⚠ 空清單也要帶條件（`= ANY('{}')` 回 0 列）——「這個 workspace 沒有成員」
+        #   與「全庫」是兩件完全不同的事，靜默退回全庫會讓封面數字看起來很正常。
+        sql += " WHERE patent_id = ANY(%s)"
+        params = ([int(i) for i in patent_ids],)
     with _app_layer_connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT patent_type, document_kind FROM derived_layer.report_patent_base")
+        cur.execute(sql, params)
         rows = [dict(r) for r in cur.fetchall()]
     return {
         "tally": kind_tally(rows),
@@ -5318,7 +5333,9 @@ def run_chart_trial(
             # ⚠ 設計案 11 件本來就被兩個分群通道自動排除（無獨立項、無效果摘要），
             # 但簡報上完全沒說——讀者看到封面 55、分類頁 44 只會覺得數字錯。
             # 判定一律走唯一定義處 `transforms/patent_kind.py`，不在此自行比對。
-            "patent_kind": fetch_patent_kind_summary(),
+            # 🔴 2026-08-18：必須把母體傳下去。原本沒傳（函式也沒有這個參數），
+            #    封面顯示全庫 281 件而非本 workspace 的 55 件。
+            "patent_kind": fetch_patent_kind_summary(patent_ids=ctx.patent_ids),
             # sections 持久化：--refresh-index 由此重建 index（解讀回填後重渲染）
             "sections": persistable_sections(ctx.sections),
             # 表格顯示規格（2026-07-31）：欄名對照、排除欄與儲存格呈現字串由引擎寫出，

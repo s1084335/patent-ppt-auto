@@ -8,11 +8,75 @@
 
 ⚠ 本 change 未經使用者確認前不得 apply。
 
+## 🔴 執行分段（2026-08-18 使用者裁決：分 4 段，逐段回報）
+
+切點是**依賴**與**能不能獨立驗收**，不是平均分。
+
+| 段 | 節 | 項數 | 段末可驗的實物 |
+|---|---|---|---|
+| **1. 母體** | §1 ＋ §2 ＋ §7e | 14 | 兩個 workspace 數字**不相等且各自正確**（滑雪機 55/48、割草機 226/163）；拿掉 `patent_ids` 閘門要紅 |
+| **2. 版型庫** | §7a → §7b → §7c → §7d | 15 | 三處同步閘門綠；`conclusions` **真的產得出那一頁**；`roadmap` 不再出現 |
+| **3. 收斂** | §6 ＋ §4 | 10 | 裸 hex 為 0；「造形」語意字串逐處人工過目未被改動 |
+| **4. 契約與驗收** | §3 ＋ §5 ＋ §8 | 16 | `report_key` 對帳閘門綠；兩份報表全頁目視 |
+
+### 為什麼這樣切（不要自行調換）
+
+- ⚠ **§1 必須最先**：§7e 的法律狀態分解是**新的彙總**。閘門立起來之前做它，
+  等於當場再種一個同型錯誤（該錯已出現三次）。§2 封面數字同理。
+- ⚠ **§5 文件契約必須最後**（不直覺）：第 2 段會改 `narrative.md`、`SKILL.md`、
+  `content-template.json`，第 3 段會改用詞。文件同步排前面就要**同步兩次**，
+  第二次一定有人漏。
+- ⚠ **§4 用詞單獨放第 3 段**：全批**唯一不可逆**的一節（「外觀」有兩種語意，
+  誤改文獻備註救不回來）。不能趕，也不該跟別的事混在同一段的注意力裡。
+- **第 2 段內部有順序**：7a 的反向驗證會當場抓出還有哪些版型漏登記；
+  7c 要在 7d 前（7d 的結論頁要用通用表格版型）。
+
+### 每段結束要交的東西
+
+改了哪些檔／跑了哪些測試／**反向驗證結果**（把對的改壞，閘門有沒有紅）／
+這段沒驗到什麼／下一段開工前需不需要使用者裁決。
+
+⚠ §6 的色票數字（28→49 種）是觀測值不是現況，第 3 段開工時**重新實查**。
+
 ---
 
 ## 1. 母體閘門（最優先——同型錯誤已出現三次）
 
-- [ ] 1.1 掃出所有繞過 `run_report` 自行 `cur.execute` 的彙總，列成嫌疑清單
+- [x] 1.1 掃出所有繞過 `run_report` 自行 `cur.execute` 的彙總，列成嫌疑清單
+      （`scripts/audit_population_scope.py`，唯讀）
+
+      **結果與原假設不同，記在這裡供後續不要重查：**
+
+      第一類（繞過 `run_report` 自行查）：14 個函式，10 個未見母體條件。
+      逐個人工判定後**只有 1 個是真 bug**：
+
+      | 函式 | 判定 |
+      |---|---|
+      | `chart_runner.fetch_patent_kind_summary` | 🔴 真 bug（見 1.4） |
+      | `mcp_server.get_data_status` | 全庫用途**正確**，但見 1.7 |
+      | `list_zh_name_drafts`／`count_company_normalization_queue`／`list_company_groups`／`list_confirmed_group_candidates` | 公司治理跨 workspace，**本來就該全庫** |
+      | `refresh_patent_search_terms`／`refresh_report_patent_base` | derived 重建，全庫 |
+      | `api/jobs.ready` | 健康檢查，全庫 |
+      | `workflow_outputs_repository._append` | 誤報（不是報表彙總） |
+
+      ⚠ **掃描器有盲點**：它只抓「繞過 `run_report`」的，抓不到「走 `run_report`
+      但定義 `supports_patent_ids=False`」那一類——第 2 例（受理局家族註記）就是
+      那類。第二類要另外掃 `report_definitions.py`。
+
+      第二類（`supports_patent_ids=False`）：4 個。
+
+      | 報表 | 判定 |
+      |---|---|
+      | `family_country_layout` | 🔴 真 bug（見 1.5） |
+      | `applicant_strength_profile`／`cluster_topic_table`／`opportunity_quadrant` | ✅ **排除嫌疑**——`report_type="cluster"`，範圍由 `workspace_id` 經 `load_cluster_workspace_data` 給，不是由 `patent_ids`。實測滑雪機 ws=3：成員 55 → 指派專利 **44**（44 ≤ 55，沒有洩到全庫） |
+
+      ⚠ 那個 **44** 是「11 件外觀設計被靜默排除」（分不了群），屬 **deepen §3**
+      而非本節——同樣是母體不對，但根因相反：§1 是**洩到全庫**，deepen §3 是
+      **靜默縮小**。不要在本節「修」它。
+
+- [ ] 1.7 `get_data_status` 的全庫數字要**標明是全庫**
+      ⚠ 它不是 bug，但是現成的誤讀陷阱：CLI 讀到 `patents: 281` 可能當成本報告母體，
+      那正是封面 281 的形態。純加標籤，不改數字。
 - [ ] 1.2 Red：閘門測試——直查 DB 的彙總若未帶母體條件且不在白名單即紅
 - [ ] 1.3 白名單機制：模組層顯式宣告＋**必須寫理由**（design §3）
 - [ ] 1.4 修 `fetch_patent_kind_summary`：接 `patent_ids`
@@ -139,6 +203,12 @@ if topic in facts: ...    # ③ 主題名不在 facts 就整個跳過逐字比�
       ⚠ 走 `mappings/legal_status` 唯一定義處，不在此重判
 - [ ] 7e.2 母體閘門同樣適用（本 change §1）——新彙總要吃 `patent_ids`
 - [ ] 7e.3 Red：兩個 workspace 的分解數字不得相等
+- [ ] 7e.4 🔴 **合計必須對上 cluster 母體，不是 workspace 成員數**
+      實測滑雪機：workspace 成員 55、cluster 指派 **44**（11 件外觀設計分不了群）。
+      分解件數合計要等於 **44**；寫成 55 就是把「刻意排除」偽裝成「全都算到了」，
+      那才是真的新種一個同型錯。
+- [ ] 7e.5 輸出要帶母體字串（讓讀者知道這張表的分母是 44 不是 55）
+      ⚠ 這是揭露不是修正——「為什麼是 44」由 deepen §3 處理
 
 ## 8. 驗收
 
