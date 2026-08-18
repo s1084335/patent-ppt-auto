@@ -1668,17 +1668,27 @@ function companyNormalizationTargetOptionsHtml(currentCode) {
 function companyNormalizationSuggestionHtml(suggestion) {
   const meta = suggestion.metadata && typeof suggestion.metadata === 'object' ? suggestion.metadata : {};
   const target = (suggestion.suggested_zh_name || suggestion.suggested_normalized_name || suggestion.company_code || '').trim();
-  const kindLabel = {
-    map_existing: '加入既有公司',
-    update_names: '補公司名稱',
-    create_temp: '建立臨時公司',
-    person_affiliation: '自然人分析歸戶',
-  }[meta.suggestion_kind] || meta.suggestion_kind || '未分類';
+  // 🔴 2026-08-18 使用者定案：標籤講**使用者要知道的事**，不講內部機制。
+  // ⚠ 原本 create_temp 的標籤帶「臨時」二字，會讓人以為確認後還要再做一次
+  //   什麼，實際上確認即生效、報表立刻用它歸戶（`TEMP:` 只是代碼層
+  //   「不冒充 WIPS 代碼」的系統標記，日後補真代碼是選配不是待辦）。
+  //   四個一起改，避免只修一個、其餘仍是內部術語。
+  const KIND_LABELS = {
+    map_existing: { label: '歸入既有公司', hint: '這個變體其實就是已知的某一家' },
+    update_names: { label: '更新公司名稱', hint: '公司已知，只是名稱要補或修正' },
+    create_temp: { label: '新公司', hint: '白名單裡沒有這家；確認後即建立歸戶，WIPS 代碼可日後補' },
+    person_affiliation: { label: '自然人歸戶', hint: '這是個人不是公司，其專利將計入該公司統計' },
+  };
+  const kindInfo = KIND_LABELS[meta.suggestion_kind]
+    || { label: meta.suggestion_kind || '未分類', hint: '' };
+  const kindLabel = kindInfo.label;
   return '<div class="company-group-suggestion" data-suggestion-id="' + escHtml(suggestion.id) + '">'
     + '<label style="display:flex;gap:.45rem;align-items:flex-start">'
     + '<input type="checkbox" class="company-normalization-checkbox" value="' + escHtml(suggestion.id) + '">'
     + '<span><strong>' + escHtml(kindLabel) + '</strong> '
-    + '<span class="hint">#' + escHtml(suggestion.id) + '</span></span></label>'
+    + '<span class="hint">#' + escHtml(suggestion.id) + '</span>'
+    + (kindInfo.hint ? '<div class="hint">' + escHtml(kindInfo.hint) + '</div>' : '')
+    + '</span></label>'
     + '<div class="code-field"><label>原始變體</label><div>' + escHtml(suggestion.raw_name || '') + '</div></div>'
     + '<div class="code-field"><label>目標公司</label><select class="text-input" id="company-normalization-target-'
     + escHtml(suggestion.id) + '">' + companyNormalizationTargetOptionsHtml(suggestion.company_code) + '</select></div>'

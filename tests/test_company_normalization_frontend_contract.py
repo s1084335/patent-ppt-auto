@@ -38,6 +38,13 @@ def test_company_normalization_pending_review_is_hidden_when_empty_and_readable(
     assert "原始變體" in src
     assert "目標公司" in src
     assert "名稱依據" in src
+    # 🔴 2026-08-18：四種建議的標籤要講使用者要知道的事，不得洩漏內部機制。
+    # ⚠「建立臨時公司」會讓人以為確認後還要再做一次什麼——實際上確認即生效，
+    #   `TEMP:` 只是代碼層「不冒充 WIPS 代碼」的系統標記。
+    assert "建立臨時公司" not in src, "仍在畫面上講內部的臨時代碼機制"
+    for label in ("歸入既有公司", "更新公司名稱", "新公司", "自然人歸戶"):
+        assert label in src, f"缺少建議種類標籤：{label}"
+    assert "WIPS 代碼可日後補" in src, "沒告訴使用者代碼是選配不是待辦"
     assert "注意事項" in src
     assert ">來源</a>" in src
     assert "JSON.stringify(suggestion.metadata)" not in src
