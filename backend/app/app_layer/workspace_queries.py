@@ -354,14 +354,8 @@ def list_workspace_patents(
             cur.execute(_WS_PATENTS_ITEMS_SQL, params)
             items = cur.fetchall()
     _attach_topic_columns(items, workspace_id=workspace_id, source_field=source_field)
-    # 顯示字面（2026-08-07）：與全庫清單同一份唯一定義處，前端只消費此欄。
-    from backend.app.mappings.legal_status import display_legal_status
-
-    from backend.app.transforms.patent_kind import patent_kind
-
-    for it in items:
-        it["legal_status_display"] = display_legal_status(it.get("legal_status"))
-        it["patent_kind_display"] = patent_kind(it)
+    # 推導型顯示欄位：與全庫清單同一份唯一定義處，前端只消費。
+    patent_queries.attach_display_fields(items)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
@@ -435,4 +429,9 @@ def list_topic_patents(
     # 技術分類／功效分類兩欄全空——分通道欄當初只加在 list_workspace_patents。
     # source_field=None：此清單已鎖定在某主題，沒有「當前通道」的單一欄語意。
     _attach_topic_columns(items, workspace_id=workspace_id)
+    # 🔴 2026-08-18：推導型顯示欄位當初也只加在 list_workspace_patents，
+    #    於是分類區點進主題後「專利種類」「專利狀態」整欄空白——與上面那條註解
+    #    完全同型的漏，在同一支函式上發生第二次。推導已收斂到
+    #    patent_queries.attach_display_fields（唯一定義處），此處只消費。
+    patent_queries.attach_display_fields(items)
     return {"items": items, "total": total, "limit": limit, "offset": offset}

@@ -139,6 +139,25 @@ def display_field_keys() -> tuple[str, ...]:
     return (*_PATENT_FIELDS, *_PEOPLE_FIELDS, *_REPORT_BASE_FIELDS)
 
 
+def attach_display_fields(items: list[dict[str, Any]]) -> None:
+    """補上「查完才推導」的顯示欄位（原地修改）。
+
+    `patent_kind_display`／`legal_status_display` 不是 SQL 欄位，是查回來之後在
+    Python 推導的。⚠ 這段原本**抄在每一支清單函式裡**，於是漏掉
+    `list_topic_patents`——分類區點進某個主題後「專利種類」「專利狀態」整欄空白
+    （2026-08-18 使用者回報）。同型的事在同一支函式上已經發生過一次
+    （分通道主題欄當初也只加在 `list_workspace_patents`）。
+
+    落點在此（`display_projection`／`display_field_keys` 的同一個模組）：
+    定義欄位的地方就負責把欄位補完，新增清單只要呼叫這一支。
+    """
+    for it in items:
+        # 顯示字面：簡→繁只在 mappings 定義一次，前端只消費此欄。
+        it["legal_status_display"] = display_legal_status(it.get("legal_status"))
+        # 專利種類：唯一定義處 transforms/patent_kind 推導。
+        it["patent_kind_display"] = patent_kind(it)
+
+
 def display_projection(
     *,
     patents_alias: str = "p",
@@ -575,12 +594,9 @@ def list_patents(
     # 哨兵 -1＝未指定，走唯一切換點決定來源；明確傳 None＝不取主題。
     resolved_ws = resolve_topic_workspace_id() if topic_workspace_id == -1 else topic_workspace_id
     topic_labels = _topic_labels_by_patent(resolved_ws)
+    attach_display_fields(items)   # 推導型顯示欄位：唯一定義處
     for it in items:
         it["workspaces"] = membership.get(it["patent_id"], [])
-        # 顯示字面（2026-08-07）：簡→繁只在 mappings 定義一次，前端只消費此欄。
-        it["legal_status_display"] = display_legal_status(it.get("legal_status"))
-        # 專利種類（五之三定案）：唯一定義處 transforms/patent_kind 推導。
-        it["patent_kind_display"] = patent_kind(it)
         for source_field, by_patent in topic_labels.items():
             it[topic_label_key(source_field)] = by_patent.get(it["patent_id"])
     return {"items": items, "total": total, "limit": limit, "offset": offset}
