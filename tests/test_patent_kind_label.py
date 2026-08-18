@@ -16,22 +16,42 @@ HTML = (Path(__file__).resolve().parents[1] / "backend" / "app" / "static"
 
 
 class ListApiKindTests(unittest.TestCase):
-    def test_global_list_attaches_kind_display(self):
+    """⚠ 2026-08-18 改寫：原本斷言函式原始碼裡出現 `patent_kind_display` 字串。
+
+    那種寫法有兩個問題：①推導一旦被收斂成共用函式（正確的方向）測試就紅，
+    ②它其實**沒有驗到行為**——字串在、值錯了照樣綠。而且它只盯 `list_patents`
+    與 `list_workspace_patents` 兩支，正是因此漏掉 `list_topic_patents`，
+    分類區點進主題後「專利種類／專利狀態」整欄空白（使用者 2026-08-18 回報）。
+
+    改為驗真行為（推導函式的輸出），三支清單有沒有呼叫它由
+    `test_patent_list_display_fields_gate.py` 一起守。
+    """
+
+    def test_kind_display_is_derived_not_raw(self):
+        from backend.app.app_layer.patent_queries import attach_display_fields
+
+        rows = [
+            {"document_kind": "S", "patent_type": "P"},      # 設計
+            {"document_kind": "A", "patent_type": "P"},      # 發明
+            {"document_kind": "A", "patent_type": "U"},      # 新型
+            {},                                              # 兩欄皆缺
+        ]
+        attach_display_fields(rows)
+        self.assertEqual([r["patent_kind_display"] for r in rows[:3]],
+                         ["設計", "發明", "新型"])
+        self.assertIn("patent_kind_display", rows[3],
+                      "來源無值時仍須保留欄位（欄位一律呈現）")
+
+    def test_every_list_uses_the_shared_derivation(self):
+        """三支清單都要補——漏一支就是整欄空白。"""
         import inspect
 
         from backend.app.app_layer import patent_queries as q
-
-        src = inspect.getsource(q.list_patents)
-        self.assertIn("patent_kind_display", src)
-        self.assertIn("patent_kind", src)
-
-    def test_workspace_list_attaches_kind_display(self):
-        import inspect
-
         from backend.app.app_layer import workspace_queries as wq
 
-        src = inspect.getsource(wq.list_workspace_patents)
-        self.assertIn("patent_kind_display", src)
+        for fn in (q.list_patents, wq.list_workspace_patents, wq.list_topic_patents):
+            with self.subTest(function=fn.__name__):
+                self.assertIn("attach_display_fields", inspect.getsource(fn))
 
     def test_kind_uses_single_definition(self):
         """推導一律走 transforms/patent_kind.patent_kind，不得另寫組合條件。"""
