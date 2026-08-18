@@ -321,7 +321,7 @@ class RunNarrativeOrchestrationTests(unittest.TestCase):
             observed: dict[str, str | None] = {}
 
             def _cli_with_scope(argv, timeout):
-                observed["workspace_id"] = os.environ.get(rr.NARRATIVE_WORKSPACE_ID_ENV)
+                observed["workspace_id"] = os.environ.get(rr.SCOPE_WORKSPACE_ENV)
                 observed["snapshot_id"] = os.environ.get(rr.NARRATIVE_SNAPSHOT_ID_ENV)
                 (run_dir / "narratives.json").write_text(
                     json.dumps({"based_on_version": version, "reports": {}}),
@@ -340,7 +340,7 @@ class RunNarrativeOrchestrationTests(unittest.TestCase):
             self.assertEqual(observed["workspace_id"], "7")
             self.assertEqual(observed["snapshot_id"], version)
             self.assertEqual(summary["workspace_id"], 7)
-            self.assertIsNone(os.environ.get(rr.NARRATIVE_WORKSPACE_ID_ENV))
+            self.assertIsNone(os.environ.get(rr.SCOPE_WORKSPACE_ENV))
 
     def test_run_narrative_missing_narratives_raises(self):
         """CLI 正常結束但未產出 narratives.json 時 raise。"""

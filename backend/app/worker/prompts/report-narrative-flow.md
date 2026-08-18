@@ -381,7 +381,10 @@ text`（範例已如此排列）。
 - 輸出完成後確認 `based_on_version` 等於報表版本目錄名稱。
 ## Workspace Scoped Live DB Rule
 
-When the report version has `report_data.json.parameters.workspace_id`, live DB
-`query_database` is restricted to row-level patent evidence. Use
-`query_report_evidence()` / snapshot rows for aggregate claims, and do not
-recalculate full-database aggregates with raw SQL.
+報表版本帶 `report_data.json.parameters.workspace_id` 時，系統會在 `query_database`
+自動注入 `workspace_scope(patent_id)` CTE。
+
+- 查 `patents`／`patent_attributes` **必須 JOIN `workspace_scope`**，否則查詢被拒
+  （錯誤訊息會附改寫範例）。
+- 彙總（`COUNT`／`SUM`／`GROUP BY`）**可以用**——範圍在彙總之前就生效，
+  數字只涵蓋本報告的 workspace。不需要改用快照來閃避彙總。

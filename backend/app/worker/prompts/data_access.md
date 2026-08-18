@@ -30,12 +30,11 @@
 query_database(sql="SELECT ...", limit=500)
 ```
 
-- Workspace scoped narrative rule: when `report_data.json.parameters.workspace_id`
-  exists, `query_database` is limited to row-level patent evidence. Do not use it
-  for aggregate claims (`COUNT`, `SUM`, `GROUP BY`, window functions). Use
-  `query_report_evidence()` / snapshot rows for aggregate statements.
-- Scoped `query_database` queries must return `patent_id` or `id`; rows outside
-  the report workspace are filtered by the MCP server and must not be cited.
+- 綁定 workspace 時：系統會自動注入 `workspace_scope(patent_id)` 這個 CTE。
+  查 `patents`／`patent_attributes` **必須 JOIN 它**，否則查詢會被拒絕：
+  `SELECT … FROM patents p JOIN workspace_scope s ON s.patent_id = p.patent_id`
+- 彙總（`COUNT`／`SUM`／`GROUP BY`）**可以用**，只要照上面 JOIN——
+  範圍在彙總之前就生效，數字只涵蓋本報告的 workspace。
 - 單句 `SELECT`／`WITH`；連線層**強制唯讀**＋30 秒逾時——你查不壞任何東西，放心探索
 - 預設 500 列、最高 2000；輸出 `{columns, rows, row_count, truncated, evidence_ref}`
 - ⚠ `truncated=true` 代表**還有沒給你的資料**，不要當成全部就下結論
