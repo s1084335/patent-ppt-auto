@@ -99,7 +99,11 @@ class AggregateColumnsTests(unittest.TestCase):
         # applicant_year_matrix（同構，走展開 VIEW）。防護意圖不變。
         """申請人年度矩陣以 applicant × application year 聚合（展開口徑）。"""
         definition = REPORT_DEFINITIONS["applicant_year_matrix"]
-        self.assertEqual(definition.label_zh, "申請人年度專利分布矩陣")
+        # ⚠ 2026-08-19：期望值去掉「矩陣」。這張圖 2026-08-12 起已從泡泡矩陣改成
+        #   **跨度圖**（見 chart_runner.render_applicant_year_span_chart），
+        #   `a5123b8` 同步把 label_zh 改成「申請人年度專利分布」，本斷言沒跟上。
+        #   名稱與實際圖形一致才是對的——留著「矩陣」等於讓測試守著一個已不存在的形式。
+        self.assertEqual(definition.label_zh, "申請人年度專利分布")
         self.assertEqual(definition.columns, ("applicant_display_name", "application_year"))
         self.assertEqual(definition.group_by, ("applicant_display_name", "application_year"))
         self.assertEqual(

@@ -44,7 +44,12 @@ class EngineThresholdMetadataTests(unittest.TestCase):
 
         from backend.app.reports import chart_runner
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        # ⚠ 用 **kwargs 收尾（2026-08-19）：`run_report` 在 795ef4a 新增了
+        #   `report_scope`，替身簽章沒跟上就整批 TypeError——而錯誤訊息長得像
+        #   「引擎壞了」，其實是替身太窄。本測試關心的是門檻判定，不是參數表，
+        #   多收一個參數不會削弱它，簽章漂移也不再變成假紅。
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None,
+                            **_ignored):
             return {"report_name": name, "label": name, "label_zh": "IPC 主分類分布",
                     "report_type": "aggregate", "rows": _rows(codes),
                     "row_count": len(codes), "rows_total": len(codes)}
