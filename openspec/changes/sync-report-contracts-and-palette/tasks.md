@@ -38,6 +38,10 @@
 
 ⚠ §6 的色票數字（28→49 種）是觀測值不是現況，第 3 段開工時**重新實查**。
 
+**2026-08-19 使用者再確認**：§4 用詞**照原規劃留在第 3 段**，與 §6 色票同段完成，
+不抽出、不延後。⚠ 同段混了一個可逆（色票）與一個不可逆（用詞）的改動，所以
+第 3 段的**兩件事要分開 commit**——用詞那批單獨一個 commit，出事才回退得乾淨。
+
 ---
 
 ## 1. 母體閘門（最優先——同型錯誤已出現三次）
@@ -159,6 +163,17 @@
 - [ ] 5.2 Red：`report_key` 集合對帳閘門
       —— 文件提到但定義裡沒有＝紅；定義裡有但文件沒提＝黃（列出不擋）
 - [ ] 5.3 反向驗證：文件塞一個假 report_key 要紅
+- [ ] 5.8 `test_topic_table_single_render` 兩條改成**驗行為**（2026-08-19 使用者裁決）
+
+      現況：`test_section_carries_rows` 與 `test_variant_has_no_chart_file` 都用
+      `re.search` 掃 `chart_runner` 原始碼找 `ctx.sections.append({"title": "分群…`。
+      ⚠ 那個 anchor 在 **chart_runner 全歷史都不存在**（`git log -S '"title": "分群'`
+      查無）——它從來沒對上過，兩條紅不是回歸，是一開始就沒在守。
+
+      改法：實際跑出分群 section，斷言它帶 `rows`、且主題統計表的 variant 沒有
+      chart file。⚠ source-grep 型測試的 anchor 會隨重構漂走而**不會有人發現**，
+      因為漂走的症狀是「一直紅」而不是「突然紅」——本專案同型陷阱第 6 次。
+      併進 §5 是因為它與 5.2 同屬「文件／測試與程式對不上」，收成同一套契約檢查。
 - [ ] 5.4 同步 `prompts/report-narrative-flow.md`（family_country_layout、
       年度矩陣、country_distribution 狀態堆疊、topic_timeline 段落）
 - [ ] 5.5 同步 `prompts/content_standard.md`（技術主題×2）
