@@ -166,10 +166,22 @@ class DeckRunnerTests(unittest.TestCase):
     # ── 機械步編排 ──────────────────────────────────────────
 
     def test_happy_path_step_order(self):
+        """⚠ 2026-08-19（§6.2b）新增兩步，位置都有硬理由，**不得調換**：
+
+        - `recolor` 在 `fit` **之前**：fit 產的 PNG 就是進投影片的畫素，
+          之後再換色來不及。（也必須在 `chip` 之後——見下一條測試。）
+        - `recolor_check` 在 `marks` **之後**：marks 還會再動一次 SVG，
+          只在換色當下驗等於驗了一份不是最終產物的東西。
+        """
         summary, steps, cli = self._run()
         self.assertEqual(
             steps.calls,
-            ["assemble", "plan", "fit", "marks", "check", "make", "audit", "shoot"])
+            ["assemble", "plan", "recolor", "fit", "marks", "recolor_check",
+             "check", "make", "audit", "shoot"])
+        self.assertLess(steps.calls.index("recolor"), steps.calls.index("fit"),
+                        "換色跑在 fit 之後＝PNG 已經是報表色，換了也沒用")
+        self.assertLess(steps.calls.index("marks"), steps.calls.index("recolor_check"),
+                        "換色檢查跑在 marks 之前＝驗的不是最終產物")
         # CLI 恰兩次：撰稿＋目視通過
         self.assertEqual(len(cli.prompts), 2)
         self.assertEqual(summary["visual_rounds"], 1)
@@ -180,6 +192,10 @@ class DeckRunnerTests(unittest.TestCase):
         self.assertIn("chip", steps.calls)
         self.assertLess(steps.calls.index("plan"), steps.calls.index("chip"))
         self.assertLess(steps.calls.index("chip"), steps.calls.index("fit"))
+        # ⚠ §6.2b：換色必須在 chip **之後**——`rebuild_chip_chart` 會寫入
+        #   報表側的色（實測 5 處 #00094A），先換色等於漏掉重排過的那幾張。
+        self.assertLess(steps.calls.index("chip"), steps.calls.index("recolor"),
+                        "換色跑在 chip 之前＝重排寫進去的報表色不會被換掉")
 
     def test_mechanical_failure_short_circuits(self):
         """plan 非零 → 立即失敗，fit 之後一步都不跑，CLI 一次都不呼叫。"""

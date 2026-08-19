@@ -338,6 +338,17 @@ def _check_p2_evidence_rules(c: dict) -> list[str]:
         for key in INTERNAL_EVIDENCE_KEYS:
             if key in joined:
                 bad.append(f"建議卡第 {index} 張含內部欄位「{key}」——投影片請改用中文顯示名稱")
+        # 🔴 色彩庫是給 CLI 挑的，挑庫外的要在這裡擋（§6.5b）。
+        # ⚠ 原本完全不驗：CLI 寫 `"color": "purple"` 會一路走到 make_deck 才
+        #   KeyError，錯誤訊息與內容無關、修稿輪修不掉。比照版型庫的作法，
+        #   清單讀 `deck_layout.COLOR_LIBRARY`（唯一定義處），不在這裡另寫一份。
+        from deck_layout import COLOR_LIBRARY
+
+        colour = str(rec.get("color") or "").strip()
+        if colour and colour not in COLOR_LIBRARY:
+            bad.append(
+                f"建議卡第 {index} 張的色「{colour}」不在色彩庫 "
+                f"{sorted(COLOR_LIBRARY)}——CLI 只能從庫裡挑，不得自創")
     return bad
 
 

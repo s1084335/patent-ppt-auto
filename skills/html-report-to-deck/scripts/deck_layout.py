@@ -64,7 +64,30 @@ TEXT     = rgb(COLOR_TOKENS["TEXT_ON_PAGE"].hex)
 MUTED    = RGBColor(0x53, 0x69, 0x8B)
 CARD     = RGBColor(0xFF, 0xFF, 0xFF)
 CARD_ED  = RGBColor(0xC2, 0xD1, 0xE6)
-PALETTE  = {"cyan": CYAN, "blue": BLUE, "amber": AMBER, "rose": ROSE, "green": GREEN}
+#: 🔴 **CLI 可挑的色彩庫**（唯一定義處，比照 `LAYOUTS` 版型庫）。
+#:
+#: 色彩庫與版型庫一樣，本來就是**給 CLI 選的**——CLI 挑名字、不寫色值，
+#: 同 `layout: "chart"` 而不是寫幾何。所以每一項都要說清楚「什麼情況用」，
+#: 只給名字對色值等於叫 CLI 靠字面猜。
+#:
+#: ⚠ 2026-08-19 之前這裡只有 `{"cyan": CYAN, …}`，而且 `check_content`
+#: **完全不驗**：CLI 寫 `"color": "purple"` 會一路走到 `make_deck` 才 KeyError，
+#: 錯誤訊息與內容無關、修稿輪也修不掉。版型庫有三處同步閘門，色彩庫一道都沒有
+#: ——那正是 §7a 剛修完的「同一份清單三處各說各話」同型問題。
+#:
+#: ⚠ 這一組與 `chart_sizing.PALETTE`／`SCALES` 是**不同層**：那邊是引擎畫圖用的
+#: 內部色與色階，CLI 碰不到；這邊是 CLI 寫進 content.json 的選項。
+COLOR_LIBRARY: dict[str, dict] = {
+    "cyan":  {"rgb": CYAN,  "purpose": "中性強調：陳述事實、不帶評價的重點"},
+    "blue":  {"rgb": BLUE,  "purpose": "需要進一步驗證的方向（still open）"},
+    "amber": {"rgb": AMBER, "purpose": "需留意但未到風險：擁擠、集中、可探索"},
+    "rose":  {"rgb": ROSE,  "purpose": "風險或應迴避：高競爭、權利集中在他人"},
+    "green": {"rgb": GREEN, "purpose": "可行動、已有依據支撐的結論"},
+}
+
+#: 渲染時取色用。⚠ 由色彩庫導出，不另寫一份——兩份清單各自演進的起點就是
+#: 「反正只是把同樣的東西再寫一次」。
+PALETTE  = {name: e["rgb"] for name, e in COLOR_LIBRARY.items()}
 TAG_COLOR = {"風險": ROSE, "機會": AMBER, "行動": GREEN, "依據": CYAN}
 
 FONT = FONT_FAMILY
