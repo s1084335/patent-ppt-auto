@@ -464,13 +464,15 @@ def budget() -> dict[str, float]:
         # 圖內字級掉約 0.6pt。2 行是建議值，4 行是還能接受的上限。
         "band_total":   _per_line(CW - 0.52) * 2,
         "band_max":     _per_line(CW - 0.52) * 4,
-        "rec_title":    _per_line(gw - 0.52),
-        "rec_line":     _per_line(gw - 0.52) * 2,
+        # ⚠ 2026-08-19（§5.2）：`rec_title`／`rec_line`／`roadmap_item` 三個鍵
+        #   已隨 rec 頁（§9.3）與路線圖頁（§7d）退場而移除。
+        #   留著不是中性的——它們是**字串鍵**，會讓「文件提到的名字存不存在」
+        #   那道對帳閘門把已退場的名字算成合法，於是 narrative.md 教
+        #   `roadmap_item` 也不會被抓到（實際發生，本次由該閘門反查出來）。
         # 純文字頁（charts 留空）：由實際幾何推出放得下幾行，**不要寫死倍數**。
         # ⚠ 曾經寫死 14，改用實測行高（LS_RENDER）後實際只放得下 12 行，
         #   上限變成高估——寫死的倍數不會跟著幾何調整走（2026-08-11）。
         "text_page":    _per_line(CW - 0.52) * _text_page_lines(),
-        "roadmap_item": _per_line(rw - 0.48) * 3,
         "limit_line":   _per_line(CW - 0.52),
     }
 
@@ -798,21 +800,9 @@ def label_page_fit(lines) -> dict:
     }
 
 
-def roadmap_page_overflow(c: dict):
-    """路線圖頁（卡片＋限制框）會不會撐爆整頁；不會就回 None。
-
-    ⚠ 與 `slide_roadmap` 用**同一組式子**，供 check_content 事前擋——否則秒級閘門
-    放行、組版才擋，使用者白等一輪。回傳 (可用, 需求, 卡片單行單位)。
-    """
-    rw = (CW - 0.44) / 3
-    tw = rw - 0.48
-    card_need = max(text_h([(r["label"], 16, 10)] + [(t, 16, 8) for t in r["items"]], tw)
-                    for r in c["roadmap"])
-    lim_need = text_h([(c.get("limits_title", "分析限制與適用邊界"), 16, 6)]
-                      + [(t, 16, 4) for t in c["limits"]], CW - 0.52)
-    need = (card_need + 0.50) + (lim_need + 0.34) + 0.20
-    avail = BAND_BOT - CHART_TOP
-    return None if need <= avail else (avail, need, _per_line(tw))
+# ⚠ `roadmap_page_overflow` 已於 2026-08-19（§5.2）移除：它服務的頁面在 §7d
+#   就沒了，函式卻留著並仍讀 `c["roadmap"]`。死碼會讓「這個名字還存在」的
+#   對帳閘門放行已退場的名字（本次實際發生）。
 
 
 def _slide_text_label(s, page, spec, top, bot):

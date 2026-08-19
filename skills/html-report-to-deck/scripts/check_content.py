@@ -31,8 +31,7 @@ def _force_utf8_console() -> None:
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from deck_layout import (LAYOUTS, MIN_CHART_PT_MULTI, budget,   # noqa: E402
-                         label_page_fit, predict_chart_pt,
-                         roadmap_page_overflow, units)
+                         label_page_fit, predict_chart_pt, units)
 
 # ⚠ 2026-08-18（§7d）：`roadmap_title`／`roadmap_takeaway`／`roadmap` 已移除
 #   ——路線圖頁併入結論頁、期程整個拿掉。留在必填清單裡會逼 CLI 生出一個
@@ -542,18 +541,13 @@ def main() -> int:
         if unused:
             print(f"⚠ 有圖未使用：{', '.join(sorted(unused))}（若為刻意略過，回報時要說明）")
 
-    chk("路線圖結論句", c["roadmap_takeaway"], B["takeaway"])
-    for r in c["roadmap"]:
-        for it in r["items"]:
-            chk(f"路線圖 {r['label'][:2]}", it, B["roadmap_item"])
-    # ⚠ 單項合格 ≠ 整頁合格：`roadmap_item` 只管「每則 ≤3 行」，但三張卡各三則
-    #   再加限制框就可能撐爆整頁。以前這個檢查只存在於 make_deck，秒級閘門放行、
-    #   組版才擋，等於白等一輪（2026-08-11 sub agent 實測踩到）。幾何直接 import，
-    #   不在這裡另寫一份。
-    over = roadmap_page_overflow(c)
-    if over:
-        bad.append(f"路線圖頁總高：需求 {over[1]:.2f}in > 可用 {over[0]:.2f}in"
-                   f" → 把最長的幾則壓短（每張卡每則約 {over[2]:.1f} 單位為一行）")
+    # ⚠ 2026-08-19（§5.2）：路線圖頁的字數與溢出驗證整段移除。
+    # §7d 只拿掉 `_compose` 的呼叫，這裡卻還在讀 `c["roadmap"]`——
+    # 範本已無該鍵，真的走到就是 KeyError；而它從來走不到，所以沒人發現。
+
+    # ⚠ 「單項合格 ≠ 整頁合格」這條紀律**沒有消失**——它移到結論頁：
+    #   `slide_conclusions` 的 `note("結論頁列高總和", …)` 管整頁總高，
+    #   而 §9.4 的自動分頁讓「裝不下」變成「換頁」而不是「溢出」。
     for t in c["limits"]:
         chk("限制", t, B["limit_line"])
 

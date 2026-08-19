@@ -2958,6 +2958,22 @@ def _read_narratives(run_dir: Path, version: str) -> dict[str, Any]:
 # cluster_topic_table：source_field 原始欄名不出現在使用者介面（2026-07-21 定案，
 # 技術/功效已由統計表分段標題表達）。
 DATA_TABLE_EXCLUDED_COLUMNS: dict[str, tuple[str, ...]] = {
+    # 🔴 2026-08-19（§3）家族數落點收斂：趨勢表的 `family_count` 不再顯示。
+    #
+    # 同一頁上 `patent_count` 與 `family_count` 都叫「數量」，讀者無從判斷該看
+    # 哪一個，而兩者口徑不同（件數 vs 同族合併後）。§2 已把家族數收斂到**封面**
+    # 由引擎統一供給，趨勢表再列一次就是同一份知識的第二個顯示落點——
+    # ⚠ 兩處若因口徑差異而不同（實測受理局頁 46 vs 封面 48 vs 家族報表 40），
+    #   讀者只會覺得報表在自相矛盾。
+    #
+    # ⚠ **隱藏顯示不刪資料**：`chart_rows` 仍帶 `family_count`，CLI 取證要用，
+    #   而且刪掉之後「同族合併後的數字」再也算不回來。
+    # ⚠ 只收 `application_trend`——實查：`publication_trend` 的 `aggregates`
+    #   是空的、根本沒有 family_count。對不存在的欄位登記排除，那條規則永遠
+    #   不生效卻**看起來像已經處理了**，比沒登記更糟。
+    # ⚠ 不動 KP 表與 KP 象限：那裡的家族數是 per-applicant 維度
+    #   （某申請人有幾個家族），與「某年有幾個家族」不是同一件事。
+    "application_trend": ("family_count",),
     # 2026-07-29 使用者定案：
     #   topic_code  → 「機制能識別就好，表格和報告不用顯示」（資料仍帶著，供合併/拆分識別）
     #   leading_*   → 「有前三大申請人好像就不用龍頭涉入了」（改以集中度兩欄表達競爭結構）

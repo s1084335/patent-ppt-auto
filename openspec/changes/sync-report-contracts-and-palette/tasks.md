@@ -145,9 +145,9 @@
 
 ## 3. 家族數落點收斂
 
-- [ ] 3.1 Red：`annual_trend`／`publication_trend` 的顯示欄不含 `family_count`
-- [ ] 3.2 登記隱藏欄；⚠ `chart_rows` 必須保留資料（CLI 取證要用）
-- [ ] 3.3 確認 KP 表與 KP 象限泡泡不受影響（per-applicant 維度，不動）
+- [x] 3.1 Red：`annual_trend`／`publication_trend` 的顯示欄不含 `family_count`
+- [x] 3.2 登記隱藏欄；⚠ `chart_rows` 必須保留資料（CLI 取證要用）
+- [x] 3.3 確認 KP 表與 KP 象限泡泡不受影響（per-applicant 維度，不動）
 
 ## 4. 用詞統一為「設計」
 
@@ -196,10 +196,10 @@
 
 ## 5. 文件契約同步
 
-- [ ] 5.1 在 design §2 的權責邊界表基礎上，逐檔標出「這段屬於誰的職責」
-- [ ] 5.2 Red：`report_key` 集合對帳閘門
+- [x] 5.1 在 design §2 的權責邊界表基礎上，逐檔標出「這段屬於誰的職責」
+- [x] 5.2 Red：`report_key` 集合對帳閘門
       —— 文件提到但定義裡沒有＝紅；定義裡有但文件沒提＝黃（列出不擋）
-- [ ] 5.3 反向驗證：文件塞一個假 report_key 要紅
+- [x] 5.3 反向驗證：文件塞一個假 report_key 要紅
 - [x] 5.8 `test_topic_table_single_render` 兩條改成**驗行為**（2026-08-19 使用者裁決）
 
       ⚠ **更正 08-19 稍早的錯誤歸屬**：我當時說「anchor 在 chart_runner 全歷史都
@@ -219,11 +219,11 @@
 
       已改為實跑 `_build_cluster_analytics_section` 再驗 section 的 rows 與
       variant。反向驗證：拿掉 rows／把 variant 指向 SVG 各自轉紅（2/2）。
-- [ ] 5.4 同步 `prompts/report-narrative-flow.md`（family_country_layout、
+- [x] 5.4 同步 `prompts/report-narrative-flow.md`（family_country_layout、
       年度矩陣、country_distribution 狀態堆疊、topic_timeline 段落）
-- [ ] 5.5 同步 `prompts/content_standard.md`（技術主題×2）
-- [ ] 5.6 同步 `skills/html-report-to-deck/SKILL.md`＋`references/narrative.md`
-- [ ] 5.7 同步 `add-deck-delivery-line/design.md` 的頁面盤點
+- [x] 5.5 同步 `prompts/content_standard.md`（技術主題×2）
+- [x] 5.6 同步 `skills/html-report-to-deck/SKILL.md`＋`references/narrative.md`
+- [x] 5.7 同步 `add-deck-delivery-line/design.md` 的頁面盤點
       （現存有效×2、主題演進×3、年度矩陣×2、更多、技術主題）
 
 ## 6. 色票唯一定義處
@@ -1200,6 +1200,29 @@ SVG 路徑與 PPTX 路徑對同一份輸入不同意，沒有人對帳。
       ⚠ 這是揭露不是修正——「為什麼是 44」由 deepen §3 處理
 
 ## 8. 驗收
+
+### 🔴 8.0 未覆蓋範圍揭露（§8.5，2026-08-19）
+
+⚠ 「全綠」不等於「全驗過」。以下是**已知沒驗到**的，逐項寫出來而不是讓它
+消失在綠燈裡——未揭露的未驗範圍，讀者會預設它驗過了。
+
+| 未驗項 | 為什麼 | 需要什麼才能驗 |
+|---|---|---|
+| **OpenSpec strict validation**（8.1） | `openspec` CLI 已依使用者要求移除（2026-08-18） | 重新安裝（需使用者同意，工具一律先問） |
+| **兩 workspace 各產一份報表**（8.3 完整版） | 既有版本都是 08-11／08-12 產的，**在 §1／§2 改動之前**——沒有 `cover_stats`／`pending_count`／`action_scan` | 連正式庫重產報表（需使用者授權；會寫入 output/） |
+| **真 CLI 撰稿與目視** | 半真機械鏈的 CLI 是假接的（代打 content.json、目視固定 pass） | 真 CLI（燒 token，需使用者允許） |
+| **本機測試庫相關的 6 條** | `127.0.0.1:5433` 未啟動；⚠ **不得改指 Supabase**——`tests/conftest.py` 就是為防「寫入類測試在正式庫留資料」而寫的 | 起一個本機拋棄式 Postgres |
+| **`STATUS_*` 門檻在第二個 workspace 的表現**（§9.9e-1） | 需要割草機的分群資料，而該 workspace 目前無分群主題 | 先完成該 workspace 的分群 |
+
+**已驗到的替代證據**：
+- §8.3 以**真素材**跑 intake（`report_trial_20260811_094014`）：
+  行動掃描接線修正後，證據不足 92 → 5、成立 6 → 9、每主題成立數 0–3。
+  ⚠ 剩的 5 個都是 `pending_count` 缺（§7e 之後才有的欄位）——那是**資料舊**
+  不是系統判不出來，正好證明兩者分開是對的。
+- 半真機械鏈（真 subprocess 全鏈、真產 `.pptx`、真 Chromium）每批都跑。
+
+- [ ] 8.1 OpenSpec strict validation ⚠ **阻塞**：CLI 已移除，需使用者決定是否重裝
+- [x] 8.5 揭露未覆蓋範圍（本節）
 
 - [ ] 8.1 OpenSpec strict validation
 - [ ] 8.2 三層範圍回歸（直接／整合／契約）

@@ -242,17 +242,51 @@ def _action_scan(report_data: dict) -> dict:
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-    rows = (report_data.get("chart_rows") or {}).get("cluster_topic_table") or []
+    chart_rows = report_data.get("chart_rows") or {}
+    rows = chart_rows.get("cluster_topic_table") or []
+
+    # 🔴 象限在**另一個區塊**（`opportunity_quadrant_*`），主題表列裡沒有。
+    # ⚠ 不接進來的話，四條看象限的規則會全部回「證據不足」——實測 13 個主題
+    #   噴出 92 個證據不足、只有 6 個成立，看起來像資料不足，其實是沒 join。
+    #   那正是「證據不足」與「系統判不出來」混在一起的具體後果（§9.1e-2）。
+    quadrant_by_label: dict[str, str] = {}
+    for key, block in chart_rows.items():
+        if not key.startswith("opportunity_quadrant") or not isinstance(block, dict):
+            continue
+        for r in block.get("rows") or []:
+            if r.get("label") and r.get("quadrant"):
+                quadrant_by_label[str(r["label"])] = str(r["quadrant"])
+
+    # 🔴 掃描母體＝**技術主題**，不是全部主題（§9.1e）。
+    # ⚠ 五類技術狀態只給技術通道（2026-08-03 使用者定案，功效通道不判演進狀態）。
+    #   對功效主題跑狀態規則，每個都會回 9 個「證據不足」——那是**雜訊不是訊號**，
+    #   而雜訊會把真正的證據不足淹掉。
+    # ⚠ 縮小母體必須**寫出來**：`scope` 欄記錄掃了幾個、全部幾個，
+    #   靜默縮小正是本專案母體三種病之一。
+    from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL
+    from backend.app.reports.action_space import scan_workspace
+
+    technical = [r for r in rows
+                 if str(r.get("source_field") or "") == SOURCE_FIELD_TECHNICAL]
+    enriched = [{**r, "quadrant": quadrant_by_label.get(str(r.get("label") or ""))}
+                for r in technical]
+
     counts = []
-    for r in rows:
+    for r in enriched:
         try:
             counts.append(float(r.get("patent_count") or 0))
         except (TypeError, ValueError):
             continue
     median = statistics.median(counts) if counts else 0.0
-    from backend.app.reports.action_space import scan_workspace
 
-    return scan_workspace(rows, median)
+    result = scan_workspace(enriched, median)
+    result["scope"] = {
+        "scanned_topics": len(enriched),
+        "all_topics": len(rows),
+        "why": "行動判定依賴五類技術狀態，而狀態只給技術通道"
+               "（2026-08-03 定案：功效通道不判演進狀態）",
+    }
+    return result
 
 
 def _topic_finding(row: dict) -> str:
