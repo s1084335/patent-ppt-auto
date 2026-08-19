@@ -75,11 +75,19 @@ class DeclarationTests(unittest.TestCase):
 
 
 class KnownOffendersAreTrackedTests(unittest.TestCase):
-    """🔴 掃描抓到的 4 個「出自單一資料集」必須在表上且標為待修。"""
+    """🔴 掃描抓到的「出自單一資料集」必須在表上，未解的要標為待修。"""
 
+    #: 全部被抓到過的門檻——**只增不減**：這份清單是歷史事實，
+    #: 記錄「哪些東西曾經綁死單一資料集」。解掉的移到 RESOLVED，不是從這裡刪。
     OFFENDERS = ("STATUS_EARLY_YEARS", "STATUS_RECENT_YEARS",
                  "STATUS_GROWTH_HIGH", "STATUS_MIN_SAMPLE",
                  "MIN_CLUSTERING_DOCUMENTS")
+
+    #: 已解除資料綁定者。⚠ 移進來要有**可指的證據**，不是「看起來修好了」：
+    #: 2026-08-19 兩個時間窗改由 `derive_status_windows` 從本批資料推導，
+    #: 且實測滑雪機那批推導結果與原常數逐字相同、13 個主題狀態一個都沒變
+    #: （見 `test_status_windows_relative`）。
+    RESOLVED = ("STATUS_EARLY_YEARS", "STATUS_RECENT_YEARS")
 
     def test_all_offenders_are_declared(self):
         for name in self.OFFENDERS:
@@ -87,16 +95,27 @@ class KnownOffendersAreTrackedTests(unittest.TestCase):
                 self.assertIn(name, T.THRESHOLD_BASIS,
                               f"{name} 沒有宣告基準來源——它出自單一資料集")
 
-    def test_offenders_are_marked_as_pending(self):
-        """⚠ 現況它們**兩者皆非**（不是本次母體、也不是制度事實）。
+    def test_unresolved_offenders_are_marked_as_pending(self):
+        """⚠ 未解的必須標 pending：宣告表要誠實反映現況，
 
-        宣告表要誠實反映這件事，不得為了讓表看起來乾淨而硬塞一個基準
-        ——那就變成用宣告掩蓋問題。
+        不得為了讓表看起來乾淨而硬塞一個基準——那就變成用宣告掩蓋問題。
         """
         for name in self.OFFENDERS:
+            if name in self.RESOLVED:
+                continue
             with self.subTest(threshold=name):
                 self.assertTrue(T.THRESHOLD_BASIS[name].pending,
                                 f"{name} 沒被標為待修")
+
+    def test_resolved_ones_say_how_they_were_resolved(self):
+        """⚠ 解除 pending 的必須留下推導方式，否則下次讀的人只看到一個 False，
+        無從判斷它是真的解了、還是有人為了讓閘門變綠而改的。"""
+        for name in self.RESOLVED:
+            with self.subTest(threshold=name):
+                d = T.THRESHOLD_BASIS[name]
+                self.assertFalse(d.pending, f"{name} 列在 RESOLVED 卻仍標 pending")
+                self.assertTrue(str(d.derivation).strip(),
+                                f"{name} 解除了 pending 卻沒說推導方式")
 
     def test_pending_ones_carry_the_evidence(self):
         for name in self.OFFENDERS:

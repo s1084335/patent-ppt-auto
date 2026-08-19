@@ -39,12 +39,54 @@ TOPIC_STATUS_MEANINGS: dict[str, str] = {
     TOPIC_STATUS_INSUFFICIENT: "件數過少，趨勢判斷不可靠",
 }
 
-# 時間窗（申請年）。⚠ 這三個數字是從實際資料切出來的，不是慣例：
+# 時間窗（申請年）。
+#
+# 🔴 2026-08-19：改為**由本批資料推導**（`derive_status_windows`）。
+# 原本這兩個是絕對年份，切自滑雪機那批的年度分布：
 #   2011–2019 共 17 件（9 年）／2020–2024 共 38 件（5 年）／2025–2026 僅 5 件。
-# 末兩年偏低是**資料截止效應**（新案還在審查中未公開），不是活動衰退，
-# 併進近期窗會把每個主題都拉成「衰退」。故整段排除，不計入任何一窗。
+# ⚠ 絕對年份套到別批資料上的失效方式是**靜默**的：例如一批 2000–2010 的資料，
+#   兩個窗都落在資料之外 → recent＝early＝0 → `classify_topic_status` 的四個比較
+#   全是 `0 < 0`＝假 → **每個主題都回「未分類」**，不報錯也不警告。
+#
+# 下列兩個常數**保留**，降為兩種用途：①推導失敗（跨度不足）時的退路
+# ②`threshold_basis` 雙向對帳的對象（刪了會變成「宣告了但常數不存在」）。
 STATUS_EARLY_YEARS = (2011, 2019)
 STATUS_RECENT_YEARS = (2020, 2024)
+
+# 推導參數。⚠ 具名而非寫在算式裡——寫在算式裡就沒人知道它代表什麼，也改不動。
+#: 近期窗長度（年）。固定不隨資料量浮動，否則兩批報表的「近期」不是同一回事。
+STATUS_RECENT_WINDOW_YEARS = 5
+#: 末端排除幾年。**資料截止效應**：新案還在審查中未公開，件數天然偏低，
+#: 併進近期窗會把每個主題都拉成「衰退」。故整段排除，不計入任何一窗。
+STATUS_TAIL_EXCLUDED_YEARS = 2
+
+
+def derive_status_windows(years) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    """從本批資料的申請年推導（早期窗, 近期窗）；跨度不足以切窗時回 `None`。
+
+    規則就是原本註解已經寫下的那三件事，只是改成對**任何一批**都成立：
+    末 `STATUS_TAIL_EXCLUDED_YEARS` 年排除 → 其餘的最後
+    `STATUS_RECENT_WINDOW_YEARS` 年為近期窗 → 再往前全部為早期窗。
+
+    ⚠ 套在滑雪機那批（2011–2026）上的結果**與原本寫死的常數逐字相同**
+    ——`test_status_windows_relative` 鎖住這點。移除資料綁定不該順手改動
+    現有報表的判定結果，那是兩個決定。
+
+    ⚠ 回 `None` 而不是回一組落在資料外的窗：沉默地回假窗會讓所有主題變成
+    「未分類」而沒有人知道為什麼。
+    """
+    usable = sorted({int(y) for y in (years or [])
+                     if isinstance(y, (int, float)) and not isinstance(y, bool)}
+                    ) if years else []
+    if not usable:
+        return None
+    cutoff = usable[-1] - STATUS_TAIL_EXCLUDED_YEARS      # 末端排除後的最後一年
+    recent_start = cutoff - STATUS_RECENT_WINDOW_YEARS + 1
+    early_end = recent_start - 1
+    # 早期窗至少要有一年才算切得出來——否則整批都被近期窗吃掉，比不到東西。
+    if early_end < usable[0]:
+        return None
+    return (usable[0], early_end), (recent_start, cutoff)
 
 # 「成長率高」與「成長停滯」的分界：近期件數佔該主題總件數的比例 R。
 # 全庫基準 R＝38/55＝0.69——高於它才叫成長得比整體快。
@@ -242,6 +284,16 @@ def build_topic_effect_table(
     def _key(item: dict[str, Any], code: str) -> tuple[str, str]:
         return (code, str(item.get("source_field") or ""))
 
+    # 🔴 2026-08-19：時間窗改由**本批資料**推導，不再用寫死的絕對年份。
+    # ⚠ 推導一次、兩個通道共用：逐主題各推一次的話，主題間的「近期」會不一樣，
+    #   跨主題比較就失去意義（而症狀只會表現成幾個主題的狀態怪怪的）。
+    # ⚠ 跨度不足以切窗時退回常數：那組值仍出自滑雪機，但**退路比假窗誠實**
+    #   ——回一組落在資料外的窗會讓每個主題都變「未分類」且無人知情。
+    _windows = derive_status_windows(
+        [p.get("application_year") for p in (patents or {}).values()])
+    early_window, recent_window = _windows if _windows else (
+        STATUS_EARLY_YEARS, STATUS_RECENT_YEARS)
+
     topic_patents: dict[tuple[str, str], set[int]] = {}
     for t in topics:
         topic_patents.setdefault(_key(t, t["topic_code"]), set())
@@ -307,8 +359,8 @@ def build_topic_effect_table(
             "top_applicants": top3,
         }
         if patents is not None:
-            early = _window_metrics(patents_of_topic, patents, STATUS_EARLY_YEARS, app_by_patent)
-            recent = _window_metrics(patents_of_topic, patents, STATUS_RECENT_YEARS, app_by_patent)
+            early = _window_metrics(patents_of_topic, patents, early_window, app_by_patent)
+            recent = _window_metrics(patents_of_topic, patents, recent_window, app_by_patent)
             row.update({
                 "early_count": early[0], "early_applicants": early[1], "concentration_early": early[2],
                 "recent_count": recent[0], "recent_applicants": recent[1], "concentration_recent": recent[2],
