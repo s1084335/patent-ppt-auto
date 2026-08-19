@@ -1,8 +1,8 @@
 """2026-08-18 實物驗收五項。
 
 1. 現行有效不特別點出來——看圖（授權那段）就知道了。
-2. 外觀保護策略改「申請人 × 技術／外觀／技術+外觀」矩陣。
-3. 技術交叉表要呈現**外觀所保護的標的**（讀設計案內容進來）。
+2. 設計保護策略改「申請人 × 技術／設計／技術+設計」矩陣。
+3. 技術交叉表要呈現**設計所保護的標的**（讀設計案內容進來）。
    ⚠ 現行的「技術主題」欄永遠是空的：`_tech_label` 找 分類標籤／topic_label／
    topic_key／label，而 `design_protection_detail` 報表根本沒有這些欄
    ——空欄比沒有欄更糟，讀者會以為「這些申請人沒有技術主題」。
@@ -74,34 +74,34 @@ class LiveCountRemovedTests(unittest.TestCase):
 
 
 class StrategyMatrixTests(unittest.TestCase):
-    """2. 申請人 × 技術／外觀／技術+外觀。"""
+    """2. 申請人 × 技術／設計／技術+設計。"""
 
     def _rows(self):
         return chart_runner.design_strategy_matrix_rows(
             design_protection_strategy(DETAIL))
 
     def test_two_columns(self):
-        """⚠ 2026-08-18 二輪定案：拿掉「技術+外觀」。這張圖只收有設計案的
+        """⚠ 2026-08-18 二輪定案：拿掉「技術+設計」。這張圖只收有設計案的
         申請人，第三欄恆等於前兩欄相加，永遠不會出現只走技術那一類。"""
         cols = {r["strategy_axis"] for r in self._rows()}
-        self.assertEqual(cols, {"技術", "外觀"})
+        self.assertEqual(cols, {"技術", "設計"})
 
     def test_counts_per_applicant(self):
         by = {(r["applicant"], r["strategy_axis"]): r["patent_count"]
               for r in self._rows()}
-        self.assertEqual(by[("廈門帝瑪斯健康科技", "外觀")], 2)
+        self.assertEqual(by[("廈門帝瑪斯健康科技", "設計")], 2)
         self.assertEqual(by[("廈門帝瑪斯健康科技", "技術")], 1)
 
     def test_design_only_applicant_has_no_tech_cell(self):
-        """只走外觀者技術欄應為 0——不得憑空生出技術件數。"""
+        """只走設計者技術欄應為 0——不得憑空生出技術件數。"""
         by = {(r["applicant"], r["strategy_axis"]): r["patent_count"]
               for r in self._rows()}
         self.assertEqual(by.get(("Zhou Zheng", "技術"), 0), 0)
-        self.assertEqual(by[("Zhou Zheng", "外觀")], 1)
+        self.assertEqual(by[("Zhou Zheng", "設計")], 1)
 
 
 class IntersectionTableSupersededTests(unittest.TestCase):
-    """⚠ 本輪的「外觀保護標的」欄已於同日二輪移交解讀（使用者：「應該納入解讀
+    """⚠ 本輪的「設計保護標的」欄已於同日二輪移交解讀（使用者：「應該納入解讀
     讓 CLI 去讀來寫」）——表格改為逐家時序表，判準見
     `test_design_cross_timeline.py`。這裡只留兩條防回頭的斷言。
     """

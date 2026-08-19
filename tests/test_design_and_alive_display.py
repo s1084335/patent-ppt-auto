@@ -23,13 +23,13 @@ COUNTRY_ROWS = [
 ]
 
 STRATEGY_ROWS = [
-    {"applicant": "廈門帝瑪斯健康科技", "strategy_type": "技術+外觀",
+    {"applicant": "廈門帝瑪斯健康科技", "strategy_type": "技術+設計",
      "design_count": 2, "tech_count": 11,
      "first_design_year": 2019, "latest_design_year": 2022,
      "design_years": [2019, 2022], "legal_status_summary": "授權",
      "representative_design_patent_id": 134,
      "representative_design_title": "Fan skiing training ware"},
-    {"applicant": "Zhou Zheng", "strategy_type": "只走外觀",
+    {"applicant": "Zhou Zheng", "strategy_type": "只走設計",
      "design_count": 1, "tech_count": 0,
      "first_design_year": 2021, "latest_design_year": 2021,
      "design_years": [2021], "legal_status_summary": "到期",
@@ -38,7 +38,7 @@ STRATEGY_ROWS = [
 ]
 
 INTERSECTION_ROWS = [
-    {"applicant": "廈門帝瑪斯健康科技", "strategy_type": "技術+外觀",
+    {"applicant": "廈門帝瑪斯健康科技", "strategy_type": "技術+設計",
      "design_count": 2, "tech_count": 11,
      "tech_labels": ["阻力調節", "體感回饋"],
      "representative_design_patent_id": 134,
@@ -70,7 +70,7 @@ class StackChartStillShowsStatusTests(unittest.TestCase):
 
 
 class DesignStrategyMatrixTests(unittest.TestCase):
-    """2026-08-18：矩陣改為申請人 × 技術／外觀（年度版與合計欄都已退場）。"""
+    """2026-08-18：矩陣改為申請人 × 技術／設計（年度版與合計欄都已退場）。"""
 
     def test_axis_columns(self):
         rows = chart_runner.design_strategy_matrix_rows(STRATEGY_ROWS)
@@ -78,13 +78,13 @@ class DesignStrategyMatrixTests(unittest.TestCase):
                          set(chart_runner.DESIGN_STRATEGY_AXIS))
 
     def test_counts_match_source(self):
-        """⚠ 二輪拿掉「技術+外觀」合計欄，改驗兩欄各自等於來源件數。"""
+        """⚠ 二輪拿掉「技術+設計」合計欄，改驗兩欄各自等於來源件數。"""
         by = {(r["applicant"], r["strategy_axis"]): r["patent_count"]
               for r in chart_runner.design_strategy_matrix_rows(STRATEGY_ROWS)}
         for row in STRATEGY_ROWS:
             a = row["applicant"]
             self.assertEqual(by[(a, "技術")], row["tech_count"])
-            self.assertEqual(by[(a, "外觀")], row["design_count"])
+            self.assertEqual(by[(a, "設計")], row["design_count"])
 
 
 class IntersectionTableTrimTests(unittest.TestCase):

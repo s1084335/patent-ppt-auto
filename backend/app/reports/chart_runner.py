@@ -890,7 +890,7 @@ def year_matrix_summary_rows(pivot: list[dict[str, Any]]) -> list[dict[str, Any]
 def design_strategy_table_rows(
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """外觀策略明細表的**精簡欄位**（2026-08-17 使用者：PPT 放不下）。
+    """設計策略明細表的**精簡欄位**（2026-08-17 使用者：PPT 放不下）。
 
     10 欄 → 6 欄。⚠ 資訊不丟，只改承載方式：
     - 三個年份欄（first／latest／design_years）併成一欄區間
@@ -916,34 +916,34 @@ def design_strategy_table_rows(
     return out
 
 
-#: 外觀策略矩陣的欄序（語意序，不按量排）。
-#: ⚠ 2026-08-18 拿掉「技術+外觀」第三欄：`design_protection_strategy` 只收
+#: 設計策略矩陣的欄序（語意序，不按量排）。
+#: ⚠ 2026-08-18 拿掉「技術+設計」第三欄：`design_protection_strategy` 只收
 #: 有設計案的申請人（`if not designs: continue`），第三欄**恆等於前兩欄相加**，
 #: 永遠不會出現只走技術那一類。策略改由「技術欄是否為 0」直接讀出。
-DESIGN_STRATEGY_AXIS = ("技術", "外觀")
+DESIGN_STRATEGY_AXIS = ("技術", "設計")
 
 
 def design_strategy_matrix_rows(
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """外觀保護策略：申請人 × 技術／外觀／技術+外觀（2026-08-18 使用者定案）。
+    """設計保護策略：申請人 × 技術／設計／技術+設計（2026-08-18 使用者定案）。
 
     取代 08-17 的「申請人 × 年度」矩陣。三欄各是**件數**：
     - 技術：該申請人的技術案件數
-    - 外觀：外觀案件數
-    - 技術+外觀：兩者合計（＝該申請人在本主題的總投入）
+    - 設計：設計案件數
+    - 技術+設計：兩者合計（＝該申請人在本主題的總投入）
 
     ⚠ 三欄不是三種互斥策略。每個申請人只有一個 `strategy_type`
-    （`技術+外觀` 或 `只走外觀`），若把 x 軸當策略歸屬，每列只會有一格有值、
+    （`技術+設計` 或 `只走設計`），若把 x 軸當策略歸屬，每列只會有一格有值、
     看不出投入規模。此處取「件數」讀法：策略型由「技術欄是否為 0」直接讀出
-    ——0 就是只走外觀，不必另闢一欄。
+    ——0 就是只走設計，不必另闢一欄。
     """
     out: list[dict[str, Any]] = []
     for row in rows:
         design = _int_or_none(row.get("design_count")) or 0
         tech = _int_or_none(row.get("tech_count")) or 0
         applicant = str(row.get("applicant") or "")
-        for axis, value in (("技術", tech), ("外觀", design)):
+        for axis, value in (("技術", tech), ("設計", design)):
             out.append({"applicant": applicant, "strategy_axis": axis,
                         "patent_count": value})
     return out
@@ -954,13 +954,13 @@ def design_intersection_table_rows(
 ) -> list[dict[str, Any]]:
     """技術交叉表的**精簡欄位**（2026-08-17 使用者：「欄位能更精簡吧」）。
 
-    🔴 2026-08-18 改為**逐家時序表**（使用者選方案 A）。原表把外觀清單與技術
+    🔴 2026-08-18 改為**逐家時序表**（使用者選方案 A）。原表把設計清單與技術
     代表案並排，「交叉」是假的——沒有任何欄位表達兩者的關係。實資料裡關係很
-    清楚（帝瑪斯外觀 2019 先於技術 2020；康樂佳與澳瑞特同年同步，且標題顯示
+    清楚（帝瑪斯設計 2019 先於技術 2020；康樂佳與澳瑞特同年同步，且標題顯示
     是同一產品的雙重保護），那才是這張表該答的事。
 
     四欄＋一個隱藏欄：
-    - 外觀／技術：件數與年份區間
+    - 設計／技術：件數與年份區間
     - 佈局順序：⚠ **算術不是判斷**（比較首次申請年）。用詞守在事實層，
       不寫「產品化訊號」那種超譯
     - `design_patent_ids`：給 CLI 讀 `patents."文獻備註"` 自行撰寫保護標的
@@ -1004,7 +1004,7 @@ def _filing_order(design_years: list[int] | None,
     if not d or not t:
         return ""
     if d[0] < t[0]:
-        return f"外觀先行 {t[0] - d[0]} 年"
+        return f"設計先行 {t[0] - d[0]} 年"
     if t[0] < d[0]:
         return f"技術先行 {d[0] - t[0]} 年"
     return "同年同步"
@@ -2859,19 +2859,19 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     #   白名單時不會印出英文欄名」，不是宣告要顯示。
     "inactive_count": "失效",
     "unknown_status_count": "狀態未知",
-    # 2026-08-17：外觀策略／技術交叉兩張表的欄名（實機表頭曾整排印英文 key）。
+    # 2026-08-17：設計策略／技術交叉兩張表的欄名（實機表頭曾整排印英文 key）。
     "applicant": "申請人",
     "strategy_type": "策略型",
-    "design_count": "外觀件數",
+    "design_count": "設計件數",
     "tech_count": "技術件數",
-    "design_years": "外觀申請年",
+    "design_years": "設計申請年",
     "legal_status_summary": "法律狀態",
     "tech_labels": "技術主題",
     "representative_tech_title": "代表技術案",
     "applicant_strategy": "申請人·策略",
     "strategy_axis": "策略面向",
     # 技術交叉時序表（2026-08-18 方案 A）
-    "design_summary": "外觀（件數／年）",
+    "design_summary": "設計（件數／年）",
     "tech_summary": "技術（件數／年）",
     "filing_order": "佈局順序",
     # 🔴 2026-08-18 使用者「單位是甚麼要標清楚」：
@@ -4251,12 +4251,12 @@ def _build_design_protection_section(ctx: ChartContext) -> None:
     report = ctx.report("design_protection_detail")
     strategy_rows = design_protection_strategy(report["rows"])
     intersection_rows = design_tech_intersections(report["rows"])
-    # 🔴 2026-08-17 使用者實物驗收：原圖只有兩條總數（只走外觀 6／技術+外觀 4）
+    # 🔴 2026-08-17 使用者實物驗收：原圖只有兩條總數（只走設計 6／技術+設計 4）
     #    ——「這樣看得出啥？」改為**申請人 × 策略型交叉**，看得出誰用什麼策略、
     #    各投入多少；策略型總數留在 chart_rows 供口徑對照，不再單獨出圖。
     chart_rows = design_strategy_chart_rows(strategy_rows)
-    # 🔴 2026-08-18（三輪）使用者定案：**申請人 × 技術／外觀／技術+外觀**。
-    #    08-17 的「申請人 × 年度」矩陣退場（那版答的是「何時佈外觀」，
+    # 🔴 2026-08-18（三輪）使用者定案：**申請人 × 技術／設計／技術+設計**。
+    #    08-17 的「申請人 × 年度」矩陣退場（那版答的是「何時佈設計」，
     #    使用者要的是「各類投入多少」）。
     # ⚠ 欄序給死：三欄是語意序，按量排會讓每份報告的欄序不同。
     matrix_rows = design_strategy_matrix_rows(strategy_rows)
@@ -4303,7 +4303,7 @@ def _build_design_protection_section(ctx: ChartContext) -> None:
             },
         ],
         "note": (
-            "外觀頁使用圖表呈現保護策略分布，表格列出技術與外觀交叉的申請人、"
+            "設計頁使用圖表呈現保護策略分布，表格列出技術與設計交叉的申請人、"
             "代表案與 evidence 摘要；不輸出 WIPS/PDF 連結。"
         ),
     })

@@ -132,7 +132,7 @@ def design_protection_strategy(rows: list[dict[str, Any]]) -> list[dict[str, Any
         years = sorted(y for row in designs if (y := _row_year(row)) is not None)
         statuses = _dedupe([_first_text(row, "legal_status") for row in designs])
         representative = _representative(designs) or {}
-        strategy_type = "技術+外觀" if tech else "只走外觀"
+        strategy_type = "技術+設計" if tech else "只走設計"
         out.append({
             "applicant": applicant,
             "strategy_type": strategy_type,
@@ -162,7 +162,7 @@ def design_tech_intersections(rows: list[dict[str, Any]]) -> list[dict[str, Any]
         tech_row = _representative(tech) or {}
         out.append({
             "applicant": applicant,
-            "strategy_type": "技術+外觀",
+            "strategy_type": "技術+設計",
             "design_count": len(designs),
             "tech_count": len(tech),
             # 🔴 2026-08-18（二輪）：保護標的**不進表格**，改由 CLI 讀
@@ -171,7 +171,7 @@ def design_tech_intersections(rows: list[dict[str, Any]]) -> list[dict[str, Any]
             #    這裡只給 id；⚠ 是內部識別碼，顯示層必須排除。
             "design_patent_ids": [
                 pid for row in designs if (pid := _row_id(row)) is not None],
-            # 逐件申請年——交叉表要答「外觀與技術誰先誰後」，那是這張表的本體問題。
+            # 逐件申請年——交叉表要答「設計與技術誰先誰後」，那是這張表的本體問題。
             "design_years": sorted(
                 y for row in designs if (y := _row_year(row)) is not None),
             "tech_years": sorted(

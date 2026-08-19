@@ -4,7 +4,7 @@ import unittest
 
 
 class DesignProtectionContentTests(unittest.TestCase):
-    """外觀保護策略與技術交叉素材。"""
+    """設計保護策略與技術交叉素材。"""
 
     def _rows(self):
         return [
@@ -14,7 +14,7 @@ class DesignProtectionContentTests(unittest.TestCase):
                 "document_kind": "S",
                 "application_year": 2023,
                 "legal_status": "授權",
-                "applicant_display_name": "只外觀",
+                "applicant_display_name": "只設計",
                 "title": "Ski machine",
                 "文獻備註": "外觀設計",
                 "has_main_figure": True,
@@ -58,13 +58,13 @@ class DesignProtectionContentTests(unittest.TestCase):
         rows = design_protection_strategy(self._rows())
         by_name = {row["applicant"]: row for row in rows}
 
-        self.assertEqual(by_name["只外觀"]["strategy_type"], "只走外觀")
-        self.assertEqual(by_name["只外觀"]["design_count"], 1)
-        self.assertEqual(by_name["只外觀"]["tech_count"], 0)
-        self.assertEqual(by_name["雙軸公司"]["strategy_type"], "技術+外觀")
+        self.assertEqual(by_name["只設計"]["strategy_type"], "只走設計")
+        self.assertEqual(by_name["只設計"]["design_count"], 1)
+        self.assertEqual(by_name["只設計"]["tech_count"], 0)
+        self.assertEqual(by_name["雙軸公司"]["strategy_type"], "技術+設計")
         self.assertEqual(by_name["雙軸公司"]["design_count"], 1)
         self.assertEqual(by_name["雙軸公司"]["tech_count"], 1)
-        self.assertNotIn("只技術", by_name, "外觀策略表只列有外觀設計的主體")
+        self.assertNotIn("只技術", by_name, "設計策略表只列有外觀設計的主體")
 
     def test_strategy_rows_include_visual_reference_without_pdf(self):
         from backend.app.reports.content_blocks import design_protection_strategy
@@ -83,7 +83,7 @@ class DesignProtectionContentTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         row = rows[0]
         self.assertEqual(row["applicant"], "雙軸公司")
-        self.assertEqual(row["strategy_type"], "技術+外觀")
+        self.assertEqual(row["strategy_type"], "技術+設計")
         self.assertEqual(row["tech_labels"], ["速度控制與人機介面"])
         self.assertEqual(row["representative_design_patent_id"], 2)
         self.assertEqual(row["representative_tech_patent_id"], 3)

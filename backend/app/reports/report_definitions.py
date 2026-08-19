@@ -296,7 +296,7 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
         name="design_protection_detail",
         report_type="detail",
         label="Design Protection Strategy",
-        label_zh="外觀保護策略",
+        label_zh="設計保護策略",
         source_table=REPORT_SOURCE_TABLE,
         columns=(
             "patent_id",
@@ -319,7 +319,7 @@ REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
             "current_assignee_display_name",
         ),
         data_source_note=(
-            "外觀策略使用 report_patent_base 的文獻種類、年度、申請人與本地代表案 id；"
+            "設計策略使用 report_patent_base 的文獻種類、年度、申請人與本地代表案 id；"
             "不產生 WIPS/PDF 連結。"
         ),
     ),

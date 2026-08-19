@@ -3966,7 +3966,7 @@ const CLUSTER_REPORT_NAMES = new Set([
   'cluster_topic_table', 'opportunity_quadrant',
 ]);
 const REPORT_TYPES = [
-  ['design_protection_detail', '外觀保護策略'],
+  ['design_protection_detail', '設計保護策略'],
   ['application_trend', '專利申請趨勢'],
   ['publication_trend', '專利授權公告趨勢'],
   ['country_distribution', '專利受理局分布'],
@@ -4767,7 +4767,7 @@ function sectionForReportView(section, option, sourceField) {
     // 🔴 2026-08-17（第三修）：非分群 section 的 variant 有**兩條**切換路徑，
     //    先前只認其中一條，所以 IPC/CPC 切階層時圖換了、表沒換。
     //    ①下拉逐 variant（`option.variantIndex`）——分群家族在用
-    //    ②卡片內分頁鈕（`reportVariantPick[sectionIndex]`）——IPC/CPC、外觀在用。
+    //    ②卡片內分頁鈕（`reportVariantPick[sectionIndex]`）——IPC/CPC、設計在用。
     //      `buildReportViewOptions` 對非分群 section **一個 section 只給一項**、
     //      不帶 variantIndex，所以①那條對它們是死碼。
     //    ⚠ 圖早就用 ②（`reportSingleHtml` 的 `pick`）選 variant；表必須同源，

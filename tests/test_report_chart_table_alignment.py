@@ -7,7 +7,7 @@
 | A | 趨勢表有「涉及／首現技術主題」兩欄，圖上沒有，且後面另有技術主題演進頁 | 移除兩欄 |
 | B | 受理局表有六種狀態欄，圖只畫兩條；且**表裡沒有「現存有效」**（圖上那條在表中找不到） | 圖改狀態堆疊 |
 | C | 已轉讓用斜線疊加，看不清 | 改第三種顏色 |
-| D | 外觀策略圖只有兩條（只走外觀 6／技術+外觀 4），看不出東西；兩張寬表 PPT 放不下 | 改申請人×策略型交叉圖，表精簡 |
+| D | 設計策略圖只有兩條（只走設計 6／技術+設計 4），看不出東西；兩張寬表 PPT 放不下 | 改申請人×策略型交叉圖，表精簡 |
 
 ⚠ 共同形態：**圖與表各自演進**。B 是反向不一致（圖有、表沒有），
 與同日修的趨勢表（表有、圖沒有）恰成對照。
@@ -106,15 +106,15 @@ class TransferredColorTests(unittest.TestCase):
 
 
 class DesignStrategyChartTests(unittest.TestCase):
-    """D：外觀策略改申請人×策略型交叉圖，表精簡。"""
+    """D：設計策略改申請人×策略型交叉圖，表精簡。"""
 
     STRATEGY_ROWS = [
-        {"applicant": "廈門帝瑪斯健康科技", "strategy_type": "技術+外觀",
+        {"applicant": "廈門帝瑪斯健康科技", "strategy_type": "技術+設計",
          "design_count": 2, "tech_count": 11, "first_design_year": 2019,
          "latest_design_year": 2022, "design_years": "2019；2022",
          "legal_status_summary": "授權", "representative_design_patent_id": 134,
          "representative_design_title": "Fan skiing training ware"},
-        {"applicant": "上海波迪貿易", "strategy_type": "只走外觀",
+        {"applicant": "上海波迪貿易", "strategy_type": "只走設計",
          "design_count": 1, "tech_count": 0, "first_design_year": 2018,
          "latest_design_year": 2018, "design_years": "2018",
          "legal_status_summary": "授權", "representative_design_patent_id": 135,
@@ -125,14 +125,14 @@ class DesignStrategyChartTests(unittest.TestCase):
         """🔴 圖要能看出「誰用什麼策略」，不是只有兩條總數。
 
         形式改過四輪，判準始終不變（圖上要有申請人、看得出策略）：
-        兩條總長條 → 申請人×年度矩陣（08-17）→ 申請人 × 技術／外觀／技術+外觀
-        → **申請人 × 技術／外觀兩欄**（08-18 二輪：這張圖只收有設計案的申請人，
+        兩條總長條 → 申請人×年度矩陣（08-17）→ 申請人 × 技術／設計／技術+設計
+        → **申請人 × 技術／設計兩欄**（08-18 二輪：這張圖只收有設計案的申請人，
         合計欄恆等於兩欄相加，永遠不會出現只走技術那一類）。
         """
         rows = chart_runner.design_strategy_matrix_rows(self.STRATEGY_ROWS)
         out = Path(tempfile.mkdtemp()) / "design.svg"
         chart_runner.render_matrix_chart(
-            out, "外觀保護策略", rows, row_key="applicant",
+            out, "設計保護策略", rows, row_key="applicant",
             col_key="strategy_axis",
             col_order=chart_runner.DESIGN_STRATEGY_AXIS)
         svg = out.read_text(encoding="utf-8")

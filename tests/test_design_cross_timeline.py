@@ -2,12 +2,12 @@
 
 ## 為什麼改
 
-原表把外觀清單與技術代表案並排，「交叉」是假的——**沒有任何欄位表達兩者的
+原表把設計清單與技術代表案並排，「交叉」是假的——**沒有任何欄位表達兩者的
 關係**。實資料裡關係很清楚：
 
-    廈門帝瑪斯   外觀 2019, 2022  │ 技術 2020×4, 2022×2, 2024×5  → 外觀先行
-    廈門康樂佳   外觀 2024        │ 技術 2024                    → 同年同步
-    澳瑞特體育   外觀 2015        │ 技術 2015                    → 同年同步
+    廈門帝瑪斯   設計 2019, 2022  │ 技術 2020×4, 2022×2, 2024×5  → 設計先行
+    廈門康樂佳   設計 2024        │ 技術 2024                    → 同年同步
+    澳瑞特體育   設計 2015        │ 技術 2015                    → 同年同步
 
 後兩家還是同一個產品的雙重保護（`Ski machine (K7528)` ／
 `Skiing machine with adjustable wind resistance`）。這才是這張表該答的事。
@@ -15,7 +15,7 @@
 ## 兩個設計取捨
 
 - **佈局順序是算術不是判斷**：比較首次申請年而已。⚠ 用詞守在事實層
-  （外觀先行 N 年／同年同步／技術先行 N 年），不寫「產品化訊號」那種超譯。
+  （設計先行 N 年／同年同步／技術先行 N 年），不寫「產品化訊號」那種超譯。
 - **保護標的不進表格**：改由 CLI 讀 `patents."文獻備註"` 寫進解讀
   ——沿用 2026-08-10 定案（資料層給 `patent_ids`，不預先算好餵過去，
   否則 CLI 無法追問、無法深入）。所以列裡帶隱藏的 `design_patent_ids`。
@@ -31,7 +31,7 @@ from backend.app.reports.content_blocks import (
 )
 
 DETAIL = [
-    # 帝瑪斯：外觀 2019／2022，技術 2020／2024 → 外觀先行 1 年
+    # 帝瑪斯：設計 2019／2022，技術 2020／2024 → 設計先行 1 年
     {"patent_id": 134, "patent_type": "P", "document_kind": "S",
      "application_year": 2019, "applicant_display_name": "廈門帝瑪斯健康科技",
      "title": "Fan skiing training ware", "主權項": ""},
@@ -52,7 +52,7 @@ DETAIL = [
      "application_year": 2024, "applicant_display_name": "廈門康樂佳運動器材",
      "title": "Skiing machine with adjustable wind resistance",
      "主權項": "一種可調風阻…"},
-    # 只走外觀：不進交叉表，但要進策略矩陣
+    # 只走設計：不進交叉表，但要進策略矩陣
     {"patent_id": 129, "patent_type": "P", "document_kind": "S",
      "application_year": 2021, "applicant_display_name": "Zhou Zheng",
      "title": "Body-building skiing machine", "主權項": ""},
@@ -92,14 +92,14 @@ class CrossTableIsTimelineTests(unittest.TestCase):
 
     def test_filing_order_design_first(self):
         self.assertEqual(
-            self._by_applicant()["廈門帝瑪斯健康科技"]["filing_order"], "外觀先行 1 年")
+            self._by_applicant()["廈門帝瑪斯健康科技"]["filing_order"], "設計先行 1 年")
 
     def test_filing_order_same_year(self):
         self.assertEqual(
             self._by_applicant()["廈門康樂佳運動器材"]["filing_order"], "同年同步")
 
     def test_design_only_applicant_absent(self):
-        """只走外觀者沒有交叉可言，不進這張表（範圍維持現狀）。"""
+        """只走設計者沒有交叉可言，不進這張表（範圍維持現狀）。"""
         self.assertNotIn("Zhou Zheng", self._by_applicant())
 
     def test_patent_ids_carried_for_cli(self):
@@ -127,7 +127,7 @@ class CrossTableIsTimelineTests(unittest.TestCase):
 
 
 class StrategyMatrixTwoAxisTests(unittest.TestCase):
-    """策略矩陣拿掉「技術+外觀」。
+    """策略矩陣拿掉「技術+設計」。
 
     ⚠ 理由不只是「多餘」：`design_protection_strategy` 只收有設計案的申請人
     （`if not designs: continue`），所以第三欄**恆等於前兩欄相加**，
@@ -139,19 +139,19 @@ class StrategyMatrixTwoAxisTests(unittest.TestCase):
             design_protection_strategy(DETAIL))
 
     def test_only_two_axes(self):
-        self.assertEqual(chart_runner.DESIGN_STRATEGY_AXIS, ("技術", "外觀"))
+        self.assertEqual(chart_runner.DESIGN_STRATEGY_AXIS, ("技術", "設計"))
         self.assertEqual({r["strategy_axis"] for r in self._rows()},
-                         {"技術", "外觀"})
+                         {"技術", "設計"})
 
     def test_no_total_column(self):
         for r in self._rows():
-            self.assertNotEqual(r["strategy_axis"], "技術+外觀")
+            self.assertNotEqual(r["strategy_axis"], "技術+設計")
 
     def test_design_only_shows_zero_tech(self):
         by = {(r["applicant"], r["strategy_axis"]): r["patent_count"]
               for r in self._rows()}
         self.assertEqual(by[("Zhou Zheng", "技術")], 0)
-        self.assertEqual(by[("Zhou Zheng", "外觀")], 1)
+        self.assertEqual(by[("Zhou Zheng", "設計")], 1)
 
 
 if __name__ == "__main__":
