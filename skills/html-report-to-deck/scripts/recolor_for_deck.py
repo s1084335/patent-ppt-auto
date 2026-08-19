@@ -32,6 +32,7 @@ PPTX 簡報用 `#0B2545`。報表側產的 SVG 直接嵌進投影片時，
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -41,6 +42,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 from backend.app.reports.chart_sizing import (  # noqa: E402
+    NOT_SAME_PAGE,
     REPORT_TO_DECK,
     known_colours,
 )
@@ -116,17 +118,63 @@ def unknown_colours(svg_dir: Path) -> list[str]:
     return sorted(seen - known)
 
 
+def check_pages(content_path: Path, svg_dir: Path) -> list[str]:
+    """§6.8：同頁互斥色對——同一頁不得同時出現 `NOT_SAME_PAGE` 的任一對。
+
+    ## 為什麼要有這道，而 §6.2c 不夠
+
+    使用者裁決「都留但不得同頁」有兩組，**分離手段不同**：
+
+    - 兩套深藍靠**媒介**分離（本檔的換色），結構上不可能同頁——§6.2c 就管得住。
+    - 兩個紅（`#C62828` 到期／`#DC2626` 最高）**都在報表側**，分不了媒介，
+      靠**色階**分離。換色管不到它們，只能驗**頁面組成**。
+
+    ⚠ 判準是「渲染後的頁」不是「圖檔本身」：雙圖頁把兩張圖放同一頁，
+    各自合規、合起來違規——只驗單張圖等於沒驗到唯一會出事的情境。
+
+    ⚠ **只報告，不自動換色**（§6.8.4）：兩個紅分屬不同色階，自動換會把
+    「到期」染成「最高」，語意被改掉而畫面看起來還變「正確」了。
+    拆頁或改圖是判斷，不是規則。
+    """
+    content = json.loads(Path(content_path).read_text(encoding="utf-8"))
+    bad: list[str] = []
+    for index, page in enumerate(content.get("pages") or [], 1):
+        title = str(page.get("title") or f"第 {index} 頁")
+        seen: set[str] = set()
+        for name in page.get("charts") or []:
+            f = Path(svg_dir) / f"{name}.svg"
+            if not f.is_file():
+                # ⚠ 缺圖要報出來，不能當成「這頁沒有色」放行——靜默略過會讓
+                #   缺圖的頁永遠合規（缺席型偏差）。
+                bad.append(f"「{title}」宣告的圖 {name}.svg 不存在，無法檢查同頁互斥")
+                continue
+            seen |= {m.group(0).upper() for m in HEX.finditer(f.read_text(encoding="utf-8"))}
+        for a, b in NOT_SAME_PAGE:
+            if a in seen and b in seen:
+                bad.append(
+                    f"「{title}」同時出現 {a} 與 {b}——這兩色宣告為不得同頁"
+                    "（都留、但靠不同頁區分）。請拆頁或改用同一色階")
+    return bad
+
+
 def main() -> int:
     svg_dir = Path(sys.argv[1])
     if "--check" in sys.argv[2:]:
         bad = check_dir(svg_dir)
+        # §6.8：給了 content.json 就一併驗同頁互斥。⚠ 沒給就跳過**並說出來**——
+        # 靜默跳過會讓人以為驗過了（本專案「缺席型偏差」的固定形狀）。
+        rest = [a for a in sys.argv[2:] if a != "--check"]
+        if rest:
+            bad += check_pages(Path(rest[0]), svg_dir)
+        else:
+            print("⚠ 未給 content.json，**略過同頁互斥檢查**（§6.8）")
         for line in bad:
             print("✗", line)
         unknown = unknown_colours(svg_dir)
         if unknown:
             # 只揭露不擋：讓沒被涵蓋的色現形，由人判斷該不該進色票
             print(f"⚠ 不在色票內的色 {len(unknown)} 種：{', '.join(unknown)}")
-        print("換色檢查：", "通過" if not bad else f"{len(bad)} 處未換")
+        print("換色檢查：", "通過" if not bad else f"{len(bad)} 處未過")
         return 1 if bad else 0
 
     result = recolor_dir(svg_dir)

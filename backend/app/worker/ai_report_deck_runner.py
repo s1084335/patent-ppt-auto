@@ -378,8 +378,10 @@ def run_deck(
         # ⚠ 放在這裡而不是緊接換色之後：`marks` 之後 SVG 還會被動一次，
         #   只在換色當下驗等於驗了一份不是最終產物的東西。
         # ⚠ 這是引擎保證項（不是內容問題），紅了不走修稿輪——CLI 改不動色票。
+        # ⚠ 帶 content.json：不帶的話只驗換色、**不驗同頁互斥**（§6.8），
+        #   而腳本會把「略過」印出來——但印出來不等於有人看，所以這裡直接給。
         _step("recolor_check", [py, str(scripts / "recolor_for_deck.py"),
-                                str(work / "charts"), "--check"])
+                                str(work / "charts"), "--check", str(content_path)])
 
         code, output = _step("check", [py, str(scripts / "check_content.py"),
                                        str(content_path), str(work / "png")],

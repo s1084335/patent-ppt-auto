@@ -56,6 +56,9 @@ class FakeSteps:
                  make_fail_times: int = 0, check_fail_times: int = 0):
         self.work = work
         self.calls: list[str] = []
+        #: 步名 -> 最後一次的 argv。⚠ 只記步名不夠：`recolor_check` 有沒有拿到
+        #: content.json 決定它驗不驗同頁互斥（§6.8），而「有呼叫」看不出這件事。
+        self.argv: dict[str, list[str]] = {}
         self.fail_step = fail_step
         self.fail_times = fail_times
         self.plan_chips = plan_chips or []
@@ -64,6 +67,7 @@ class FakeSteps:
 
     def __call__(self, step: str, argv: list[str]) -> tuple[int, str]:
         self.calls.append(step)
+        self.argv[step] = list(argv)
         fails_left = self.fail_times if step == self.fail_step else 0
         if fails_left and self.calls.count(self.fail_step) <= self.fail_times:
             return 1, f"{step} 假失敗"
@@ -185,6 +189,21 @@ class DeckRunnerTests(unittest.TestCase):
         # CLI 恰兩次：撰稿＋目視通過
         self.assertEqual(len(cli.prompts), 2)
         self.assertEqual(summary["visual_rounds"], 1)
+
+    def test_recolor_check_receives_content_json(self):
+        """🔴 §6.8：換色檢查必須拿到 content.json，否則它**只驗換色、不驗同頁互斥**。
+
+        ⚠ 反向驗證抓到的洞：把 runner 的 `str(content_path)` 拿掉，
+        所有測試照樣綠——「有呼叫 recolor_check」看不出它拿到了什麼，
+        而腳本會安靜地退化成半套檢查（它會印一行「略過」，但印出來不等於有人看）。
+        """
+        _summary, steps, _cli = self._run()
+        argv = steps.argv.get("recolor_check")
+        self.assertIsNotNone(argv, "沒有跑 recolor_check")
+        self.assertIn("--check", argv)
+        self.assertTrue(
+            any(a.endswith("content.json") for a in argv),
+            f"recolor_check 沒拿到 content.json，同頁互斥不會被驗：{argv}")
 
     def test_chip_rebuild_runs_only_when_plan_marks(self):
         steps = FakeSteps(self.work, plan_chips=["opportunity_quadrant_tech"])
