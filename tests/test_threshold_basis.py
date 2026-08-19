@@ -87,7 +87,10 @@ class KnownOffendersAreTrackedTests(unittest.TestCase):
     #: 2026-08-19 兩個時間窗改由 `derive_status_windows` 從本批資料推導，
     #: 且實測滑雪機那批推導結果與原常數逐字相同、13 個主題狀態一個都沒變
     #: （見 `test_status_windows_relative`）。
-    RESOLVED = ("STATUS_EARLY_YEARS", "STATUS_RECENT_YEARS")
+    #: ⚠ `STATUS_STAGNANT_BAND` **不在**這裡：帶心雖已改為推導，但它的問題是
+    #: 機制（ratio 拿 5 年窗比 9 年窗，被窗長汙染），不是值。
+    #: 把值改成推導不等於修好機制——這條界線是本表存在的意義。
+    RESOLVED = ("STATUS_EARLY_YEARS", "STATUS_RECENT_YEARS", "STATUS_GROWTH_HIGH")
 
     def test_all_offenders_are_declared(self):
         for name in self.OFFENDERS:

@@ -88,10 +88,48 @@ def derive_status_windows(years) -> tuple[tuple[int, int], tuple[int, int]] | No
         return None
     return (usable[0], early_end), (recent_start, cutoff)
 
-# 「成長率高」與「成長停滯」的分界：近期件數佔該主題總件數的比例 R。
-# 全庫基準 R＝38/55＝0.69——高於它才叫成長得比整體快。
+# 「成長率高」與「成長停滯」的分界：近期件數佔（近期＋早期）的比例 R。
+#
+# 🔴 2026-08-19 改為**由本批推導**（`derive_growth_baseline`）。
+# 語意本來就是比較型的——原註解寫著「高於它才叫成長得**比整體快**」，
+# 而「整體」隨批次改變。寫成常數等於拿甲批的整體去衡量乙批的主題。
+#
+# ⚠ 實測還發現這個常數連**它自己宣稱的依據**都對不上：原註解說「全庫基準
+#   R＝38/55＝0.69」，但 55 是 **workspace 成員數**，判定實際跑在 **44 件的
+#   分群母體**上——真正的 R＝30/40＝**0.75**。0.70 既不是別批的尺也不是本批的尺。
+# ⚠ 改成推導後實測滑雪機 13 個主題狀態**變動 0 個**（主因是「件數與家數同步
+#   上升就判成長」的優先序排在這兩個門檻之前，多數主題走不到這裡）。
+#
+# 下列兩個常數**保留**為推導失敗（母體空）時的退路與基準宣告的對象。
 STATUS_GROWTH_HIGH = 0.70
 STATUS_STAGNANT_BAND = (0.59, 0.79)
+
+#: 停滯帶的半寬。⚠ 這是**選擇**不是推導——帶要多寬沒有資料能告訴你，
+#: 具名是為了讓它可以被宣告、被追問，而不是藏在 (0.59, 0.79) 這組數字裡。
+STATUS_STAGNANT_HALF_WIDTH = 0.10
+
+
+def derive_growth_baseline(recent_total: int, early_total: int) -> float | None:
+    """本批的「整體成長率」R＝近期 ÷（近期＋早期）；母體空時回 `None`。
+
+    ⚠ 回 `None` 而不是 0：回 0 會讓每個主題的 `ratio >= baseline` 都成立，
+    整批誤判成「新興」——那是比沒有基準更糟的失效方式。
+    """
+    total = int(recent_total) + int(early_total)
+    if total <= 0:
+        return None
+    return int(recent_total) / total
+
+
+def derive_stagnant_band(baseline: float) -> tuple[float, float]:
+    """停滯帶＝以本批基準為中心、`STATUS_STAGNANT_HALF_WIDTH` 為半寬。
+
+    ⚠ 夾限在 [0, 1]：基準接近兩端時帶會溢出比例的定義域，
+    不夾限會出現負數下界（等於帶變單邊）或 >1 的上界（等於帶失效）。
+    """
+    lo = max(0.0, baseline - STATUS_STAGNANT_HALF_WIDTH)
+    hi = min(1.0, baseline + STATUS_STAGNANT_HALF_WIDTH)
+    return (round(lo, 4), round(hi, 4))
 
 # 件數過少時不判狀態。⚠ 切窗後「近期 2 件 vs 早期 1 件」在數學上是成長 100%，
 # 但那是噪音不是訊號；本案 13 個主題有 3 個落在這裡。
@@ -106,7 +144,9 @@ REPRESENTATIVE_MAX = 3
 TECH_MEANS_MAX = 3
 
 
-def classify_topic_status(metrics: dict[str, Any], median_count: float) -> str:
+def classify_topic_status(metrics: dict[str, Any], median_count: float,
+                          *, growth_high: float | None = None,
+                          stagnant_band: tuple[float, float] | None = None) -> str:
     """依五類條件判定技術狀態；判定優先序見下。
 
     優先序 **衰退／轉型 → 競爭集中 → 成長 → 成熟 → 新興 → 未分類**。
@@ -134,6 +174,9 @@ def classify_topic_status(metrics: dict[str, Any], median_count: float) -> str:
     in_window = recent + early
     ratio = (recent / in_window) if in_window else 0.0
     high_volume = total >= median_count
+    # ⚠ 未傳入就退回常數：既有呼叫端零修改，且推導失敗（母體空）時仍有退路。
+    high_bar = STATUS_GROWTH_HIGH if growth_high is None else growth_high
+    band = STATUS_STAGNANT_BAND if stagnant_band is None else stagnant_band
 
     if recent < early and share_recent < share_early and apps_recent < apps_early:
         return TOPIC_STATUS_DECLINING
@@ -141,9 +184,9 @@ def classify_topic_status(metrics: dict[str, Any], median_count: float) -> str:
         return TOPIC_STATUS_CONCENTRATED
     if recent > early and apps_recent > apps_early:
         return TOPIC_STATUS_GROWING
-    if high_volume and STATUS_STAGNANT_BAND[0] <= ratio <= STATUS_STAGNANT_BAND[1]:
+    if high_volume and band[0] <= ratio <= band[1]:
         return TOPIC_STATUS_MATURE
-    if not high_volume and ratio >= STATUS_GROWTH_HIGH and share_recent > share_early:
+    if not high_volume and ratio >= high_bar and share_recent > share_early:
         return TOPIC_STATUS_EMERGING
     return TOPIC_STATUS_UNCLASSIFIED
 
@@ -461,10 +504,21 @@ def _attach_topic_status(rows: list[dict[str, Any]]) -> None:
         by_source.setdefault(str(row.get("source_field") or ""), []).append(row)
 
     for source_field, channel_rows in by_source.items():
-        recent_total = sum(r["recent_count"] for r in channel_rows) or 1
-        early_total = sum(r["early_count"] for r in channel_rows) or 1
+        # ⚠ 原始總數與除法用的分母要分開：下面兩個 `or 1` 是除零保護，
+        #   拿它去算成長基準會把「近期 0 件」變成「近期 1 件」，基準整個偏掉。
+        recent_sum = sum(r["recent_count"] for r in channel_rows)
+        early_sum = sum(r["early_count"] for r in channel_rows)
+        recent_total = recent_sum or 1
+        early_total = early_sum or 1
         counts = [r["patent_count"] for r in channel_rows] or [0]
         median_count = statistics.median(counts)
+        # 🔴 2026-08-19：「成長得比整體快」的基準由**本通道的整體**推導，
+        # 不再用寫死的 0.70。⚠ 逐通道各推一份——技術與功效的量級本來就不同，
+        # 共用一個基準等於拿技術的尺量功效（同 median_count 的理由）。
+        baseline = derive_growth_baseline(recent_sum, early_sum)
+        growth_high = STATUS_GROWTH_HIGH if baseline is None else baseline
+        stagnant_band = (STATUS_STAGNANT_BAND if baseline is None
+                         else derive_stagnant_band(baseline))
         # 🔴 狀態分類**只給技術通道**（2026-08-03 使用者定案）。
         # 使用者實機看到「提升訓練成效 → 成長技術」後指出這是技術通道的設計。
         # 他 08-02 定的五類講的是技術；功效通道的用途是**跟技術主題對照**，
@@ -477,7 +531,9 @@ def _attach_topic_status(rows: list[dict[str, Any]]) -> None:
             row["share_recent"] = round(row["recent_count"] / recent_total, 4)
             row["share_early"] = round(row["early_count"] / early_total, 4)
             if classify:
-                row["status"] = classify_topic_status(row, median_count)
+                row["status"] = classify_topic_status(
+                    row, median_count,
+                    growth_high=growth_high, stagnant_band=stagnant_band)
                 row["status_meaning"] = TOPIC_STATUS_MEANINGS.get(row["status"], "")
 
 
