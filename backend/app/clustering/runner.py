@@ -54,8 +54,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SOURCE_FIELD_WIPS_INDEPENDENT_CLAIMS = SOURCE_FIELD_TECHNICAL
 PCA_COMPONENTS = 100
 # 分群文件數下限（2026-07-27 使用者定：50→30）。
-# 實機動因：滑雪機 60 筆專利，但各通道**可用文件數**不足 50——技術（獨立項）40、
-# 功效（效果摘要）49，兩通道都被舊門檻擋下。可用數＜專利數，因為不是每筆都有該欄位。
+#
+# 🔴 2026-08-19 依據改寫。原註解寫的是**觸發場合**不是**理由**：
+# 「實機動因：滑雪機 60 筆專利，但各通道可用文件數不足 50——技術 40、功效 49，
+# 兩通道都被舊門檻擋下」。那說明了為什麼當時要調，沒說明為什麼是 30。
+#
+# 真正的理由可以從本檔內部推導：下方 k 掃描規則規定 30–49 筆掃 `k=(3, 5, 8)`，
+# 而分群品質指標 `model.small_topic_ratio` 以 `min_topic_docs=5` 認定「太小的群」。
+#   最小 k=3 × 每群至少 5 篇 ⇒ **15 筆是絕對下限**
+#   取 30 讓最粗的 k=3 每群約 10 篇 ⇒ 下限的 2 倍
+#
+# ⚠ 本項**不推導**：它決定「這批能不能分群」。由本批推導等於「資料少就把標準
+#   放寬」，而資料少正是分群不可靠的時候——那是循環論證。
 # ⚠ 低於本門檻改由 AI 提主題草稿、使用者定案（罕用備案），不走 BERTopic。
 MIN_CLUSTERING_DOCUMENTS = 30
 CANDIDATE_REFERENCE_PARAMETER_KEY = "_representative_document_references"

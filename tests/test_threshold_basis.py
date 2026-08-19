@@ -35,8 +35,49 @@ from backend.app.reports import threshold_basis as T
 
 
 class BasisVocabularyTests(unittest.TestCase):
-    def test_three_bases_only(self):
-        self.assertEqual(set(T.BASES), {"本次母體", "制度事實", "全庫"})
+    def test_basis_vocabulary_is_closed(self):
+        """基準詞彙是**封閉集合**——鎖住是為了防止有人加一個模糊的類別來安置
+        說不清楚的門檻（例如「工程判斷」「經驗值」），那等於取消這道閘門。
+
+        🔴 2026-08-19 刻意加第四類「可靠度下限」：使用者原則「不能是絕對值」
+        對**比較型**判準成立，但**可靠度型**（資料夠不夠讓計算有意義）改成
+        推導是循環論證——「這批少所以把標準放寬」，而少正是不可靠的時候。
+        原本三類裝不下它，只能硬塞「本次母體」＋ pending，那是用宣告掩蓋分類錯誤。
+        ⚠ 加類別的門檻很高：新類別必須**改變該門檻該不該推導的答案**，
+        而不只是讓表格看起來比較整齊。
+        """
+        self.assertEqual(set(T.BASES),
+                         {"本次母體", "制度事實", "全庫", "可靠度下限"})
+
+    def test_reliability_floor_needs_a_checkable_reference(self):
+        """宣告「可靠度下限」必須附**統計慣例或可從程式內部推導**的依據。
+
+        ⚠ 這一類最容易變成藏污納垢處：說「這是可靠度下限」就不必推導了。
+        所以它跟「制度事實」同樣要附依據，且同樣不接受自我指涉。
+        """
+        for name, d in T.THRESHOLD_BASIS.items():
+            if d.basis != "可靠度下限":
+                continue
+            with self.subTest(threshold=name):
+                self.assertTrue(str(d.reference).strip(),
+                                f"{name} 宣告可靠度下限卻沒給依據")
+                for vague in ("沿用既有", "實測如此", "經驗值", "工程判斷"):
+                    self.assertNotIn(vague, d.reference,
+                                     f"{name} 的依據是自我指涉")
+
+    def test_reliability_floor_is_not_justified_by_this_batch(self):
+        """⚠ 核心：可靠度下限的依據**不得**用本批的分布來 justify。
+
+        那正是原本的病——「本案 13 個主題有 3 個落在這裡」「實機動因：滑雪機
+        60 筆」。它們說明了調整的**場合**，沒說明門檻該取這個值的**理由**。
+        """
+        for name, d in T.THRESHOLD_BASIS.items():
+            if d.basis != "可靠度下限":
+                continue
+            with self.subTest(threshold=name):
+                for batch_word in ("滑雪機", "割草機", "本案 ", "這批資料"):
+                    self.assertNotIn(batch_word, d.reference,
+                                     f"{name} 的依據仍指向某一批資料")
 
 
 class DeclarationTests(unittest.TestCase):
@@ -90,7 +131,13 @@ class KnownOffendersAreTrackedTests(unittest.TestCase):
     #: ⚠ `STATUS_STAGNANT_BAND` **不在**這裡：帶心雖已改為推導，但它的問題是
     #: 機制（ratio 拿 5 年窗比 9 年窗，被窗長汙染），不是值。
     #: 把值改成推導不等於修好機制——這條界線是本表存在的意義。
-    RESOLVED = ("STATUS_EARLY_YEARS", "STATUS_RECENT_YEARS", "STATUS_GROWTH_HIGH")
+    #:
+    #: ⚠ 解除的方式有**兩種**，不是只有推導：
+    #:   ①改成由本批推導（比較型）——前三項
+    #:   ②依據換成統計／演算法理由並改宣告為「可靠度下限」（可靠度型）——後兩項
+    #: 後者仍是絕對值，但它**本來就該是**；病在依據用本批分布 justify，不在值本身。
+    RESOLVED = ("STATUS_EARLY_YEARS", "STATUS_RECENT_YEARS", "STATUS_GROWTH_HIGH",
+                "STATUS_MIN_SAMPLE", "MIN_CLUSTERING_DOCUMENTS")
 
     def test_all_offenders_are_declared(self):
         for name in self.OFFENDERS:
@@ -111,14 +158,21 @@ class KnownOffendersAreTrackedTests(unittest.TestCase):
                                 f"{name} 沒被標為待修")
 
     def test_resolved_ones_say_how_they_were_resolved(self):
-        """⚠ 解除 pending 的必須留下推導方式，否則下次讀的人只看到一個 False，
-        無從判斷它是真的解了、還是有人為了讓閘門變綠而改的。"""
+        """⚠ 解除 pending 的必須留下**怎麼解的**，否則下次讀的人只看到一個 False，
+        無從判斷它是真的解了、還是有人為了讓閘門變綠而改的。
+
+        ⚠ 兩條解除路徑各留各的證據，不能只認一種（本測試初版只認 `derivation`，
+        把靠依據解除的那兩個判成失敗——**測試自己也會有「只認得一種正確」的偏差**）：
+          - 比較型 → 改成推導 → 留 `derivation`
+          - 可靠度型 → 依據換成統計／演算法理由 → 留 `reference`
+        """
         for name in self.RESOLVED:
             with self.subTest(threshold=name):
                 d = T.THRESHOLD_BASIS[name]
                 self.assertFalse(d.pending, f"{name} 列在 RESOLVED 卻仍標 pending")
-                self.assertTrue(str(d.derivation).strip(),
-                                f"{name} 解除了 pending 卻沒說推導方式")
+                evidence = str(d.derivation).strip() or str(d.reference).strip()
+                self.assertTrue(evidence,
+                                f"{name} 解除了 pending 卻既沒說推導方式、也沒給依據")
 
     def test_pending_ones_carry_the_evidence(self):
         for name in self.OFFENDERS:
