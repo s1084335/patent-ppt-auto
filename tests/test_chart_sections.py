@@ -1594,31 +1594,32 @@ class SparseChartFillsFrameTests(unittest.TestCase):
             svg = path.read_text(encoding="utf-8")
         return int(re.search(r'height="(\d+)"', svg).group(1))
 
-    def test_few_rows_still_fill_the_frame(self):
-        """3 列以上要填到六成；1–2 列另計。
+    def test_canvas_height_tracks_row_count(self):
+        """圖高隨資料量成長，不再撐開填滿固定畫布。
 
-        🔴 **本項判準 2026-08-03 依 H-6 下修（規格被實機推翻）**：
-        原本 1 列 0.45、2 列 0.6。實機 p9（CPC L4 只有 1 列）照這個標準撐開後，
-        那根長條橫貫全寬、粗到變成**一整塊色帶**，已經不像圖表——
-        用一個可讀性問題換掉另一個。
+        🔴 **本項 2026-08-19 依使用者裁決改寫（規格被推翻）**。原名
+        `test_few_rows_still_fill_the_frame`，斷言 1/2/3 列各要填到畫布上限的
+        0.26／0.35／0.6——那是 G-7／H-6（2026-08-03）「圖要填滿 PPT 3.2in 圖框」
+        的判準。使用者實機看 IPC/CPC 分頁後裁決：
+        「bar 間距縮小，文字同樣大小，圖不一定要撐那麼大張，根據資料變動」。
 
-        ⚠ 「不要大片留白」的意圖仍然保留：少列時列高照樣撐開（`_fill_row_height`
-        仍會放大），只是上限收到 `SPARSE_ROW_CEILING_FACTOR`＝2 倍。
-        剩下的留白是**內容量的問題**（CPC L4 就只有一個分類），
-        要靠版型或插圖補（W-3），不是把長條拉粗。
+        ⚠ 推翻的依據不只是偏好：`chart_scale()` 自 2026-08-12
+        （unify-chart-source）起**恆為 1.0**，PPT 二次縮放補償已退場、
+        簡報端改由 deck skill 逐圖 refit——「填滿圖框」的前提本身已不存在。
+        填框留下的病徵是列距毫無規律（2/3/5/8/10 列＝54/108/91/57/45），
+        同一張圖的兩個分頁切換時條會跳位。
 
-        🔴 2026-08-12 契約更新（unify-chart-source）：畫布綁 WEB 後
-        max 高 460→560（+21.7%）、列高 28→32（+14.3%）——分母長得比分子快，
-        1 列的實際佔比由 ~0.30 降為 0.279，舊下限 0.28 差線。填框**機制零改動**
-        （實測 1/2/3 列＝156/210/426px），下限依新幾何校準為 0.26/0.35/0.6
-        ——此為量測後校準，範圍在 change 事前核准的「幾何測試逐支更新」內，
-        已於完成回報揭露。
+        ⚠ 新判準斷言的是**單調性**不是絕對值：列多的圖要比列少的高。
+        寫死「n 列＝多少 px」會在字級或 profile 一變就假紅；
+        列距是否一致由 `test_chart_row_density.py` 專責。
         """
-        for n, floor in ((1, 0.26), (2, 0.35), (3, 0.6)):
-            height = self._height(n)
-            self.assertGreaterEqual(
-                height, chart_runner.CHART_CANVAS_MAX_HEIGHT * floor,
-                f"{n} 列的圖只有 {height}px，框會空掉一大半")
+        heights = {n: self._height(n) for n in (1, 2, 3, 5, 10)}
+        counts = sorted(heights)
+        for smaller, larger in zip(counts, counts[1:]):
+            self.assertLess(
+                heights[smaller], heights[larger],
+                f"{smaller} 列 {heights[smaller]}px 不低於 {larger} 列 "
+                f"{heights[larger]}px——高度沒有隨資料量變動：{heights}")
 
     def test_many_rows_unchanged(self):
         """⚠ 列多時維持原列高——撐開會讓畫布爆高、整張圖反而被縮小（P-2）。"""

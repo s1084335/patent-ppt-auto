@@ -145,16 +145,21 @@ def _minimal_content() -> dict:
         "footer": "測試｜非 FTO", "eyebrow": "測試", "deck_title": "口徑閘門測試",
         "subtitle": "測試", "meta": ["m1", "m2"], "stats": [["55", "件"]],
         "stats_note": "備註", "boundary": "非 FTO 判斷",
-        "rec_title": "建議", "rec_takeaway": "測試",
-        "recommendations": [
-            {"title": "甲", "tag": "t", "lines": ["依據：測試事實", "a"], "color": "cyan"},
-            {"title": "乙", "tag": "t", "lines": ["依據：測試事實", "a"], "color": "blue"},
-            {"title": "丙", "tag": "t", "lines": ["依據：測試事實", "a"], "color": "amber"},
-            {"title": "丁", "tag": "t", "lines": ["依據：測試事實", "a"], "color": "rose"},
-        ],
+        # 🔴 2026-08-19（§9.3）：`rec_title`／`recommendations`／`roadmap*` 已隨
+        #    建議頁與路線圖退場，交付物只剩結論頁。這份 fixture 是七支測試共用的
+        #    最小 content，留著退場欄位會讓那些測試繼續驗一個不存在的落點。
+        #    ⚠ 「依據：」紀律沒有跟著退場——它移到結論列的 `evidence`
+        #    （check_content._check_p2_evidence_rules），故此處每列都帶。
         "pages": [],
-        "roadmap_title": "路線", "roadmap_takeaway": "測試",
-        "roadmap": [{"label": "短期", "title": "x", "items": ["y"], "color": "cyan"}],
+        "conclusions": {
+            "title": "結論",
+            "rows": [
+                {"topic": "測試主題", "finding": "測試發現", "reading": "測試判讀",
+                 "action": "追蹤", "evidence": "依據：測試事實"},
+            ],
+            "covered": "1/1",
+            "uncovered": [],
+        },
         "limits_title": "限制", "limits": ["l1"],
     }
 

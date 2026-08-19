@@ -225,6 +225,18 @@ def _check_conclusions(c: dict, facts_path: Path) -> list[str]:
         topic = str(r.get("topic") or "").strip()
         if not topic:
             continue
+        if not facts:
+            # 🔴 2026-08-19 修：沒有 topic_facts 檔時**不做**主題名比對。
+            #    原本無條件比對，於是每一列都被判「不在引擎的主題清單裡
+            #    （可用：[]）」——清單根本不存在，卻說你不在裡面，
+            #    訊息本身就自相矛盾，讀的人會去改主題名而不是去補檔。
+            #    ⚠ 這不是把破口③放回去：破口③是「主題名不在 facts 就跳過
+            #      逐字比對」，前提是 facts 存在。facts 不存在時無從比對，
+            #      與同函式的 `_check_conclusion_coverage`（`if not facts: return []`）
+            #      同一條規則——沒有對帳基準就不對帳。
+            #    ⚠ 正式路徑不會走到這裡：`assemble_from_version` 一律寫出
+            #      topic_facts.json，且 `require_topic_facts` 會先擋。
+            continue
         if topic not in facts:
             # 🔴 破口③：原本 `if topic in facts:` ——主題名不在 facts 就整個跳過
             #    逐字比對。CLI 只要換個主題名，這道比對就完全失效。

@@ -50,44 +50,44 @@ def _run_check(content: dict) -> subprocess.CompletedProcess:
 class EvidenceGateTests(unittest.TestCase):
     """建議句必須可追 evidence，流程狀態不得印進投影片。"""
 
+    # 🔴 2026-08-19（§9.3）：本組原本把依據紀律驗在 `recommendations[].lines`，
+    #    建議頁退場後那個落點已不存在。**紀律沒有跟著退場**——它擋的是
+    #    「接不上依據的建議句」，而結論頁的行動同樣是建議，只是換了落點到
+    #    `conclusions.rows[].evidence`（check_content._check_p2_evidence_rules）。
+    #    ⚠ 這種時候最容易犯的錯是把測試刪掉：閘門還在、測試沒了，
+    #      日後閘門被改壞不會有人知道。
     def _content(self) -> dict:
         content = _minimal_content()
         content.pop("read_me", None)
         content.pop("chart_rule", None)
         content["pages"] = [{"title": "測試頁", "takeaway": "測試", "charts": [],
                              "lines": ["測試內容"], "tag": None}]
-        content["recommendations"][0]["lines"] = [
-            "依據：CN 121754862 獨立項第 1 要素",
-            "先做構型比對，再決定是否進入設計迭代。",
+        content["conclusions"]["rows"] = [
+            {"topic": "構型主題", "finding": "測試發現", "reading": "測試判讀",
+             "action": "細讀比對",
+             "evidence": "依據：CN 121754862 獨立項第 1 要素"},
+            {"topic": "低密度主題", "finding": "測試發現", "reading": "測試判讀",
+             "action": "佈局", "evidence": "依據：申請年×主題統計"},
         ]
-        content["recommendations"][1]["lines"] = [
-            "依據：申請年×主題統計",
-            "低密度區先做需求驗證。",
-        ]
-        content["recommendations"][2]["lines"] = [
-            "依據：申請人年度布局",
-            "避開近期集中申請的構型。",
-        ]
-        content["recommendations"][3]["lines"] = [
-            "依據：家族國家布局",
-            "優先看有效權利較密集的國家。",
-        ]
+        content["conclusions"]["covered"] = "2/2"
         return content
 
-    def test_recommendations_with_evidence_pass(self):
+    def test_conclusions_with_evidence_pass(self):
         proc = _run_check(self._content())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
-    def test_recommendation_without_evidence_fails(self):
+    def test_conclusion_without_evidence_fails(self):
         content = self._content()
-        content["recommendations"][0]["lines"] = ["先做構型比對，再決定是否迭代。"]
+        content["conclusions"]["rows"][0]["evidence"] = ""
+        content["conclusions"]["rows"][0]["reading"] = "先做構型比對，再決定是否迭代。"
         proc = _run_check(content)
         self.assertEqual(proc.returncode, 1)
         self.assertIn("依據：", proc.stdout)
 
     def test_workflow_state_words_are_blocked(self):
+        """流程狀態詞不得印上投影片——不論它出現在哪一頁。"""
         content = self._content()
-        content["recommendations"][0]["lines"][1] = "待驗證：先放進短期策略。"
+        content["pages"][0]["lines"] = ["待驗證：先放進短期策略。"]
         proc = _run_check(content)
         self.assertEqual(proc.returncode, 1)
         self.assertIn("待驗證", proc.stdout)
@@ -96,7 +96,7 @@ class EvidenceGateTests(unittest.TestCase):
         for phrase in VAGUE_EVIDENCE_EXAMPLES:
             with self.subTest(phrase=phrase):
                 content = self._content()
-                content["recommendations"][0]["lines"][0] = phrase
+                content["conclusions"]["rows"][0]["evidence"] = phrase
                 proc = _run_check(content)
                 self.assertEqual(proc.returncode, 1)
                 self.assertIn("空泛依據", proc.stdout)
@@ -105,7 +105,7 @@ class EvidenceGateTests(unittest.TestCase):
         for key in INTERNAL_KEY_EXAMPLES:
             with self.subTest(key=key):
                 content = self._content()
-                content["recommendations"][0]["lines"][0] = f"依據：{key}"
+                content["conclusions"]["rows"][0]["evidence"] = f"依據：{key}"
                 proc = _run_check(content)
                 self.assertEqual(proc.returncode, 1)
                 self.assertIn("內部欄位", proc.stdout)
@@ -120,8 +120,6 @@ class RetiredCoverRuleFieldsTests(unittest.TestCase):
         content.pop("chart_rule", None)
         content["pages"] = [{"title": "測試頁", "takeaway": "測試", "charts": [],
                              "lines": ["測試內容"], "tag": None}]
-        for rec in content["recommendations"]:
-            rec["lines"] = ["依據：測試事實", "依據足夠才提出動作。"]
         proc = _run_check(content)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
@@ -136,9 +134,18 @@ class TemplateContractTests(unittest.TestCase):
         )
         self.assertNotIn("read_me", template)
         self.assertNotIn("chart_rule", template)
-        for rec in template["recommendations"]:
-            joined = "\n".join(rec["lines"])
-            self.assertIn("依據：", joined)
+        # 🔴 2026-08-19（§9.3）：範本的 `recommendations` 已退場，
+        #    「依據：」示範改掛結論列的 `evidence`。⚠ 仍要驗**範本本身**帶示範句
+        #    ——CLI 照範本寫，範本不示範就等於沒有這條紀律。
+        self.assertNotIn("recommendations", template,
+                         "建議頁已退場，範本不得再宣告 recommendations")
+        rows = template["conclusions"]["rows"]
+        self.assertTrue(rows, "範本的結論頁沒有任何示範列")
+        for row in rows:
+            joined = "\n".join([str(row.get("evidence") or ""),
+                                str(row.get("reading") or "")])
+            self.assertIn("依據：", joined,
+                          f"範本結論列「{row.get('topic')}」沒有示範依據句")
 
         template_text = "\n".join(_walk_text(template))
         for term in BLOCKED_TEMPLATE_TERMS:
