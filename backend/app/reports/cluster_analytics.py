@@ -56,12 +56,76 @@ STATUS_RECENT_YEARS = (2020, 2024)
 # 推導參數。⚠ 具名而非寫在算式裡——寫在算式裡就沒人知道它代表什麼，也改不動。
 #: 近期窗長度（年）。固定不隨資料量浮動，否則兩批報表的「近期」不是同一回事。
 STATUS_RECENT_WINDOW_YEARS = 5
-#: 末端排除幾年。**資料截止效應**：新案還在審查中未公開，件數天然偏低，
-#: 併進近期窗會把每個主題都拉成「衰退」。故整段排除，不計入任何一窗。
+#: 末端排除幾年的**退路值**。**資料截止效應**：新案還在審查中未公開，件數天然
+#: 偏低，併進近期窗會把每個主題都拉成「衰退」。故整段排除，不計入任何一窗。
+#: 🔴 2026-08-19 起正式路徑改由 `derive_tail_exclusion` 依**法律狀態**推導；
+#: 本常數只在狀態資料缺席時使用。
 STATUS_TAIL_EXCLUDED_YEARS = 2
 
+#: 判定「這一年還沒跑完」的未決比門檻。
+#: 🔴 兩批實測夾出來的：50% 會多排除滑雪機的 2024、70% 會少排除割草機的 2025，
+#: **只有 60% 在兩批上都重現現行行為**。
+#: ⚠ 誠實界線：判準是「與既有行為相容」，而既有行為（固定排除末 2 年）本身
+#: 沒被獨立驗證過——60% 是兩批夾出的相容區間，**不是被證明的最佳值**。
+STATUS_TAIL_PENDING_RATIO = 0.60
 
-def derive_status_windows(years) -> tuple[tuple[int, int], tuple[int, int]] | None:
+
+def derive_tail_exclusion(patents) -> int:
+    """依法律狀態推導要排除幾個末端年份（資料截止效應）。
+
+    🔴 2026-08-19 使用者裁決：「應該以專利狀態去推，不直接用年分」。
+
+    原本固定排除末 2 年，在滑雪機與割草機**剛好都對**——但那是巧合，
+    它不知道自己在排除什麼，只是數了兩年。改用**未決比**（該年可見案件中仍在
+    審查／公開的比例）直接量到真相：未決比高代表「這一年看得到的案子幾乎都還
+    沒有結局」，看到的只是最早公開的那一小撮。
+
+    ⚠ 這同時解掉「相對本批最新年 vs 相對今年」的兩難：**不需要知道今天是哪一年**。
+    一份 2022 年匯出的舊資料，它的 2021 年未決比自然偏高，會被正確排除；
+    不必靠「相對今年」去猜，報表也不會隨時間變動（可重現性保住）。
+
+    ⚠ 只排除**連續的末端**：中間年份未決比高（割草機 2018 年 90% 是個別案件還在
+    審）不代表那一年沒跑完。截止效應必然從最新年開始連續往回。
+
+    ⚠ 三個退化情形各有理由：
+    - 沒有年份／沒有任何可判狀態 → 回常數，**不是回 0**。回 0 等於當成「全部
+      已結案」，末端的假低值會把每個主題拉成衰退。
+    - 每一年都超過門檻 → 至少留一年，否則兩窗全空、每個主題回「未分類」，
+      正是本輪在修的那種靜默失效。
+    """
+    from backend.app.mappings.legal_status import (
+        STATUS_PENDING, normalize_legal_status)
+
+    if not patents:
+        return STATUS_TAIL_EXCLUDED_YEARS
+    total: dict[int, int] = {}
+    pending: dict[int, int] = {}
+    judged = 0
+    for p in patents:
+        year = p.get("application_year")
+        if not isinstance(year, int):
+            continue
+        raw = p.get("legal_status")
+        if raw is None or not str(raw).strip():
+            continue                      # 狀態缺席者不計入分母，避免稀釋未決比
+        judged += 1
+        total[year] = total.get(year, 0) + 1
+        if normalize_legal_status(raw) == STATUS_PENDING:
+            pending[year] = pending.get(year, 0) + 1
+    if not judged or not total:
+        return STATUS_TAIL_EXCLUDED_YEARS
+
+    years = sorted(total)
+    excluded = 0
+    for year in reversed(years):
+        if pending.get(year, 0) / total[year] < STATUS_TAIL_PENDING_RATIO:
+            break                          # 一遇到已跑完的年份就停（只砍連續末端）
+        excluded += 1
+    return min(excluded, len(years) - 1)   # 至少留一年
+
+
+def derive_status_windows(years, *, tail_excluded: int | None = None
+                          ) -> tuple[tuple[int, int], tuple[int, int]] | None:
     """從本批資料的申請年推導（早期窗, 近期窗）；跨度不足以切窗時回 `None`。
 
     規則就是原本註解已經寫下的那三件事，只是改成對**任何一批**都成立：
@@ -80,7 +144,11 @@ def derive_status_windows(years) -> tuple[tuple[int, int], tuple[int, int]] | No
                     ) if years else []
     if not usable:
         return None
-    cutoff = usable[-1] - STATUS_TAIL_EXCLUDED_YEARS      # 末端排除後的最後一年
+    # ⚠ 排除年數由呼叫端傳入（正式路徑走 `derive_tail_exclusion` 依狀態推導）；
+    #   未傳時退回常數，既有呼叫端零修改。
+    tail = (STATUS_TAIL_EXCLUDED_YEARS if tail_excluded is None
+            else max(0, int(tail_excluded)))
+    cutoff = usable[-1] - tail                            # 末端排除後的最後一年
     recent_start = cutoff - STATUS_RECENT_WINDOW_YEARS + 1
     early_end = recent_start - 1
     # 早期窗至少要有一年才算切得出來——否則整批都被近期窗吃掉，比不到東西。
@@ -340,8 +408,11 @@ def build_topic_effect_table(
     #   跨主題比較就失去意義（而症狀只會表現成幾個主題的狀態怪怪的）。
     # ⚠ 跨度不足以切窗時退回常數：那組值仍出自滑雪機，但**退路比假窗誠實**
     #   ——回一組落在資料外的窗會讓每個主題都變「未分類」且無人知情。
+    # 🔴 2026-08-19 使用者裁決：截止效應改**以專利狀態推**，不直接數年份。
+    _members = list((patents or {}).values())
+    _tail = derive_tail_exclusion(_members)
     _windows = derive_status_windows(
-        [p.get("application_year") for p in (patents or {}).values()])
+        [p.get("application_year") for p in _members], tail_excluded=_tail)
     early_window, recent_window = _windows if _windows else (
         STATUS_EARLY_YEARS, STATUS_RECENT_YEARS)
 

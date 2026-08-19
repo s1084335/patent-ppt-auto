@@ -65,19 +65,42 @@ class BasisVocabularyTests(unittest.TestCase):
                     self.assertNotIn(vague, d.reference,
                                      f"{name} 的依據是自我指涉")
 
-    def test_reliability_floor_is_not_justified_by_this_batch(self):
-        """⚠ 核心：可靠度下限的依據**不得**用本批的分布來 justify。
+    def test_settled_reliability_floor_is_not_justified_by_this_batch(self):
+        """⚠ 核心：**已定案**的可靠度下限，依據不得用本批的分布來 justify。
 
         那正是原本的病——「本案 13 個主題有 3 個落在這裡」「實機動因：滑雪機
         60 筆」。它們說明了調整的**場合**，沒說明門檻該取這個值的**理由**。
+
+        🔴 2026-08-19 校準：本閘門初版**不分 pending 與否**，於是抓到
+        `STATUS_TAIL_PENDING_RATIO`——它的 reference 是**跨批校準紀錄**
+        （「50% 會多排除滑雪機的 2024、70% 會少排除割草機的 2025，只有 60%
+        兩批都成立」），那是關於門檻穩健性的證據，不是從單批推出的理由。
+
+        ⚠ 而且它標了 `pending=True`，也就是**明說自己還沒有依據**。
+        這時要求依據不得提批次，等於逼它把僅有的證據刪掉——閘門會促成
+        資訊消失，那與它存在的目的相反。
+
+        ⚠ 這正是昨天記下的那條：**訊號式掃描抓的是詞不是行為**。
+        故本閘門只管**已定案**者：宣告「我有依據了」的，依據就不能是某一批。
+        還在 pending 的，留著它的校準紀錄比乾淨更重要。
         """
         for name, d in T.THRESHOLD_BASIS.items():
-            if d.basis != "可靠度下限":
+            if d.basis != "可靠度下限" or d.pending:
                 continue
             with self.subTest(threshold=name):
                 for batch_word in ("滑雪機", "割草機", "本案 ", "這批資料"):
                     self.assertNotIn(batch_word, d.reference,
-                                     f"{name} 的依據仍指向某一批資料")
+                                     f"{name} 已定案，依據卻仍指向某一批資料")
+
+    def test_pending_reliability_floor_still_needs_evidence(self):
+        """⚠ 放寬的補償：pending 的可靠度下限仍要留下**測過什麼**，
+        不能因為標了 pending 就什麼都不寫——那會變成用 pending 逃避舉證。"""
+        for name, d in T.THRESHOLD_BASIS.items():
+            if d.basis != "可靠度下限" or not d.pending:
+                continue
+            with self.subTest(threshold=name):
+                self.assertTrue(str(d.reference).strip(),
+                                f"{name} 標 pending 但連測過什麼都沒寫")
 
 
 class DeclarationTests(unittest.TestCase):
