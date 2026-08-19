@@ -70,6 +70,75 @@ ROLE_CHART_FOOTER = "chart-footer"  # FTO 聲明等頁尾註（圖下方）
 
 
 @dataclass(frozen=True)
+class PaletteEntry:
+    """一個色票條目。
+
+    `medium` 是 §6.2「兩套深藍都留但不得同頁」的依據：
+    分界不是「哪個模組」而是「哪個媒介」——HTML 報表一種、PPTX 簡報一種，
+    同一份 SVG 進 deck 時整批換色，於是任一頁上只會出現一種。
+
+    ⚠ `purpose` 不得留空（§6.5）：沒有用途說明的色，下一個人只能靠猜要不要
+    沿用，於是又多一種。實查時 chart 側 48 種顏色有 **24 種完全沒有具名常數**，
+    就是這樣長出來的。
+    """
+
+    hex: str
+    medium: str          # "report"（HTML 報表）／"deck"（PPTX）／"both"（共用）
+    purpose: str         # 語意用途，空字串不算填
+
+
+#: 🔴 色票的**唯一定義處**（2026-08-19，tasks §6.3）。
+#:
+#: 為什麼與字型同住這裡：`deck_layout.py:27` 與 `rebuild_chip_chart.py` 已經
+#: import 本模組取 `FONT_FAMILY`（字型 2026-08-13 使用者裁決選項 A）。
+#: 色票沿用同一條路——少一個序列化層，也少一份可能分岔的副本。
+#:
+#: ⚠ 目前只收**已有具名常數**的色。實查（§6.0）另有 24 種散落在函式裡、
+#: 完全沒有名字的色，那批要在 §6.4／§6.5 逐一命名並填用途後才進來。
+#: **不預先塞進來湊數**：沒有用途說明的條目等於把問題搬個地方放。
+PALETTE: dict[str, PaletteEntry] = {
+    # ── 文字（🔴 §6.2 的兩套深藍，媒介分流）───────────────────────────
+    "TEXT_IN_CHART": PaletteEntry(
+        "#00094A", "report",
+        "圖內標題與主文字（SVG／HTML 報表）。原 chart_runner.COLOR_TEXT"),
+    "TEXT_ON_PAGE": PaletteEntry(
+        "#0B2545", "deck",
+        "投影片頁面文字（PPTX）。原 deck_layout.TEXT"),
+    "TEXT_SOFT": PaletteEntry(
+        "#869FB2", "report", "次要文字：刻度、副標"),
+    "TEXT_ON_LIGHT": PaletteEntry(
+        "#1A1A1A", "report",
+        "淺色填色**上**的圖元內文字。⚠ 與 TEXT_IN_CHART 不共用——"
+        "那是頁面文字，這是畫在圖元上的，底色來源不同"),
+    # ── 資料主色 ──────────────────────────────────────────────
+    "DATA_PRIMARY": PaletteEntry(
+        "#006DF5", "report", "申請線／長條主色（COLOR_APPLICATION／COLOR_BAR）"),
+    "DATA_ALERT": PaletteEntry(
+        "#C62828", "report", "公告線：與藍線對比（COLOR_PUBLICATION）"),
+    "DATA_SEGMENT": PaletteEntry(
+        "#D97706", "report",
+        "分段長條的區段色（有最新受讓人）。⚠ 與藍段色相差約 180°，色盲安全配對"),
+    "DATA_BAR_ALT": PaletteEntry(
+        "#C99A5B", "report", "次要長條：暖中性，與資料暖色系一致"),
+    "DATA_TRANSFERRED": PaletteEntry(
+        "#7C3AED", "report",
+        "已轉讓（申請人排名圖）：2026-08-17 使用者實物驗收「斜線看不清」改第三色"),
+    # ── 底與線 ────────────────────────────────────────────────
+    "SURFACE_MAP": PaletteEntry("#F8FAFC", "report", "地圖底色"),
+    "LINE_GRID": PaletteEntry("#DCE3F2", "report", "格線"),
+}
+
+#: 🔴 報表色 → deck 色（§6.2「都留但不得同頁」的對照表）。
+#:
+#: 同一份 SVG 進 deck 時依此整批換色。⚠ 左欄必須是 `medium="report"` 的色、
+#: 右欄必須是 `medium="deck"` 的色——方向反了會把 deck 的色換成報表的色，
+#: 而且產物看起來仍然「只有一種深藍」，閘門會綠。
+REPORT_TO_DECK: dict[str, str] = {
+    PALETTE["TEXT_IN_CHART"].hex: PALETTE["TEXT_ON_PAGE"].hex,
+}
+
+
+@dataclass(frozen=True)
 class ChartSizing:
     """一組會在網頁／PPT 之間衝突的尺寸與字級參數。"""
 

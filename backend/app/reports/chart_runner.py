@@ -201,11 +201,6 @@ def record_exports(
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output"
 
-# F-lite（2026-07-31 使用者核准）：SVG 只換配色與字體、圖型邏輯不動。
-# 色票對齊 skill 的 theme.json（Slidesgo 系）——⚠ 值以常數對齊、不做 runtime
-# 依賴（引擎不 import skill）；兩邊一致由 tests/test_chart_svg_flite.py 釘住。
-COLOR_APPLICATION = "#006DF5"   # theme blue：申請線／長條主色
-COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
 # ── 圖表畫布：以**最終顯示尺寸**設計（P-2，2026-08-03）──
 #
 # 🔴 實測：排名圖原本畫 980×724px（10.21×7.54 in），塞進 chart_hero 的
@@ -221,10 +216,21 @@ COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
 # 自行 refit 字級，引擎不再為 PPT 預放大。
 from backend.app.reports.chart_sizing import FONT_STACK
 from backend.app.reports.chart_sizing import (
+    PALETTE,
     ROLE_CHART_FOOTER,
     ROLE_CHART_NOTE,
 )
 from backend.app.reports.chart_sizing import WEB as _SIZING
+
+# F-lite（2026-07-31 使用者核准）：SVG 只換配色與字體、圖型邏輯不動。
+# 🔴 2026-08-19（§6.3）：色票的唯一定義處改為 `chart_sizing.PALETTE`。
+# ⚠ 原註解寫「色票對齊 skill 的 theme.json…值以常數對齊、不做 runtime 依賴」
+#   ——那個「兩邊各寫一份、靠測試釘住」的作法正是 §6.0 實查抓到的病灶
+#   （chart 側 48 種色、24 種完全沒有具名常數，兩側同一個深藍兩個值）。
+#   改為單一來源後不需要「釘住兩份」，因為只有一份。
+# ⚠ 這幾行必須放在 import 之後：原本在檔案上方，改吃 PALETTE 後會 NameError。
+COLOR_APPLICATION = PALETTE["DATA_PRIMARY"].hex   # 申請線／長條主色
+COLOR_PUBLICATION = PALETTE["DATA_ALERT"].hex     # 公告線（與藍線對比）
 
 
 # 🔴 P3（2026-08-07）：畫布與字級目標改**依作用中的 profile** 取值——
@@ -338,7 +344,7 @@ BUBBLE_MIN_RADIUS_PX = _SIZING.bubble_min_radius
 # 泡泡與數字都放得下。
 CHART_YEAR_WINDOW = _SIZING.year_window
 
-COLOR_BAR = "#006DF5"
+COLOR_BAR = PALETTE["DATA_PRIMARY"].hex
 # ⚠ 不得與 COLOR_TEXT_SOFT 共用色值：轉色表以**色碼**為鍵，兩個角色撞同一個
 # 字面值時下游無法分辨「這是次要文字還是次要資料」，只能一起換或一起不換
 # （2026-07-31 獨立驗收：次要長條因此被換成裝飾色族，距 accent 僅 0.4°）。
@@ -350,12 +356,12 @@ COLOR_BAR = "#006DF5"
 # 🔴 2026-08-11 使用者實機回報「三段顏色太相近」：原青 `0891B2` 與藍段同屬
 # 冷色系、明度相近，排名圖上單獨／共同幾乎分不開。改**藍橙對比**
 # （色盲安全的標準配對）：橙 `D97706` 對白底 3.32、與藍段色相差 ~180°。
-COLOR_SEGMENT = "#D97706"
-COLOR_BAR_ALT = "#C99A5B"       # 次要長條（暖中性，與資料暖色系一致）
-COLOR_MAP = "#F8FAFC"
-COLOR_GRID = "#DCE3F2"          # theme bar_track：格線
-COLOR_TEXT = "#00094A"          # theme navy：標題與主文字
-COLOR_TEXT_SOFT = "#869FB2"     # 次要文字（刻度、副標）
+COLOR_SEGMENT = PALETTE["DATA_SEGMENT"].hex
+COLOR_BAR_ALT = PALETTE["DATA_BAR_ALT"].hex       # 次要長條（暖中性）
+COLOR_MAP = PALETTE["SURFACE_MAP"].hex
+COLOR_GRID = PALETTE["LINE_GRID"].hex             # 格線
+COLOR_TEXT = PALETTE["TEXT_IN_CHART"].hex         # 圖內標題與主文字
+COLOR_TEXT_SOFT = PALETTE["TEXT_SOFT"].hex        # 次要文字（刻度、副標）
 
 #: 法律狀態堆疊色（2026-08-17 受理局圖改狀態堆疊）。**唯一定義處**——
 #: 狀態語意固定，顏色不得各處各寫一份。
@@ -372,10 +378,10 @@ STATUS_COLORS: dict[str, str] = {
 }
 
 #: 已轉讓（申請人排名圖）：2026-08-17 使用者實物驗收「斜線看不清」，改第三色。
-COLOR_TRANSFERRED = "#7C3AED"
+COLOR_TRANSFERRED = PALETTE["DATA_TRANSFERRED"].hex
 # 淺色填色上的圖元內文字色（見 readable_text_on）；不與 COLOR_TEXT 共用——
 # 那是「頁面文字」，這是「畫在圖元上的文字」，底色來源不同。
-TEXT_ON_LIGHT = "#1A1A1A"
+TEXT_ON_LIGHT = PALETTE["TEXT_ON_LIGHT"].hex
 # SVG 內建字體宣告：不宣告時瀏覽器與 PowerPoint 轉圖都退回襯線字（舊版視覺斷裂主因）。
 SVG_FONT_STYLE = f"<style>text{{font-family:{FONT_STACK}}}</style>"
 

@@ -24,7 +24,11 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+# ⚠ 別名匯入：本檔已有一個 `PALETTE`（建議卡的標籤色 cyan/blue/…，是
+#   content.json 的公開契約），與色票登記表**同名不同物**。直接匯入會被遮蔽，
+#   而遮蔽不會報錯——只會讓後寫的那個靜默生效。
 from backend.app.reports.chart_sizing import FONT_FAMILY  # noqa: E402
+from backend.app.reports.chart_sizing import PALETTE as COLOR_TOKENS  # noqa: E402
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -32,6 +36,17 @@ from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Length, Pt
 from PIL import Image
+
+def rgb(value: str) -> RGBColor:
+    """`#RRGGBB` → `RGBColor`（🔴 換算的唯一定義處）。
+
+    ⚠ 色票以 hex 字串存（同時服務 SVG／CSS 與 PPTX），PPTX 端需要 `RGBColor`。
+    這個換算每個用到的地方各寫一次的話，會在大小寫與 `#` 前綴上分岔，
+    而分岔的症狀是顏色悄悄變成別的值，不是報錯。
+    """
+    v = value.lstrip("#")
+    return RGBColor(int(v[0:2], 16), int(v[2:4], 16), int(v[4:6], 16))
+
 
 # ── 淺色系（非純白）：頁面淺藍灰，圖表卡白色以襯出報表原圖 ─────────
 BG       = RGBColor(0xE9, 0xEE, 0xF6)
@@ -41,7 +56,11 @@ BLUE     = RGBColor(0x43, 0x3B, 0xC4)
 AMBER    = RGBColor(0xA1, 0x53, 0x07)
 ROSE     = RGBColor(0xB0, 0x12, 0x3C)
 GREEN    = RGBColor(0x04, 0x6B, 0x4E)
-TEXT     = RGBColor(0x0B, 0x25, 0x45)
+#: 🔴 頁面主文字色走色票唯一定義處（§6.3b）。
+#: ⚠ 它與 `chart_runner.COLOR_TEXT`（`#00094A`）是「改一邊就得改另一邊」的
+#:   同一份知識——§6.2 的媒介對照表就是在描述這個關係。兩個值都保留
+#:   （使用者裁決「都留但不得同頁」），但**定義只能有一處**。
+TEXT     = rgb(COLOR_TOKENS["TEXT_ON_PAGE"].hex)
 MUTED    = RGBColor(0x53, 0x69, 0x8B)
 CARD     = RGBColor(0xFF, 0xFF, 0xFF)
 CARD_ED  = RGBColor(0xC2, 0xD1, 0xE6)
