@@ -63,7 +63,10 @@ class SvgOutputTests(unittest.TestCase):
 
     def test_one_svg_per_page(self):
         out, pages = self._run()
-        self.assertEqual(len(pages), 8, "頁數應與現行 pptx 路徑一致")
+# 2026-08-18（§7d）：路線圖頁併入結論頁後移除，總頁數 8 → 7。
+        # ⚠ 這條紅是第 2 段的漏網——當時挑回歸檔案靠名稱相關性，
+        #   `svg_output_layer` 不含「conclusion／roadmap」字樣就被漏掉了。
+        self.assertEqual(len(pages), 7, "頁數應與現行 pptx 路徑一致")
         for path in pages:
             with self.subTest(page=path.name):
                 self.assertTrue(path.is_file())

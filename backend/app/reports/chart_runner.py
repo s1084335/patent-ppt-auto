@@ -220,6 +220,10 @@ COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
 # WEB 尺寸的 SVG（15px 字級、1180 畫布），寫入既有原檔名；簡報端（deck）
 # 自行 refit 字級，引擎不再為 PPT 預放大。
 from backend.app.reports.chart_sizing import FONT_STACK
+from backend.app.reports.chart_sizing import (
+    ROLE_CHART_FOOTER,
+    ROLE_CHART_NOTE,
+)
 from backend.app.reports.chart_sizing import WEB as _SIZING
 
 
@@ -4857,7 +4861,9 @@ def render_opportunity_quadrant_svg(
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="{margin_l}" y="{chrome["title_y"]:.0f}" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         # Y 軸口徑防呆註（沿用散點版文案）
-        f'<text x="{margin_l}" y="{chrome["note_y"]:.0f}" font-size="{note_px:.1f}" fill="#9CA3AF">※ 純專利訊號(申請人家數)＝衡量申請人是否已投入布局，不等於產品核心度</text>',
+        # ⚠ 角色標記不可省：deck 側重排靠它取這段文字，原本靠 fill 色值認，
+        #   §6.2 的換色一上就會靜默取不到（tasks §6.3a）。
+        f'<text data-role="{ROLE_CHART_NOTE}" x="{margin_l}" y="{chrome["note_y"]:.0f}" font-size="{note_px:.1f}" fill="#9CA3AF">※ 純專利訊號(申請人家數)＝衡量申請人是否已投入布局，不等於產品核心度</text>',
         # 圖例：色＝龍頭涉入三級｜數字＝件/家
         f'<text x="{margin_l}" y="{chrome["legend_y"]:.0f}" font-size="{note_px:.1f}" font-weight="600" fill="{COLOR_TEXT}">{LEGEND_PREFIX_TEXT}</text>',
     ]
@@ -4919,7 +4925,8 @@ def render_opportunity_quadrant_svg(
     # K-5：FTO 註是註記類 → note_px；y 排在軸說明下一行（原 26/48 兩行在
     # 24.5px 字級下行距只剩 22px，字高 34px 直接相疊）。
     parts.append(
-        f'<text x="{margin_l}" y="{axis_y + note_px * 1.7:.0f}" font-size="{note_px:.1f}" fill="#9CA3AF">'
+        f'<text data-role="{ROLE_CHART_FOOTER}" x="{margin_l}" y="{axis_y + note_px * 1.7:.0f}" '
+        f'font-size="{note_px:.1f}" fill="#9CA3AF">'
         f'本分析非侵權迴避(FTO)結論｜資料依公開專利資訊整理</text>')
 
     parts.append("</svg>")

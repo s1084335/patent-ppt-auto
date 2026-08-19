@@ -79,7 +79,8 @@ class SvgVocabularyGuardTests(unittest.TestCase):
 
     def test_all_output_within_vocabulary(self):
         pages = self._build_all_page_types()
-        self.assertGreaterEqual(len(pages), 14)   # 8 頁型 + 6 圖形頁
+        # §7d 移除路線圖頁後：7 頁型 + 6 圖形頁（原 8 + 6）。
+        self.assertGreaterEqual(len(pages), 13)   # 7 頁型 + 6 圖形頁
         vocab = self.canvas.SVG_VOCABULARY
         for path in pages:
             root = ET.fromstring(path.read_text(encoding="utf-8"))

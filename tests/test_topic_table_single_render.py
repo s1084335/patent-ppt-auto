@@ -31,6 +31,46 @@ import re
 import unittest
 
 
+def _cluster_section() -> dict:
+    """真的跑一次 `_build_cluster_analytics_section`，回它產出的 section。
+
+    ⚠ 兩通道（技術／功效）都給：主題統計表的 variant 只有在**實際存在兩個通道**
+    時才會依通道拆成兩個（單通道只放一個預設項）。只餵一個通道會驗到比較弱的
+    那條路徑。
+    """
+    import tempfile
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from backend.app.reports import chart_runner
+
+    data = {
+        "topics": [
+            {"topic_code": "T01", "label": "散熱防塵",
+             "source_field": "wips_independent_claims"},
+            {"topic_code": "E01", "label": "降噪效果",
+             "source_field": "effect_summary"},
+        ],
+        "assignments": [
+            {"topic_code": "T01", "patent_id": 1,
+             "source_field": "wips_independent_claims"},
+            {"topic_code": "E01", "patent_id": 1,
+             "source_field": "effect_summary"},
+        ],
+        "normalized_applicants": [{"patent_id": 1, "applicant_name": "TSMC"}],
+        "patents": {1: {"application_year": 2022}},
+        "top_applicants_ws": ["TSMC"],
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = SimpleNamespace(
+            run_dir=Path(tmp), chart_rows={}, sections=[], report=None,
+            cluster_data=data, cluster_reports={}, meta={},
+            ipc_levels=(4, 5), cpc_levels=(4, 5))
+        chart_runner._build_cluster_analytics_section(ctx)
+        assert ctx.sections, "沒有產出任何 section"
+        return ctx.sections[0]
+
+
 class TopicTableSingleRenderTests(unittest.TestCase):
     """主題統計表不得同時出現在圖表變體與數據表。"""
 
@@ -60,13 +100,30 @@ class TopicTableSingleRenderTests(unittest.TestCase):
         **沒有 rows**——前端 `rows.filter(row => row.source_field === sourceField)`
         過濾的是空陣列，切換完全沒反應（靜默失敗：表格由另一路徑顯示得出來，
         只有切換無效，看起來像按鈕壞掉）。
+
+        ⚠ 2026-08-19 改寫（tasks §5.8）：原本 `re.search` 掃原始碼找
+
+            r'ctx\\.sections\\.append\\(\\{\\s*"title": "分群分析".*?\\}\\)'
+
+        **失效原因是註解**：2026-08-12 有人在 `ctx.sections.append({` 與
+        `"title":` 之間插了一行說明註解，而 `\\s*` 只容得下空白。字串本身一直在
+        （chart_runner L5208），是 regex 兜不住了。
+
+        ⚠ 這是本專案「註解破壞斷言」的第 6 次，而且方向是新的——前五次是註解裡
+        的字**餵出假通過**，這次是註解**擋掉真比對**造成假失敗。兩個方向的根因
+        同一個：拿原始碼文字當契約，而註解是原始碼文字的一部分。
+
+        ⚠ source-grep 失效時症狀是「一直紅」而不是「突然紅」，於是被當成既有債
+        長期忽略——這兩條就這樣紅了好幾週。改為**實際跑一次**再驗結果。
         """
-        section_block = re.search(
-            r'ctx\.sections\.append\(\{\s*"title": "分群分析".*?\}\)',
-            self.src, re.S)
-        self.assertIsNotNone(section_block, "找不到分群 section 宣告")
-        self.assertIn('"rows"', section_block.group(0),
-                      "分群 section 未帶 rows，前端技術／功效切換無資料可切")
+        section = _cluster_section()
+        self.assertIn(
+            "rows", section,
+            "分群 section 未帶 rows，前端技術／功效切換無資料可切")
+        self.assertTrue(section["rows"], "rows 是空的，切換一樣沒東西可切")
+        self.assertTrue(
+            all("source_field" in r for r in section["rows"]),
+            "rows 缺 source_field——前端就是靠這個欄位過濾技術／功效")
 
     def test_rows_keep_single_key(self):
         """⚠ chart_rows 維持單一鍵——分鍵會讓前端取不到（實測踩過）。"""
@@ -187,14 +244,22 @@ class TopicTableNarrativeTests(unittest.TestCase):
                       "主題統計表無 variant_key，AI 解讀無處可掛")
 
     def test_variant_has_no_chart_file(self):
-        """⚠ 該 variant 不得指向不存在的圖檔——會顯示「圖檔待產出」佔位。"""
-        import re
+        """⚠ 該 variant 不得指向不存在的圖檔——會顯示「圖檔待產出」佔位。
 
-        # 2026-07-31：單一 variant 改為依通道各一個（技術／功效），宣告形式
-        # 由 insert(0, {...}) 變成迴圈 insert(index, {...})——比對改抓那段迴圈。
-        block = re.search(
-            r'for index, \(_, variant_key, label\).*?variants\.insert\(index, \{[^}]*\}\)',
-            self.src, re.S)
-        self.assertIsNotNone(block, "找不到主題統計表的 variant 宣告")
-        self.assertNotIn(".svg", block.group(0), "不得指向 SVG——它沒有圖")
-        self.assertNotIn(".html", block.group(0), "不得指向 HTML——本輪已移除該檔")
+        ⚠ 2026-08-19 改寫（tasks §5.8）：原本用 regex 抓「那段 `variants.insert`
+        迴圈」的原始碼。它已經隨重構漂走而抓不到，於是 `assertIsNotNone` 一直紅，
+        而底下兩條真正的斷言**從來沒被執行過**——測試在守的東西其實沒人在守。
+        改為實際跑出 variants 再檢查每一個。
+        """
+        section = _cluster_section()
+        topic_variants = [v for v in section["variants"]
+                          if str(v.get("variant_key", "")).startswith("topic_table")]
+        self.assertTrue(
+            topic_variants,
+            "找不到主題統計表的 variant——AI 解讀無處可掛（見上一條測試）")
+        for v in topic_variants:
+            with self.subTest(variant=v.get("variant_key")):
+                self.assertEqual(
+                    v.get("file", ""), "",
+                    f"主題統計表 variant 指向了圖檔 {v.get('file')!r}"
+                    "——它沒有圖，畫面會顯示「圖檔待產出」佔位")

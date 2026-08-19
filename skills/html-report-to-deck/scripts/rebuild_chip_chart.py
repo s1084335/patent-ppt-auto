@@ -25,7 +25,11 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-from backend.app.reports.chart_sizing import FONT_STACK  # noqa: E402
+from backend.app.reports.chart_sizing import (  # noqa: E402
+    FONT_STACK,
+    ROLE_CHART_FOOTER,
+    ROLE_CHART_NOTE,
+)
 
 F = 20                    # 新字級
 W = 1260                  # 圖寬（只影響長寬比，不影響投影片上的字級）
@@ -45,8 +49,24 @@ def esc(t: str) -> str:
              .replace('"', "&quot;"))
 
 
+def _by_role(items, role: str) -> str:
+    """依產生端打的 `data-role` 取文字（🔴 唯一辨識途徑，不看顏色）。
+
+    ⚠ 2026-08-19 之前這裡是 `if "#9CA3AF" in attrs`——拿**顏色值**當語意標記。
+    顏色是樣式：§6.2 裁決「兩套深藍都留但不得同頁」，做法是 SVG 進 deck 時整批
+    換色，換色一上這個判斷就找不到目標，`next(..., "")` 回空字串，
+    註記與 FTO 頁尾**從圖上消失且不報錯**。角色名的唯一定義處在
+    `chart_sizing`，產生端與本檔讀同一份。
+    """
+    return next((t for a, _y, t in items if f'data-role="{role}"' in a), "")
+
+
 def parse(svg: str) -> dict:
-    """以**結構**（屬性、位置、順序）辨識元素，不比對任何特定字串——換一批資料仍適用。"""
+    """以**結構**（角色標記、屬性、位置、順序）辨識元素，不比對顏色或資料內容。
+
+    ⚠ 原 docstring 寫「不比對任何特定字串」，但實作當時正在比對 `#9CA3AF`
+    ——宣稱的護欄與實作不符。措辭同步改成實際成立的版本。
+    """
     d: dict = {}
     d["title"] = re.search(r'data-role="chart-title"[^>]*>([^<]*)<', svg).group(1)
     # (attrs, y, text)：保留 y 座標，用位置決定角色
@@ -54,7 +74,7 @@ def parse(svg: str) -> dict:
              for a, t in re.findall(r'<text([^>]*)>([^<]*)</text>', svg)
              if re.search(r'\sy="([\d.]+)"', a) and "rotate" not in a]
     head = sorted([i for i in items if i[1] < 120], key=lambda i: i[1])
-    d["note"] = next((t for a, _, t in head if "#9CA3AF" in a), "")
+    d["note"] = _by_role(items, ROLE_CHART_NOTE)
     d["legend_head"] = next((t for a, _, t in head
                              if "font-weight" in a and "chart-title" not in a), "")
     d["legend"] = [(m.group(1), m.group(2)) for m in re.finditer(
@@ -64,7 +84,7 @@ def parse(svg: str) -> dict:
     d["axis_x"] = next((t for a, _, t in reversed(tail) if 'text-anchor="middle"' in a), "")
     rot = re.search(r'<text([^>]*transform="rotate[^>]*)>([^<]*)</text>', svg)
     d["axis_y"] = rot.group(2) if rot else ""
-    d["footer"] = next((t for a, _, t in reversed(tail) if "#9CA3AF" in a), "")
+    d["footer"] = _by_role(items, ROLE_CHART_FOOTER)
 
     boxes = []
     for m in re.finditer(
@@ -120,7 +140,8 @@ def build(d: dict) -> str:
          '<rect width="100%" height="100%" fill="white"/>',
          f'<text data-role="chart-title" x="{ML_}" y="{y_title}" font-size="{F}" '
          f'font-weight="700" fill="#00094A">{esc(d["title"])}</text>',
-         f'<text x="{ML_}" y="{y_note}" font-size="{F}" fill="#9CA3AF">{esc(d["note"])}</text>',
+         f'<text data-role="{ROLE_CHART_NOTE}" x="{ML_}" y="{y_note}" font-size="{F}" '
+         f'fill="#9CA3AF">{esc(d["note"])}</text>',
          f'<text x="{ML_}" y="{y_leg}" font-size="{F}" font-weight="600" '
          f'fill="#00094A">{esc(d["legend_head"])}</text>']
     for ri, row in enumerate(leg_rows):
@@ -160,7 +181,8 @@ def build(d: dict) -> str:
              f'fill="#00094A">{esc(d["axis_x"])}</text>')
     o.append(f'<text x="26" y="{mid:.0f}" text-anchor="middle" font-size="{F}" fill="#00094A" '
              f'transform="rotate(-90,26,{mid:.0f})">{esc(d["axis_y"])}</text>')
-    o.append(f'<text x="{ML_}" y="{y_ft}" font-size="{F}" fill="#9CA3AF">{esc(d["footer"])}</text>')
+    o.append(f'<text data-role="{ROLE_CHART_FOOTER}" x="{ML_}" y="{y_ft}" '
+             f'font-size="{F}" fill="#9CA3AF">{esc(d["footer"])}</text>')
     o.append("</svg>")
     return "\n".join(o).replace("{H}", str(H))
 

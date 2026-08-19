@@ -163,17 +163,25 @@
 - [ ] 5.2 Red：`report_key` 集合對帳閘門
       —— 文件提到但定義裡沒有＝紅；定義裡有但文件沒提＝黃（列出不擋）
 - [ ] 5.3 反向驗證：文件塞一個假 report_key 要紅
-- [ ] 5.8 `test_topic_table_single_render` 兩條改成**驗行為**（2026-08-19 使用者裁決）
+- [x] 5.8 `test_topic_table_single_render` 兩條改成**驗行為**（2026-08-19 使用者裁決）
 
-      現況：`test_section_carries_rows` 與 `test_variant_has_no_chart_file` 都用
-      `re.search` 掃 `chart_runner` 原始碼找 `ctx.sections.append({"title": "分群…`。
-      ⚠ 那個 anchor 在 **chart_runner 全歷史都不存在**（`git log -S '"title": "分群'`
-      查無）——它從來沒對上過，兩條紅不是回歸，是一開始就沒在守。
+      ⚠ **更正 08-19 稍早的錯誤歸屬**：我當時說「anchor 在 chart_runner 全歷史都
+      不存在（`git log -S` 查無）」——**那是錯的**。字串一直在（L5208
+      `"title": "分群分析"`）。真正的失效原因是 2026-08-12 有人在
+      `ctx.sections.append({` 與 `"title":` 之間插了一行**註解**，而 regex 寫的是
+      `\(\{\s*"title"`，`\s*` 只容得下空白。`git log -S` 查無是我在 PowerShell
+      裡的引號被吃掉，不是歷史真的沒有。
 
-      改法：實際跑出分群 section，斷言它帶 `rows`、且主題統計表的 variant 沒有
-      chart file。⚠ source-grep 型測試的 anchor 會隨重構漂走而**不會有人發現**，
-      因為漂走的症狀是「一直紅」而不是「突然紅」——本專案同型陷阱第 6 次。
-      併進 §5 是因為它與 5.2 同屬「文件／測試與程式對不上」，收成同一套契約檢查。
+      ⚠ 這是「註解破壞斷言」第 6 次，方向是新的：前五次是註解裡的字**餵出假通過**，
+      這次是註解**擋掉真比對**造成假失敗。根因同一個——拿原始碼文字當契約，
+      而註解是原始碼文字的一部分。
+
+      ⚠ 失效症狀是「一直紅」不是「突然紅」，於是被當成既有債忽略了好幾週；
+      更糟的是 `test_variant_has_no_chart_file` 卡在 `assertIsNotNone`，
+      它底下兩條真正的斷言**從來沒被執行過**。
+
+      已改為實跑 `_build_cluster_analytics_section` 再驗 section 的 rows 與
+      variant。反向驗證：拿掉 rows／把 variant 指向 SVG 各自轉紅（2/2）。
 - [ ] 5.4 同步 `prompts/report-narrative-flow.md`（family_country_layout、
       年度矩陣、country_distribution 狀態堆疊、topic_timeline 段落）
 - [ ] 5.5 同步 `prompts/content_standard.md`（技術主題×2）
@@ -297,8 +305,23 @@ PowerPoint 畫（`#0B2545`），正下方嵌的圖自己的標題是 `#00094A`
       ⚠ 這條**不是**改名潔癖：`chart_runner` 已有先例——`TEXT_ON_LIGHT` 的註解
       特地寫「那是頁面文字，這是畫在圖元上的文字，底色來源不同」，
       表示這個區分早就存在，只是沒有反映在名字上，於是每次都要靠讀註解
-- [ ] 6.3a 🔴 先解 6.0a 的**顏色當語意選擇器**（`rebuild_chip_chart` L57／L67）
+- [x] 6.3a 🔴 先解 6.0a 的**顏色當語意選擇器**（`rebuild_chip_chart` L57／L67）
       ——它會讓 6.2 的收斂變成靜默破壞。⚠ **排在 6.2 之前做**
+
+      已完成（2026-08-19）：角色標記 `ROLE_CHART_NOTE`／`ROLE_CHART_FOOTER`
+      定在 `chart_sizing`（與字型同一個唯一定義處），產生端 `chart_runner` 打、
+      消費端 `rebuild_chip_chart` 讀，**輸出端也打**（重排後的圖不能失去語意標記）。
+      ⚠ 順帶更正 `parse` 的 docstring：它原本寫「不比對任何特定字串」，
+      而實作正在比對 `#9CA3AF`——宣稱的護欄與實作不符。
+
+      關鍵測試是 `test_parse_survives_recolor`：**把 §6.2 的換色做進測試裡**。
+      只斷言「有 data-role」不夠，那只是換一種字串比對；要證明的是
+      「顏色變了、解析仍然對」。反向驗證 5 則全轉紅（拿掉 note 標記／拿掉
+      footer 標記／改回用顏色選／輸出端不打標記／角色名打重複）。
+
+      ⚠ **不驗完整往返**（`parse(build(...))`）：`build` 吐的象限方塊與 `parse`
+      期望的格式本來就不同，這支腳本設計是對引擎原圖跑一次、就地覆寫，
+      從不支援讀自己的輸出。要求它往返是測過頭，會逼出沒人需要的相容層。
 - [ ] 6.4 硬判準：`chart_runner` 散落裸 hex 為 0（模組層具名常數除外）
       基線 **49 處**（SVG 30／HTML CSS 15／表格樣式 4）。
       ⚠ 掃描器必須用 `ast` 取常數行範圍——正則＋括號計數會被內嵌 CSS 的

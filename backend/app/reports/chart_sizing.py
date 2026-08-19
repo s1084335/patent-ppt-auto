@@ -49,6 +49,25 @@ FONT_FAMILY = "Noto Sans TC"
 #: ⚠ 但退到它們時量測與產出會一起偏（見 design 4-0b 第 6 項）。
 FONT_STACK = f"'{FONT_FAMILY}','Microsoft JhengHei','Segoe UI',sans-serif"
 
+#: 🔴 SVG 圖元**角色標記**的唯一定義處（2026-08-19，tasks §6.3a）。
+#:
+#: 為什麼是同一份知識：產生端（`chart_runner`）打標記、消費端
+#: （`skills/html-report-to-deck` 的 `rebuild_chip_chart`）依標記取內容，
+#: 「改 A 就得改 B」——放兩處必然分岔。與字型同理，故同住這裡。
+#:
+#: 🔴 為什麼一定要有角色標記：消費端原本靠**顏色值**辨認元素——
+#: `if "#9CA3AF" in attrs` 用來認「這段是註記」。顏色是**樣式**，樣式會改：
+#: §6.2 裁決「兩套深藍都留但不得同頁」，做法是 SVG 進 deck 時整批換色，
+#: 換色一上，那個判斷就找不到目標而 `next(..., "")` **回空字串**——
+#: 註記與 FTO 頁尾從圖上消失，且**沒有任何東西會報錯**（缺席型偏差）。
+#: 角色是**語意**，語意才能拿來辨認。
+#:
+#: ⚠ 一個角色在同一張圖只能出現一次：消費端用 `next(...)` 取第一個，
+#: 重複就變成碰運氣（測試 `test_roles_are_unique` 盯著）。
+ROLE_CHART_TITLE = "chart-title"
+ROLE_CHART_NOTE = "chart-note"      # 口徑防呆註（圖上方）
+ROLE_CHART_FOOTER = "chart-footer"  # FTO 聲明等頁尾註（圖下方）
+
 
 @dataclass(frozen=True)
 class ChartSizing:
