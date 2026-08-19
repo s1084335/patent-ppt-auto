@@ -219,6 +219,7 @@ from backend.app.reports.chart_sizing import (
     PALETTE,
     ROLE_CHART_FOOTER,
     ROLE_CHART_NOTE,
+    SCALES,
 )
 from backend.app.reports.chart_sizing import WEB as _SIZING
 
@@ -368,14 +369,10 @@ COLOR_TEXT_SOFT = PALETTE["TEXT_SOFT"].hex        # 次要文字（刻度、副�
 #: 順序即堆疊順序：由「剛遞件」到「權利消滅」，一條看完生命週期。
 #: ⚠ 鍵＝表格的六欄字面（`country_status_display_pivot` 的輸出），
 #:   不是四大桶——圖與表因此逐欄對得上（使用者 2026-08-17 裁決）。
-STATUS_COLORS: dict[str, str] = {
-    "申請": "#93C5FD",
-    "公開": "#60A5FA",
-    "審查中": "#006DF5",
-    "授權": "#10B981",
-    "放棄": "#9CA3AF",
-    "到期": "#C62828",
-}
+# 🔴 2026-08-19（§6.5）：色階的唯一定義處移到 `chart_sizing.SCALES["STATUS"]`。
+# 值不變，只是不再在這裡寫第二份——本檔另有三套色階（量級／龍頭涉入／象限）
+# 與它撞色（例如 #9CA3AF 同時是「放棄」與 lead=0），各自獨立、不得互相牽動。
+STATUS_COLORS: dict[str, str] = dict(SCALES["STATUS"].steps)
 
 #: 已轉讓（申請人排名圖）：2026-08-17 使用者實物驗收「斜線看不清」，改第三色。
 COLOR_TRANSFERRED = PALETTE["DATA_TRANSFERRED"].hex
@@ -2045,11 +2042,12 @@ def year_bubble_matrix_layout(
     return {"top_rows": top_rows, "years": ordered_years, "values": values, "max_value": max_value, "rows_total": len(totals)}
 
 
-YEAR_BUBBLE_COLOR_BANDS: tuple[tuple[float, str, str], ...] = (
-    (0.25, "#93C5FD", "低"),
-    (0.50, "#14B8A6", "中"),
-    (0.75, "#F59E0B", "高"),
-    (1.00, "#DC2626", "最高"),
+# ⚠ 門檻（0.25/0.50/0.75/1.00）留在這裡、色取自色階：門檻是**本圖的分帶規則**，
+# 色是**全庫共用的語意**。兩者寫在一起會讓「改色」與「改分帶」看起來像同一件事。
+YEAR_BUBBLE_COLOR_BANDS: tuple[tuple[float, str, str], ...] = tuple(
+    (threshold, hexv, label)
+    for threshold, (label, hexv) in zip(
+        (0.25, 0.50, 0.75, 1.00), SCALES["INTENSITY"].steps)
 )
 
 
@@ -4657,7 +4655,7 @@ _CHIP_GAP_X = 8      # 同列 chip 間距
 _CHIP_GAP_Y = 8      # 列與列間距
 
 # 龍頭涉入三級色（沿用散點版 tier_colors）
-_TIER_COLORS = {"lead≥2": "#DC2626", "lead=1": "#F59E0B", "lead=0": "#9CA3AF"}
+_TIER_COLORS = dict(SCALES["TIER"].steps)
 
 
 def _tier_key(leading_count: int) -> str:
@@ -4760,7 +4758,7 @@ def render_opportunity_quadrant_svg(
     inner_pad = 12
     area_w = cell_w - 2 * inner_pad
 
-    qcolors = {"q1": "#10B981", "q2": "#3B82F6", "q3": "#9CA3AF", "q4": "#F59E0B"}
+    qcolors = dict(SCALES["QUADRANT"].steps)
     # 🔴 K-4（2026-08-04 實機 p17/p18）：原本每格 header 有兩行——灰色密度標籤
     # （「低密度．高廣度」）＋象限名。改名後象限名（「低件數·多申請人」）已把同一
     # 資訊講完，灰行是舊寫法殘留；字級放大後兩行直接相疊。**刪灰行**，一格一行。

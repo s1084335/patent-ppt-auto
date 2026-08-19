@@ -139,6 +139,81 @@ REPORT_TO_DECK: dict[str, str] = {
 
 
 @dataclass(frozen=True)
+class ColorScale:
+    """一組**有序**、語意相關的色（🔴 2026-08-19 使用者裁決，tasks §6.5）。
+
+    為什麼色票的單位不能只是「一個色」：實查發現四套**獨立**色階恰好共用色值
+    ——`#9CA3AF` 同時是法律狀態「放棄」、龍頭涉入 `lead=0`、象限 q3 與註記文字。
+    它們是**不同的知識**（改「授權」的綠不該連帶改掉象限 q1），只是撞到同一個
+    hex。若拆成一色一條目並禁止重複，會被迫把四套獨立設計綁死——
+    **方向與「同一份知識一個落點」想防的完全相反**。
+
+    ⚠ `steps` 存 `(語意, 色值)` 而不只是色值序列：只有 hex 的話，下一個人不知道
+    第三格是什麼意思，那就等於沒有語意，與 §6.5 的軟揭露要求不符。
+    ⚠ 同一套色階內不得重複色值（那兩階讀者分不出來，是真的 bug）；
+    **跨色階重複是允許的**，那正是本結構存在的理由。
+    """
+
+    steps: tuple[tuple[str, str], ...]
+    medium: str
+    purpose: str
+
+
+#: 🔴 色階登記表（與 `PALETTE` 並列，單色與色階兩種單位並存）。
+SCALES: dict[str, ColorScale] = {
+    "STATUS": ColorScale(
+        (("申請", "#93C5FD"), ("公開", "#60A5FA"), ("審查中", "#006DF5"),
+         ("授權", "#10B981"), ("放棄", "#9CA3AF"), ("到期", "#C62828")),
+        "report",
+        "法律狀態堆疊（受理局圖）。順序即堆疊順序：由「剛遞件」到「權利消滅」，"
+        "一條看完生命週期。⚠ 鍵是表格的六欄字面，不是四大桶——圖與表因此逐欄對得上"),
+    "INTENSITY": ColorScale(
+        (("低", "#93C5FD"), ("中", "#14B8A6"), ("高", "#F59E0B"), ("最高", "#DC2626")),
+        "report",
+        "年度泡泡矩陣的量級分帶（`YEAR_BUBBLE_COLOR_BANDS`）。"
+        "⚠ 與 STATUS 撞色（#93C5FD 同時是「申請」）純屬巧合，兩套各自獨立"),
+    "TIER": ColorScale(
+        (("lead≥2", "#DC2626"), ("lead=1", "#F59E0B"), ("lead=0", "#9CA3AF")),
+        "report",
+        "龍頭涉入三級（chip 底色，沿用散點版 tier_colors）"),
+    "QUADRANT": ColorScale(
+        (("q1", "#10B981"), ("q2", "#3B82F6"), ("q3", "#9CA3AF"), ("q4", "#F59E0B")),
+        "report",
+        "機會四象限的格子底色。⚠ 象限**名稱**與後續動作的唯一定義處在 "
+        "`chart_runner._qlabel`，本表只管色"),
+}
+
+#: 🔴 **不得出現在同一頁**的色對（2026-08-19 使用者裁決「都留但不同頁」）。
+#:
+#: 兩組的分離手段不同，這點很重要：
+#: - 深藍（`#00094A`／`#0B2545`）靠**媒介**分離——`recolor_for_deck` 換色，
+#:   報表側與 deck 側各一種，結構上不可能同頁。
+#: - 兩個紅（`#C62828`／`#DC2626`）**都在報表側**，分不了媒介；它們靠**色階**
+#:   分離（生命週期 vs 量級），所以只能驗**頁面組成**——同一頁不得同時出現。
+#:   實測 ΔE2000 = 4.59（並置可辨），與深藍同一種病，小一號。
+#:
+#: ⚠ 登記在這裡不等於已經分開，只等於「宣告了要分開」；真正的保證在閘門
+#: （深藍＝換色後產物檢查；兩個紅＝逐頁色彩共現檢查）。
+NOT_SAME_PAGE: tuple[tuple[str, str], ...] = (
+    (PALETTE["TEXT_IN_CHART"].hex, PALETTE["TEXT_ON_PAGE"].hex),
+    ("#C62828", "#DC2626"),
+)
+
+
+def known_colours() -> set[str]:
+    """色票涵蓋的所有色值（單色 ＋ 色階 ＋ deck 側對照目標）。
+
+    ⚠ 消費端（`recolor_for_deck.unknown_colours`）用它判斷「哪些色沒進色票」。
+    漏掉色階的話，四套色階的每一個色都會被報成未知——訊號被雜訊淹掉，
+    等於沒有那個功能。
+    """
+    out = {e.hex for e in PALETTE.values()} | set(REPORT_TO_DECK.values())
+    for scale in SCALES.values():
+        out |= {h for _lbl, h in scale.steps}
+    return out
+
+
+@dataclass(frozen=True)
 class ChartSizing:
     """一組會在網頁／PPT 之間衝突的尺寸與字級參數。"""
 

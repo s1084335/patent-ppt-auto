@@ -75,7 +75,26 @@ class PaletteRegistryTests(unittest.TestCase):
         self.assertEqual(bad, [], f"色值格式不合（需 #RRGGBB 大寫）：{bad}")
 
     def test_no_duplicate_hex_within_same_medium(self):
-        """⚠ 同一個媒介裡兩個名字指同一個色＝那就是同一份知識兩個落點。"""
+        """⚠ 同一個媒介裡兩個名字指同一個色＝那就是同一份知識兩個落點。
+
+        🔴 **本條的適用範圍在 §6.5 收色時必須先裁決**（2026-08-19 實查發現）：
+        `chart_runner` 有**四套獨立色階恰好共用色值**——
+
+        | 色階 | 內容 |
+        |---|---|
+        | `STATUS_COLORS`（生命週期） | 申請 #93C5FD／公開 #60A5FA／授權 #10B981／放棄 #9CA3AF |
+        | `YEAR_BUBBLE_COLOR_BANDS`（強度） | 低 #93C5FD／中 #14B8A6／高 #F59E0B／最高 #DC2626 |
+        | `_TIER_COLORS`（龍頭涉入） | lead≥2 #DC2626／lead=1 #F59E0B／lead=0 #9CA3AF |
+        | `qcolors`（象限） | q1 #10B981／q2 #3B82F6／q3 #9CA3AF／q4 #F59E0B |
+
+        它們是**不同的知識**（改「授權」的綠不該連帶改掉象限 q1），只是恰好
+        撞到同一個 hex。若照本條把它們合併成單一條目，就是把四套獨立設計綁死
+        ——**方向與本條想防的完全相反**。
+
+        ⚠ 目前 PALETTE 只收 11 個各自唯一的色，本條成立且有價值；
+        但 §6.5 把那四套色階收進來之前，必須先決定「同色多語意」怎麼表達
+        （獨立條目？收斂成具名色階？逐組判斷？），不得為了讓本條通過而硬併。
+        """
         seen: dict[tuple[str, str], str] = {}
         dupes = []
         for name, e in self.palette.items():
@@ -84,6 +103,87 @@ class PaletteRegistryTests(unittest.TestCase):
                 dupes.append((seen[key], name, e.hex, e.medium))
             seen[key] = name
         self.assertEqual(dupes, [], f"同媒介重複色：{dupes}")
+
+
+class ColorScaleTests(unittest.TestCase):
+    """🔴 色票的單位不只是「一個色」，還有「一套色階」（2026-08-19 使用者裁決）。
+
+    實查發現四套**獨立**色階恰好共用色值——`#9CA3AF` 同時是法律狀態「放棄」、
+    龍頭涉入 `lead=0`、象限 q3 與註記文字色。它們是不同的知識
+    （改「授權」的綠不該連帶改掉象限 q1），只是撞到同一個 hex。
+
+    若把它們拆成一色一條目並禁止重複，會被迫合併＝把四套獨立設計綁死，
+    **方向與「同一份知識一個落點」想防的完全相反**。故色票收「色階」為單位。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from backend.app.reports import chart_sizing
+
+        cls.scales = chart_sizing.SCALES
+
+    def test_expected_scales_registered(self):
+        for key in ("STATUS", "INTENSITY", "TIER", "QUADRANT"):
+            with self.subTest(scale=key):
+                self.assertIn(key, self.scales, f"色階 {key} 沒登記")
+
+    def test_each_scale_declares_purpose_and_medium(self):
+        bad = [k for k, s in self.scales.items()
+               if not str(s.purpose).strip() or s.medium not in MEDIA]
+        self.assertEqual(bad, [], f"色階缺用途或媒介不合法：{bad}")
+
+    def test_steps_carry_meaning_not_just_hex(self):
+        """⚠ 只存 hex 序列＝下一個人不知道第三格是什麼意思，等於沒有語意。"""
+        for key, s in self.scales.items():
+            with self.subTest(scale=key):
+                self.assertTrue(s.steps, f"{key} 是空的")
+                for label, hexv in s.steps:
+                    self.assertTrue(str(label).strip(), f"{key} 有一階沒有語意標籤")
+                    self.assertRegex(hexv, r"^#[0-9A-F]{6}$", f"{key} 色值格式不合")
+
+    def test_no_duplicate_within_one_scale(self):
+        """⚠ **同一套**色階裡重複＝那兩階讀者分不出來，是真的 bug。
+
+        跨色階重複則是允許的（那正是本類別存在的理由）。
+        """
+        for key, s in self.scales.items():
+            hexes = [h for _lbl, h in s.steps]
+            with self.subTest(scale=key):
+                self.assertEqual(len(hexes), len(set(hexes)),
+                                 f"{key} 內有重複色值：{hexes}")
+
+    def test_status_scale_matches_engine(self):
+        """色階不得與引擎現行值分岔——分岔的症狀是圖與表對不上，不是報錯。"""
+        from backend.app.reports.chart_runner import STATUS_COLORS
+
+        registered = {lbl: h for lbl, h in self.scales["STATUS"].steps}
+        self.assertEqual(registered, STATUS_COLORS,
+                         "STATUS 色階與 chart_runner.STATUS_COLORS 不一致")
+
+
+class NotSamePageTests(unittest.TestCase):
+    """🔴 同頁互斥色對（§6.2 深藍、§6.5 兩個紅，使用者裁決「都留但不同頁」）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from backend.app.reports import chart_sizing
+
+        cls.pairs = chart_sizing.NOT_SAME_PAGE
+
+    def test_navy_pair_declared(self):
+        self.assertIn(("#00094A", "#0B2545"), self.pairs,
+                      "兩套深藍沒登記為同頁互斥")
+
+    def test_red_pair_declared(self):
+        """實測 ΔE2000 = 4.59（並置可辨）——與深藍同一種病，只是小一號。"""
+        self.assertIn(("#C62828", "#DC2626"), self.pairs,
+                      "兩個紅沒登記為同頁互斥")
+
+    def test_pairs_are_ordered_and_distinct(self):
+        """⚠ 左右相同的「互斥對」永遠成立，會讓閘門顯示已處理。"""
+        for a, b in self.pairs:
+            with self.subTest(pair=(a, b)):
+                self.assertNotEqual(a, b)
 
 
 class MediumRemapTests(unittest.TestCase):

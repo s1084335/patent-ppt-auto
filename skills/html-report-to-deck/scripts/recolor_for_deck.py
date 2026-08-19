@@ -40,7 +40,10 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-from backend.app.reports.chart_sizing import PALETTE, REPORT_TO_DECK  # noqa: E402
+from backend.app.reports.chart_sizing import (  # noqa: E402
+    REPORT_TO_DECK,
+    known_colours,
+)
 
 HEX = re.compile(r"#[0-9A-Fa-f]{6}")
 
@@ -104,7 +107,9 @@ def unknown_colours(svg_dir: Path) -> list[str]:
     ⚠ 只擋已知左欄的話，新冒出來的第三種藍不會被發現——缺席型偏差。
     這裡不擋、只列出來：擋了會誤傷合理的新增，不列則等於沒發生過。
     """
-    known = {e.hex for e in PALETTE.values()} | set(REPORT_TO_DECK.values())
+    # ⚠ 走 known_colours()：漏掉色階的話，四套色階的每個色都會被報成未知，
+    #   訊號被雜訊淹掉＝等於沒有這個功能。
+    known = known_colours()
     seen: set[str] = set()
     for f in sorted(Path(svg_dir).glob("*.svg")):
         seen |= {m.group(0).upper() for m in HEX.finditer(f.read_text(encoding="utf-8"))}
