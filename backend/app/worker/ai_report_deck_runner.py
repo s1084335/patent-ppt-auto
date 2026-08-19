@@ -309,6 +309,14 @@ def run_deck(
         _step("chip", [py, str(scripts / "rebuild_chip_chart.py"),
                        str(work / "charts"), *chips])
 
+    # 🔴 換色（§6.2b）：報表側色票 → deck 側色票，讓任一頁只出現一種深藍。
+    # ⚠ 位置不能動：
+    #   - 必須在 `chip` **之後**——`rebuild_chip_chart` 會寫入報表側的色。
+    #   - 必須在 `fit` **之前**——fit 產的 PNG 就是進投影片的畫素，之後再換來不及。
+    #   - `marks` 在更後面，但它寫的 `#B0123C` 本來就是 deck 側的色，不需轉換。
+    _progress("recolor", 19)
+    _step("recolor", [py, str(scripts / "recolor_for_deck.py"), str(work / "charts")])
+
     _progress("fit", 20)
     _step("fit", [py, str(scripts / "fit_render_charts.py"),
                   str(work / "charts"), str(work / "png")])
@@ -365,6 +373,13 @@ def run_deck(
         if "MARKS_APPLIED" in output:
             _step("fit", [py, str(scripts / "fit_render_charts.py"),
                           str(work / "charts"), str(work / "png")])
+
+        # 🔴 換色驗收（§6.2c）：驗**產物**——進 deck 的 SVG 不得再有報表側的色。
+        # ⚠ 放在這裡而不是緊接換色之後：`marks` 之後 SVG 還會被動一次，
+        #   只在換色當下驗等於驗了一份不是最終產物的東西。
+        # ⚠ 這是引擎保證項（不是內容問題），紅了不走修稿輪——CLI 改不動色票。
+        _step("recolor_check", [py, str(scripts / "recolor_for_deck.py"),
+                                str(work / "charts"), "--check"])
 
         code, output = _step("check", [py, str(scripts / "check_content.py"),
                                        str(content_path), str(work / "png")],
