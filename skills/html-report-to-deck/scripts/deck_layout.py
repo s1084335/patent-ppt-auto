@@ -1198,6 +1198,63 @@ def row_actions(row: dict) -> list[str]:
     return [s for item in items if (s := str(item).strip())]
 
 
+#: 結論頁可用的內容高度（`CHART_TOP` 到頁尾之間，扣掉表頭與列間距的餘裕）。
+#: ⚠ 與 `slide_conclusions` 的 `top, bot` 同源；改一邊要改另一邊，
+#: 分頁算出來的頁數與實際畫得下的量才會一致。
+CONCL_BODY_H = 7.06 - CHART_TOP - 0.48
+
+
+def conclusion_row_height(row: dict, widths=None) -> float:
+    """一列結論在版面上的實測高度（§9.4.1：只能量不能估）。
+
+    ⚠ 用 `text_h` 量而不是「一列固定 0.5in」：判讀欄長度差很多，
+    固定值會讓長列溢出、短列浪費——而溢出是看不見的（它被畫到頁面外）。
+    """
+    w = widths or table_col_widths(3, weights=(3.0, 6.4, 2.4))
+    first = (text_h([(row.get("topic", ""), 16, 0)], w[0] - 0.14)
+             + text_h([(row.get("finding", ""), S_SIZE.pt, 0)], w[0] - 0.14))
+    return max(first,
+               text_h([(row.get("reading", ""), 16, 0)], w[1] - 0.14),
+               text_h([(str(row.get("action", "")), 16, 0)], w[2] - 0.14)) + ROW_PAD
+
+
+def paginate_conclusions(rows: list[dict]) -> list[list[dict]]:
+    """依實測高度把結論列切頁（§9.4，2026-08-19 使用者裁決「自動分頁」）。
+
+    §9.3 拆掉數量鎖後列數由資料決定，一頁一定裝不下；而字級鎖死不能縮字
+    （縮字＝把「放不下」變成「看不清」），**分頁是唯一不損失內容的解法**。
+
+    ⚠ 判準是「沒有任何一列消失」，不是「頁數等於某個公式」——把版面演算法寫進
+    測試的話，改個行距就假紅，而假紅久了會被改成「反正就是這個數字」。
+    ⚠ 單列高於整頁時仍**自成一頁**，不丟掉：丟掉是缺席型偏差，
+    溢出至少看得見。
+    """
+    pages: list[list[dict]] = []
+    current: list[dict] = []
+    used = 0.0
+    for row in rows:
+        h = conclusion_row_height(row) + ROW_GAP
+        if current and used + h > CONCL_BODY_H:
+            pages.append(current)
+            current, used = [], 0.0
+        current.append(row)
+        used += h
+    if current:
+        pages.append(current)
+    return pages or [[]]
+
+
+def conclusion_page_titles(title: str, page_count: int) -> list[str]:
+    """結論頁的逐頁標題；續頁帶「（續）」。
+
+    ⚠ 只有一頁時**不加**後綴——加了會讓讀者去找一個不存在的下一頁。
+    這件事由 `range` 自然成立（`page_count=1` → `range(2, 2)` 為空），
+    不另加早退分支：反向驗證證明那個分支拿掉行為不變，是多餘的防禦
+    ——而多餘的分支會讓讀者以為那裡有特殊情況要處理。
+    """
+    return [title] + [f"{title}（續 {i}）" for i in range(2, page_count + 1)]
+
+
 def _also_actions(verb: str, row: dict) -> str:
     """該列除了本分組動詞以外還宣告了什麼（給行動格的灰小字）。
 

@@ -40,7 +40,14 @@ from deck_layout import (LAYOUTS, MIN_CHART_PT_MULTI, budget,   # noqa: E402
 REQUIRED = ["footer", "eyebrow", "deck_title", "subtitle", "meta", "stats", "stats_note",
             "boundary",         "pages",
             "limits"]
-BLOCKED_SLIDE_TERMS = ("本簡報怎麼讀", "圖表原則", "待驗證", "降級")
+# 🔴 內部流程／判定用語，不得印在投影片上。
+# ⚠ 2026-08-19（§9.6b）新增後四項：使用者「成立／不成立／證據不足這種事系統內部
+#   判定，不要讓這種措辭外洩到報告去」。與既有的「待驗證」「降級」同一類——
+#   **流程狀態不是分析結論**。讀者要看的是結論，不是系統的推導狀態。
+# ⚠ **有限清單，不做模式比對**（沿 deepen 4.2 的作法）：模式比對會擋掉正常句子，
+#   逼 CLI 亂改到過為止。
+BLOCKED_SLIDE_TERMS = ("本簡報怎麼讀", "圖表原則", "待驗證", "降級",
+                       "證據不足", "判定為成立", "判定為不成立", "covered")
 VAGUE_EVIDENCE_TERMS = (
     "整體統計",
     "資料分析",

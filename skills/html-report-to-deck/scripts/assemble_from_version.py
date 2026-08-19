@@ -216,7 +216,43 @@ def assemble(version_dir: Path | str, out_dir: Path | str) -> dict:
     (out_dir / "cover_stats.json").write_text(
         json.dumps(report_data.get("cover_stats") or {}, ensure_ascii=False, indent=1),
         encoding="utf-8")
+    # 🔴 行動空間掃描（2026-08-19，§9.6）：引擎逐主題掃完整個候選池。
+    # ⚠ 這是**非渲染**的落點——判定措辭（成立／不成立／證據不足）是系統內部語言，
+    #   不得外洩到報告（§9.6b，使用者裁決）。它給閘門與稽核看，
+    #   讓「為什麼沒建議 X」查得到；讀者只會看到**成立**的行動。
+    (out_dir / "action_scan.json").write_text(
+        json.dumps(_action_scan(report_data), ensure_ascii=False, indent=1),
+        encoding="utf-8")
     return report
+
+
+def _action_scan(report_data: dict) -> dict:
+    """對每個主題掃完整個行動候選池（§9.6）。
+
+    ⚠ 判定由**引擎**算：規則全是確定性的，所以 `covered` 恆等成立，
+    Verifier 不必再防 LLM 偷懶——那個風險從根上消失。
+    ⚠ 但規則是**地板不是天花板**：CLI 可加可否決（§9.7e-1），本檔只給候選。
+    """
+    import statistics
+
+    # ⚠ 本腳本以子行程執行，`backend` 不在 sys.path。照 `deck_layout.py:24`
+    #   與 `rebuild_chip_chart.py:25` 的既有做法把 repo root 加進去
+    #   ——那條路是字型／色票唯一定義處已經在走的（2026-08-13 選項 A）。
+    repo_root = Path(__file__).resolve().parents[3]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    rows = (report_data.get("chart_rows") or {}).get("cluster_topic_table") or []
+    counts = []
+    for r in rows:
+        try:
+            counts.append(float(r.get("patent_count") or 0))
+        except (TypeError, ValueError):
+            continue
+    median = statistics.median(counts) if counts else 0.0
+    from backend.app.reports.action_space import scan_workspace
+
+    return scan_workspace(rows, median)
 
 
 def _topic_finding(row: dict) -> str:
