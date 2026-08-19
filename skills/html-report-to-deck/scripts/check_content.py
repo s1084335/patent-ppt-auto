@@ -38,8 +38,7 @@ from deck_layout import (LAYOUTS, MIN_CHART_PT_MULTI, budget,   # noqa: E402
 #   ——路線圖頁併入結論頁、期程整個拿掉。留在必填清單裡會逼 CLI 生出一個
 #   不會被畫出來的區塊。
 REQUIRED = ["footer", "eyebrow", "deck_title", "subtitle", "meta", "stats", "stats_note",
-            "boundary", "rec_title", "rec_takeaway",
-            "recommendations", "pages",
+            "boundary",         "pages",
             "limits"]
 BLOCKED_SLIDE_TERMS = ("本簡報怎麼讀", "圖表原則", "待驗證", "降級")
 VAGUE_EVIDENCE_TERMS = (
@@ -326,29 +325,33 @@ def _check_p2_evidence_rules(c: dict) -> list[str]:
             if term in text:
                 bad.append(f"{path} 含流程/規則字串「{term}」——不得印在投影片上")
 
-    for index, rec in enumerate(c.get("recommendations") or [], 1):
-        evidence = str(rec.get("evidence") or "")
-        lines = [str(line) for line in rec.get("lines") or []]
-        joined = "\n".join([evidence, *lines])
+    # 🔴 §9.3：CLI 挑色的入口收斂到 `pages[].tag`（rec 頁退場後）。
+    # ⚠ 挑庫外的標籤要在這裡擋——原本完全不驗，寫錯會在 `TAG_COLOR[tag]`
+    #   KeyError，錯誤訊息與內容無關、修稿輪也修不掉。
+    # ⚠ 不掛標籤是合法的：強制每頁都要標籤是形式鎖，會逼 CLI 硬掛。
+    from deck_layout import TAG_COLOR
+
+    for page_index, page in enumerate(c.get("pages") or [], 1):
+        tag = page.get("tag")
+        if tag and tag not in TAG_COLOR:
+            bad.append(
+                f"第 {page_index} 頁的標籤「{tag}」不在標籤庫 {sorted(TAG_COLOR)}"
+                "——CLI 只能從庫裡挑，不得自創")
+
+    # 🔴 §9.3：`recommendations` 已退場，`依據：` 紀律移到結論頁的 `evidence`
+    # （§9.5 證據鏈）。⚠ 這條紀律**不能跟著 rec 一起消失**——它擋的是
+    #   「接不上依據的建議句」，而結論頁的行動同樣是建議。
+    for index, row in enumerate((c.get("conclusions") or {}).get("rows") or [], 1):
+        joined = "\n".join([str(row.get("evidence") or ""),
+                            str(row.get("reading") or "")])
         if "依據：" not in joined:
-            bad.append(f"建議卡第 {index} 張缺「依據：」——接不上依據的建議句不得放行")
+            bad.append(f"結論第 {index} 列缺「依據：」——接不上依據的行動不得放行")
         for term in VAGUE_EVIDENCE_TERMS:
             if f"依據：{term}" in joined:
-                bad.append(f"建議卡第 {index} 張含空泛依據「依據：{term}」——請改用可追錨點")
+                bad.append(f"結論第 {index} 列含空泛依據「依據：{term}」——請改用可追錨點")
         for key in INTERNAL_EVIDENCE_KEYS:
             if key in joined:
-                bad.append(f"建議卡第 {index} 張含內部欄位「{key}」——投影片請改用中文顯示名稱")
-        # 🔴 色彩庫是給 CLI 挑的，挑庫外的要在這裡擋（§6.5b）。
-        # ⚠ 原本完全不驗：CLI 寫 `"color": "purple"` 會一路走到 make_deck 才
-        #   KeyError，錯誤訊息與內容無關、修稿輪修不掉。比照版型庫的作法，
-        #   清單讀 `deck_layout.COLOR_LIBRARY`（唯一定義處），不在這裡另寫一份。
-        from deck_layout import COLOR_LIBRARY
-
-        colour = str(rec.get("color") or "").strip()
-        if colour and colour not in COLOR_LIBRARY:
-            bad.append(
-                f"建議卡第 {index} 張的色「{colour}」不在色彩庫 "
-                f"{sorted(COLOR_LIBRARY)}——CLI 只能從庫裡挑，不得自創")
+                bad.append(f"結論第 {index} 列含內部欄位「{key}」——投影片請改用中文顯示名稱")
     return bad
 
 
@@ -434,14 +437,17 @@ def main() -> int:
     for _n, label in c["stats"]:
         chk("封面統計標籤", label, B["stat_label"])
 
-    chk("結論頁標題", c["rec_title"], B["page_title"])
-    chk("結論頁結論句", c["rec_takeaway"], B["takeaway"])
-    if len(c["recommendations"]) not in (3, 4, 5):
-        bad.append(f"研發建議應為 3–5 個方向，目前 {len(c['recommendations'])} 個")
-    for r in c["recommendations"]:
-        chk(f"建議卡標題 {r['title'][:4]}", r["title"] + r["tag"], B["rec_title"])
-        for ln in r["lines"]:
-            chk(f"建議卡內文 {r['title'][:4]}", ln, B["rec_line"])
+    # 🔴 §9.3：`recommendations` 的 3–5 數量鎖已移除，rec 頁本身也退場。
+    # ⚠ 數量鎖與 v5／v7／v9 形式鎖同族——它不說「該寫什麼」，只說「不准超過 N」，
+    #   於是 CLI 為了過鎖而硬湊或乾脆刪掉整段。使用者 2026-08-19：
+    #   「不一定只能提四項，需要的是完整由資料驅動所得出的結論或建議。」
+    # ⚠ 而且原本的鎖是**假的**：閘門允許 5 張，版面高度卻寫死兩排
+    #   （`need_total = 2 * gh`），5 張要 3 排，裕度檢查少算一整排。
+    # 完整性改由「行動空間完整掃描」保證（§9.6），不用數量下限。
+    cc = c.get("conclusions") or {}
+    if cc:
+        chk("結論頁標題", cc.get("title", ""), B["page_title"])
+        chk("結論頁結論句", cc.get("takeaway", ""), B["takeaway"])
 
     used = []
     for i, p in enumerate(c["pages"], start=3):

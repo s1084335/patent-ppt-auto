@@ -145,9 +145,18 @@ class ConclusionsRenderTests(unittest.TestCase):
             len(pages), 7,
             "conclusions 仍是取代 rec（不新增頁）；路線圖頁已於 §7d 移除")
 
-    def test_without_conclusions_rec_page_stays(self):
-        pages = self._build(False)
-        self.assertIn("建議", self._text(pages[1]))
+    def test_conclusions_is_the_only_second_page(self):
+        """⚠ 2026-08-19（§9.3）取代原 `test_without_conclusions_rec_page_stays`。
+
+        原測試驗「沒宣告 conclusions 時建議頁還在」——那條路徑已移除：
+        §9.2c 起「沒有分群主題就不產簡報」是硬檢查，conclusions 一定有內容，
+        `_compose` 的 else 分支永遠走不到。留著等於在守一條不存在的行為。
+        """
+        import deck_layout
+
+        self.assertFalse(hasattr(deck_layout, "slide_rec"))
+        pages = self._build(True)
+        self.assertIn("綜合結論", self._text(pages[1]))
 
 
 class ConclusionsGateTests(unittest.TestCase):
@@ -172,8 +181,11 @@ class ConclusionsGateTests(unittest.TestCase):
             [PY, str(SCRIPTS / "check_content.py"), str(cpath)],
             capture_output=True, text=True, encoding="utf-8", errors="replace")
 
+    # ⚠ 2026-08-19（§9.3）：`依據：` 紀律從 rec 移到結論列——結論頁的行動
+    #   同樣是建議，那條紀律不能跟著 rec 一起消失。
     ROW_OK = {"topic": "甲", "finding": "6件/2家｜集中持有",
-              "reading": "說明", "action": "追蹤"}
+              "reading": "說明", "action": "追蹤",
+              "evidence": "依據：CN 121754861"}
 
     def test_action_outside_verb_table_fails(self):
         proc = self._check([{**self.ROW_OK, "action": "立即提出申請"}])

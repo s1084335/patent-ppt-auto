@@ -61,6 +61,35 @@ class DeckRunnerError(RuntimeError):
     """deck 產製失敗（機械步非零、CLI 未產出、目視迴圈未收斂、回存失敗）。"""
 
 
+def require_topic_facts(work: Path) -> int:
+    """沒有分群主題就不產簡報（§9.2c）；回主題數。
+
+    使用者 2026-08-19：「沒有分群不會去進入做簡報。」
+    ⚠ 但那是**流程上不會**，程式裡原本沒有這道守門：`_compose` 是
+    `if conclusions else slide_rec`，`_check_conclusions` 也只在 `topic_facts`
+    非空時才要求 conclusions。rec 頁退場後（§9.1），無主題＝第 2 頁**靜默消失**
+    ——使用者拿到少一頁的簡報而沒有任何訊息。
+
+    ⚠ 檔案不存在與內容為空是**同一件事**（都代表沒有主題），必須一起擋：
+    分開處理的話漏掉的那條就是靜默通過的入口。
+
+    ⚠ 訊息要說得出**原因與下一步**。只 raise 的話使用者看到的是技術例外，
+    仍然不知道要去做分群——錯誤訊息本身就是這道檢查的產出。
+    """
+    path = Path(work) / "topic_facts.json"
+    facts = []
+    if path.is_file():
+        try:
+            facts = json.loads(path.read_text(encoding="utf-8")) or []
+        except json.JSONDecodeError:
+            facts = []
+    if not facts:
+        raise DeckRunnerError(
+            "本報表版本沒有分群主題，無法產簡報——簡報的結論頁是「一主題一列」，"
+            "沒有主題就沒有結論可寫。請先完成分群並重新產製報表，再產簡報。")
+    return len(facts)
+
+
 def _resolve_skill_scripts() -> Path:
     """deck skill 的 scripts 目錄。
 
@@ -296,6 +325,12 @@ def run_deck(
     _progress("assemble", 10)
     _step("assemble", [py, str(scripts / "assemble_from_version.py"),
                        str(run_dir), str(work)])
+    # 🔴 §9.2c：沒有分群主題就不產簡報。
+    # ⚠ 這道檢查原本不存在——「沒有分群不會去進入做簡報」是**流程上不會**，
+    #   不是程式擋著。rec 頁退場後（§9.1），沒有主題就等於第 2 頁靜默消失，
+    #   使用者拿到少一頁的簡報而沒有任何訊息。把流程假設寫成明確前置檢查。
+    require_topic_facts(work)
+
     _progress("plan", 14)
     _step("plan", [py, str(scripts / "plan_deck.py"), str(work)])
 

@@ -61,6 +61,8 @@ def _synth_conclusions(work: Path) -> dict | None:
                       for f in facts[len(actions):]],
         "rows": [{"topic": f["topic"], "finding": f["finding"],
                   "reading": "半真素材佔位判讀句，不代表真實分析結論。",
+                  # ⚠ §9.3：`依據：` 紀律移到結論列，代打也要帶
+                  "evidence": "依據：半真素材主題 " + f["topic"],
                   "action": a, "pending_count": 0}
                  for f, a in zip(written, actions)],
     }

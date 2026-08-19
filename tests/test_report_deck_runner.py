@@ -76,6 +76,12 @@ class FakeSteps:
                 "report_meta": {"workspace_name": "滑雪機", "h1": "滑雪機"},
                 "sections": []}))
             _write(self.work / "charts" / "a.svg", "<svg/>")
+            # ⚠ §9.2c：真 assemble 一律產 topic_facts.json，runner 在它之後
+            #   會確認非空（沒有分群主題就不產簡報）。假步驟不產的話，
+            #   測到的是「無主題」那條路徑，而不是正常流程。
+            _write(self.work / "topic_facts.json",
+                   json.dumps([{"topic": "拉繩滑雪", "finding": "10件/9家｜成長"}],
+                              ensure_ascii=False))
         elif step == "plan":
             _write(self.work / "plan.json", json.dumps(
                 {"pages": [], "rebuildable_chip_chart": self.plan_chips}))

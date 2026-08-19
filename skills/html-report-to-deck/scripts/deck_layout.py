@@ -88,7 +88,21 @@ COLOR_LIBRARY: dict[str, dict] = {
 #: 渲染時取色用。⚠ 由色彩庫導出，不另寫一份——兩份清單各自演進的起點就是
 #: 「反正只是把同樣的東西再寫一次」。
 PALETTE  = {name: e["rgb"] for name, e in COLOR_LIBRARY.items()}
-TAG_COLOR = {"風險": ROSE, "機會": AMBER, "行動": GREEN, "依據": CYAN}
+#: 🔴 頁面標籤色——**CLI 挑色的入口**（2026-08-19，§9.3）。
+#:
+#: rec 頁退場後，`PALETTE[r["color"]]` 失去消費者。使用者明確要求「色彩庫和
+#: 版型庫本來就是要給 CLI 去選擇的」，所以挑色能力收斂到 `pages[].tag` 這一條，
+#: 而不是讓色彩庫變成一張沒人用的擺設清單。
+#:
+#: ⚠ 值一律取自 `COLOR_LIBRARY`，不自己寫——原本寫死 `ROSE`／`AMBER` 等常數，
+#: 那是第三份各說各話的清單（§7a 剛修完同型問題）。標籤語意與色彩庫的
+#: `purpose` 對得起來：風險→rose、機會→amber、行動→green、依據→cyan。
+TAG_COLOR = {
+    "風險": COLOR_LIBRARY["rose"]["rgb"],
+    "機會": COLOR_LIBRARY["amber"]["rgb"],
+    "行動": COLOR_LIBRARY["green"]["rgb"],
+    "依據": COLOR_LIBRARY["cyan"]["rgb"],
+}
 
 FONT = FONT_FAMILY
 T_SIZE, B_SIZE = Pt(24), Pt(16)          # 規格鎖死：標題 24、內文 16
@@ -727,33 +741,11 @@ def slide_cover(prs, c):
     return s
 
 
-def slide_rec(prs, c):
-    s = base(prs, c["footer"], 2, source=src_line(c))
-    header(s, c["rec_title"], c["rec_takeaway"])
-    top, bot = CHART_TOP, 7.06
-    gw = (CW - 0.22) / 2
-    tw_ = gw - 0.52
-    gh = max(text_h([(r["title"] + r["tag"], 16, 10)] + [(t, 16, 8) for t in r["lines"]], tw_)
-             for r in c["recommendations"]) + 0.36
-    # ⚠ 不要查「單張卡的 gh - 0.26 vs 該卡 need」——gh 是由**最高那張卡的 need**
-    #   加固定 padding 算出來的，avail 恆 ≥ need，那個檢查永遠不會失敗
-    #   （與 slide_roadmap 同一個坑，2026-08-11）。真正的約束是兩排卡的總高。
-    avail_total, need_total = bot - top, 2 * gh + 0.18
-    note("建議頁總高", avail_total, need_total)
-    top += max(0.0, (avail_total - need_total) / 2)
-    for i, r in enumerate(c["recommendations"]):
-        x = ML + (i % 2) * (gw + 0.22)
-        y = top + (i // 2) * (gh + 0.18)
-        color = PALETTE[r["color"]]
-        rect(s, x, y, gw, gh, fill=BG_PANEL, line=CARD_ED,
-             shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.05)
-        rect(s, x, y, 0.065, gh, fill=color)
-        blocks = [([(r["title"], {"bold": True, "color": color}),
-                    ("　" + r["tag"], {"color": MUTED})], {"space_after": 10})]
-        blocks += [([("▍", {"color": color}), (t, {})], {"space_after": 8}) for t in r["lines"]]
-        textbox(s, x + 0.26, y + 0.13, tw_, gh - 0.26, blocks)
-    return s
-
+# ⚠ slide_rec（研發建議結論頁）已於 2026-08-19（§9.1／§9.3）移除。
+#   conclusions 宣告時本來就取代它（§7.7「同一問題不答兩次」），而 §9.2c 之後
+#   「沒有分群主題就不產簡報」是硬檢查——conclusions 一定有內容，這條分支永遠
+#   走不到。留著不是中性的：它自帶 3–5 數量鎖（與使用者「不一定只能提四項」
+#   相衝），版面又寫死兩排（5 張會溢出而裕度檢查不擋，「允許 3–5」是假的）。
 
 def slide_chart(prs, c, page, spec, png_dir):
     s = base(prs, c["footer"], page, source=src_line(c, spec))
@@ -1286,44 +1278,34 @@ def slide_table(prs, c, page, spec):
     return s
 
 
-def slide_roadmap(prs, c, page):
-    s = base(prs, c["footer"], page, source=src_line(c))
-    header(s, c["roadmap_title"], c["roadmap_takeaway"])
-    top = CHART_TOP
-    cw_ = (CW - 0.44) / 3
-    tw_ = cw_ - 0.48
-    lim_title = c.get("limits_title", "分析限制與適用邊界")
-    card_need = max(text_h([(r["label"], 16, 10)] + [(t, 16, 8) for t in r["items"]], tw_)
-                    for r in c["roadmap"])
-    lim_need = text_h([(lim_title, 16, 6)] + [(t, 16, 4) for t in c["limits"]], CW - 0.52)
-    lim_h = lim_need + 0.34
-    card_h = card_need + 0.50
-    # ⚠ 這一頁的兩個區塊高度都是「內容需求 ＋ 固定 padding」算出來的，所以
-    #   分開檢查各自的 avail vs need **恆等於通過**——那是套套邏輯，抓不到任何東西。
-    #   2026-08-11 實測：限制頁加到 5 則時最後一則被頁尾切掉，裕度表仍報「溢出 0」。
-    #   真正的約束是**整頁總高**，只能在這裡查。
-    avail_total = BAND_BOT - CHART_TOP
-    need_total = card_h + lim_h + 0.20
-    note("路線圖頁總高", avail_total, need_total)
-    # 放不下時靠上排（不要用負偏移把內容推到頁面外，那會連頁尾一起蓋掉）
-    top += max(0.0, (avail_total - need_total) / 2)
-    for i, r in enumerate(c["roadmap"]):
-        x = ML + i * (cw_ + 0.22)
-        color = PALETTE[r["color"]]
-        rect(s, x, top, cw_, card_h, fill=BG_PANEL, line=CARD_ED,
-             shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.05)
-        rect(s, x, top, cw_, 0.06, fill=color)
-        blocks = [(r["label"], {"bold": True, "color": color, "space_after": 10})]
-        blocks += [([("▍", {"color": color}), (t, {})], {"space_after": 8}) for t in r["items"]]
-        textbox(s, x + 0.24, top + 0.26, tw_, card_h - 0.44, blocks)
-    y = top + card_h + 0.20
-    rect(s, ML, y, CW, lim_h, fill=BG_PANEL, line=ROSE,
-         shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.06)
-    blocks = [(lim_title, {"bold": True, "color": ROSE, "space_after": 6})]
-    blocks += [([("・", {"color": ROSE}), (t, {"color": MUTED})], {"space_after": 4})
-               for t in c["limits"]]
-    textbox(s, ML + 0.26, y + 0.17, CW - 0.52, lim_h - 0.34, blocks)
-    return s
+# ⚠ slide_roadmap 已於 2026-08-18（§7d）移除：路線圖頁併入結論頁、期程整個
+#   拿掉。當時只把 _compose 的呼叫拿掉、函式本體留著，2026-08-19（§9.3）
+#   一併刪除——死碼是 PALETTE[r["color"]] 的第二個消費者，會讓「色彩庫還有
+#   沒有人用」的判斷失準。
+
+def _compose(deck, content: dict, png_dir: Path) -> dict:
+    """跑完整份簡報的頁型。⚠ **頁型呼叫的唯一落點**——pptx 與 SVG 兩個輸出端
+    共用這一份，否則兩邊會各自演進（少一頁、順序不同都不會報錯）。
+    """
+    slide_cover(deck, content)
+    # 🔴 2026-08-19（§9.1／§9.3）：結論頁是**唯一**的第 2 頁，rec 分支已移除。
+    # 原本是 `if conclusions else slide_rec`——但 §9.2c 起「沒有分群主題就不產
+    # 簡報」是硬檢查，conclusions 一定有內容，那條 else 永遠走不到。
+    slide_conclusions(deck, content)
+    widths = {}
+    for i, spec in enumerate(content["pages"], start=3):
+        if spec.get("layout") == "table":
+            slide_table(deck, content, i, spec)     # 表格頁：不佔圖表寬度
+        elif spec.get("charts"):
+            widths[i] = slide_chart(deck, content, i, spec, png_dir)
+        else:
+            slide_text(deck, content, i, spec)      # 純文字頁：不佔圖表寬度
+    # 🔴 2026-08-18（§7d）：路線圖頁**併入結論頁**、期程整個拿掉。
+    #    結論頁四欄每欄都有引擎來源，唯獨路線圖的時間桶沒有任何資料支撐——
+    #    系統不知道人力、預算與產品排程，`短期 0–3 個月` 是 CLI 憑空填的。
+    #    拿掉期程後兩頁功能重疊（結論頁已有 主題｜發現｜意涵｜行動），故合併。
+    #    `slide_roadmap` 暫留供舊 content 追溯，不再由 _compose 呼叫。
+    return widths
 
 
 class _SvgDeck:
@@ -1344,32 +1326,6 @@ class _SvgDeck:
         self.pages.append(canvas)
         return canvas
 
-
-def _compose(deck, content: dict, png_dir: Path) -> dict:
-    """跑完整份簡報的頁型。⚠ **頁型呼叫的唯一落點**——pptx 與 SVG 兩個輸出端
-    共用這一份，否則兩邊會各自演進（少一頁、順序不同都不會報錯）。
-    """
-    slide_cover(deck, content)
-    # §7.7：conclusions 宣告時綜合結論頁**取代**建議頁（取代不並存——
-    # 兩頁並存＝同一問題答兩次；§7.10 頁數帳也靠這條成立）。
-    if content.get("conclusions"):
-        slide_conclusions(deck, content)
-    else:
-        slide_rec(deck, content)
-    widths = {}
-    for i, spec in enumerate(content["pages"], start=3):
-        if spec.get("layout") == "table":
-            slide_table(deck, content, i, spec)     # 表格頁：不佔圖表寬度
-        elif spec.get("charts"):
-            widths[i] = slide_chart(deck, content, i, spec, png_dir)
-        else:
-            slide_text(deck, content, i, spec)      # 純文字頁：不佔圖表寬度
-    # 🔴 2026-08-18（§7d）：路線圖頁**併入結論頁**、期程整個拿掉。
-    #    結論頁四欄每欄都有引擎來源，唯獨路線圖的時間桶沒有任何資料支撐——
-    #    系統不知道人力、預算與產品排程，`短期 0–3 個月` 是 CLI 憑空填的。
-    #    拿掉期程後兩頁功能重疊（結論頁已有 主題｜發現｜意涵｜行動），故合併。
-    #    `slide_roadmap` 暫留供舊 content 追溯，不再由 _compose 呼叫。
-    return widths
 
 
 def build_svg(content: dict, png_dir, out_dir) -> list[Path]:

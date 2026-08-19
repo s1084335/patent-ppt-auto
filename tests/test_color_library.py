@@ -82,7 +82,10 @@ class ColorLibraryRegistryTests(unittest.TestCase):
 class GateRejectsUnknownColourTests(unittest.TestCase):
     """CLI 挑了庫外的色要**在閘門就擋**，不是拖到 make_deck 才 KeyError。"""
 
-    def _check(self, colour: str):
+    def _check(self, tag):
+        """⚠ 2026-08-19（§9.3）：CLI 挑色的入口從 `recommendations[].color`
+        改成 `pages[].tag`——rec 頁已退場，色彩庫的消費者改由標籤色承接。
+        """
         from tests.test_deck_caliber_page import _minimal_content
 
         tmp = tempfile.TemporaryDirectory()
@@ -90,25 +93,22 @@ class GateRejectsUnknownColourTests(unittest.TestCase):
         work = Path(tmp.name)
         content = _minimal_content()
         content["pages"] = [{"title": "頁", "takeaway": "t", "charts": [],
-                             "lines": ["內容"], "tag": None}]
-        for rec in content.get("recommendations") or []:
-            rec["color"] = colour
+                             "lines": ["內容"], "tag": tag}]
         path = work / "content.json"
         path.write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
         return subprocess.run(
             [PY, str(SCRIPTS / "check_content.py"), str(path)],
             capture_output=True, text=True, encoding="utf-8", errors="replace")
 
-    def test_unknown_colour_is_rejected(self):
-        proc = self._check("purple")
-        self.assertEqual(proc.returncode, 1, "庫外的色沒被擋")
-        self.assertIn("purple", proc.stdout)
+    def test_unknown_tag_is_rejected(self):
+        proc = self._check("紫色標籤")
+        self.assertEqual(proc.returncode, 1, "庫外的標籤沒被擋")
+        self.assertIn("紫色標籤", proc.stdout)
 
-    def test_known_colour_passes(self):
+    def test_known_tag_passes(self):
         """⚠ 反面也要驗：只擋不放行的閘門會逼 CLI 亂改到過為止。"""
-        proc = self._check("amber")
-        self.assertNotIn("色", proc.stdout.split("\n")[0] if proc.stdout else "",
-                         proc.stdout)
+        proc = self._check("風險")
+        self.assertNotIn("標籤", proc.stdout, proc.stdout)
 
 
 class ThreeWaySyncTests(unittest.TestCase):
