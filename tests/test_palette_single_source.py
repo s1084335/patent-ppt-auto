@@ -161,6 +161,39 @@ class ColorScaleTests(unittest.TestCase):
                          "STATUS 色階與 chart_runner.STATUS_COLORS 不一致")
 
 
+class ReportThemeMatchesFrontendTests(unittest.TestCase):
+    """🔴 跨語言的同一份知識：報表主題 vs 產品前端 CSS（一致性測試）。
+
+    `chart_runner` 的 HTML 報表主題註解自己寫著「沿用產品前端
+    `backend/app/static/index.html` 的 accent／text／border，同一個產品不該有
+    兩套視覺語言」——也就是說**它已經是一份副本**。
+
+    ⚠ 前端是 HTML/CSS、引擎是 Python，跨語言不能 import。依規則
+    「真的必須複製時，加一致性測試：斷言兩處相等。它不防止複製，
+    但讓分岔立刻紅」。這就是那道測試。
+    """
+
+    #: 報表主題的階名 → 前端的 CSS 變數名
+    PAIRS = {"ink": "--text", "line": "--border",
+             "brand": "--accent", "brand-soft": "--accent-2"}
+
+    def test_shared_tokens_match_frontend_light_theme(self):
+        from backend.app.reports import chart_sizing
+
+        html = (ROOT / "backend/app/static/index.html").read_text(encoding="utf-8")
+        # 只取淺色（第一組 :root）——深色主題另有一組值，混進來會誤判
+        light = html.split(":root", 1)[1].split("}", 1)[0]
+        theme = dict(chart_sizing.SCALES["REPORT_THEME"].steps)
+        for step, css_var in self.PAIRS.items():
+            with self.subTest(token=step):
+                m = re.search(rf"{re.escape(css_var)}\s*:\s*(#[0-9A-Fa-f]{{6}})", light)
+                self.assertIsNotNone(m, f"前端找不到 {css_var}")
+                self.assertEqual(
+                    theme[step].upper(), m.group(1).upper(),
+                    f"報表主題的 {step} 與前端 {css_var} 分岔了"
+                    "——同一個產品出現兩套視覺語言，而且不會有任何東西報錯")
+
+
 class NotSamePageTests(unittest.TestCase):
     """🔴 同頁互斥色對（§6.2 深藍、§6.5 兩個紅，使用者裁決「都留但不同頁」）。"""
 

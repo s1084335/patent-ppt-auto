@@ -142,8 +142,12 @@ class FetchPatentKindSummaryTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def execute(self, sql):
+            def execute(self, sql, params=None):
+                # ⚠ 加了 `params`：§1.4 起本查詢帶 `WHERE patent_id = ANY(%s)`，
+                #   假 cursor 只收一個位置參數會 TypeError。
+                #   **不要**把 params 丟掉不看——下面的斷言要用它證明母體真的有傳。
                 self.sql = sql
+                self.params = params
 
             def fetchall(self):
                 return [
@@ -167,9 +171,16 @@ class FetchPatentKindSummaryTests(unittest.TestCase):
 
         conn = _Conn()
         with mock.patch.object(chart_runner, "_app_layer_connect", return_value=conn):
-            summary = chart_runner.fetch_patent_kind_summary()
+            # ⚠ 2026-08-19（§1.4）：`patent_ids` 改為**必填無預設**——有預設就會
+            #   在呼叫端忘記傳的時候靜默掃全庫（母體洩漏，本專案已出現三次）。
+            #   這個消費者是那次改動的漏網：§1 的回歸範圍沒涵蓋本檔。
+            summary = chart_runner.fetch_patent_kind_summary(patent_ids=[1, 2, 3])
 
         self.assertIn("derived_layer.report_patent_base", conn.cursor_obj.sql)
+        # 🔴 §1.4：母體必須真的傳進查詢，不只是「函式簽章上有這個參數」。
+        # ⚠ 只驗簽章是代理指標——本專案踩過「函式在、字串在、資料到不了照樣綠」。
+        self.assertIn("patent_id = ANY(%s)", conn.cursor_obj.sql)
+        self.assertEqual(conn.cursor_obj.params, ([1, 2, 3],))
         self.assertEqual(summary["tally"], {"設計": 1, "新型": 1, "發明": 1})
         self.assertIn("設計 1 件", summary["design_note"])
 

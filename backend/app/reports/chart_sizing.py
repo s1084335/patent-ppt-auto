@@ -126,6 +126,43 @@ PALETTE: dict[str, PaletteEntry] = {
     # ── 底與線 ────────────────────────────────────────────────
     "SURFACE_MAP": PaletteEntry("#F8FAFC", "report", "地圖底色"),
     "LINE_GRID": PaletteEntry("#DCE3F2", "report", "格線"),
+    # ── 圖例與軸的中性色（2026-08-19 §6.4／§6.5 收編）───────────────
+    # ⚠ 用途逐條讀自實際用法（`scripts/audit_palette.py` 掃出的呼叫點），
+    #   不是照名字猜。空泛用途在此等於沒填。
+    "LEGEND_HEAD": PaletteEntry(
+        "#374151", "report",
+        "圖例前綴與泡泡描邊：矩陣圖的圖例標題（粗體）與泡泡 stroke"),
+    "LEGEND_ITEM": PaletteEntry(
+        "#4B5563", "report", "圖例項目文字（比圖例標題淺一階）"),
+    "AXIS_TICK_LINE": PaletteEntry(
+        "#94A3B8", "report", "軸刻度線與地圖外框；比格線深、比文字淺"),
+    "SURFACE_CARD": PaletteEntry(
+        "#FFFFFF", "both",
+        "白：圖表卡底、深色填色上的反白文字。⚠ 標為 both——報表與 deck 都用，"
+        "且兩邊要的就是同一個白，不是各自的白"),
+    "SURFACE_TABLE_HEAD": PaletteEntry(
+        "#F1F5F9", "report", "HTML 表格表頭底色；矩陣圖空格底色"),
+    "LINE_TABLE": PaletteEntry(
+        "#E5E7EB", "report", "HTML 表格列分隔線；象限格描邊"),
+    "TEXT_TABLE": PaletteEntry(
+        "#111827", "report",
+        "HTML 表格正文字色。⚠ 與 `TEXT_IN_CHART` 分開：那是 SVG 圖內文字，"
+        "這是 HTML 表格——兩者底色與媒介都不同"),
+    "BUBBLE_FILL": PaletteEntry(
+        "#2563EB", "report", "地圖泡泡填色（單一國家）；與 stroke 成對使用"),
+    "BUBBLE_STROKE": PaletteEntry(
+        "#1E40AF", "report", "地圖泡泡描邊（單一國家）：同色系深一階"),
+    "BUBBLE_STROKE_REGIONAL": PaletteEntry(
+        "#92400E", "report",
+        "地區型受理局（EP／WO 等）泡泡的描邊；填色沿用 INTENSITY 的「高」橘。"
+        "⚠ 與單一國家分色是為了讓讀者一眼分辨「一國」與「一區」"),
+    "LINE_ROW_FAINT": PaletteEntry(
+        "#EEF2F7", "report", "矩陣圖的列分隔線：比格線更淡，只用來分列不搶視線"),
+    "TEXT_NOTE": PaletteEntry(
+        "#9CA3AF", "report",
+        "圖內註記與頁尾註的文字色（口徑防呆註、FTO 聲明、「本案無此類」）。"
+        "⚠ 與 STATUS 的「放棄」、TIER 的 `lead=0`、QUADRANT 的 q3 **撞色但無關**"
+        "——那三個是資料編碼，這個是文字層級。改註記灰不該連帶改掉法律狀態"),
 }
 
 #: 🔴 報表色 → deck 色（§6.2「都留但不得同頁」的對照表）。
@@ -181,6 +218,34 @@ SCALES: dict[str, ColorScale] = {
         "report",
         "機會四象限的格子底色。⚠ 象限**名稱**與後續動作的唯一定義處在 "
         "`chart_runner._qlabel`，本表只管色"),
+    "RANKING": ColorScale(
+        (("第1階", "#0A3A80"), ("第2階", "#0B4FB8"), ("第3階", "#1268D6"),
+         ("第4階", "#2E86E0"), ("第5階", "#4A97E3")),
+        "report",
+        "申請人排名長條的深淺階（由多到少）。🔴 硬約束：**最淺一階也要 ≥3.0** "
+        "（WCAG 圖形元素門檻）——色階是從這個下限往上推，不是從主色往下淡。"
+        "白底實測對比 10.88／7.43／5.28／3.75／3.08，全數過關。"
+        "⚠ 分階依**數值**不依名次：名次相鄰但件數差很多時該有明顯色差"),
+    "REPORT_THEME": ColorScale(
+        (("paper", "#F4F6F9"), ("card", "#FFFFFF"), ("ink", "#1A1A2E"),
+         ("ink-soft", "#5A6472"), ("line", "#E2E6EC"), ("line-soft", "#EEF1F5"),
+         ("brand", "#0F3460"), ("brand-soft", "#1A6BC4"), ("wash", "#EDF2F9"),
+         ("meta", "#8A93A3"), ("row-hover", "#F8FAFD"), ("btn-hover", "#DFE8F4")),
+        "report",
+        "HTML 報表頁面的 CSS 變數主題（`:root{--paper…}`）。淺色單一主題，"
+        "不宣告 dark——瀏覽器自動反轉會把圖表白底與頁面撞在一起。"
+        "🔴 其中 ink／line／brand／brand-soft **與產品前端 index.html 的 "
+        "--text／--border／--accent／--accent-2 是同一份知識**（同一個產品不該有"
+        "兩套視覺語言）。⚠ 跨語言不能 import，故走一致性測試"
+        "（`test_palette_single_source` 斷言兩處相等）——它不防止複製，"
+        "但讓分岔立刻紅"),
+    "KP_CLASS": ColorScale(
+        (("全領域布局", "#D97706"), ("單一技術深布局", "#0D9488"),
+         ("利基／探索", "#60A5FA"), ("前案（多失效）", "#6B7280")),
+        "report",
+        "Key Players 競爭定位的分類色。⚠ 這是**類別編碼不是數值色階**——"
+        "同一個分類在不同泡泡必須同色，否則圖例對不上。"
+        "分類本身由資料推導，不吃 AI 給的字串"),
 }
 
 #: 🔴 **不得出現在同一頁**的色對（2026-08-19 使用者裁決「都留但不同頁」）。

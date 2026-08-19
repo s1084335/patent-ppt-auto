@@ -1095,7 +1095,7 @@ def render_country_status_stack(
             if seg_w > note_px * 2.4:
                 svg.append(f'<text x="{x + seg_w / 2:.1f}" y="{y + bar_h * 0.72:.1f}"'
                            f' text-anchor="middle" font-size="{note_px:.1f}"'
-                           f' fill="#FFFFFF">{count}</text>')
+                           f' fill="{PALETTE["SURFACE_CARD"].hex}">{count}</text>')
             x += seg_w
         svg.append(f'<text x="{left + plot_w + 8}" y="{y + bar_h * 0.72:.1f}"'
                    f' font-size="{label_px:.1f}" fill="{COLOR_TEXT}">'
@@ -1529,7 +1529,7 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text x="50" y="36" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<rect x="{left}" y="{top}" width="{map_w}" height="{map_h}" fill="{COLOR_MAP}" stroke="#94A3B8"/>',
+        f'<rect x="{left}" y="{top}" width="{map_w}" height="{map_h}" fill="{COLOR_MAP}" stroke="{PALETTE["AXIS_TICK_LINE"].hex}"/>',
     ]
     for lon in range(-180, 181, 60):
         x = scale(lon, -180, 180, left, left + map_w)
@@ -1556,7 +1556,7 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
         y = scale(lat, 85, -85, top, top + map_h)
         radius = 8 + 34 * math.sqrt(value / max_value)
         # 區域局用橘色，與國家（藍色）視覺區分：代表「這個地區有佈局」而非單一國家。
-        fill, stroke = ("#F59E0B", "#92400E") if is_regional else ("#2563EB", "#1E40AF")
+        fill, stroke = (_INTENSITY["高"], PALETTE["BUBBLE_STROKE_REGIONAL"].hex) if is_regional else (PALETTE["BUBBLE_FILL"].hex, PALETTE["BUBBLE_STROKE"].hex)
         svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" fill="{fill}" fill-opacity="0.68" stroke="{stroke}" stroke-width="2"/>')
         svg.append(f'<text x="{x:.1f}" y="{y + 4:.1f}" text-anchor="middle" font-size="{label_px:.1f}" fill="{readable_text_on(fill)}" data-on-fill="{fill}" font-weight="700">{xml_text(code)}</text>')
         svg.append(f'<text x="{x:.1f}" y="{y + radius + 18:.1f}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value}</text>')
@@ -1572,16 +1572,34 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
 # 圖檔名（唯一定義處：對照表、產圖與測試都取這裡）。
 KP_QUADRANT_FILENAME = "kp_quadrant.svg"
 # 定位分類**由資料推導**，不吃 AI 給的字串——分類是統計事實不是敘述。
+# 分類色取自色階登記表（§6.5）——⚠ 這是**類別編碼不是數值色階**：
+# 同一個分類在不同泡泡必須同色，否則圖例對不上。
+_KP_COLOR = dict(SCALES["KP_CLASS"].steps)
+# 地區型受理局的泡泡填色沿用量級色階的「高」橘——⚠ 它與 INTENSITY 是同一個色，
+# 這裡不另開條目：另開會變成「改一個沒改另一個」而視覺上悄悄分家。
+_INTENSITY = dict(SCALES["INTENSITY"].steps)
+
+
+def _report_theme_css() -> str:
+    """HTML 報表主題的 `:root` 變數宣告，由色階登記表產生（§6.4／§6.5）。
+
+    ⚠ 原本 9 個 `--paper: #F4F6F9;` 這樣逐行寫死在模板字串裡。那些值與產品前端
+    `static/index.html` 的 `--text`／`--border`／`--accent`／`--accent-2`
+    是同一份知識（註解自己寫著「同一個產品不該有兩套視覺語言」），
+    跨語言不能 import，改由 `SCALES["REPORT_THEME"]` 供給並加一致性測試。
+    """
+    return "\n".join(
+        f"      --{label}: {hexv};" for label, hexv in SCALES["REPORT_THEME"].steps)
 KP_CLASS_FULL_DOMAIN = "全領域布局"
 KP_CLASS_SINGLE_TECH = "單一技術深布局"
 KP_CLASS_NICHE = "利基／探索"
 KP_CLASS_PRIOR_ART = "前案（多失效）"
 
 _KP_CLASS_COLORS = {
-    KP_CLASS_FULL_DOMAIN: "#D97706",   # 橘：範例右上大泡
-    KP_CLASS_SINGLE_TECH: "#0D9488",   # 青綠：右下
-    KP_CLASS_NICHE: "#60A5FA",         # 淺藍：左側
-    KP_CLASS_PRIOR_ART: "#6B7280",     # 灰：僅具前案價值
+    KP_CLASS_FULL_DOMAIN: _KP_COLOR["全領域布局"],   # 橘：範例右上大泡
+    KP_CLASS_SINGLE_TECH: _KP_COLOR["單一技術深布局"],  # 青綠：右下
+    KP_CLASS_NICHE: _KP_COLOR["利基／探索"],        # 淺藍：左側
+    KP_CLASS_PRIOR_ART: _KP_COLOR["前案（多失效）"],   # 灰：僅具前案價值
 }
 
 
@@ -1794,7 +1812,7 @@ def place_bubble_labels(
                 line_y1, line_y2 = label_y + 3, y - radius
             else:
                 line_y1, line_y2 = label_y - 10, y + radius
-            out.append(f'<line x1="{x:.1f}" y1="{line_y1:.1f}" x2="{x:.1f}" y2="{line_y2:.1f}" stroke="#94A3B8" stroke-width="1"/>')
+            out.append(f'<line x1="{x:.1f}" y1="{line_y1:.1f}" x2="{x:.1f}" y2="{line_y2:.1f}" stroke="{PALETTE["AXIS_TICK_LINE"].hex}" stroke-width="1"/>')
         out.append(f'<text x="{x:.1f}" y="{label_y:.1f}" text-anchor="middle" '
                    f'font-size="{label_px:.1f}" font-weight="600" fill="{COLOR_TEXT}">{xml_text(label)}</text>')
     return out
@@ -1846,7 +1864,7 @@ def render_bubble_chart(
         x = scale(float(row[x_key]), 0, x_max, left, left + plot_w)
         y = scale(float(row[y_key]), 0, y_max, top + plot_h, top)
         radius = 6 + 30 * math.sqrt(float(row[size_key]) / s_max)
-        svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" fill="#2563EB" fill-opacity="0.45" stroke="#1E40AF" stroke-width="1.5"/>')
+        svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" fill="{PALETTE["BUBBLE_FILL"].hex}" fill-opacity="0.45" stroke="{PALETTE["BUBBLE_STROKE"].hex}" stroke-width="1.5"/>')
 
     # 標籤：全部泡泡都標。預設放泡泡正上方；重疊時上下交錯逐步外推找空位，
     # 標籤離開泡泡邊緣時畫一條引線（箭頭）指回泡泡，群聚也能對得上誰是誰。
@@ -1875,7 +1893,7 @@ def render_bubble_chart(
                 line_y1, line_y2 = label_y + 3, y - radius
             else:            # 標籤在泡泡下方
                 line_y1, line_y2 = label_y - 10, y + radius
-            svg.append(f'<line x1="{x:.1f}" y1="{line_y1:.1f}" x2="{x:.1f}" y2="{line_y2:.1f}" stroke="#94A3B8" stroke-width="1"/>')
+            svg.append(f'<line x1="{x:.1f}" y1="{line_y1:.1f}" x2="{x:.1f}" y2="{line_y2:.1f}" stroke="{PALETTE["AXIS_TICK_LINE"].hex}" stroke-width="1"/>')
         svg.append(f'<text x="{x:.1f}" y="{label_y:.1f}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{xml_text(label)}</text>')
     svg.append("</svg>")
     _write_svg(path, svg)
@@ -1960,7 +1978,7 @@ def render_matrix_chart(
          f' viewBox="0 0 {width} {height}" font-family="{FONT_STACK}">'),
         f'<rect width="{width}" height="{height}" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="26" font-size="{note_px:.1f}" font-weight="bold" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="16" y="56" font-size="{label_px:.1f}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
+        f'<text x="16" y="56" font-size="{label_px:.1f}" font-weight="600" fill="{PALETTE["LEGEND_HEAD"].hex}">{LEGEND_SCALE_PREFIX}</text>',
     ]
     # 🔴 F-13：格子有三階顏色卻沒有任何說明（實機 p6），讀者無從對照。
     # ⚠ 圖例與格子共用 `bubble_legend_spans`——各算各的會出現
@@ -1970,7 +1988,7 @@ def render_matrix_chart(
     for legend_color, legend_label, legend_span in bubble_legend_spans(max_value):
         text = f"{legend_label} {legend_span}"
         parts.append(f'<rect x="{legend_x}" y="{44}" width="12" height="12" rx="2" fill="{legend_color}"/>')
-        parts.append(f'<text x="{legend_x + 20}" y="{56}" font-size="{label_px:.1f}" fill="#4B5563">'
+        parts.append(f'<text x="{legend_x + 20}" y="{56}" font-size="{label_px:.1f}" fill="{PALETTE["LEGEND_ITEM"].hex}">'
                      f'{xml_text(text)}</text>')
         legend_x += legend_step(text, mark_gap=8)
     for col_index, col in enumerate(cols):
@@ -1989,7 +2007,7 @@ def render_matrix_chart(
             value = cells.get((row_label, col))
             if value is None:
                 parts.append(
-                    f'<rect x="{x}" y="{y}" width="{cell_w - 2}" height="{cell_h - 2}" fill="#F1F5F9"/>'
+                    f'<rect x="{x}" y="{y}" width="{cell_w - 2}" height="{cell_h - 2}" fill="{PALETTE["SURFACE_TABLE_HEAD"].hex}"/>'
                 )
                 continue
             # 🔴 2026-07-31：原本用 `fill-opacity` 0.12–0.90 疊在同一色上表達大小。
@@ -2064,14 +2082,14 @@ def readable_text_on(fill: str) -> str:
     """
     value = fill.lstrip("#")
     if len(value) != 6:
-        return "#FFFFFF"
+        return PALETTE["SURFACE_CARD"].hex
     channels = []
     for offset in (0, 2, 4):
         component = int(value[offset:offset + 2], 16) / 255
         channels.append(component / 12.92 if component <= 0.03928
                         else ((component + 0.055) / 1.055) ** 2.4)
     luminance = 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
-    return TEXT_ON_LIGHT if luminance > 0.4 else "#FFFFFF"
+    return TEXT_ON_LIGHT if luminance > 0.4 else PALETTE["SURFACE_CARD"].hex
 
 
 def bubble_legend_spans(max_value: int) -> list[tuple[str, str, str]]:
@@ -2192,7 +2210,7 @@ def render_year_span_chart(
                      f' text-anchor="middle" fill="{COLOR_TEXT}">{label}</text>')
         # 淡格線：沒有它，條的起訖對不回年份刻度。
         parts.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}"'
-                     f' y2="{top + len(row_names) * row_h}" stroke="#EEF2F7" stroke-width="1"/>')
+                     f' y2="{top + len(row_names) * row_h}" stroke="{PALETTE["LINE_ROW_FAINT"].hex}" stroke-width="1"/>')
 
     for row_index, company in enumerate(row_names):
         y_center = top + row_index * row_h + row_h / 2
@@ -2221,7 +2239,7 @@ def render_year_span_chart(
         for year in active:
             parts.append(
                 f'<circle data-role="active-year" cx="{year_x[year]:.1f}" cy="{y_center:.1f}"'
-                f' r="{max(2.5, bar_h * SPAN_ACTIVE_DOT_RATIO):.1f}" fill="#FFFFFF"'
+                f' r="{max(2.5, bar_h * SPAN_ACTIVE_DOT_RATIO):.1f}" fill="{PALETTE["SURFACE_CARD"].hex}"'
                 f' stroke="{fill}" stroke-width="1.5"/>')
         parts.append(
             f'<text data-role="span-total" x="{last_x + cell_w * 0.4:.1f}"'
@@ -2285,7 +2303,7 @@ def render_year_bubble_matrix_chart(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="{FONT_STACK}">',
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="28" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="16" y="90" font-size="{note_px:.1f}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
+        f'<text x="16" y="90" font-size="{note_px:.1f}" font-weight="600" fill="{PALETTE["LEGEND_HEAD"].hex}">{LEGEND_SCALE_PREFIX}</text>',
         *([(f'<text x="{width - 34}" y="{top - 14}" text-anchor="end" font-size="{note_px:.1f}" '
             f'fill="{COLOR_TEXT_SOFT}">僅顯示 {years[0]}–{years[-1]}（共 {years_total} 年）</text>')]
           if years_total > len(years) else []),
@@ -2301,7 +2319,7 @@ def render_year_bubble_matrix_chart(
     for color, label, span in bubble_legend_spans(max_value):
         text = f"{label} {span}"
         parts.append(f'<circle cx="{legend_x}" cy="86" r="9" fill="{color}"/>')
-        parts.append(f'<text x="{legend_x + 14}" y="90" font-size="{label_px:.1f}" fill="#4B5563">'
+        parts.append(f'<text x="{legend_x + 14}" y="90" font-size="{label_px:.1f}" fill="{PALETTE["LEGEND_ITEM"].hex}">'
                      f'{xml_text(text)}</text>')
         legend_x += legend_step(text, mark_width=18, mark_gap=5)
     year_labels = [_year_axis_label(year, cell_w, label_px) for year in years]
@@ -2334,7 +2352,7 @@ def render_year_bubble_matrix_chart(
             value_font_size = label_px
             parts.append(
                 f'<circle cx="{x:.1f}" cy="{y + 16:.1f}" r="{radius:.1f}" fill="{fill}" '
-                f'data-value-band="{color_band}" stroke="#374151" stroke-width="1.1">'
+                f'data-value-band="{color_band}" stroke="{PALETTE["LEGEND_HEAD"].hex}" stroke-width="1.1">'
                 f'<title>{xml_text(company)} / {year} / {value}</title></circle>'
             )
             parts.append(
@@ -2611,7 +2629,7 @@ def render_chart_embed(file: str) -> str:
 # 往上推，不是從主色往下淡——後者就是再做一次 F-2。
 # 白底（網頁報表）實測對比：10.88／7.43／5.28／3.75／3.08，全數過關。
 # 對應的深底階由 theme.json 的 chart_recolor 映射（對背景 9.24→3.53）。
-RANKING_BAR_SCALE: tuple[str, ...] = ("#0A3A80", "#0B4FB8", "#1268D6", "#2E86E0", "#4A97E3")
+RANKING_BAR_SCALE: tuple[str, ...] = tuple(h for _lbl, h in SCALES["RANKING"].steps)
 
 #: 申請結構分段的類別色（#3，2026-08-05）。⚠ 類別編碼不得用數值色階——
 #: 同一個「單獨申請」在不同列會變色，圖例就對不上。取最淺一階（W-2 保證 ≥3.0）。
@@ -3593,15 +3611,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
        不宣告 dark，避免瀏覽器自動反轉把圖表白底與頁面撞在一起。 */
     :root {{
       color-scheme: light;
-      --paper: #F4F6F9;      /* 頁面底：比純白略深，讓白卡浮起來 */
-      --card: #FFFFFF;
-      --ink: #1A1A2E;        /* 產品 --text */
-      --ink-soft: #5A6472;   /* 次要文字：比 #6C757D 深一階，小字仍讀得清 */
-      --line: #E2E6EC;       /* 產品 --border */
-      --line-soft: #EEF1F5;  /* 表格內線：只用來分列，不圍格 */
-      --brand: #0F3460;      /* 產品 --accent */
-      --brand-soft: #1A6BC4; /* 產品 --accent-2 */
-      --wash: #EDF2F9;       /* 極淺藍：chip、表頭、解讀區底 */
+{_report_theme_css()}
     }}
     * {{ box-sizing: border-box; }}
     /* Noto Sans TC 排第一（deck 字型定案，裝了就用）；未安裝時 fallback 正黑體，
@@ -3621,7 +3631,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     .meta-bar {{ color: var(--ink-soft); font-size: 13px; margin: 0;
       font-variant-numeric: tabular-nums; }}
     /* 產製參數對追溯有用、對讀者無用——放得到但不搶眼。 */
-    .meta-params {{ color: #8A93A3; font-size: 12px; margin: 4px 0 0;
+    .meta-params {{ color: var(--meta); font-size: 12px; margin: 4px 0 0;
       font-variant-numeric: tabular-nums; }}
     /* scroll-margin-top：錨點跳轉後把章節頂端往下推，避開常駐導覽列。
        🔴 **必須動態**：導覽列高度隨章節數與視窗寬度變（chip 會換行）——
@@ -3657,7 +3667,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
       border-bottom: 1px solid var(--line); }}
     .data-table-wrap td {{ padding: 6px 10px; border-bottom: 1px solid var(--line-soft);
       white-space: nowrap; }}
-    .data-table-wrap tbody tr:hover td {{ background: #F8FAFD; }}
+    .data-table-wrap tbody tr:hover td {{ background: var(--row-hover); }}
     .data-table-wrap td.totals-cell {{ border-top: 2px solid var(--line);
       border-bottom: none; font-weight: 700; background: var(--wash); }}
     .data-table-wrap details {{ margin-top: 8px; }}
@@ -3666,8 +3676,8 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
       border-radius: 9px; margin: 0 0 14px; }}
     .toggle-btn {{ border: none; background: transparent; color: var(--ink); font-size: 14px;
       font-weight: 600; padding: 6px 15px; border-radius: 7px; cursor: pointer; }}
-    .toggle-btn:hover {{ background: #DFE8F4; }}
-    .toggle-btn.active {{ background: var(--brand); color: #FFFFFF; }}
+    .toggle-btn:hover {{ background: var(--btn-hover); }}
+    .toggle-btn.active {{ background: var(--brand); color: var(--card); }}
     .toggle-btn:focus-visible {{ outline: 2px solid var(--brand-soft); outline-offset: 2px; }}
     .expand-btn {{ border: 1px solid var(--line); background: var(--card); color: var(--brand-soft);
       font-size: 14px; font-weight: 600; padding: 7px 14px; border-radius: 7px;
@@ -3724,7 +3734,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     [hidden] {{ display: none !important; }}
     /* 列印／轉 PDF：導覽無用途，章節不要被切成兩頁。 */
     @media print {{
-      body {{ background: #FFFFFF; padding: 0; }}
+      body {{ background: var(--card); padding: 0; }}
       .chapter-nav, .table-expand, .expand-btn {{ display: none; }}
       .report-section {{ break-inside: avoid; box-shadow: none; }}
       tr.folded {{ display: table-row; }}
@@ -4544,11 +4554,16 @@ def render_cluster_topic_table_html(
     parts = [
         '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">',
         '<style>',
-        f'body{{font-family:{FONT_STACK};margin:16px;color:#111827}}',
+        f'body{{font-family:{FONT_STACK};margin:16px;color:{PALETTE["TEXT_TABLE"].hex}}}',
         'table{border-collapse:collapse;width:100%;font-size:13px;margin:0 0 18px}',
-        'th,td{text-align:left;padding:6px 10px;border-bottom:1px solid #E5E7EB}',
-        'th{background:#F1F5F9;font-weight:600;position:sticky;top:0}',
-        'tr:hover{background:#F8FAFC}',
+        # ⚠ 這三行原本是**純字串**（沒有 f 前綴）。改成引用色票時必須一併加 f，
+        #   否則 `{PALETTE[...]}` 會原樣印進 HTML——語法檢查會過、測試若只驗
+        #   「原始碼有引用色票」也會過，但產出的表格會直接壞掉。
+        f'th,td{{text-align:left;padding:6px 10px;'
+        f'border-bottom:1px solid {PALETTE["LINE_TABLE"].hex}}}',
+        f'th{{background:{PALETTE["SURFACE_TABLE_HEAD"].hex};'
+        f'font-weight:600;position:sticky;top:0}}',
+        f'tr:hover{{background:{PALETTE["SURFACE_MAP"].hex}}}',
         'h3{font-size:15px;margin:14px 0 8px}',
         '.num{text-align:right;font-variant-numeric:tabular-nums}',
         '</style></head><body>',
@@ -4674,7 +4689,7 @@ def _chip_text_color(hex_fill: str) -> str:
     g = int(hex_fill[3:5], 16)
     b = int(hex_fill[5:7], 16)
     luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-    return "#111827" if luminance > 0.6 else "#FFFFFF"
+    return PALETTE["TEXT_TABLE"].hex if luminance > 0.6 else PALETTE["SURFACE_CARD"].hex
 
 
 def _fit_chip_text(text: str, area_w: float,
@@ -4867,7 +4882,7 @@ def render_opportunity_quadrant_svg(
         # Y 軸口徑防呆註（沿用散點版文案）
         # ⚠ 角色標記不可省：deck 側重排靠它取這段文字，原本靠 fill 色值認，
         #   §6.2 的換色一上就會靜默取不到（tasks §6.3a）。
-        f'<text data-role="{ROLE_CHART_NOTE}" x="{margin_l}" y="{chrome["note_y"]:.0f}" font-size="{note_px:.1f}" fill="#9CA3AF">※ 純專利訊號(申請人家數)＝衡量申請人是否已投入布局，不等於產品核心度</text>',
+        f'<text data-role="{ROLE_CHART_NOTE}" x="{margin_l}" y="{chrome["note_y"]:.0f}" font-size="{note_px:.1f}" fill="{PALETTE["TEXT_NOTE"].hex}">※ 純專利訊號(申請人家數)＝衡量申請人是否已投入布局，不等於產品核心度</text>',
         # 圖例：色＝龍頭涉入三級｜數字＝件/家
         f'<text x="{margin_l}" y="{chrome["legend_y"]:.0f}" font-size="{note_px:.1f}" font-weight="600" fill="{COLOR_TEXT}">{LEGEND_PREFIX_TEXT}</text>',
     ]
@@ -4896,7 +4911,7 @@ def render_opportunity_quadrant_svg(
         battle, action = _qlabel(*probes[q], 0.5, 0.5)
         parts.append(
             f'<rect x="{cx:.1f}" y="{cy:.1f}" width="{cell_w:.1f}" height="{ch:.1f}" rx="10" '
-            f'fill="{qcolors[q]}" fill-opacity="0.07" stroke="#E5E7EB"/>')
+            f'fill="{qcolors[q]}" fill-opacity="0.07" stroke="{PALETTE["LINE_TABLE"].hex}"/>')
         # K-4：象限名＋行動建議兩行（密度灰行已刪；併一行會超出格寬，見 _chrome）。
         parts.append(
             f'<text x="{cx + inner_pad:.1f}" y="{cy + label_px * 1.35:.1f}" font-size="{label_px:.1f}" font-weight="600" '
@@ -4913,7 +4928,7 @@ def render_opportunity_quadrant_svg(
         else:
             parts.append(
                 f'<text x="{cx + inner_pad:.1f}" y="{cy + header_h + 14:.1f}" font-size="{label_px:.1f}" '
-                f'fill="#9CA3AF" font-style="italic">本案無此類</text>')
+                f'fill="{PALETTE["TEXT_NOTE"].hex}" font-style="italic">本案無此類</text>')
 
     # 語意方向軸標籤（無數值刻度）
     mid_x = margin_l + (width - margin_l - margin_r) / 2
@@ -4930,7 +4945,7 @@ def render_opportunity_quadrant_svg(
     # 24.5px 字級下行距只剩 22px，字高 34px 直接相疊）。
     parts.append(
         f'<text data-role="{ROLE_CHART_FOOTER}" x="{margin_l}" y="{axis_y + note_px * 1.7:.0f}" '
-        f'font-size="{note_px:.1f}" fill="#9CA3AF">'
+        f'font-size="{note_px:.1f}" fill="{PALETTE["TEXT_NOTE"].hex}">'
         f'本分析非侵權迴避(FTO)結論｜資料依公開專利資訊整理</text>')
 
     parts.append("</svg>")
