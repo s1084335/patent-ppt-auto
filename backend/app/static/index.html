@@ -4761,6 +4761,17 @@ function switchReportSourceField(sourceField) {
   renderReportViewer();
 }
 
+// 🔴 2026-08-19：「目前顯示 N 筆，總計 M 筆」的 M 必須與**畫出來的那份清單**同源。
+// 實機病徵：主題演進 12 列（完整）被標成「總計 13 筆」——13 是主題表的列數，
+// 因為三個分支都只換 rows、沒換 row_count，section 那份就一路蓋過來。
+// ⚠ 拿不到該清單的未截斷總數時（例如通道過濾後的子集）回 rows.length：
+//   寧可不顯示截斷訊息，也不對讀者謊報「還有資料沒給你看」。
+function rowCountFor(rows, owner) {
+  const shown = (rows || []).length;
+  const n = owner && owner.row_count;
+  return (typeof n === 'number' && n >= shown) ? n : shown;
+}
+
 function sectionForReportView(section, option, sourceField) {
   option = option || {};
   if (!isClusterSection(section)) {
@@ -4779,11 +4790,12 @@ function sectionForReportView(section, option, sourceField) {
     const variant = (section.variants || [])[idx];
     if (!variant) return section;
     // ⚠ 判長度不判 truthy：空陣列／空物件不得蓋掉 section 那份完整資料。
-    const variantRows = (Array.isArray(variant.rows) && variant.rows.length)
-      ? variant.rows : (section.rows || []);
+    const usedVariantRows = (Array.isArray(variant.rows) && variant.rows.length);
+    const variantRows = usedVariantRows ? variant.rows : (section.rows || []);
     return Object.assign({}, section, {
       title: option.label || section.title,
       rows: variantRows,
+      row_count: rowCountFor(variantRows, usedVariantRows ? variant : section),
       report_key: variant.report_key || section.report_key,
       column_labels: (variant.column_labels
         && Object.keys(variant.column_labels).length)
@@ -4803,12 +4815,15 @@ function sectionForReportView(section, option, sourceField) {
     const channel = option.source_field || sourceField;
     const channelRows = (section.rows || [])
       .filter(row => !row.source_field || row.source_field === channel);
-    const pickedRows = (picked && Array.isArray(picked.rows) && picked.rows.length)
-      ? picked.rows : channelRows;
+    const usedPickedRows = (picked && Array.isArray(picked.rows) && picked.rows.length);
+    const pickedRows = usedPickedRows ? picked.rows : channelRows;
     return Object.assign({}, section, {
       title: option.label || section.title,
       report_key: option.report_key || section.report_key,
       rows: pickedRows,
+      // ⚠ channelRows 是 section.rows 過濾後的子集，未截斷總數無從得知——
+      //   owner 傳 null，rowCountFor 回 rows.length（＝不顯示截斷訊息）。
+      row_count: rowCountFor(pickedRows, usedPickedRows ? picked : null),
       column_labels: (picked && picked.column_labels
         && Object.keys(picked.column_labels).length)
         ? picked.column_labels : section.column_labels,
@@ -4822,10 +4837,15 @@ function sectionForReportView(section, option, sourceField) {
   );
   const variant = variants[0] || null;
   const variantRows = variant && Array.isArray(variant.rows) ? variant.rows : [];
+  const finalRows = variantRows.length
+    ? variant.rows : (rows.length ? rows : (section.rows || []));
   return Object.assign({}, section, {
     title: option.label || reportLabelForKey(reportKey),
     report_key: reportKey,
-    rows: variantRows.length ? variant.rows : (rows.length ? rows : (section.rows || [])),
+    rows: finalRows,
+    // rows 用哪份，總數就跟哪份；通道過濾後的 `rows` 是子集故傳 null。
+    row_count: rowCountFor(finalRows,
+      variantRows.length ? variant : (rows.length ? null : section)),
     // ⚠ 要判**長度**不是 truthy：主題統計表的 variant 是沒有 rows 的解讀落點，
     // 後端 _column_labels([]) 回 {}，而 {} 在 JS 為真 → 空物件蓋掉 section 那份
     // 完整對照表，表頭整排退回英文 key（2026-08-03 實機，status 顯示成 status）。

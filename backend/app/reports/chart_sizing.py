@@ -289,6 +289,7 @@ class ChartSizing:
     row_height: int              # 長條圖基準列高（px，隨字級縮放）
     year_window: int             # 年度矩陣顯示年數
     bar_height: int              # 排名長條高（px）
+    bar_min_gap: int             # 相鄰長條之間的最小空白（px）——列高的下限＝bar_height＋本值
     bubble_min_radius: float     # 年度矩陣大泡泡的最小半徑（px）
 
 
@@ -314,5 +315,6 @@ WEB = ChartSizing(
     row_height=32,
     year_window=16,         # 2026-08-03 使用者定案（原 15 是拍的，16 由資料橫距量出）
     bar_height=18,
+    bar_min_gap=6,
     bubble_min_radius=14.0,
 )

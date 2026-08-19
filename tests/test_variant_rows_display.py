@@ -52,8 +52,11 @@ class VariantRowsDisplayTests(unittest.TestCase):
     def _run(self, section: dict, option: dict) -> dict:
         deps = "\n".join(
             _extract(self.html, fn) for fn in
+            # ⚠ `rowCountFor` 是 `sectionForReportView` 的依賴（2026-08-19 加）：
+            #   抽取清單漏了它，node 端會 ReferenceError 而不是斷言失敗——
+            #   看起來像「前端壞了」，其實是測試的取樣清單沒跟上。
             ("isClusterSection", "clusterVariantMatchesReport", "clusterVariantMatchesSource",
-             "sectionForReportView"))
+             "rowCountFor", "sectionForReportView"))
         script = (
             "const CLUSTER_REPORT_NAMES = new Set(['cluster_topic_table','opportunity_quadrant',"
             "'topic_timeline']);\n"

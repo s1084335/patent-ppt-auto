@@ -677,25 +677,37 @@ def render_line_chart(
 # ⚠ 附錄2（完整名單）已定案移除，被截的部分改由網頁報表承接，註記同步改寫。
 CHART_ROW_LIMIT = 10
 
+#: 橫條的高度（px）與條間最小空白（px）。
+#: 🔴 2026-08-19：條高原本是渲染迴圈裡的字面值 `height="18"`，而列高會被
+#: 撐開到 4 倍——18px 的條擺進 108px 的列，空白是條高的 5 倍。條高與列高
+#: 是同一件事（「這張圖多密」）的兩個落點，字面值讓它們無法一起推理。
+#: ⚠ 最小空白參與 `_row_h` 的下限：列高由字級推導，字級一小就可能低於條高。
+#: ⚠ 兩者都取自 `chart_sizing`，不得在此寫字面值：2026-08-19 初版把條高寫成
+#: `BAR_HEIGHT_PX = 18`，而檔案下方早有 `BAR_HEIGHT_PX = _SIZING.bar_height`
+#: ——同一個名字兩個定義處，兩邊剛好都是 18 所以完全沒有症狀，但改
+#: `chart_sizing.bar_height` 只有一半會跟著動。
+BAR_HEIGHT_PX = _SIZING.bar_height
+BAR_MIN_GAP_PX = _SIZING.bar_min_gap
+
 
 def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_key: str, value_key: str = "patent_count", limit: int = CHART_ROW_LIMIT) -> None:
     data = rows[:limit]
     width = _sizing_value("canvas_width")
     top = 68
-    # 🔴 G-7：列少時把列高撐開，否則圖只有一小條、框空掉一半
-    # （實機 p9 CPC L4 只有 1 列，圖高 130px 放進 3.2in 的框，空 48%）。
-    # ⚠ 有上限：無限放大會讓單列長條變成一整塊色帶，也不成圖。
+    # 列高由字級推導、不隨列數變動（2026-08-19 使用者裁決，見 `_row_height`）。
     right = 150
     bottom = 34
     # 🔴 2026-08-04：字級由「這張畫布會被縮多少」反推（資料 14pt／註記 12pt）。
     # ⚠ 畫布高度又依字級而變，故迭代求解（見 solve_chart_font）。
     def _row_h(font_px: float) -> int:
-        rh = _fill_row_height(len(data), top=top, bottom=bottom,
-                              base=int(round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX)))
+        rh = _row_height(len(data), top=top, bottom=bottom,
+                         base=int(round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX)))
         # ⚠ 列多時字級縮放會把總高撐過畫布上限（P-2：畫布過高整張圖被縮小）——
         # 上限內裝不下就壓回平均列高，字仍讀得到（row ≥ font×1.25 由 20 列上限保證）。
         cap = int((_sizing_value("canvas_max_height") - top - bottom) / max(1, len(data)))
-        return max(1, min(rh, cap))
+        # ⚠ 下限＝條高＋最小間距：列高由字級推導，字級一小就可能低於條高，
+        # 條會壓到下一列去。條高是本圖的硬幾何，必須參與列高的下限。
+        return max(BAR_HEIGHT_PX + BAR_MIN_GAP_PX, min(rh, cap))
 
     def _canvas_height(font_px: float) -> float:
         return top + bottom + max(1, len(data)) * _row_h(font_px)
@@ -743,9 +755,14 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
         color = ranking_bar_color(value, max_value)
         # 🔴 I-3：列標籤**左對齊**——字寬估算猜三次仍被裁（實測真實寬度比估算多 13%），
         # 改成從左緣固定位置開始畫，標籤多長都不可能超出左界。
-        svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{label}</text>')
-        svg.append(f'<rect x="{left}" y="{y + 5}" width="{bar_w:.1f}" height="18" rx="2" fill="{color}"/>')
-        svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value}</text>')
+        # 條在列內**垂直置中**、標籤與數值對齊條的中線（2026-08-19）。
+        # ⚠ 原本是 `y + 5`／`y + 20` 兩個字面值，隱含「列高 ≈ 28」的假設；
+        # 列高一被撐開，多出來的空白就全部落在條的下方而不是上下平分。
+        bar_y = y + (row_h - BAR_HEIGHT_PX) / 2
+        text_y = bar_y + BAR_HEIGHT_PX / 2 + label_px * 0.36   # 0.36≈半個 cap height
+        svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{text_y:.1f}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{label}</text>')
+        svg.append(f'<rect x="{left}" y="{bar_y:.1f}" width="{bar_w:.1f}" height="{BAR_HEIGHT_PX}" rx="2" fill="{color}"/>')
+        svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{text_y:.1f}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value}</text>')
     svg.append("</svg>")
     _write_svg(path, svg)
 
@@ -1135,7 +1152,7 @@ def render_paired_bar_chart(
     def _row_h(font_px: float) -> int:
         bar_h, gap = _bar_metrics(font_px)
         base = round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX) * 2
-        rh = _fill_row_height(len(data), top=top, bottom=bottom, base=base)
+        rh = _row_height(len(data), top=top, bottom=bottom, base=base)
         cap = int((_sizing_value("canvas_max_height") - top - bottom) / max(1, len(data)))
         return max(bar_h * 2 + gap * 3, min(rh, cap))
 
@@ -2422,9 +2439,6 @@ def legend_step(label: str, *, mark_width: float = 12, mark_gap: float = 8) -> f
     return mark_width + mark_gap + _text_px(label) + LEGEND_ITEM_GAP_PX
 
 
-#: 排名圖長條的高度（px）。註記位置由它推導，不得各寫各的。
-BAR_HEIGHT_PX = _SIZING.bar_height
-
 #: 文字「字身上緣到 baseline」佔字級的比例，用來判斷文字會不會壓到上方元素。
 #: ⚠ 這是估算值——量的是能不能「看起來壓到」，不是精確排版。
 TEXT_ASCENT_RATIO = 0.75
@@ -2665,31 +2679,31 @@ def truncation_note(shown: int, total: int) -> str:
     return f"顯示前 {shown}/{total} 名，完整名單見網頁報表"
 
 
-#: 列數少於 3 時的列高上限倍率。
-#: ⚠ 與一般情況（4 倍）分開：1–2 列撐到 4 倍就變成色帶（H-6）。
-SPARSE_ROW_CEILING_FACTOR = 2
+def _row_height(row_count: int, *, top: int, bottom: int,
+                base: int = CHART_ROW_HEIGHT) -> int:
+    """列高＝基準值（由字級推導），不隨列數變動；圖高因此隨資料量成長。
 
+    🔴 2026-08-19 使用者裁決（實機看 IPC/CPC 四階／五階分頁）：
+    「bar 間距縮小，文字同樣大小，圖不一定要撐那麼大張，根據資料變動」。
+    **本函式原為 `_fill_row_height`——列少時撐開列高填滿畫布（G-7／H-6，
+    2026-08-03）。該行為在此裁決中被推翻。**
 
-def _fill_row_height(row_count: int, *, top: int, bottom: int,
-                     base: int = CHART_ROW_HEIGHT, ceiling_factor: int = 4) -> int:
-    """列高：列少時撐開填滿畫布，列多時維持基準值。
+    ⚠ 推翻的依據不只是偏好：G-7 的前提是「圖要填滿 PPT 的 3.2in 圖框，
+    否則空掉 37–48%」，而 `chart_scale()` 自 2026-08-12（unify-chart-source）
+    起**恆為 1.0**——PPT 二次縮放補償已退場、簡報端改由 deck skill 逐圖 refit，
+    引擎輸出即網頁顯示尺寸。撐開填框是那個時代留下來的遺留物。
 
-    🔴 G-7：列高固定 28px 時，1–2 列的圖只有 130–158px 高，放進 3.2in 的框
-    空掉 37–48%。⚠ 那不是版型給太多空間，是圖本身太矮。
+    ⚠ 實機病徵（report_trial_20260819_122745）：同一張 IPC 圖的兩個分頁，
+    四階（2 列）列距 54、五階（5 列）列距 91，切分頁時條會跳位；
+    CPC 五階（3 列）列距 108，條間空白 90px＝條高的 5 倍。
 
-    ⚠ 兩端都要守：
-    - 上限 `base × ceiling_factor`——再撐下去單列長條會變成一整塊色帶，不成圖。
-    - 下限 `base`——列多時撐開會讓畫布爆高，整張圖反而被縮小（P-2 的老問題）。
+    ⚠ 仍保留的保護：列多到 `base × row_count` 會超過畫布上限時壓回平均列高
+    ——那是防止畫布爆高後整張圖被縮小（P-2），與「填滿」是兩回事。
     """
     if row_count <= 0:
         return base
     usable = _sizing_value("canvas_max_height") - top - bottom
-    # 🔴 H-6（2026-08-03 實機 p9）：CPC 四階只有 1 列，撐到 base×4＝112px 後
-    # 那根長條橫貫全寬、粗到變成一整塊色帶，已經不像圖表了。
-    # ⚠ 列數極少時**不追求填滿**：填滿是為了避免大片留白，但把單一長條撐成色帶
-    # 是用一個可讀性問題換另一個。少列時上限收到 base×2，留白改由版型處理。
-    factor = ceiling_factor if row_count >= 3 else SPARSE_ROW_CEILING_FACTOR
-    return int(max(base, min(base * factor, usable // row_count)))
+    return int(max(1, min(base, usable // row_count)))
 
 
 #: 標籤文字與畫布左緣之間的留白（px）。
@@ -4548,6 +4562,76 @@ def pivot_year_matrix(rows: list[dict[str, Any]], entity_key: str) -> list[dict[
     return sorted(grouped.values(), key=lambda x: (-x["total"], str(x[entity_key])))
 
 
+#: 轉置年度矩陣末列的列名（該欄本來放年份，這一列放的是跨年合計）。
+#: ⚠ 只有一個定義處：顯示端要辨識「這列是總計不是某一年」時一律 import 本值，
+#: 不得各自寫字串——寫死的那一份不會報錯，只會在改字時默默失去辨識能力。
+TOTAL_ROW_LABEL = "總件數"
+
+
+def pivot_year_matrix_by_year(rows: list[dict[str, Any]],
+                              entity_key: str) -> list[dict[str, Any]]:
+    """年度矩陣長格式 → **年份為列、實體為欄**的交叉表（`pivot_year_matrix` 的轉置）。
+
+    🔴 2026-08-19 使用者裁決：「一律轉置成年份為列、主題為欄」。主題演進表原本
+    5 列 × 14 欄（12 年份＋主題標籤＋總件數）必須橫捲；轉置後 12 列 × 6 欄。
+
+    輸出每列＝一個申請年，實體名成為欄位；**末列**＝各實體的總件數：
+
+        {"application_year": "2022", "風磁複合阻力裝置": 3}
+        {"application_year": "總件數", "風磁複合阻力裝置": 11}   ← 末列
+
+    🔴 2026-08-19 使用者裁決：「總件數應該算主題的，不用算各年的」。
+    轉置初版沿用 `pivot_year_matrix` 的 `total` 欄，但那在年份為列時的語意變成
+    「該年跨主題合計」——那是年度趨勢圖已經在回答的問題，擺在主題演進表裡
+    既重複又佔一欄。主題總件數才是這張表的摘要，位置在末列不是末欄。
+
+    設計取捨（與 `pivot_year_matrix` 對齊，兩張表不得在同一件事上分岔）：
+    - **該年該實體無資料回空字串不是 0**——0 讀起來像「查過但沒有」
+    - 列序＝年份由舊到新（時間軸就是列序），不依件數排
+    - 欄序＝該實體總件數降冪，重要的在左
+    - 年份由**鍵**變成**值**：前端 `Object.keys` 會把整數樣鍵排到最前，
+      年份當鍵時 `label`／`total` 會被擠到最右邊（轉置前的實際症狀）
+
+    ⚠ 實體名與保留欄名（`application_year`／`total`）相撞時**併入而非覆蓋**：
+    AI 產的主題標籤不受控，靜默覆蓋只會讓某一年的合計悄悄變成該主題的件數。
+    """
+    if not rows:
+        return []
+    entity_totals: dict[str, int] = {}
+    cells: dict[str, dict[str, int]] = {}
+    for row in rows:
+        name = str(row.get(entity_key) or "")
+        year = row.get("application_year")
+        if not name or year is None:
+            continue
+        cnt = int(row.get("patent_count") or 0)
+        entity_totals[name] = entity_totals.get(name, 0) + cnt
+        cells.setdefault(str(year), {})[name] = (
+            cells.get(str(year), {}).get(name, 0) + cnt)
+    if not cells:
+        return []
+    # 欄序：總件數降冪，同數以名稱排（結果穩定，兩次產出可對照）
+    columns = sorted(entity_totals, key=lambda n: (-entity_totals[n], n))
+    # ⚠ 與保留欄名相撞的實體改掛加註欄名，不讓 dict 靜默吃掉其中一邊——
+    #   覆蓋不會報錯，只會讓某一年的合計悄悄變成該主題的件數。
+    reserved = {"application_year"}
+    column_key = {n: (f"{n}（主題）" if n in reserved else n) for n in columns}
+    out: list[dict[str, Any]] = []
+    for year in sorted(cells):
+        by_entity = cells[year]
+        record: dict[str, Any] = {"application_year": year}
+        for name in columns:
+            record[column_key[name]] = by_entity.get(name, "")
+        out.append(record)
+    # 末列＝各實體總件數。⚠ 用與年份列**相同的鍵**，否則表頭對不齊；
+    #   首欄放「總件數」當列名，讀者一眼知道這列不是某一年。
+    total_row: dict[str, Any] = {"application_year": TOTAL_ROW_LABEL}
+    for name in columns:
+        total_row[column_key[name]] = entity_totals[name]
+    out.append(total_row)
+    return out
+
+
 def _source_segments(rows: list[dict[str, Any]]) -> list[tuple[str, str, list[dict[str, Any]]]]:
     """依 source_field 分段（技術先、功效後、未知來源殿後），回傳 [(source_field, 段名, rows)]。"""
     order = {"wips_independent_claims": 0, "effect_summary": 1}
@@ -5184,8 +5268,11 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
                 # 🔴 2026-08-18 使用者：「主題演進的表格和主題統計表視同一張」
                 #    ——原本掛的是 `timeline_rows`（＝主題統計表那份），
                 #    所以兩個分頁的表一模一樣。改掛**圖的同一份資料**轉成
-                #    主題 × 年交叉表（複用 pivot_year_matrix，不另寫轉置）。
-                timeline_table = pivot_year_matrix(ty_rows, "label")
+                #    主題 × 年交叉表。
+                # 🔴 2026-08-19 使用者裁決：「一律轉置成年份為列、主題為欄」。
+                #    實測 5 主題 × 12 年時，主題為列＝14 欄必須橫捲，
+                #    年份為列＝6 欄塞得下。使用者已知並接受主題數多時較寬的代價。
+                timeline_table = pivot_year_matrix_by_year(ty_rows, "label")
                 variants.append({
                     "label": f"主題演進{tab_suffix}",
                     "file": timeline_file,

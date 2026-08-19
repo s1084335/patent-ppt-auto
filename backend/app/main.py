@@ -435,6 +435,11 @@ def _report_content_payload(run_dir):
                         narrative = {"text": entry["text"]}  # v1 相容：單一 text 當所有變體預設
                     if narrative is not None:
                         break
+            # 🔴 2026-08-19：variant 原本不給 `row_count`，前端 `viewSection` 就退回用
+            #    section 的——主題演進 12 列（完整）被標成「目前顯示 12 筆，總計 13 筆」，
+            #    13 其實是**主題表**的列數。那是對讀者說「資料被截斷了」的假訊息，
+            #    而且五個 variant 全中。row_count 與 rows 必須出自同一份清單。
+            variant_rows = variant.get("rows", [])
             variants_out.append({
                 "label": variant.get("label", ""),
                 "variant_key": variant_key,
@@ -444,8 +449,10 @@ def _report_content_payload(run_dir):
                 "chart_url": (asset_base + resolve_web_asset(file_name, run_dir.exists)
                               if run_dir.exists(file_name) else None),
                 "narrative": narrative,
-                "rows": variant.get("rows", []),
-                "column_labels": _column_labels(variant.get("rows", [])),
+                "row_count": len(variant_rows),
+                # 顯示上限與 section 同一條規則：不同步的話「總計 N 筆」會對不上實際被截的量。
+                "rows": _limit_rows_per_source(variant_rows, 20),
+                "column_labels": _column_labels(variant_rows),
                 "thresholds": variant.get("thresholds", {}),
             })
         sections_out.append({
