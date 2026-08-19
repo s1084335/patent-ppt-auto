@@ -152,6 +152,17 @@ CW = SW - 2 * ML
 CHART_TOP = 1.24
 BAND_TOP, BAND_BOT = 6.02, 7.06
 
+# ── 頁尾來源行的幾何與字級（唯一定義處）──────────────────────────
+# 🔴 2026-08-19（實機 job #426 finding 4）：七頁的來源行被截斷，畫面上只剩
+# 「…／jurisdiction_」「…／opportunity_quadrant」，chart key 尾段掉到框外的
+# 第二行。框高 0.26in 只容一行，而 `textbox` 未給 size 時預設 B_SIZE=16pt。
+# ⚠ 溢出的方式是「消失」不是「擠出來」，掃過去像正常——這是缺席型偏差。
+# 修法兩層：字級降到 S_SIZE（來源行本來就是小字角色，且在 ALLOWED_SIZES 內），
+# 放不下時再**看得見地**省略。幾何具名化是為了讓閘門與渲染共用同一組數字。
+SOURCE_X = ML + 5.2
+SOURCE_W = SW - 1.6 - SOURCE_X
+SOURCE_PT = 11               # ＝S_SIZE.pt；此處用數值供 est_lines 直接使用
+
 MIN_CHART_PT = 9.0        # 單圖頁：圖內字級低於此值視為不可讀（見 SKILL.md 優先順序）
 MIN_CHART_PT_MULTI = 12.0  # 雙圖頁：門檻更高——擠成兩圖是自找的，達不到就拆成兩頁
 
@@ -603,8 +614,25 @@ def src_line(c: dict, spec: dict | None = None) -> str | None:
     if not version:
         return None
     shown = str(version).removeprefix("report_trial_")
-    keys = "、".join(spec.get("charts") or []) if spec else ""
-    return f"資料來源：{shown}／{keys}" if keys else f"資料來源：{shown}"
+    head = f"資料來源：{shown}"
+    keys = [str(k) for k in (spec.get("charts") or [])] if spec else []
+    if not keys:
+        return head
+
+    def _compose(kept: list[str]) -> str:
+        omitted = len(keys) - len(kept)
+        tail = "、".join(kept) + (f" 等 {len(keys)} 項" if omitted else "")
+        return f"{head}／{tail}"
+
+    # 逐個加 key，加到放不下就停。⚠ 至少留一個：連第一個都放不下時仍印出來，
+    #   寧可那一頁擠一點，也不要來源行整個消失（回溯性比版面重要）。
+    kept: list[str] = []
+    for key in keys:
+        candidate = kept + [key]
+        if kept and est_lines(_compose(candidate), SOURCE_W, SOURCE_PT) > 1:
+            break
+        kept = candidate
+    return _compose(kept)
 
 
 def base(prs, footer, page=None, source=None):
@@ -618,10 +646,12 @@ def base(prs, footer, page=None, source=None):
         textbox(s, ML, SH - 0.29, 8.5, 0.26, [(footer, {"color": MUTED})])
     if source:
         # 右對齊、頁碼左側。⚠ 與 footer 左框共享 band：footer 文字超過 ~5in
-        # 才會撞（現行 footer 約 3.4in）；來源行去前綴後約 4.3in 內。
-        y = SH - 0.29
-        textbox(s, ML + 5.2, y, SW - 1.6 - (ML + 5.2), 0.26,
-                [(source, {"color": MUTED, "align": PP_ALIGN.RIGHT})])
+        # 才會撞（現行 footer 約 3.4in）。
+        # ⚠ 幾何與字級一律取 SOURCE_* 常數，不在此寫算式——src_line 的省略判斷
+        #   用的是同一組數字，兩邊各寫一份就會出現「算得下、畫不下」。
+        textbox(s, SOURCE_X, SH - 0.29, SOURCE_W, 0.26,
+                [(source, {"color": MUTED, "align": PP_ALIGN.RIGHT,
+                           "size": S_SIZE})])
     return s
 
 

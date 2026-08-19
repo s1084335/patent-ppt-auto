@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Callable
 
 from .cli_gateway import (
@@ -222,6 +223,55 @@ def build_writing_prompt(work: Path, version: str, *, scripts: Path,
     return "\n".join(lines)
 
 
+#: 「CLI 想改檔但被權限層擋下」的字樣。⚠ 必須含英文原文：CLI 回的是英文
+#: （`requested permissions … haven't granted it yet`），中文那句是它自己加的摘要，
+#: 只認中文會在它沒加摘要時漏判。
+_PERMISSION_BLOCK_MARKERS = (
+    "haven't granted",
+    "have not granted",
+    "permission denied",
+    "被權限層擋下",
+    "權限層擋下",
+)
+
+
+def permission_blocked(findings: Sequence[str] | None) -> list[str]:
+    """挑出「想改 content.json 但被權限擋下」的 finding。
+
+    🔴 2026-08-19（實機 job #426）：目視第 2 輪回報問題卻沒改檔，runner 判定
+    「停滯」。但真因是白名單漏了 `Edit`——CLI 兩次都被擋。兩者都長成「回報問題
+    但沒改檔」，可是下一步完全不同：一個要調提示詞，一個要補白名單。
+
+    ⚠ 誤判的代價不對稱：把正常回報當成權限問題，會讓真的版面缺陷被當環境問題
+    放過去。故只認明確的權限字樣，不做模糊比對。
+    """
+    if not findings:
+        return []
+    return [str(f) for f in findings
+            if any(m in str(f) for m in _PERMISSION_BLOCK_MARKERS)]
+
+
+def visual_stall_message(round_no: int, findings: Sequence[str] | None,
+                         verdict_path: Any) -> str:
+    """目視回報問題卻沒改檔時的錯誤訊息——分辨停滯與被擋，並指向完整證據。
+
+    ⚠ 原本是 `"；".join(findings)[:400]`，而 #426 的關鍵 finding 剛好被截在
+    「阻塞：本輪對 conte」——截斷把診斷所需的那一句吃掉了。截斷本身可以保留
+    （錯誤欄位有長度上限），但必須留下取得完整內容的路徑。
+    """
+    blocked = permission_blocked(findings)
+    detail = "；".join(str(f) for f in (findings or []))
+    tail = f"完整回報見 {verdict_path}"
+    if blocked:
+        return (f"目視第 {round_no} 輪的修正被**權限層**擋下——CLI 判斷出要改什麼、"
+                f"也試著改了，但工具未授權，content.json 因此沒有變動。"
+                f"這是白名單設定缺陷，不是模型不聽話：請確認 deck 線的 "
+                f"allowedTools 含 Edit 與 Write。{tail}。"
+                + "；".join(blocked)[:600])
+    return (f"目視第 {round_no} 輪回報問題但未修改 content.json（停滯）。"
+            f"{tail}。" + detail[:400])
+
+
 def build_review_prompt(work: Path, shots_dir: Path, round_no: int) -> str:
     """目視迴圈提示：CLI 看逐頁 PNG，發現問題改 content.json，寫 verdict。
 
@@ -387,6 +437,14 @@ def run_deck(
         with workspace_scope_env(ws_id):
             parse_cli_result(runner(fix_argv, timeout_seconds))
         if _sha256(content_path) == before:
+            # ⚠ 修稿輪同樣會踩權限問題（#426 的 Edit 被擋就是這一類）——
+            #   同一條判準要用在兩處，否則補了目視輪、修稿輪還是報「停滯」。
+            blocked = permission_blocked([gate_output])
+            if blocked:
+                raise DeckRunnerError(
+                    f"{source} 的修稿被**權限層**擋下——CLI 試著改 content.json 但"
+                    f"工具未授權。這是白名單設定缺陷，不是模型不聽話：請確認 deck 線的"
+                    f" allowedTools 含 Edit 與 Write。{gate_output[:400]}")
             raise DeckRunnerError(
                 f"{source} 未通過且 CLI 未修改 content.json（停滯）：{gate_output[:300]}")
         visual_log.append({"round": round_no, "source": source,
@@ -457,8 +515,7 @@ def run_deck(
             break
         if not changed:
             raise DeckRunnerError(
-                f"目視第 {round_no} 輪回報問題但未修改 content.json（停滯）："
-                + "；".join(last_findings)[:400])
+                visual_stall_message(round_no, last_findings, verdict_path))
 
     if not passed:
         raise DeckRunnerError(
