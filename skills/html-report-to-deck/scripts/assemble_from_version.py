@@ -264,22 +264,17 @@ def _action_scan(report_data: dict) -> dict:
     # ⚠ 縮小母體必須**寫出來**：`scope` 欄記錄掃了幾個、全部幾個，
     #   靜默縮小正是本專案母體三種病之一。
     from backend.app.clustering.sources import SOURCE_FIELD_TECHNICAL
-    from backend.app.reports.action_space import scan_workspace
+    from backend.app.reports.action_space import derive_thresholds, scan_workspace
 
     technical = [r for r in rows
                  if str(r.get("source_field") or "") == SOURCE_FIELD_TECHNICAL]
     enriched = [{**r, "quadrant": quadrant_by_label.get(str(r.get("label") or ""))}
                 for r in technical]
 
-    counts = []
-    for r in enriched:
-        try:
-            counts.append(float(r.get("patent_count") or 0))
-        except (TypeError, ValueError):
-            continue
-    median = statistics.median(counts) if counts else 0.0
-
-    result = scan_workspace(enriched, median)
+    # 🔴 2026-08-20：門檻改由 `derive_thresholds` 從**這一批**算（件數中位數 ＋
+    # 集中度中位數），本檔不再自己算一份——自己算的那份只會有件數，
+    # 加新門檻時會靜默沿用舊行為（同一份知識兩個定義處）。
+    result = scan_workspace(enriched, derive_thresholds(enriched))
     result["scope"] = {
         "scanned_topics": len(enriched),
         "all_topics": len(rows),

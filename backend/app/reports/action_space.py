@@ -1,4 +1,4 @@
-"""行動候選池與逐主題掃描（tasks §9.7，2026-08-19 使用者設計）。
+﻿"""行動候選池與逐主題掃描（tasks §9.7，2026-08-19 使用者設計）。
 
 ## 使用者的流程
 
@@ -50,15 +50,49 @@ VERDICTS = (HOLDS, FAILS, UNKNOWN)
 
 
 @dataclass(frozen=True)
+class Thresholds:
+    """本批推導出的門檻（🔴 2026-08-20 使用者裁決：邏輯用中位數，數字不得寫死）。
+
+    ⚠ 做成物件而非多個位置參數：之後再加一個推導門檻時，不必改 10 條規則的簽章
+    ——那種改動每次都會漏掉一兩條，而漏掉的那條會靜默沿用舊行為。
+
+    ⚠ `median_max_share` 可為 `None`（空批算不出來）。消費端必須把它當成
+    「沒有尺」回 `UNKNOWN`，**不得**當成 0 而讓所有比較都成立。
+    """
+
+    median_count: float
+    median_max_share: float | None = None
+
+
+def derive_thresholds(rows: list[dict[str, Any]]) -> Thresholds:
+    """從**傳進來的那批**主題算出門檻。
+
+    ⚠ 與 `build_opportunity_matrix` 的四象限同一套作法（中位數切高低），
+    這樣「集中」在整個系統只有一個定義。原本 `max_share >= 50` 是第二個定義：
+    實測 `max_share` 中位數在滑雪機技術是 40、割草機技術是 56.5——固定 50 在
+    前者是「前 20%」、在後者是「前 60%」，**同一個數字兩批講的不是同一件事**。
+    """
+    import statistics
+
+    counts = [float(r.get("patent_count") or 0) for r in rows]
+    shares = [float(r["max_share"]) for r in rows
+              if r.get("max_share") is not None]
+    return Thresholds(
+        median_count=statistics.median(counts) if counts else 0.0,
+        median_max_share=statistics.median(shares) if shares else None,
+    )
+
+
+@dataclass(frozen=True)
 class ActionCandidate:
     """一個候選行動方向。
 
-    `rule` 收 `(row, median_count)` 回三值之一。⚠ 缺欄位時必須回 `UNKNOWN`
+    `rule` 收 `(row, thresholds)` 回三值之一。⚠ 缺欄位時必須回 `UNKNOWN`
     而不是 `FAILS`：「這份資料判不出來」與「判出來不成立」是不同的結論，
     給使用者的下一步也不同（補資料 vs 不用管）。
     """
 
-    rule: Callable[[dict[str, Any], float], str]
+    rule: Callable[[dict[str, Any], Thresholds], str]
     purpose: str        # 這個行動是什麼意思（CLI 要據此寫判讀）
     signal: str         # 它讀哪些引擎欄位（讓判定可反查）
 
@@ -76,9 +110,9 @@ def _num(row: dict[str, Any], key: str) -> float | None:
         return None
 
 
-def _by_status(*wanted: str) -> Callable[[dict, float], str]:
+def _by_status(*wanted: str) -> Callable[[dict, Thresholds], str]:
     """狀態在指定集合內即成立；沒有狀態＝這份資料判不出來。"""
-    def rule(row: dict[str, Any], _median: float) -> str:
+    def rule(row: dict[str, Any], _t: Thresholds) -> str:
         s = _status(row)
         if s is None:
             return UNKNOWN
@@ -86,25 +120,25 @@ def _by_status(*wanted: str) -> Callable[[dict, float], str]:
     return rule
 
 
-def _rule_explore(row: dict[str, Any], median: float) -> str:
+def _rule_explore(row: dict[str, Any], t: Thresholds) -> str:
     s = _status(row)
     count = _num(row, "patent_count")
     if s is None or count is None:
         return UNKNOWN
     if s == "件數不足":
         return HOLDS
-    return HOLDS if (s == "新興" and count < median) else FAILS
+    return HOLDS if (s == "新興" and count < t.median_count) else FAILS
 
 
-def _rule_maintain(row: dict[str, Any], median: float) -> str:
+def _rule_maintain(row: dict[str, Any], t: Thresholds) -> str:
     s = _status(row)
     count = _num(row, "patent_count")
     if s is None or count is None:
         return UNKNOWN
-    return HOLDS if (s == "成熟" and count >= median) else FAILS
+    return HOLDS if (s == "成熟" and count >= t.median_count) else FAILS
 
 
-def _rule_differentiate(row: dict[str, Any], _median: float) -> str:
+def _rule_differentiate(row: dict[str, Any], _t: Thresholds) -> str:
     s = _status(row)
     q = row.get("quadrant")
     if s is None and q is None:
@@ -114,7 +148,7 @@ def _rule_differentiate(row: dict[str, Any], _median: float) -> str:
     return FAILS
 
 
-def _rule_track_pending(row: dict[str, Any], _median: float) -> str:
+def _rule_track_pending(row: dict[str, Any], _t: Thresholds) -> str:
     """他人審查中件數 ≥1 → 值得追蹤。⚠ 這是**外部訊號**（對手給的時間壓力），
     可查證；不是我們假設的月份。
     """
@@ -124,8 +158,8 @@ def _rule_track_pending(row: dict[str, Any], _median: float) -> str:
     return HOLDS if n >= 1 else FAILS
 
 
-def _by_quadrant(*wanted: str) -> Callable[[dict, float], str]:
-    def rule(row: dict[str, Any], _median: float) -> str:
+def _by_quadrant(*wanted: str) -> Callable[[dict, Thresholds], str]:
+    def rule(row: dict[str, Any], _t: Thresholds) -> str:
         q = row.get("quadrant")
         if not q:
             return UNKNOWN
@@ -133,17 +167,34 @@ def _by_quadrant(*wanted: str) -> Callable[[dict, float], str]:
     return rule
 
 
-def _rule_concentration(row: dict[str, Any], _median: float) -> str:
+def _rule_concentration(row: dict[str, Any], t: Thresholds) -> str:
+    """權利集中程度——門檻取**本批** `max_share` 的中位數，不寫死。
+
+    🔴 2026-08-20 使用者裁決：「機會四象限數字都是中位數，所以邏輯用中位數
+    但數字不能寫死」。原本是 `share >= 50`。
+
+    ⚠ 50 不只是「沒有依據」，它讓同一個數字在兩批講不同的事：實測 `max_share`
+    中位數在滑雪機技術是 **40**、割草機技術是 **56.5**——固定 50 在前者是
+    「前 20%」（5 個主題只過 1 個）、在後者是「前 60%」（10 個過 6 個）。
+    ⚠ 而且「集中」原本有兩個定義：象限的「集中持有」是中位數推導的，
+    這裡的 50 是另一個。改用中位數後整個系統只有一個定義。
+
+    ⚠ 誠實記錄另一種讀法：50% 有「單一持有人過半」的絕對意義。但本規則的用途
+    是排序與比較（值不值得追這個主題的集中度），比較型判準就該用本批的尺。
+    """
     q = row.get("quadrant")
     share = _num(row, "max_share")
+    if q == "集中持有":
+        return HOLDS                       # 象限已判定，不必再看 share
     if q is None and share is None:
         return UNKNOWN
-    if q == "集中持有" or (share is not None and share >= 50):
-        return HOLDS
-    return FAILS
+    if share is None or t.median_max_share is None:
+        # ⚠ 沒有尺就量不了 → 證據不足，不得放行也不得判不成立
+        return UNKNOWN
+    return HOLDS if share >= t.median_max_share else FAILS
 
 
-def _rule_niche(row: dict[str, Any], _median: float) -> str:
+def _rule_niche(row: dict[str, Any], _t: Thresholds) -> str:
     """§9.7d：「技術空白」改成「利基」。
 
     ⚠ 用詞不是修辭問題：「空白」是**缺席主張**（這裡沒有人做），而母體只是
@@ -194,7 +245,7 @@ ACTION_POOL: dict[str, ActionCandidate] = {
     "確認權利集中程度": ActionCandidate(
         _rule_concentration,
         "確認權利是否集中在單一持有者，影響可繞開的空間",
-        "象限＝集中持有 ∨ max_share ≥ 50"),
+        "象限＝集中持有 ∨ max_share ≥ 本批中位數"),
     "評估利基切入": ActionCandidate(
         _rule_niche,
         "低密度且少玩家的區塊值不值得切入——**評估**，不是斷定它是機會",
@@ -217,20 +268,20 @@ KNOWN_GAPS: tuple[dict[str, str], ...] = (
 )
 
 
-def scan_topic(row: dict[str, Any], median_count: float) -> dict[str, str]:
+def scan_topic(row: dict[str, Any], thresholds: Thresholds) -> dict[str, str]:
     """對**每一個**候選方向給判定（🔴 完整掃描的實作）。
 
     ⚠ 一律走完整個池子，不提早 return——`covered` 恆等成立就是靠這個迴圈。
     """
-    return {key: item.rule(row, median_count) for key, item in ACTION_POOL.items()}
+    return {key: item.rule(row, thresholds) for key, item in ACTION_POOL.items()}
 
 
-def holding_actions(row: dict[str, Any], median_count: float) -> list[str]:
+def holding_actions(row: dict[str, Any], thresholds: Thresholds) -> list[str]:
     """只回**成立**的行動；數量由資料決定（可能是 1 個，也可能是 6 個）。"""
-    return [k for k, v in scan_topic(row, median_count).items() if v == HOLDS]
+    return [k for k, v in scan_topic(row, thresholds).items() if v == HOLDS]
 
 
-def scan_workspace(rows: list[dict[str, Any]], median_count: float) -> dict[str, Any]:
+def scan_workspace(rows: list[dict[str, Any]], thresholds: Thresholds) -> dict[str, Any]:
     """整批掃描並附對帳。
 
     ⚠ `covered` 是 `N/N` 而不是 `寫了幾個/總共幾個`：引擎不會漏掃自己的迴圈，
@@ -240,7 +291,7 @@ def scan_workspace(rows: list[dict[str, Any]], median_count: float) -> dict[str,
     per_topic = {}
     for row in rows:
         per_topic[str(row.get("label") or row.get("topic_code") or "")] = \
-            scan_topic(row, median_count)
+            scan_topic(row, thresholds)
     return {
         "covered": f"{len(ACTION_POOL)}/{len(ACTION_POOL)}",
         "verdicts": per_topic,

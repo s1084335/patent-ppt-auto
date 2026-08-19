@@ -83,6 +83,14 @@ class BasisVocabularyTests(unittest.TestCase):
         ⚠ 這正是昨天記下的那條：**訊號式掃描抓的是詞不是行為**。
         故本閘門只管**已定案**者：宣告「我有依據了」的，依據就不能是某一批。
         還在 pending 的，留著它的校準紀錄比乾淨更重要。
+
+        ⚠ 2026-08-20 第二次校準：本閘門再度抓到 `STATUS_MIN_SAMPLE`——我把「兩批
+        實測擋掉 0/5 與 2/10」寫進了 `reference`。那是**驗證**（它沒壞）不是
+        **依據**（為何取 5），欄位放錯。
+
+        這次**不放寬閘門**：上次已為 pending 放寬一次，若已定案的也放寬，這條
+        規則就形同虛設。正解是把驗證證據移到 `why`，讓兩個欄位各司其職——
+        `reference` 回答「為什麼是這個值」，`why` 收其餘一切（含怎麼檢查的）。
         """
         for name, d in T.THRESHOLD_BASIS.items():
             if d.basis != "可靠度下限" or d.pending:
@@ -90,7 +98,8 @@ class BasisVocabularyTests(unittest.TestCase):
             with self.subTest(threshold=name):
                 for batch_word in ("滑雪機", "割草機", "本案 ", "這批資料"):
                     self.assertNotIn(batch_word, d.reference,
-                                     f"{name} 已定案，依據卻仍指向某一批資料")
+                                     f"{name} 已定案，依據卻仍指向某一批資料"
+                                     "（實測結果屬驗證，該放 why 不是 reference）")
 
     def test_pending_reliability_floor_still_needs_evidence(self):
         """⚠ 放寬的補償：pending 的可靠度下限仍要留下**測過什麼**，

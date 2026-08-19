@@ -1,4 +1,4 @@
-"""行動候選池與引擎判定（tasks §9.7）。
+﻿"""行動候選池與引擎判定（tasks §9.7）。
 
 ## 使用者設計（2026-08-19）
 
@@ -65,25 +65,25 @@ class ScanIsCompleteTests(unittest.TestCase):
            "quadrant": "多方投入技術"}
 
     def test_every_candidate_gets_a_verdict(self):
-        verdicts = A.scan_topic(self.ROW, median_count=6)
+        verdicts = A.scan_topic(self.ROW, A.derive_thresholds([{"patent_count": 6}]))
         self.assertEqual(set(verdicts), set(A.ACTION_POOL),
                          "有候選方向沒被評估——covered 不等於 N/N")
 
     def test_verdicts_are_from_the_closed_set(self):
-        verdicts = A.scan_topic(self.ROW, median_count=6)
+        verdicts = A.scan_topic(self.ROW, A.derive_thresholds([{"patent_count": 6}]))
         for key, v in verdicts.items():
             with self.subTest(action=key):
                 self.assertIn(v, A.VERDICTS, f"{key} 的判定 {v!r} 不在三值內")
 
     def test_growth_topic_triggers_priority_investment(self):
         """規則要真的會判成立，不是全部回同一個值。"""
-        v = A.scan_topic(self.ROW, median_count=6)
+        v = A.scan_topic(self.ROW, A.derive_thresholds([{"patent_count": 6}]))
         self.assertEqual(v["優先投入"], A.HOLDS)
 
     def test_declining_topic_triggers_reduce(self):
         row = {**self.ROW, "status": "衰退"}
-        self.assertEqual(A.scan_topic(row, median_count=6)["降低投入"], A.HOLDS)
-        self.assertEqual(A.scan_topic(row, median_count=6)["優先投入"], A.FAILS)
+        self.assertEqual(A.scan_topic(row, A.derive_thresholds([{"patent_count": 6}]))["降低投入"], A.HOLDS)
+        self.assertEqual(A.scan_topic(row, A.derive_thresholds([{"patent_count": 6}]))["優先投入"], A.FAILS)
 
     def test_insufficient_data_is_distinguished_from_rejection(self):
         """⚠ 「證據不足」與「不成立」不是同一件事。
@@ -92,13 +92,13 @@ class ScanIsCompleteTests(unittest.TestCase):
         混在一起，使用者會去補資料補到天荒地老或反過來以為已經否決了。
         """
         row = {"label": "無狀態主題", "patent_count": 8}   # 缺 status
-        v = A.scan_topic(row, median_count=6)
+        v = A.scan_topic(row, A.derive_thresholds([{"patent_count": 6}]))
         self.assertEqual(v["優先投入"], A.UNKNOWN)
 
     def test_covered_is_always_full(self):
         """🔴 引擎判定的價值：`covered` 恆等成立，Verifier 不必防偷懶。"""
         report = A.scan_workspace([self.ROW, {**self.ROW, "status": "衰退"}],
-                                  median_count=6)
+                                  A.derive_thresholds([{"patent_count": 6}]))
         self.assertEqual(report["covered"],
                          f"{len(A.ACTION_POOL)}/{len(A.ACTION_POOL)}")
 
@@ -108,18 +108,18 @@ class OnlyHoldingActionsAreOutputTests(unittest.TestCase):
 
     def test_output_count_follows_data(self):
         few = A.holding_actions({"label": "冷門", "status": "件數不足",
-                                 "patent_count": 3}, median_count=6)
+                                 "patent_count": 3}, A.derive_thresholds([{"patent_count": 6}]))
         many = A.holding_actions({"label": "熱門", "status": "成長",
                                   "patent_count": 20, "applicant_count": 9,
                                   "max_share": 80, "pending_count": 5,
-                                  "quadrant": "多方投入技術"}, median_count=6)
+                                  "quadrant": "多方投入技術"}, A.derive_thresholds([{"patent_count": 6}]))
         self.assertLess(len(few), len(many),
                         "不同資料得到同樣多的行動——規則沒有真的在判")
 
     def test_single_action_is_allowed(self):
         """⚠ 使用者：「真的只有 1 種成立，也允許只有 1 種。」"""
         v = A.holding_actions({"label": "只有一種", "status": "衰退",
-                               "patent_count": 8}, median_count=6)
+                               "patent_count": 8}, A.derive_thresholds([{"patent_count": 6}]))
         self.assertGreaterEqual(len(v), 1)
 
     def test_no_minimum_count_rule_exists(self):
