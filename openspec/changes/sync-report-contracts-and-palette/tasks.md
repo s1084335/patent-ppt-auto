@@ -1208,10 +1208,19 @@ SVG 路徑與 PPTX 路徑對同一份輸入不同意，沒有人對帳。
 
 | 未驗項 | 為什麼 | 需要什麼才能驗 |
 |---|---|---|
-| **OpenSpec strict validation**（8.1） | `openspec` CLI 不在 PATH（2026-08-19 實查確認）；使用者曾答「裝起來不移除」但現況並非如此 | 重新安裝（需使用者同意，工具一律先問） |
-| **第二個 workspace 的報表**（8.3 後半） | 割草機（226 件）目前**無分群主題**，`require_topic_facts` 會擋，產不出可對判準的報表 | 先完成該 workspace 的分群 |
-| **`STATUS_*` 門檻在第二個 workspace 的表現**（§9.9e-1） | 同上——需要割草機的分群資料 | 先完成該 workspace 的分群 |
 | **成功產出的 conclusions 頁**（8.4） | 真 CLI 鏈已跑過但**尚未成功收尾**：`#426` 跑 3763 秒後死於白名單缺 `Edit`（已修並重啟 Companion） | 使用者再按一次產製簡報 |
+
+⚠ **2026-08-20 更正：本表原有三列是錯的**，逐項說明——
+
+| 原列 | 錯在哪 |
+|---|---|
+| ~~OpenSpec strict CLI 不在~~ | ⚠ **我只查了 PATH 就下結論**。CLI 一直在 `D:\vscode\openspec\`（v1.8.0）——專案規則明寫「需要某種能力時**先看 `D:\vscode\`**」，我跳過了那一步。連帶讓「CLI 已依使用者要求移除」這個記載也是錯的 |
+| ~~割草機無分群主題~~ | 2026-08-20 已分群（技術 k=10、功效 k=20），阻塞消失 |
+| ~~`STATUS_*` 門檻無第二批可驗~~ | 同上，已有第二批資料 |
+
+🔴 **教訓**：「查不到」與「沒去查該查的地方」是兩件事，而寫進揭露表的樣子一模一樣。
+揭露表的價值建立在「未驗項是真的驗不了」——放進一個**其實可驗**的項目，
+會讓整張表的可信度打折。
 
 **已解除的未驗項（2026-08-19）**：
 
@@ -1232,8 +1241,14 @@ SVG 路徑與 PPTX 路徑對同一份輸入不同意，沒有人對帳。
 其中一份 8.5 已勾、一份沒勾），使得「1/8」這個分數同時**低報**（8.2 做完沒勾）
 又**分母錯**（獨立項目是 6 項不是 8 項）。重複條目已移除。
 
-- [ ] 8.1 OpenSpec strict validation
-      ⚠ **阻塞**：`openspec` CLI 不在 PATH（2026-08-19 實查）。裝與不裝需使用者決定。
+- [x] 8.1 OpenSpec strict validation
+      → **通過**（2026-08-20）：`D:\vscode\openspec\openspec.cmd` v1.8.0，
+      `validate sync-report-contracts-and-palette --strict` → `is valid`。
+      順手批次驗了另五個相關 change（deepen／add-deck-delivery-line／
+      scope-narrative-evidence-to-workspace／add-company-group-normalization／
+      add-patent-search-terms-and-db-index-governance）**六個全過**。
+      ⚠ 先前標「阻塞：CLI 不在 PATH」是**我只查 PATH 沒查 `D:\vscode\`**——
+      而專案規則明寫要先看那裡。見 §8.0 的更正表。
 - [x] 8.2 三層範圍回歸（直接／整合／契約）
       ＋ **符號反查消費者**比對已跑清單（2026-08-18 實證：憑印象挑會漏 6 支）
       → 全套 **2637 passed / 31 failed**；31 紅逐一歸因，**無一由本 change 造成**。
