@@ -400,15 +400,8 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .export-toolbar { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.9rem; }
 .export-toolbar .switch { display: flex; align-items: center; gap: 0.4rem; font-size: 0.88rem; }
 #export-preview { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.4rem 1.6rem; }
-.real-pptx-preview { max-height: calc(100vh - 15rem); overflow: auto; border: 1px solid var(--border); border-radius: 0.45rem; background: var(--panel-2); padding: 0.75rem; }
-.real-pptx-preview > * { margin-left: auto; margin-right: auto; }
-/* ⚠ 只關掉「投影片內部」的捲軸（2026-07-31 使用者截圖：每個文字框角落都冒出上下
-   箭頭，看起來像產檔壞了）。成因是 renderer 給文字容器 overflow:auto，內容超出
-   幾像素就顯示捲軸——PPT 檔本身沒問題，純顯示面。選擇器用後代 `*` 而不是元素
-   本身：外層 .real-pptx-preview 的捲軸要留著，那是用來翻頁的。 */
-.real-pptx-preview * { scrollbar-width: none; -ms-overflow-style: none; }
-.real-pptx-preview *::-webkit-scrollbar { display: none; }
-/* ⚠ 2026-07-30 移除 .ppt-slide 系列 CSS（25 條）：那是用 HTML/CSS 模擬 PPT 版面，與批次 2 導入的真實 .pptx 渲染（.real-pptx-preview）並存必然分岔——模擬版還留著早已定案不印的浮水印即為證據。編輯模式改用 renderReportContentHtml 的內容視圖。 */
+/* ⚠ 2026-08-20 移除 .real-pptx-preview 系列（7 條）：那是匯出工作台的 .pptx 渲染區，
+   隨匯出報告工作台與 PPT 交付線一併退場。HTML 為唯一交付物。 */
 /* 報表種類頁標題列橫排（2026-07-27 R7／R8）：標題｜檢視選單｜市場 PDF（收合）。
    原本 15 個勾選框＋固定展開的市場區塊佔滿整頁，看不到報表本身。 */
 .reports-header { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.8rem; }
@@ -479,18 +472,11 @@ table.data td.cell-wrap, table.data th.cell-wrap {
   border-color: var(--accent); background: var(--accent); color: var(--panel);
 }
 .report-chart-frame { width: 100%; min-height: 420px; border: 1px solid var(--border); border-radius: 0.4rem; background: var(--panel); }
-.ppt-chart iframe { width: 100%; height: 100%; border: 0; background: var(--ppt-panel-bg); }
 #report-inline-view:not(:empty) { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1.4rem 1.6rem; margin-top: 0.9rem; }
 .report-inline-head { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
 /* 版本徽章（.ver-badge 另供待補中文名等處用；版本清單 UI 已改標頭下拉選單）。 */
 .ver-badge { font-size: 0.72rem; padding: 0.1rem 0.45rem; border-radius: 0.75rem; background: var(--accent); color: #fff; }
 .ver-badge-ai { background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
-/* PPT 版本清單（掛在報表版本下，一版可多個 _rN）：#10 */
-.report-ppt-list { margin-top: 1.1rem; padding-top: 0.9rem; border-top: 1px dashed var(--border); }
-.report-ppt-head { font-weight: 600; color: var(--text); margin-bottom: 0.5rem; }
-.report-ppt-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0.55rem; border: 1px solid var(--border); border-radius: 0.4rem; background: var(--panel-2); margin-bottom: 0.4rem; font-size: 0.86rem; }
-.report-ppt-row .ppt-name { font-family: monospace; color: var(--text); }
-.report-ppt-row .ppt-size { color: var(--text-muted); margin-left: auto; }
 .btn-sm { padding: 0.25rem 0.7rem; font-size: 0.8rem; }
 .export-cover { border-bottom: 2px solid var(--accent); padding-bottom: 1rem; margin-bottom: 1.4rem; }
 .export-cover h1 { font-size: 1.6rem; color: var(--accent); margin-bottom: 0.6rem; }
@@ -623,7 +609,9 @@ table.data td.cell-wrap, table.data th.cell-wrap {
     <button class="nav-item" data-nav="topics" onclick="navTo('topics')">分類區</button>
     <div class="nav-section-label">報告</div>
     <button class="nav-item" data-nav="reports" onclick="navTo('reports')">報表種類</button>
-    <button class="nav-item" data-nav="export" onclick="navTo('export')">匯出報告</button>
+    <!-- ⚠ 2026-08-20「匯出報告」工作台整塊移除：PPT 交付線停產、HTML 為唯一交付物，
+         而該工作台整頁圍繞 .pptx 預覽與就地編輯打造。交付物匯出改由報表種類頁版本區的
+         「匯出 HTML 檔」提供（exportSelectedReportHtml），功能未移入本頁其他區塊。 -->
     <div class="nav-section-label">進階</div>
     <!-- 🔴 2026-08-03 使用者：「案件比對區塊先移除掉」——只收**入口**。
          renderComparison()、navTo 的 comparison 分支、後端 /api/comparison
@@ -934,7 +922,6 @@ function renderMain() {
     case 'browse': return renderBrowse();
     case 'topics': return renderTopics();
     case 'reports': return renderReports();
-    case 'export': return renderExport();
     case 'comparison': return renderComparison();
     case 'status': return renderStatus();
     default: m.innerHTML = '<div class="hint">未知頁面。</div>';
@@ -4164,7 +4151,6 @@ async function loadInlineReport() {
       + '<h3 class="panel-title" style="padding:0">完整報表內容</h3>'
       + '<span class="hint">報表版本 ' + escHtml(content.version) + '</span>'
       + '<span style="flex:1"></span>'
-      + '<button class="btn btn-outline" onclick="navTo(\'export\')">前往匯出報告（編輯／匯出）</button>'
       + '</div>'
       + renderReportContentHtml(readOnlyReportView(content));
   } catch (e) {
@@ -4365,225 +4351,21 @@ function fmtElapsed(startedMs) {
   return Math.floor(sec / 60) + ' 分 ' + (sec % 60) + ' 秒';
 }
 
-// ══════════ 匯出報告（分析報告匯出入口：觸發＋取回連結） ══════════
-function renderExport() {
-  const m = el('main-panel');
-  m.innerHTML = '<h2 class="panel-title">匯出報告</h2>'
-    // ⚠ 編輯模式已移除（2026-08-10 使用者定案，change：remove-ppt-delivery-line）；
-    //   HTML 匯出入口併進「報表種類」頁，本區塊先保留其餘按鈕。
-    + '<p class="hint" style="padding:0 0 0.7rem">預覽整份報告 → 單頁 HTML 預覽（新分頁過目，分頁內可下載或列印成 PDF）。</p>'
-    + '<div class="export-toolbar">'
-    + '<select id="export-version-select" class="ppt-layout-select" onchange="loadExportPreview(this.value)"></select>'
-    + '<button class="btn btn-outline" id="btn-reload-preview" onclick="loadExportPreview(exportPreview.version)">重新載入預覽</button>'
-    + '<button class="btn btn-outline" id="btn-export" onclick="triggerExport()">重新產製報表資料</button>'
-    // R-2：明示這次產製的範圍——送錯 workspace 時要看得出來，不能靜默。
-    + '<span style="font-size:0.82rem;color:var(--text-muted)">範圍：' + escHtml(currentWorkspaceLabel()) + '</span>'
-    + '<span style="flex:1"></span>'
-    // ⚠ 「單頁 HTML 預覽」已移至報表種類頁版本區並改為「匯出 HTML 檔」
-    //   （2026-08-11 使用者定案）。
-    + '<button class="btn btn-primary" id="btn-export-ppt" onclick="requestExportPpt()">產生 PPT</button>'
-    + '</div>'
-    // 🔴 EXP-018（2026-08-09 使用者定案）：PPT **只有一個入口**，目標選填。
-    // 有填→以需求為重心；沒填→系統用預設策略規劃，品質仍須達範例水準
-    // （不是退回固定頁序——那只在規劃失敗時保底）。
-    + '<div class="toolbar" style="margin:.2rem 0 .6rem">'
-    + '<input class="text-input" id="ppt-goal-input" style="flex:1;min-width:280px" '
-    + 'placeholder="這份簡報的最大目標（選填，例：找出可切入的技術空白）">'
-    + '<span class="hint" style="padding:0;font-size:.8rem">留白＝系統依預設策略編排</span>'
-    + '</div>'
-    + '<div id="ppt-chart-picker" class="hint" style="padding:0 0 .4rem"></div>'
-    + '<div id="export-job"></div>'
-    + '<div id="export-ppt-result"></div>'
-    + '<div id="export-preview"><div class="hint">載入報告內容中…</div></div>';
-  loadExportPreview();
-  loadExportVersionOptions();
-}
-
-// 版本下拉（⑦）：清單載不到不擋預覽（預設仍是最新版）。
-async function loadExportVersionOptions() {
-  const sel = el('export-version-select');
-  if (!sel) return;
-  try {
-    // workspace 區隔（2026-07-31）：匯出版本下拉同樣只列當前 workspace 的版本，
-    // 否則會把別的 workspace 的上一版 PPT 端出來。
-    const data = await getJson(API + '/reports/versions?limit=50'
-      + (state.workspaceId ? '&workspace_id=' + state.workspaceId : ''));
-    const versions = data.versions || [];
-    sel.innerHTML = versions.map(v => '<option value="' + escHtml(v.version) + '">'
-      + escHtml(v.version) + (v.is_latest ? '（最新）' : '') + '</option>').join('');
-    if (exportPreview.version) sel.value = exportPreview.version;
-  } catch (_) { /* 版本清單非必要資訊，失敗不擋工作台 */ }
-}
-
 // ── 匯出報告的編輯狀態（人工修改） ──
-// 落點：localStorage，key 依報表版本分（不同版本各自一份人工稿）。
-// AI 原稿留在後端 narratives.json，本頁只讀不寫，人工修改一律另存 manual_text，
-// 原稿 ai_original 保留供「還原 AI 原稿」；兩者分欄，人工稿永不覆蓋 AI 稿。
-// 限制：只存在本機瀏覽器，換裝置／清快取會遺失（未落 DB，詳見工作紀錄）。
-const EXPORT_EDIT_KEY_PREFIX = 'patent_export_edits:';
-const PPTX_RENDERER_ASSET = '/static/vendor/pptx-renderer/aiden0z-pptx-renderer.browser.es.js';
-let pptxRendererModule = null;
+// ⚠ 2026-08-20 匯出報告工作台整塊移除，連帶清掉：
+//   · PPTX_RENDERER_ASSET／pptxRendererModule（.pptx 瀏覽器渲染器）
+//   · EXPORT_EDIT_KEY_PREFIX 與 localStorage 人工稿（工作台專屬，無其他讀者）
+//   · exportPreview 的 version／content／edits／editMode／pptFiles 等工作台欄位
+// 保留 clusterSourceField：報表種類頁的分群來源欄位切換仍讀它（見 switchReportSourceField）。
 const exportPreview = {
-  version: null,       // 目前預覽的報表版本（localStorage key 用）
-  content: null,       // GET /report-latest/content 的原始回應
-  pptFiles: [],
-  selectedPptFile: null,
-  pptViewer: null,
-  editMode: false,
   clusterSourceField: DEFAULT_TOPIC_SOURCE_FIELD,
-  edits: null,         // { cover: {...}, narratives: {key: manual_text}, notes: [{id,title,text,after}] }
 };
 
 function exportEditsDefault() {
   return { cover: {}, narratives: {}, notes: [], slots: {}, layout_overrides: {}, position_overrides: {} };
 }
-function loadExportEdits(version) {
-  try {
-    const raw = localStorage.getItem(EXPORT_EDIT_KEY_PREFIX + version);
-    if (!raw) return exportEditsDefault();
-    const parsed = JSON.parse(raw);
-    const base = exportEditsDefault();
-    return Object.assign(base, parsed, {
-      cover: Object.assign({}, parsed.cover || {}),
-      narratives: Object.assign({}, parsed.narratives || {}),
-      notes: Array.isArray(parsed.notes) ? parsed.notes : [],
-      slots: Object.assign({}, parsed.slots || {}),
-      layout_overrides: Object.assign({}, parsed.layout_overrides || {}),
-      position_overrides: Object.assign({}, parsed.position_overrides || {}),
-    });
-  } catch (_) { return exportEditsDefault(); }
-}
-function saveExportEdits() {
-  if (!exportPreview.version) return;
-  try {
-    localStorage.setItem(EXPORT_EDIT_KEY_PREFIX + exportPreview.version,
-      JSON.stringify(exportPreview.edits));
-  } catch (_) {}
-}
 
-// 一次取回整份報表內容（卡片＋rows＋圖 URL＋解讀），不逐卡再打 API。
-async function loadExportPreview(version) {
-  // version 未給＝最新版；給了＝載該版（⑦ 2026-07-29：原本寫死最新版，
-  // 報表種類頁看得到歷史版本、匯出頁卻匯不了舊版）。
-  const wrap = el('export-preview');
-  if (!wrap) return;
-  wrap.innerHTML = '<div class="hint">載入報告內容中…</div>';
-  try {
-    const url = version
-      ? API + '/reports/versions/' + encodeURIComponent(version) + '/content'
-      : API + '/report-latest/content';
-    const resp = await fetch(url);
-    if (resp.status === 404) {
-      const err = await resp.json().catch(() => ({}));
-      wrap.innerHTML = '<div class="placeholder-box">' + escHtml(err.detail || '尚無報表產出')
-        + '<br>請先到「報表種類」勾選並產製報表。</div>';
-      return;
-    }
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const content = await resp.json();
-    exportPreview.content = content;
-    exportPreview.version = content.version;
-    exportPreview.edits = loadExportEdits(content.version);
-    const versionSel = el('export-version-select');
-    if (versionSel && exportPreview.version) versionSel.value = exportPreview.version;
-    // 選圖清單在**內容載入後**填，兩種預覽模式都會經過這裡。
-    // ⚠ 2026-08-10：一度掛在 renderExportPreview()——那支只有**編輯模式**才呼叫，
-    // 一般預覽走 loadExportPptFiles，於是選圖清單永遠空的。實際開瀏覽器點進去
-    // 才發現：測試只驗得到「有呼叫端」，驗不到「在正確時機呼叫」。
-    loadPptChartPicker();
-    // ⚠ 2026-08-10 PPT 交付線移除：預覽不再走 .pptx 渲染（端點已拔），
-    //   改顯示唯讀內容視圖（與報表種類頁共用同一組渲染函式）。
-    wrap.innerHTML = renderReportContentHtml(readOnlyReportView(content));
-  } catch (e) {
-    wrap.innerHTML = '<div class="hint">載入報告內容失敗（' + escHtml(e.message) + '）。</div>';
-  }
-}
-
-async function ensurePptxRenderer() {
-  if (!pptxRendererModule) {
-    pptxRendererModule = await import(PPTX_RENDERER_ASSET);
-  }
-  return pptxRendererModule;
-}
-
-function pptDownloadUrl(file) {
-  const url = file && file.download_url ? String(file.download_url) : '';
-  if (!url) return '';
-  return url.startsWith('http') || url.startsWith(API) ? url : API + url;
-}
-
-async function loadExportPptFiles(version) {
-  const wrap = el('export-preview');
-  if (!wrap || !version) return;
-  wrap.innerHTML = '<div class="hint">載入 PPT 檔案中…</div>';
-  try {
-    const data = await getJson(API + '/reports/versions/' + encodeURIComponent(version) + '/ppt-files');
-    const files = data.ppt_files || [];
-    exportPreview.pptFiles = files;
-    exportPreview.selectedPptFile = files.length ? files[files.length - 1] : null;
-    if (!exportPreview.selectedPptFile) {
-      wrap.innerHTML = renderMissingPptState();
-      return;
-    }
-    await renderRealPptPreview(exportPreview.selectedPptFile);
-  } catch (e) {
-    wrap.innerHTML = '<div class="hint">載入 PPT 預覽失敗（' + escHtml(e.message) + '）。</div>';
-  }
-}
-
-function renderMissingPptState() {
-  return '<div class="placeholder-box">'
-    + '<strong>請先產生 PPT</strong>'
-    + '<p class="hint" style="padding:0.5rem 0 0">此報表版本尚未有 .pptx 檔案。按下後若尚無 AI 解讀，系統會先跑 narrative，再接續產生 PPT。</p>'
-    + '<div class="export-edit-actions" style="margin-top:0.7rem">'
-    + '<button class="btn btn-primary" id="btn-generate-ppt" onclick="requestExportPpt()">產生 PPT</button>'
-    + '</div>'
-    + '</div>';
-}
-
-async function renderRealPptPreview(file) {
-  const wrap = el('export-preview');
-  if (!wrap) return;
-  if (!file.download_url) {
-    wrap.innerHTML = '<div class="hint">PPT 檔案缺少下載路徑，無法預覽。</div>';
-    return;
-  }
-  const url = pptDownloadUrl(file);
-  const filename = file.filename || 'report.pptx';
-  wrap.innerHTML = '<div class="card">'
-    + '<div class="report-ppt-head">PPT 預覽：' + escHtml(filename) + '</div>'
-    + '<div class="export-edit-actions" style="margin:0.55rem 0 0.8rem">'
-    + '<a class="btn btn-outline" href="' + escHtml(url) + '" download="' + escHtml(filename) + '">下載 PPT</a>'
-    + '<button class="btn btn-outline btn-sm" onclick="loadExportPptFiles(exportPreview.version)">重新載入 PPT</button>'
-    + '</div>'
-    + '<div id="export-real-pptx-preview" class="real-pptx-preview"><div class="hint">渲染真實 .pptx 中…</div></div>'
-    + '</div>';
-  try {
-    const mod = await ensurePptxRenderer();
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const buffer = await resp.arrayBuffer();
-    const container = el('export-real-pptx-preview');
-    if (!container) return;
-    container.innerHTML = '';
-    exportPreview.pptViewer = await mod.PptxViewer.open(buffer, container, {
-      zipLimits: mod.RECOMMENDED_ZIP_LIMITS,
-      lazyMedia: true,
-      lazySlides: true,
-      listOptions: { windowed: true, initialSlides: 4, batchSize: 4, showSlideLabels: true },
-    });
-  } catch (e) {
-    const container = el('export-real-pptx-preview');
-    if (container) container.innerHTML = '<div class="hint">PPT 預覽渲染失敗（' + escHtml(e.message) + '）。仍可下載檔案實機檢查。</div>';
-  }
-}
-
-
-// ⚠ toggleExportEditMode（編輯模式開關）已移除（2026-08-10 使用者定案）；
-//   editMode 恆為 false，編輯分支成為不可達路徑，待匯出報告區塊整體收斂時一併清。
-
-// 唯讀 view：給不需編輯的呈現場合（報表種類頁內嵌顯示）用，與工作台共用同一組
-// 渲染函式。edits 全空＝不套人工稿、editMode false＝不出編輯控件。
+// 唯讀 view：報表種類頁內嵌顯示用。edits 全空＝不套人工稿。
 function readOnlyReportView(content) {
   return { content: content, editMode: false, edits: exportEditsDefault() };
 }
@@ -4596,74 +4378,12 @@ function renderReportContentHtml(view) {
   const notes = view.edits.notes || [];
   const parts = [exportCoverHtml(content, view)];
   parts.push(exportNotesHtml(notes, 'cover', view));
-  if (view.editMode) parts.push(exportNoteInsertHtml('cover'));
   (content.sections || []).forEach(function (section, idx) {
     parts.push(exportCardHtml(section, idx, view));
     parts.push(exportNotesHtml(notes, String(idx), view));
-    if (view.editMode) parts.push(exportNoteInsertHtml(String(idx)));
   });
   return parts.join('');
 }
-
-// 依 content + 人工編輯渲染整份報告；編輯模式開時三類欄位換成可編輯控件。
-// ⚠ 2026-07-30 起這裡**不再畫模擬投影片**：PPT 長什麼樣一律看 renderRealPptPreview()
-// 的真實 .pptx。本函式服務編輯模式的內容修改回顯與「匯出單頁 HTML」那條路，
-// 與報表種類頁共用 renderReportContentHtml，不各寫一套。
-function renderExportPreview() {
-  const wrap = el('export-preview');
-  if (!wrap || !exportPreview.content) return;
-  wrap.innerHTML = renderReportContentHtml(exportPreview);
-}
-
-
-
-// ⚠ 2026-07-30 移除模擬版面渲染 38 支（loadPptLayout、pptCoverSlideHtml、attachPptDragHandlers…）：
-// 那是在瀏覽器用 HTML/CSS「畫一份假投影片」，與真實 .pptx 渲染並存必然分岔。
-// 編輯模式改用 renderReportContentHtml 的內容視圖；方案見 ppt-visual-rework-spec.md 四之二節。
-// ⚠ 下面這支不是模擬版面：requestExportPpt() 送 approval_overrides 要用，故保留。
-function exportPptApprovalOverrides() {
-  const edits = exportPreview.edits || exportEditsDefault();
-  return {
-    slots: edits.slots || {},
-    layout_overrides: edits.layout_overrides || {},
-    position_overrides: edits.position_overrides || {},
-  };
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // 封面：標題／分析範圍／日期／專利件數。後端缺的欄位留空由使用者填（不猜值）。
 function exportCoverHtml(content, view) {
@@ -4675,43 +4395,16 @@ function exportCoverHtml(content, view) {
   const count = (cover.patent_count !== undefined && cover.patent_count !== '')
     ? cover.patent_count
     : (content.patent_count === null || content.patent_count === undefined ? '' : content.patent_count);
-  if (!view.editMode) {
-    return '<section class="export-cover" id="export-cover">'
-      + '<h1>' + escHtml(title) + '</h1>'
-      + '<div class="cover-meta">'
-      + '<span class="k">分析範圍</span><span>' + escHtml(scope || '（未填）') + '</span>'
-      + '<span class="k">報告日期</span><span>' + escHtml(date || '（未填）') + '</span>'
-      + '<span class="k">專利件數</span><span>' + escHtml(count === '' ? '（未填）' : count) + '</span>'
-      + '<span class="k">報表版本</span><span>' + escHtml(content.version) + '</span>'
-      + '</div></section>';
-  }
+  // ⚠ 2026-08-20 匯出工作台移除：封面只剩唯讀呈現（原編輯版隨工作台一併退場）。
   return '<section class="export-cover" id="export-cover">'
-    + '<div class="form-row"><label class="form-label" for="export-cover-title">報告標題</label>'
-    + '<input class="text-input full" id="export-cover-title" value="' + escHtml(title)
-    + '" oninput="saveCoverEdit()"></div>'
-    + '<div class="form-row"><label class="form-label" for="export-cover-scope">分析範圍說明</label>'
-    + '<input class="text-input full" id="export-cover-scope" value="' + escHtml(scope)
-    + '" placeholder="例如：2015–2026 全球 XX 技術專利" oninput="saveCoverEdit()"></div>'
-    + '<div class="form-row"><label class="form-label" for="export-cover-date">報告日期</label>'
-    + '<input class="text-input full" id="export-cover-date" value="' + escHtml(date)
-    + '" placeholder="YYYY-MM-DD" oninput="saveCoverEdit()"></div>'
-    + '<div class="form-row"><label class="form-label" for="export-cover-count">專利件數</label>'
-    + '<input class="text-input full" id="export-cover-count" value="' + escHtml(count)
-    + '" oninput="saveCoverEdit()"></div>'
-    + '<div class="cover-meta"><span class="k">報表版本</span><span>' + escHtml(content.version) + '</span></div>'
-    + '</section>';
+    + '<h1>' + escHtml(title) + '</h1>'
+    + '<div class="cover-meta">'
+    + '<span class="k">分析範圍</span><span>' + escHtml(scope || '（未填）') + '</span>'
+    + '<span class="k">報告日期</span><span>' + escHtml(date || '（未填）') + '</span>'
+    + '<span class="k">專利件數</span><span>' + escHtml(count === '' ? '（未填）' : count) + '</span>'
+    + '<span class="k">報表版本</span><span>' + escHtml(content.version) + '</span>'
+    + '</div></section>';
 }
-function saveCoverEdit() {
-  const pick = function (id) { const n = el(id); return n ? n.value : ''; };
-  exportPreview.edits.cover = {
-    title: pick('export-cover-title'),
-    scope_label: pick('export-cover-scope'),
-    report_date: pick('export-cover-date'),
-    patent_count: pick('export-cover-count'),
-  };
-  saveExportEdits();
-}
-
 // 卡片三區：數據表 → 圖 → 解讀。欄位與變體全依 API 實際回傳動態產生，不寫死報表清單。
 // ══════════ 報表種類頁：選單切換 ＋ 單份左右下版面（2026-07-27 R1／R7／R9）══════════
 // 目前檢視中的 content（由 loadReportVersions 取最新版後填入）。
@@ -5185,460 +4878,26 @@ function exportNarrativeHtml(section, variant, view) {
   const manual_text = view.edits.narratives[key];
   const shown = (manual_text !== undefined && manual_text !== null) ? manual_text : ai_original;
   const edited = (manual_text !== undefined && manual_text !== null && manual_text !== ai_original);
-  if (!view.editMode) {
-    if (!shown) {
-      return '<div class="export-card-narrative pending">⏳ 尚無解讀'
-        + (view.content && view.content.narratives_expired ? '（解讀版本過期）' : '') + '</div>';
-    }
-    return '<div class="export-card-narrative">' + escHtml(shown)
-      + (edited ? '<span class="edited-flag">（已人工修改）</span>' : '') + '</div>';
+  // ⚠ 2026-08-20 匯出工作台移除：解讀只剩唯讀呈現（原就地編輯隨工作台一併退場）。
+  if (!shown) {
+    return '<div class="export-card-narrative pending">⏳ 尚無解讀'
+      + (view.content && view.content.narratives_expired ? '（解讀版本過期）' : '') + '</div>';
   }
-  const safeId = 'export-narrative-edit-' + key.replace(/[^A-Za-z0-9_]/g, '_');
-  return '<div class="export-card-narrative">'
-    + '<textarea class="export-narrative-edit" id="' + safeId + '" data-narrative-key="' + escHtml(key)
-    + '" placeholder="輸入解讀文案…" oninput="saveNarrativeEdit(this)">' + escHtml(shown) + '</textarea>'
-    + '<div class="export-edit-actions">'
-    + '<button class="btn btn-outline" onclick="resetNarrativeEdit(\'' + escHtml(key) + '\')"'
-    + (ai_original ? '' : ' disabled') + '>還原 AI 原稿</button>'
-    + (edited ? '<span class="edited-flag">已人工修改（AI 原稿保留）</span>' : '')
-    + '</div></div>';
+  return '<div class="export-card-narrative">' + escHtml(shown)
+    + (edited ? '<span class="edited-flag">（已人工修改）</span>' : '') + '</div>';
 }
-function saveNarrativeEdit(node) {
-  const key = node.getAttribute('data-narrative-key');
-  exportPreview.edits.narratives[key] = node.value;
-  saveExportEdits();
-}
-// 還原＝刪掉人工稿，顯示回落 AI 原稿（AI 原稿一直在後端，本頁從未覆蓋）。
-function resetNarrativeEdit(key) {
-  delete exportPreview.edits.narratives[key];
-  saveExportEdits();
-  renderExportPreview();
-}
-
 // 自由段落／備註：可插在封面後或任一卡片之後（anchor = 'cover' 或卡片索引字串）。
 function exportNotesHtml(notes, anchor, view) {
   view = view || exportPreview;
+  // ⚠ 2026-08-20 匯出工作台移除：自寫段落只剩唯讀呈現，新增／編輯／刪除入口一併退場。
   return notes.filter(n => n.after === anchor).map(function (note) {
-    if (!view.editMode) {
-      return '<section class="export-note-block" data-note-id="' + escHtml(note.id) + '">'
-        + (note.title ? '<h4>' + escHtml(note.title) + '</h4>' : '')
-        + '<div class="note-text">' + escHtml(note.text) + '</div></section>';
-    }
     return '<section class="export-note-block" data-note-id="' + escHtml(note.id) + '">'
-      + '<input class="text-input full" style="margin-bottom:0.45rem" value="' + escHtml(note.title)
-      + '" placeholder="段落標題（可留空）" oninput="updateExportNote(\'' + escHtml(note.id) + '\',\'title\',this.value)">'
-      + '<textarea class="export-narrative-edit" placeholder="自寫段落內容（如研發方向建議、結論）…"'
-      + ' oninput="updateExportNote(\'' + escHtml(note.id) + '\',\'text\',this.value)">' + escHtml(note.text) + '</textarea>'
-      + '<div class="export-edit-actions">'
-      + '<button class="btn btn-outline" onclick="removeExportNote(\'' + escHtml(note.id) + '\')">刪除此段落</button>'
-      + '</div></section>';
+      + (note.title ? '<h4>' + escHtml(note.title) + '</h4>' : '')
+      + '<div class="note-text">' + escHtml(note.text) + '</div></section>';
   }).join('');
 }
-function exportNoteInsertHtml(anchor) {
-  return '<div class="export-note-insert">'
-    + '<button class="btn btn-outline" onclick="addExportNote(\'' + escHtml(anchor) + '\')">＋ 在此插入自寫段落</button>'
-    + '</div>';
-}
-function addExportNote(anchor) {
-  exportPreview.edits.notes.push({
-    id: 'note_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-    title: '', text: '', after: anchor,
-  });
-  saveExportEdits();
-  renderExportPreview();
-}
-function removeExportNote(noteId) {
-  exportPreview.edits.notes = exportPreview.edits.notes.filter(n => n.id !== noteId);
-  saveExportEdits();
-  renderExportPreview();
-}
-function updateExportNote(noteId, field, value) {
-  const note = exportPreview.edits.notes.find(n => n.id === noteId);
-  if (!note) return;
-  note[field] = value;
-  saveExportEdits();
-}
-
-// ── 匯出：單頁 HTML 分頁預覽（2026-07-31 使用者定案）──
-// 「不要按下去就下載，而是出現一個分頁讓使用者看，真的要下載再按下載就好。」
-// 舊確認框流程退場（2026-07-31）——預覽分頁本身就是確認。
-async function reviewExportOutput() {
-  if (!exportPreview.content) { alert('尚無報告內容可匯出。'); return; }
-  // ⚠ 先同步開分頁再組 HTML：buildExportHtml 要 fetch 圖檔轉 data URI（非同步），
-  //   await 之後才 window.open 已不在使用者手勢內，會被瀏覽器彈窗攔截擋掉。
-  const win = window.open('', '_blank');
-  if (!win) { alert('瀏覽器攔截了新分頁，請允許本站的彈出視窗後再試。'); return; }
-  win.document.write('<p style="font-family:sans-serif;padding:2rem">產生報告預覽中…</p>');
-  try {
-    const html = await buildExportHtml();
-    win.document.open();
-    win.document.write(injectExportToolbar(html));
-    win.document.close();
-  } catch (e) {
-    win.document.open();
-    win.document.write('<p style="font-family:sans-serif;padding:2rem">產生失敗：'
-      + escHtml(e.message) + '</p>');
-    win.document.close();
-  }
-}
-
-// 在產出的單頁 HTML 內注入自足工具列（下載／列印）。
-// ⚠ 自足＝分頁不依賴母頁：下載是序列化分頁自身 DOM、剔除工具列後存檔，
-//   所以落檔內容與舊「直接下載」完全相同；列印走瀏覽器原生（可存 PDF）。
-function injectExportToolbar(html) {
-  const toolbar = '<style id="export-toolbar-style">'
-    + '#export-toolbar-bar{position:fixed;top:12px;right:12px;z-index:99;display:flex;'
-    + 'gap:8px;background:#fff;border:1px solid #e2e6ec;border-radius:8px;'
-    + 'padding:8px 10px;box-shadow:0 2px 8px rgba(0,0,0,.12);font-family:sans-serif}'
-    + '#export-toolbar-bar button{border:1px solid #0f3460;border-radius:6px;'
-    + 'background:#0f3460;color:#fff;padding:6px 14px;cursor:pointer;font-size:14px}'
-    + '#export-toolbar-bar button.ghost{background:#fff;color:#0f3460}'
-    + '@media print{#export-toolbar-bar{display:none}}'
-    + '</style>'
-    + '<div id="export-toolbar-bar">'
-    + '<button onclick="__exportDownload()">下載 HTML</button>'
-    + '<button class="ghost" onclick="window.print()">列印 / 存 PDF</button>'
-    + '</div>'
-    + '<script id="export-toolbar-script">'
-    + 'function __exportDownload(){'
-    + 'var doc=document.documentElement.cloneNode(true);'
-    + 'var bar=doc.querySelector("#export-toolbar-bar");if(bar)bar.remove();'
-    + 'var sty=doc.querySelector("#export-toolbar-style");if(sty)sty.remove();'
-    + 'var sc=doc.querySelector("#export-toolbar-script");if(sc)sc.remove();'
-    + 'var blob=new Blob(["<!DOCTYPE html>\\n"+doc.outerHTML],{type:"text/html;charset=utf-8"});'
-    + 'var a=document.createElement("a");a.href=URL.createObjectURL(blob);'
-    + 'a.download=document.title+".html";a.click();'
-    + 'setTimeout(function(){URL.revokeObjectURL(a.href)},5000);'
-    + '}<\/script>';
-  return html.replace('</body>', toolbar + '</body>');
-}
-
-
 // 圖檔轉 data URI 內嵌（自包含，離線開得起來）；同一 URL 只抓一次。
 const exportChartCache = new Map();
-async function fetchChartDataUri(url) {
-  if (exportChartCache.has(url)) return exportChartCache.get(url);
-  const promise = fetch(url)
-    .then(r => (r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status))))
-    .then(svg => 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg))
-    .catch(() => null);
-  exportChartCache.set(url, promise);
-  return promise;
-}
-
-// 組出自包含單頁 HTML：內嵌樣式（含 @media print）＋圖 data URI ＋使用者編輯後內容。
-async function buildExportHtml() {
-  const content = exportPreview.content;
-  const edits = exportPreview.edits;
-  const cover = edits.cover || {};
-  const notes = edits.notes || [];
-  // 先把所有圖平行抓成 data URI（同 URL 共用同一 promise，不重複下載）。
-  const chartUrls = [];
-  (content.sections || []).forEach(s => (s.variants || []).forEach(v => {
-    if (v.chart_url) chartUrls.push(v.chart_url);
-  }));
-  const uris = await Promise.all(chartUrls.map(fetchChartDataUri));
-  const uriByUrl = {};
-  chartUrls.forEach((u, i) => { uriByUrl[u] = uris[i]; });
-
-  const notesFor = anchor => notes.filter(n => n.after === anchor).map(n =>
-    '<section class="note">' + (n.title ? '<h4>' + escHtml(n.title) + '</h4>' : '')
-    + '<p>' + escHtml(n.text).replace(/\n/g, '<br>') + '</p></section>').join('');
-
-  const cards = (content.sections || []).map(function (section, idx) {
-    const rows = section.rows || [];
-    let dataHtml = '<p class="muted">無資料</p>';
-    if (rows.length) {
-      const columns = Object.keys(rows[0]);
-      dataHtml = '<table><thead><tr>' + columns.map(c => '<th>' + escHtml(c) + '</th>').join('')
-        + '</tr></thead><tbody>'
-        + rows.map(r => '<tr>' + columns.map(c => '<td>' + escHtml(fmtCell(r[c])) + '</td>').join('') + '</tr>').join('')
-        + '</tbody></table>'
-        + (section.row_count > rows.length ? '<p class="muted">顯示前 ' + rows.length + ' 列｜總列數 ' + section.row_count + '</p>' : '');
-    }
-    const variants = (section.variants || []).map(function (v) {
-      const uri = v.chart_url ? uriByUrl[v.chart_url] : null;
-      const chart = uri ? '<div class="chart"><img src="' + uri + '" alt="' + escHtml(section.title) + '"></div>' : '';
-      const key = narrativeEditKey(section, v);
-      const manual_text = edits.narratives[key];
-      const text = (manual_text !== undefined && manual_text !== null) ? manual_text : narrativeAiOriginal(v);
-      const narr = text ? '<div class="narrative">' + escHtml(text).replace(/\n/g, '<br>') + '</div>' : '';
-      return chart + narr;
-    }).join('');
-    return '<article class="card">'
-      + '<h3>' + escHtml(section.title) + '</h3>'
-      + '<div class="data">' + dataHtml + '</div>' + variants
-      + (section.note ? '<p class="muted">' + escHtml(section.note) + '</p>' : '')
-      + '</article>' + notesFor(String(idx));
-  }).join('');
-
-  const title = cover.title || '專利分析報告';
-  const scope = cover.scope_label || content.scope || '';
-  const date = cover.report_date || (content.generated_at || '').slice(0, 10);
-  const count = (cover.patent_count !== undefined && cover.patent_count !== '')
-    ? cover.patent_count : (content.patent_count ?? '');
-  const style = 'body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;'
-    + 'line-height:1.6;color:#1a1a2e;background:#fff;max-width:960px;margin:0 auto;padding:2rem 1.5rem}'
-    + 'h1{font-size:1.8rem;color:#0f3460;margin-bottom:.6rem}h3{font-size:1.1rem;margin:0 0 .7rem}'
-    + '.cover{border-bottom:2px solid #0f3460;padding-bottom:1rem;margin-bottom:1.6rem}'
-    + '.cover .meta{display:grid;grid-template-columns:auto 1fr;gap:.3rem 1rem;font-size:.9rem;color:#555}'
-    + '.card{border:1px solid #e2e6ec;border-radius:.5rem;padding:1rem 1.15rem;margin-bottom:1.2rem}'
-    + '.data{overflow-x:auto;margin-bottom:.8rem}table{width:100%;border-collapse:collapse;font-size:.82rem}'
-    + 'th,td{padding:.35rem .55rem;border-bottom:1px solid #e2e6ec;text-align:left;white-space:nowrap}'
-    + 'th{background:#f7f9fc;font-weight:600}.chart{text-align:center;margin-bottom:.8rem}'
-    + '.chart img{max-width:100%;height:auto}'
-    + '.narrative{font-size:.92rem;background:#f7f9fc;border-left:3px solid #0f3460;padding:.6rem .85rem;border-radius:.25rem;margin-bottom:.7rem}'
-    + '.note{border:1px dashed #0f3460;border-radius:.4rem;padding:.8rem 1rem;margin-bottom:1.2rem}'
-    + '.note h4{margin-bottom:.4rem;color:#0f3460}.muted{color:#6c757d;font-size:.82rem}'
-    + '@media print{body{max-width:none;padding:0}.card,.note{break-inside:avoid;page-break-inside:avoid}'
-    + '@page{margin:1.5cm}}';
-  return '<!DOCTYPE html>\n<html lang="zh-TW"><head><meta charset="UTF-8">'
-    + '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
-    + '<title>' + escHtml(title) + '</title><style>' + style + '</style></head><body>'
-    + '<section class="cover"><h1>' + escHtml(title) + '</h1><div class="meta">'
-    + '<span>分析範圍</span><span>' + escHtml(scope) + '</span>'
-    + '<span>報告日期</span><span>' + escHtml(date) + '</span>'
-    + '<span>專利件數</span><span>' + escHtml(count) + '</span>'
-    + '<span>報表版本</span><span>' + escHtml(content.version) + '</span>'
-    + '</div></section>' + notesFor('cover') + cards + '</body></html>';
-}
-async function triggerExport() {
-  const btn = el('btn-export');
-  btn.disabled = true; btn.textContent = '送出中…';
-  const wrap = el('export-job');
-  try {
-    // 重新產製報表資料＝以全部預設報表建立 report_generate job（走既有管線）；
-    // 完成後重新載入預覽，讓工作台看到新版本內容。
-    const resp = await fetch(API + '/reports', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      // workspace_id 決定三份分群報表的範圍（2026-07-29 補）：原本送空 body，
-      // worker 端 workspace_id=None 就靜默跳過分群報表——07-28 修了報表種類頁的
-      // submitReports（呼叫點①），同檔案的這個呼叫點②漏掉。同 bug 兩個呼叫點。
-      body: JSON.stringify({ workspace_id: state.workspaceId }),
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      alert('建立匯出工作失敗：' + (err.detail || resp.status));
-      return;
-    }
-    const job = await resp.json();
-    // 沿用報表輪詢＋取回連結；輪詢寫入 export-job 區。
-    pollExportJob(job.job_id);
-  } catch (e) {
-    alert('連線錯誤：' + e.message);
-  } finally {
-    btn.disabled = false; btn.textContent = '重新產製報表資料';
-  }
-}
-async function pollExportJob(jobId) {
-  const wrap = el('export-job');
-  const started = Date.now();
-  async function tick() {
-    if (!wrap || state.nav !== 'export') return;
-    try {
-      const j = await getJson(API + '/reports/' + jobId);
-      wrap.innerHTML = jobProgressCardHtml(j, started);
-      if (j.status === 'succeeded') {
-        // 新版本產好即重載預覽工作台，就地顯示（不另開分頁看引擎的 index.html）。
-        loadExportPreview();
-        return;
-      }
-      if (['failed', 'cancelled'].includes(j.status)) return;
-    } catch (e) {
-      wrap.innerHTML = '<div class="hint">查詢匯出狀態失敗（' + escHtml(e.message) + '）。</div>';
-      return;
-    }
-    registerTimer(tick, 2000);
-  }
-  tick();
-}
-
-// ══════════ 輸出 PPT（預覽閘門後送 ai:report_ppt → 回流 → 下載連結） ══════════
-// 分工：AI 只產各頁確認槽文案 → CLI 順手呼 deterministic build_ppt.py 組版 →
-// .pptx 進 report_artifacts → 打下載路由取回。與單頁 HTML 匯出並存（兩種都給）。
-// ⚠ 預覽閘門不跳過：必須先有預覽內容（exportPreview.content）＝使用者已預覽，才送。
-// ⚠ workspace_id 放進 params（to_payload 會 exclude 具名 workspace_id）；報表版本以
-//    based_on_version 帶入（runner 據以解析報表版本目錄）。
-// 重抓目前匯出版本的 content 並寫回快取。
-// ⚠ 「要不要先跑 narrative」是會花 8 分鐘與一次 AI 額度的決策，不能建立在
-//   可能過期的快取上（2026-07-31 實機 #149：#148 兩分半鐘前才產完解讀，
-//   匯出頁快取仍停在「解讀還沒產」那一刻，於是又跑了一次整份重產）。
-//   content 端點已於本日修為 ~1 秒，決策前重抓一次成本可忽略。
-// 重抓失敗時回舊快取，不阻斷產 PPT——判斷失準的代價小於整條路斷掉。
-async function refreshExportContent() {
-  const version = exportPreview.version
-    || (exportPreview.content && exportPreview.content.version);
-  if (!version) return exportPreview.content;
-  try {
-    const content = await getJson(
-      API + '/reports/versions/' + encodeURIComponent(version) + '/content');
-    exportPreview.content = content;
-    return content;
-  } catch (e) {
-    return exportPreview.content;
-  }
-}
-
-function exportReportHasNarratives(content) {
-  content = content || exportPreview.content;
-  const sections = (content && content.sections) || [];
-  return sections.some(section =>
-    (section.variants || []).some(variant => narrativeAiOriginal(variant)));
-}
-
-async function runNarrativeThenExportPpt() {
-  const wrap = el('export-ppt-result');
-  const content = exportPreview.content;
-  const version = content && content.version;
-  if (!version) { alert('請先載入報表版本。'); return; }
-  if (narrativeJobRunning(version)) {
-    if (wrap) wrap.innerHTML = '<div class="hint">AI 解讀任務已在執行中；完成後會接續產生 PPT。</div>';
-    return;
-  }
-  try {
-    const created = await getJson(API + '/ai-tasks', {
-      method: 'POST',
-      headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
-      // R-5：帶 then_export_ppt 旗標——解讀成功後由 **worker 端**接續派 PPT。
-      // 下方輪詢保留（顯示進度、完成後載預覽），但不再是 PPT 會不會排出來的必要條件：
-      // 使用者關掉分頁離開，流程照樣走完（2026-08-05 實測 #200 斷鏈後定案）。
-      body: JSON.stringify({
-        task_type: 'ai:narrative', based_on_version: version,
-        then_export_ppt: true, workspace_id: state.workspaceId || undefined,
-      }),
-    });
-    if (wrap) wrap.innerHTML = '<div class="hint">尚無 AI 解讀，已先送出 narrative 任務（run '
-      + escHtml(created.run_id) + '）；成功後系統會自動接續產生 PPT（可關閉本頁）。</div>';
-    await fetchTasks();
-    pollNarrativeThenExportPpt(created.run_id);
-  } catch (e) {
-    if (wrap) wrap.innerHTML = '<div class="card">啟動 narrative 失敗（' + escHtml(e.message) + '）。</div>';
-  }
-}
-
-async function pollNarrativeThenExportPpt(runId) {
-  const wrap = el('export-ppt-result');
-  async function tick() {
-    if (state.nav !== 'export') return;
-    try {
-      const t = await getJson(API + '/ai-tasks/' + runId, { headers: aiAuthHeaders() });
-      if (t.status === 'succeeded') {
-        // R-5：PPT 由 **worker 端**接續派工（then_export_ppt 旗標），這裡只負責顯示。
-        // ⚠ 不得在此再送一次 requestExportPpt——兩邊都派就會產生兩個 PPT 任務。
-        if (wrap) wrap.innerHTML = '<div class="hint">AI 解讀完成，系統已接續產生 PPT…</div>';
-        if (exportPreview.version) await loadExportPreview(exportPreview.version);
-        await fetchTasks();
-        return;
-      }
-      if (['failed', 'cancelled'].includes(t.status)) {
-        if (wrap) wrap.innerHTML = '<div class="card">AI 解讀 ' + escHtml(t.status)
-          + '（' + escHtml(t.error_message || '無錯誤訊息') + '）。PPT 未送出。</div>';
-        return;
-      }
-      if (wrap) wrap.innerHTML = '<div class="hint">AI 解讀 #' + escHtml(runId) + ' '
-        + escHtml(t.status) + '　' + escHtml(t.current_stage || '') + '</div>';
-    } catch (e) {
-      if (wrap) wrap.innerHTML = '<div class="hint">查詢 narrative 任務失敗（' + escHtml(e.message) + '）。</div>';
-      return;
-    }
-    registerTimer(tick, 3000);
-  }
-  tick();
-}
-
-async function requestExportPpt(options) {
-  options = options || {};
-  const wrap = el('export-ppt-result');
-  if (!exportPreview.content) { alert('請先於下方預覽報告內容，再輸出 PPT。'); return; }
-  if (!options.skipNarrativeCheck) {
-    // 依即時資料判斷，不看快取（見 refreshExportContent 的說明）。
-    const fresh = await refreshExportContent();
-    if (!exportReportHasNarratives(fresh)) {
-      await runNarrativeThenExportPpt();
-      return;
-    }
-  }
-  const btn = el('btn-export-ppt');
-  if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
-  try {
-    // ⚠ 三種人工覆寫**只走 approval_overrides 一包**（派工端 _run_ai_report_ppt_job
-    // 只讀這個 key）。曾同時在頂層又送 slots／layout_overrides／position_overrides，
-    // 派工端不讀＝死參數，徒留「看起來有傳」的誤導（2026-07-29 移除）。
-    // 🔴 goal-driven 唯一入口（EXP-018）：先派規劃、由 worker 接續組版。
-    // ⚠ 這裡原本直接派 ai:report_ppt——選圖與最大目標都沒送出，於是每次都退回
-    // 固定頁序，使用者從介面**無法**觸發目標規劃（2026-08-10 查出）。
-    // ⚠ 接續交給 worker（then_export_ppt），不由前端輪詢後再送第二個任務：
-    // 前端輪詢會在關分頁／電腦睡著時斷鏈，且斷得「看起來成功」
-    // （見 handlers._enqueue_chained_report_ppt 的實測教訓）。
-    const brief = collectPptPlanBrief();
-    const params = {
-      snapshot_id: exportPreview.content.version,
-      based_on_version: exportPreview.content.version,
-      selected_charts: brief.selected_charts,
-      north_star_goal: brief.north_star_goal,
-      then_export_ppt: true,
-      approval_overrides: exportPptApprovalOverrides(),
-    };
-    if (state.workspaceId) params.workspace_id = state.workspaceId;
-    const created = await getJson(API + '/ai-tasks', {
-      method: 'POST',
-      headers: aiAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ task_type: 'ai:report_plan', params: params }),
-    });
-    if (wrap) wrap.innerHTML = '<div class="hint">已送出輸出 PPT 任務（run '
-      + escHtml(created.run_id) + '）；完成後於此顯示下載連結。</div>';
-    pollExportPptJob(created.run_id);
-  } catch (e) {
-    if (wrap) wrap.innerHTML = '<div class="card">輸出 PPT 失敗（' + escHtml(e.message) + '）。</div>';
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '產生 PPT'; }
-  }
-}
-// 輪詢 PPT 任務（GET /ai-tasks/{run_id}）；SSE 回流時 updateTaskFromEvent 也會推進，
-// 這裡的輪詢是保底。完成後從 result.pptx_filename 組下載連結（打 /report-latest/ppt 路由）。
-async function pollExportPptJob(runId) {
-  const wrap = el('export-ppt-result');
-  if (!wrap) return;
-  async function tick() {
-    if (state.nav !== 'export') return;
-    try {
-      const t = await getJson(API + '/ai-tasks/' + runId, { headers: aiAuthHeaders() });
-      if (t.status === 'succeeded') {
-        const r = t.result || {};
-        const version = r.based_on_version || (exportPreview.content && exportPreview.content.version);
-        const filename = r.pptx_filename;
-        if (version && filename) {
-          const url = API + '/report-latest/ppt/' + encodeURIComponent(version)
-            + '/' + encodeURIComponent(filename);
-          wrap.innerHTML = '<div class="card"><strong>PPT 已產出</strong>'
-            + '<div class="export-edit-actions" style="margin-top:0.6rem">'
-            + '<a class="btn btn-primary" href="' + url + '" download="' + escHtml(filename) + '">下載 PPT</a>'
-            + '</div>'
-            + '<p class="hint" style="padding:0.4rem 0 0">已填文案 '
-            + escHtml(r.slots_filled) + '／' + escHtml(r.slots_total) + ' 槽；未填槽於該頁標「待確認」浮水印。</p>'
-            + '</div>';
-          await loadExportPptFiles(version);
-        } else {
-          wrap.innerHTML = '<div class="hint">PPT 任務完成，但未回報檔名。</div>';
-        }
-        return;
-      }
-      if (['failed', 'cancelled'].includes(t.status)) {
-        wrap.innerHTML = '<div class="card">輸出 PPT ' + escHtml(t.status)
-          + '（' + escHtml(t.error_message || '無錯誤訊息') + '）。</div>';
-        return;
-      }
-      wrap.innerHTML = '<div class="hint">輸出 PPT #' + escHtml(runId) + ' '
-        + escHtml(t.status) + '　' + escHtml(t.current_stage || '') + '</div>';
-    } catch (e) {
-      wrap.innerHTML = '<div class="hint">查詢 PPT 任務失敗（' + escHtml(e.message) + '）。</div>';
-      return;
-    }
-    registerTimer(tick, 3000);
-  }
-  tick();
-}
-
 // ══════════ 案件比對（建立 job + target + understanding + approve） ══════════
 function renderComparison() {
   const m = el('main-panel');
@@ -6061,18 +5320,8 @@ let lastExportNarrativeReloadJobId = 0;
 async function maybeRefreshReportNarratives(tasks) {
   const succeeded = (tasks || [])
     .filter(t => t.job_type === 'ai:narrative' && t.status === 'succeeded');
-  // 匯出頁快取同步（2026-07-31）：原本只刷報表種類頁的 #report-inline-view，
-  // 匯出頁的 exportPreview.content 永遠停在載入當下——顯示與判斷都會用到舊狀態。
-  if (exportPreview.version) {
-    const mine = succeeded
-      .filter(t => t.payload && t.payload.based_on_version === exportPreview.version)
-      .sort((a, b) => (b.job_id || 0) - (a.job_id || 0));
-    const newest = mine.length ? (mine[0].job_id || 0) : 0;
-    if (newest > lastExportNarrativeReloadJobId) {
-      lastExportNarrativeReloadJobId = newest;   // 每個 job 只刷一次，不隨輪詢重打
-      await refreshExportContent();
-    }
-  }
+  // ⚠ 2026-08-20：原本這裡還要同步「匯出頁」的 exportPreview.content 快取；
+  // 匯出報告工作台已整塊移除，該快取不再有讀者，故只留報表種類頁的刷新。
   if (state.nav !== 'reports' || !reportViewContent || !reportViewContent.version) return;
   const done = succeeded
     .filter(t => t.payload && t.payload.based_on_version === reportViewContent.version)
@@ -6744,43 +5993,6 @@ async function approveTopicBackfill() {
   } catch (e) {
     if (msg) msg.textContent = '核准失敗：' + ((e && e.message) || '未知錯誤');
   }
-}
-
-// ══════════ PPT 單一入口（EXP-018）：目標選填，一顆按鈕走完 ══════════
-// ⚠ 不做「固定架構／依目標規劃」兩顆按鈕——那是把系統的不確定推給使用者選。
-async function loadPptChartPicker() {
-  const box = el('ppt-chart-picker');
-  // ⚠ 讀 content 不是 data（2026-08-10 修）：`exportPreview.data` 全庫**從未被賦值**，
-  // 本函式於是永遠在這一行 return，選圖清單一直是空的——而且沒有任何錯誤訊息。
-  if (!box || !exportPreview || !exportPreview.content) return;
-  // ⚠ 只列有圖的 variant（2026-08-10）：部分 variant 的 file 是空字串——
-  // 那是解讀落點（如主題統計表，表格由組版端自己畫），不是可選圖表。
-  // 本清單預設全選，列進來就必然被送出，後端會直接失敗。
-  // 只列**能上 PPT** 的變體：`ppt_eligible` 由後端標（唯一判準與 chart_bundle 一致）。
-  // ⚠ 不在前端自行推導（例如寫死排除 variant_key === 'more'）——那會是第二個落點。
-  // 2026-08-10 實機失敗即因此：清單列了長尾圖 `:more`，送出後 chart_bundle 不認得。
-  const sections = (exportPreview.content.sections || [])
-    .map(sec => ({ ...sec,
-                   variants: (sec.variants || []).filter(v => v.file && v.ppt_eligible) }))
-    .filter(sec => sec.variants.length);
-  if (!sections.length) { box.textContent = ''; return; }
-  const chartCount = sections.reduce((n, sec) => n + sec.variants.length, 0);
-  box.innerHTML = '<details><summary>選擇要用的圖表（預設全選，共 '
-    + chartCount + ' 張）</summary><div style="max-height:12rem;overflow:auto;padding:.3rem 0">'
-    + sections.map(sec => (sec.variants || []).map(v => {
-        const id = escHtml(sec.report_key + ':' + (v.variant_key || 'default'));
-        return '<label class="checkbox-row"><input type="checkbox" class="ppt-chart-cb" value="'
-          + id + '" checked> ' + escHtml(sec.title || sec.report_key)
-          + (v.label ? '（' + escHtml(v.label) + '）' : '') + '</label>';
-      }).join('')).join('')
-    + '</div></details>';
-}
-function collectPptPlanBrief() {
-  const goal = ((el('ppt-goal-input') || {}).value || '').trim();
-  const charts = Array.from(document.querySelectorAll('.ppt-chart-cb'))
-    .filter(cb => cb.checked).map(cb => cb.value);
-  return { north_star_goal: goal, selected_charts: charts,
-           snapshot_id: exportPreview.version };
 }
 
 // ══════════ 初始化 ══════════
