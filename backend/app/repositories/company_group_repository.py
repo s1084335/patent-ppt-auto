@@ -6,6 +6,16 @@ from uuid import uuid4
 
 from psycopg.types.json import Jsonb
 
+
+#: 母體範圍豁免（見 backend/app/db/population_scope.py）。
+#: ⚠ 理由是給複核的人看的——「忘了接母體」與「刻意全庫」在程式碼上長得一樣。
+POPULATION_SCOPE_EXEMPT = {
+    "list_company_groups":
+        "公司治理跨 workspace：集團定義不隸屬任一 workspace",
+    "list_confirmed_group_candidates":
+        "同上：候選來自全庫已確認公司",
+}
+
 REVIEW_STATUSES = {"suggested", "confirmed", "rejected"}
 SOURCE_TYPES = {"manual", "cli_ai"}
 

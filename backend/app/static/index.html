@@ -504,19 +504,16 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 .export-card-chart img { max-width: 100%; height: auto; }
 .export-card-narrative { font-size: 0.9rem; line-height: 1.65; background: var(--panel); border-left: 3px solid var(--accent); padding: 0.6rem 0.85rem; border-radius: 0.25rem; }
 .export-card-narrative.pending { color: var(--text-muted); }
-.export-card-narrative .edited-flag { font-size: 0.74rem; color: var(--ok); margin-left: 0.4rem; }
-.export-narrative-edit { width: 100%; min-height: 5rem; resize: vertical; font-family: inherit; font-size: 0.88rem; padding: 0.5rem 0.6rem; border: 1px solid var(--accent); border-radius: 0.35rem; background: var(--panel); color: var(--text); }
-.export-edit-actions { display: flex; gap: 0.5rem; margin-top: 0.45rem; }
 .export-note-block { background: var(--panel); border: 1px dashed var(--accent); border-radius: 0.4rem; padding: 0.8rem 1rem; margin-bottom: 1.1rem; }
 .export-note-block h4 { font-size: 0.98rem; margin-bottom: 0.45rem; color: var(--accent); }
 .export-note-block .note-text { white-space: pre-wrap; font-size: 0.9rem; line-height: 1.65; }
-.export-note-insert { text-align: center; margin: 0.35rem 0 0.9rem; }
-/* 匯出的單頁 HTML 自帶列印樣式；此處讓平台內預覽列印時也維持乾淨版面。 */
+/* ⚠ 2026-08-13 移除 `.edited-flag`／`.export-narrative-edit`／`.export-edit-actions`／
+   `.export-note-insert`：人工編輯控件已無產生處（編輯模式 2026-08-10 退場）。 */
+/* 平台內列印時維持乾淨版面（交付檔本身的列印樣式由引擎產出的 index.html 自帶）。 */
 @media print {
-  #topbar, #nav-panel, #ai-panel, .export-toolbar { display: none !important; }
+  #topbar, #nav-panel, #ai-panel { display: none !important; }
   #layout, body { display: block; height: auto; overflow: visible; }
   #main-panel { overflow: visible; padding: 0; }
-  #export-preview { border: none; padding: 0; }
   .export-card { break-inside: avoid; page-break-inside: avoid; }
 }
 
@@ -719,7 +716,13 @@ const PATENTS_PAGE_SIZE = 100;
 const state = {
   workspaceId: null,
   // 全庫（下拉第一項）：選它時 isGlobalWs=true、workspaceId 落到全庫真實 id。
-  isGlobalWs: false,
+  // 🔴 2026-08-17：初值必須是 true。原本是 false，於是 loadWorkspaces 完成前
+  //    （或它失敗走 catch 時）isGlobalSelected() 回 false → 去打
+  //    /workspaces/null/patents，但選單顯示的是全庫——**顯示與資料不一致**，
+  //    使用者拿錯範圍的資料下判斷且無任何錯誤訊息。
+  //    ⚠ 同型前科見 onWorkspaceChange 的 R-2（#193）：那次修持久化，
+  //    這次修的是一致性。
+  isGlobalWs: true,
   globalWorkspaceId: null,   // 後端全庫 workspace 真實 id（loadWorkspaces 取得）
   nav: 'browse',
   // 分類區專利清單的分頁位移（2026-07-27 使用者定：與總覽一致都要分頁）。
@@ -860,19 +863,29 @@ async function loadWorkspaces() {
   if (saved && saved !== GLOBAL_WS_VALUE
       && Array.from(sel.options).some(o => o.value === saved)) {
     sel.value = saved;
-    state.isGlobalWs = false;
-    state.workspaceId = parseInt(saved, 10);
+    selectWorkspaceById(saved);
   } else {
     sel.value = GLOBAL_WS_VALUE;
     selectGlobalWorkspace();
   }
-  state.nav = 'browse';
+  setNav('browse');
   renderMain();
 }
 // 選全庫：旗標打開、workspaceId 落到全庫真實 id（尚未建立全庫時為 null）。
 function selectGlobalWorkspace() {
-  state.isGlobalWs = true;
-  state.workspaceId = state.globalWorkspaceId;
+  selectWorkspaceById(GLOBAL_WS_VALUE);
+}
+// 🔴 範圍設定的**唯一入口**（2026-08-17）：isGlobalWs 與 workspaceId 描述
+// 同一件事，分開賦值遲早分岔——那正是「選單顯示 A、資料是 B」的成因。
+// 傳 GLOBAL_WS_VALUE 或 falsy＝全庫；傳 id＝該 workspace。
+function selectWorkspaceById(value) {
+  if (!value || value === GLOBAL_WS_VALUE) {
+    state.isGlobalWs = true;
+    state.workspaceId = state.globalWorkspaceId;
+  } else {
+    state.isGlobalWs = false;
+    state.workspaceId = parseInt(value, 10);
+  }
 }
 function onWorkspaceChange() {
   // 切 workspace 先停掉所有輪詢：舊 workspace 的 job 不得繼續寫入新 workspace 的畫面。
@@ -881,12 +894,9 @@ function onWorkspaceChange() {
   // 🔴 R-2（2026-08-05）：選擇持久化。原本每次載入硬性重設回全庫——部署後重整
   // 頁面，使用者以為還在滑雪機、按「重新產製」實際送出全庫（#193 實案）。
   try { localStorage.setItem('workspaceSel', v); } catch (_) {}
+  selectWorkspaceById(v);
   if (v === GLOBAL_WS_VALUE) {
-    selectGlobalWorkspace();
-    state.nav = 'browse';  // 選全庫→瀏覽專利（跨 workspace 全庫清單；總覽已刪）。
-  } else {
-    state.isGlobalWs = false;
-    state.workspaceId = v ? parseInt(v, 10) : null;
+    setNav('browse');  // 選全庫→瀏覽專利（跨 workspace 全庫清單；總覽已刪）。
   }
   state.topicPatentsOffset = 0;   // 換 workspace 清單頁碼歸零
   state.topicFilterKey = null;
@@ -894,13 +904,20 @@ function onWorkspaceChange() {
 }
 
 // ══════════ 左導覽切換 ══════════
-function navTo(nav) {
-  // 切導覽頁先停掉所有輪詢：離開的那頁不需要再更新，重畫也會生新的節點。
-  clearAllTimers();
+// 🔴 導覽狀態的**唯一設定入口**（2026-08-17）：state.nav 與側欄高亮描述同一件事，
+// 分開設定必然分岔——本 bug 即 loadWorkspaces 直接改 state.nav 繞過高亮，
+// 於是「進首頁內容是瀏覽專利、左側卻全白」。
+// ⚠ 與同日修的 workspace 顯示不一致（isGlobalWs 初值）同型：同一份狀態兩條設定路徑。
+function setNav(nav) {
   state.nav = nav;
   document.querySelectorAll('.nav-item').forEach(b => {
     b.classList.toggle('active', b.dataset.nav === nav);
   });
+}
+function navTo(nav) {
+  // 切導覽頁先停掉所有輪詢：離開的那頁不需要再更新，重畫也會生新的節點。
+  clearAllTimers();
+  setNav(nav);
   renderMain();
 }
 
@@ -3943,6 +3960,7 @@ const CLUSTER_REPORT_NAMES = new Set([
   'cluster_topic_table', 'opportunity_quadrant',
 ]);
 const REPORT_TYPES = [
+  ['design_protection_detail', '設計保護策略'],
   ['application_trend', '專利申請趨勢'],
   ['publication_trend', '專利授權公告趨勢'],
   ['country_distribution', '專利受理局分布'],
@@ -4370,8 +4388,8 @@ function readOnlyReportView(content) {
   return { content: content, editMode: false, edits: exportEditsDefault() };
 }
 
-// 純渲染：把一份報表內容（＋該 view 的編輯狀態）組成 HTML 字串。
-// 工作台與報表種類頁共用；差別只在傳入的 view，不各寫一套。
+// 純渲染：把一份報表內容組成 HTML 字串。
+// ⚠ **保留**：報表種類頁的內嵌顯示（`loadInlineReport`）共用這一支。
 function renderReportContentHtml(view) {
   const content = view.content;
   if (!content) return '';
@@ -4388,7 +4406,7 @@ function renderReportContentHtml(view) {
 // 封面：標題／分析範圍／日期／專利件數。後端缺的欄位留空由使用者填（不猜值）。
 function exportCoverHtml(content, view) {
   view = view || exportPreview;
-  const cover = view.edits.cover || {};
+  const cover = (view.edits && view.edits.cover) || {};
   const title = cover.title || '專利分析報告';
   const scope = cover.scope_label || content.scope || '';
   const date = cover.report_date || (content.generated_at || '').slice(0, 10);
@@ -4590,14 +4608,48 @@ function switchReportSourceField(sourceField) {
   renderReportViewer();
 }
 
+// 🔴 2026-08-19：「目前顯示 N 筆，總計 M 筆」的 M 必須與**畫出來的那份清單**同源。
+// 實機病徵：主題演進 12 列（完整）被標成「總計 13 筆」——13 是主題表的列數，
+// 因為三個分支都只換 rows、沒換 row_count，section 那份就一路蓋過來。
+// ⚠ 拿不到該清單的未截斷總數時（例如通道過濾後的子集）回 rows.length：
+//   寧可不顯示截斷訊息，也不對讀者謊報「還有資料沒給你看」。
+function rowCountFor(rows, owner) {
+  const shown = (rows || []).length;
+  const n = owner && owner.row_count;
+  return (typeof n === 'number' && n >= shown) ? n : shown;
+}
+
 function sectionForReportView(section, option, sourceField) {
   option = option || {};
   if (!isClusterSection(section)) {
-    if (option.variantIndex === undefined || option.variantIndex === null) return section;
-    const variant = (section.variants || [])[option.variantIndex];
+    // 🔴 2026-08-17（第三修）：非分群 section 的 variant 有**兩條**切換路徑，
+    //    先前只認其中一條，所以 IPC/CPC 切階層時圖換了、表沒換。
+    //    ①下拉逐 variant（`option.variantIndex`）——分群家族在用
+    //    ②卡片內分頁鈕（`reportVariantPick[sectionIndex]`）——IPC/CPC、設計在用。
+    //      `buildReportViewOptions` 對非分群 section **一個 section 只給一項**、
+    //      不帶 variantIndex，所以①那條對它們是死碼。
+    //    ⚠ 圖早就用 ②（`reportSingleHtml` 的 `pick`）選 variant；表必須同源，
+    //      否則就是「兩個地方各自決定顯示哪一版」。
+    const explicit = (option.variantIndex !== undefined && option.variantIndex !== null);
+    const idx = explicit
+      ? option.variantIndex
+      : (reportVariantPick[option.sectionIndex || 0] || 0);
+    const variant = (section.variants || [])[idx];
+    if (!variant) return section;
+    // ⚠ 判長度不判 truthy：空陣列／空物件不得蓋掉 section 那份完整資料。
+    const usedVariantRows = (Array.isArray(variant.rows) && variant.rows.length);
+    const variantRows = usedVariantRows ? variant.rows : (section.rows || []);
     return Object.assign({}, section, {
       title: option.label || section.title,
-      variants: variant ? [variant] : [],
+      rows: variantRows,
+      row_count: rowCountFor(variantRows, usedVariantRows ? variant : section),
+      report_key: variant.report_key || section.report_key,
+      column_labels: (variant.column_labels
+        && Object.keys(variant.column_labels).length)
+        ? variant.column_labels : section.column_labels,
+      // ⚠ 只有①（下拉已指定唯一 variant）才收斂成一個；②必須留完整清單，
+      //   否則 `reportVariantTabsHtml` 少於 2 個就**不畫分頁鈕**——切換入口消失。
+      variants: explicit ? [variant] : section.variants,
     });
   }
   const reportKey = option.report_key || 'cluster_topic_table';
@@ -4610,12 +4662,15 @@ function sectionForReportView(section, option, sourceField) {
     const channel = option.source_field || sourceField;
     const channelRows = (section.rows || [])
       .filter(row => !row.source_field || row.source_field === channel);
-    const pickedRows = (picked && Array.isArray(picked.rows) && picked.rows.length)
-      ? picked.rows : channelRows;
+    const usedPickedRows = (picked && Array.isArray(picked.rows) && picked.rows.length);
+    const pickedRows = usedPickedRows ? picked.rows : channelRows;
     return Object.assign({}, section, {
       title: option.label || section.title,
       report_key: option.report_key || section.report_key,
       rows: pickedRows,
+      // ⚠ channelRows 是 section.rows 過濾後的子集，未截斷總數無從得知——
+      //   owner 傳 null，rowCountFor 回 rows.length（＝不顯示截斷訊息）。
+      row_count: rowCountFor(pickedRows, usedPickedRows ? picked : null),
       column_labels: (picked && picked.column_labels
         && Object.keys(picked.column_labels).length)
         ? picked.column_labels : section.column_labels,
@@ -4629,10 +4684,15 @@ function sectionForReportView(section, option, sourceField) {
   );
   const variant = variants[0] || null;
   const variantRows = variant && Array.isArray(variant.rows) ? variant.rows : [];
+  const finalRows = variantRows.length
+    ? variant.rows : (rows.length ? rows : (section.rows || []));
   return Object.assign({}, section, {
     title: option.label || reportLabelForKey(reportKey),
     report_key: reportKey,
-    rows: variantRows.length ? variant.rows : (rows.length ? rows : (section.rows || [])),
+    rows: finalRows,
+    // rows 用哪份，總數就跟哪份；通道過濾後的 `rows` 是子集故傳 null。
+    row_count: rowCountFor(finalRows,
+      variantRows.length ? variant : (rows.length ? null : section)),
     // ⚠ 要判**長度**不是 truthy：主題統計表的 variant 是沒有 rows 的解讀落點，
     // 後端 _column_labels([]) 回 {}，而 {} 在 JS 為真 → 空物件蓋掉 section 那份
     // 完整對照表，表頭整排退回英文 key（2026-08-03 實機，status 顯示成 status）。
@@ -4871,11 +4931,15 @@ function narrativeEditKey(section, variant) {
 function narrativeAiOriginal(variant) {
   return (variant.narrative && variant.narrative.text) ? variant.narrative.text : '';
 }
+// 解讀顯示。⚠ 2026-08-13：移除編輯分支（textarea／還原 AI 原稿／人工修改標記）
+// 與 `saveNarrativeEdit`／`resetNarrativeEdit`——`editMode` 恆為 false，那是不可達路徑。
+// 人工稿的讀取邏輯留著（`view.edits.narratives`）：結構仍在，只是永遠是空的，
+// 讓共用渲染不必為「有沒有人工稿」分兩套。
 function exportNarrativeHtml(section, variant, view) {
   view = view || exportPreview;
   const key = narrativeEditKey(section, variant);
   const ai_original = narrativeAiOriginal(variant);
-  const manual_text = view.edits.narratives[key];
+  const manual_text = (view.edits && view.edits.narratives) ? view.edits.narratives[key] : undefined;
   const shown = (manual_text !== undefined && manual_text !== null) ? manual_text : ai_original;
   const edited = (manual_text !== undefined && manual_text !== null && manual_text !== ai_original);
   // ⚠ 2026-08-20 匯出工作台移除：解讀只剩唯讀呈現（原就地編輯隨工作台一併退場）。
@@ -5512,6 +5576,8 @@ const JOB_REFRESH_TARGETS = {
   // job_id 去重，由 fetchTasks 觸發；updateTaskFromEvent 終結時本來就 fetchTasks）
   // ——不重複接第二條刷新線。
   'ai:narrative': [],
+  // 簡報產製：完成／失敗都刷新匯出頁的 deck 紀錄（design §6：落點改頁後刷新目標跟著改）。
+  'ai:report_deck': ['deckExports'],
   'embeddings': [],          // 無可見面（供之後的分群消費）
   'ai:company_zh_name': [],  // 草稿區已移除（2026-07-29 使用者定案）
   'ai:company_group_suggestion': ['companyGroups'],
@@ -5529,6 +5595,7 @@ const RESOURCE_REFRESHERS = {
   'reports': { navs: ['reports'], run: refreshReportsArea },
   'workspaces': { navs: null, run: loadWorkspaces },  // 頂列下拉；自恢復上次選定
   'companyGroups': { navs: ['browse'], run: renderCompanyGroupRegistry },
+  'deckExports': { navs: ['export'], run: refreshDeckExports },
   'companyAliases': { navs: ['browse'], run: renderCompanyCodeRegistry },
 };
 
@@ -5996,6 +6063,9 @@ async function approveTopicBackfill() {
 }
 
 // ══════════ 初始化 ══════════
+// ⚠ 先套側欄高亮再載入：loadWorkspaces 要等網路往返，那段期間內容區已經是
+//    瀏覽專利，側欄不能是白的（使用者不知道自己在哪一區）。
+setNav(state.nav);
 loadWorkspaces();
 fetchTasks();
 connectSSE();

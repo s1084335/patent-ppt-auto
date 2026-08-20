@@ -92,15 +92,22 @@ def read_file(version: str, filename: str) -> bytes | None:
 def list_versions() -> list[dict]:
     """列出 DB 內所有報表版本（新到舊），每筆只帶顯示用 metadata。
 
-    效率契約：**不選 content**——版本一多也不會把產物內容拉回。只認含
-    report_data.json 的版本（與檔案系統端 _run_dirs 的有效性判準一致）。
+    效率契約：**不選產物內容**（report_data.json 可達 270KB）——版本一多也不會
+    把它拉回。只認含 report_data.json 的版本（與檔案系統端 _run_dirs 判準一致）。
+
+    🔴 2026-08-17：連 `version_meta.json` 一起帶回（~120B）。原本列表端點要過濾
+    workspace 時，**逐版**去讀這個小檔，而 `_DbRunSource.read_bytes` 一次要兩趟
+    （先查檔名集合、再讀內容）——48 個版本 ＝ 97 趟往返、開頁等 4.3 秒，且每產
+    一份報表就再慢一點。⚠ 單筆便宜不等於總量便宜，這裡的成本在**趟數**不在位元組。
     """
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT version,
-                       bool_or(filename = 'narratives.json') AS has_narratives
+                       bool_or(filename = 'narratives.json') AS has_narratives,
+                       (array_agg(content) FILTER (
+                            WHERE filename = 'version_meta.json'))[1] AS meta
                 FROM app_layer.report_artifacts
                 GROUP BY version
                 HAVING bool_or(filename = 'report_data.json')
@@ -108,7 +115,32 @@ def list_versions() -> list[dict]:
                 """
             )
             rows = cur.fetchall()
-    return [{"version": row[0], "has_narratives": bool(row[1])} for row in rows]
+    return [
+        {
+            "version": row[0],
+            "has_narratives": bool(row[1]),
+            # 沒有 meta 的舊版本回 None——消費端據此判定「不歸屬任何 workspace」。
+            "workspace_id": _meta_workspace_id(row[2]),
+        }
+        for row in rows
+    ]
+
+
+def _meta_workspace_id(raw) -> int | None:
+    """從 version_meta.json 的位元組取 workspace_id；缺值或格式壞掉一律回 None。
+
+    ⚠ 解析失敗不得讓整個版本清單掛掉——壞一筆 meta 的代價應該是「那一版不歸屬
+    workspace」，不是報表頁整頁空白。
+    """
+    if raw is None:
+        return None
+    import json
+
+    try:
+        value = json.loads(bytes(raw).decode("utf-8")).get("workspace_id")
+        return int(value) if value is not None else None
+    except (ValueError, TypeError, UnicodeDecodeError, AttributeError):
+        return None
 
 
 def list_ppt_files(version: str) -> list[dict]:

@@ -43,7 +43,8 @@ class VersionMetaWrittenTests(unittest.TestCase):
     def test_meta_file_written_with_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(chart_runner, "run_report", self._stub_run_report), \
-                 mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict):
+                 mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict), \
+                 mock.patch.object(chart_runner, "fetch_cover_stats", dict):
                 result = chart_runner.run_chart_trial(
                     output_dir=Path(tmp), report_names=["application_trend"],
                     workspace_id=7, workspace_name="滑雪機")
@@ -59,7 +60,8 @@ class VersionMetaWrittenTests(unittest.TestCase):
         """workspace_id 也進 parameters（name 會撞名，id 才是穩定歸屬鍵）。"""
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(chart_runner, "run_report", self._stub_run_report), \
-                 mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict):
+                 mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict), \
+                 mock.patch.object(chart_runner, "fetch_cover_stats", dict):
                 result = chart_runner.run_chart_trial(
                     output_dir=Path(tmp), report_names=["application_trend"],
                     workspace_id=7, workspace_name="滑雪機")
@@ -71,7 +73,8 @@ class VersionMetaWrittenTests(unittest.TestCase):
         """⚠ 不給 workspace＝meta 檔不含歸屬鍵（版本不歸屬任何 workspace）。"""
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(chart_runner, "run_report", self._stub_run_report), \
-                 mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict):
+                 mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict), \
+                 mock.patch.object(chart_runner, "fetch_cover_stats", dict):
                 result = chart_runner.run_chart_trial(
                     output_dir=Path(tmp), report_names=["application_trend"])
             meta = json.loads((Path(result["output_dir"]) / "version_meta.json")
@@ -136,13 +139,10 @@ class FrontendWiringTests(unittest.TestCase):
         self.assertIn("workspace_id", body.group(0),
                       "報表種類頁版本清單未帶 workspace——會顯示別的 workspace 的版本")
 
-    def test_export_versions_fetch_scoped(self):
-        import re
-
-        body = re.search(r"async function loadExportVersionOptions\(\).*?\n\}", self.html, re.S)
-        self.assertIsNotNone(body)
-        self.assertIn("workspace_id", body.group(0),
-                      "匯出報告版本下拉未帶 workspace——PPT 會顯示別的 workspace 的上一版")
+    # ⚠ 2026-08-13 退場 test_export_versions_fetch_scoped：匯出頁的版本下拉
+    #   （`loadExportVersionOptions`）隨 tasks 0 清空移除，與報表種類頁的下拉重複。
+    #   「版本清單要帶 workspace」這條契約由上面 test_report_versions_fetch_scoped
+    #   守著同一件事——現在只剩一個落點，反而不會漂移。
 
 
 class HandlerWiringTests(unittest.TestCase):

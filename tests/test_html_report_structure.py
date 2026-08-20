@@ -349,6 +349,18 @@ class OfflineSelfContainedTests(unittest.TestCase):
         externals = re.findall(r'(?:src|href)="(https?://[^"]+)"', html)
         self.assertEqual(externals, [], f"不得引用外部資源：{externals[:3]}")
 
+    def test_carries_print_stylesheet(self):
+        """可列印／存 PDF 是交付檔自帶的能力，不靠平台頁面。
+
+        ⚠ 這條契約原本掛在前端 `buildExportHtml`（`test_export_html_preview_tab.py`）。
+        該檔隨 2026-08-13 tasks 0 退場——前端自組 HTML 的做法已由引擎產出取代，
+        契約移來這裡，落在真正產檔的那一端。
+        """
+        html = _render()
+        self.assertIn("@media print", html, "交付檔缺列印樣式")
+        self.assertRegex(html, r"@media print\s*\{[^@]*(break-inside|page-break-inside)",
+                         "列印時未避免區塊被切半")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -64,6 +64,10 @@ class PatentKindClassificationTests(unittest.TestCase):
         """document_kind 有 S 就是設計，不管 patent_type 有沒有值。"""
         self.assertEqual(self._kind(None, "S"), "設計")
 
+    def test_us_design_s1_is_design(self):
+        """美國設計案可能是 S1；不得只認 S。"""
+        self.assertEqual(self._kind("P", "S1"), "設計")
+
 
 class KindTallyTests(unittest.TestCase):
     """整批統計與母體說明。"""
@@ -92,7 +96,11 @@ class KindTallyTests(unittest.TestCase):
         note = design_exclusion_note(self._rows())
         self.assertIn("11", note)
         self.assertIn("設計", note)
-        self.assertIn("技術請求項", note, "只寫件數不寫原因，讀者仍不知道為何被排除")
+        # ⚠ 2026-08-20 改判準：原本要求出現「技術請求項」——但那是**代理指標**，
+        #   實測有設計案帶獨立項文字，排除依據已改為 document_kind。
+        #   判準本身不變（要交代為什麼），變的是正確的理由。
+        self.assertIn("文獻種類", note, "只寫件數不寫原因，讀者仍不知道為何被排除")
+        self.assertNotIn("技術請求項", note, "仍以有無請求項當排除依據")
 
     def test_no_note_when_no_design_patents(self):
         """⚠ 沒有設計案時不得硬印一句——那會讓讀者以為有東西被排除。"""
@@ -138,8 +146,12 @@ class FetchPatentKindSummaryTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def execute(self, sql):
+            def execute(self, sql, params=None):
+                # ⚠ 加了 `params`：§1.4 起本查詢帶 `WHERE patent_id = ANY(%s)`，
+                #   假 cursor 只收一個位置參數會 TypeError。
+                #   **不要**把 params 丟掉不看——下面的斷言要用它證明母體真的有傳。
                 self.sql = sql
+                self.params = params
 
             def fetchall(self):
                 return [
@@ -163,9 +175,16 @@ class FetchPatentKindSummaryTests(unittest.TestCase):
 
         conn = _Conn()
         with mock.patch.object(chart_runner, "_app_layer_connect", return_value=conn):
-            summary = chart_runner.fetch_patent_kind_summary()
+            # ⚠ 2026-08-19（§1.4）：`patent_ids` 改為**必填無預設**——有預設就會
+            #   在呼叫端忘記傳的時候靜默掃全庫（母體洩漏，本專案已出現三次）。
+            #   這個消費者是那次改動的漏網：§1 的回歸範圍沒涵蓋本檔。
+            summary = chart_runner.fetch_patent_kind_summary(patent_ids=[1, 2, 3])
 
         self.assertIn("derived_layer.report_patent_base", conn.cursor_obj.sql)
+        # 🔴 §1.4：母體必須真的傳進查詢，不只是「函式簽章上有這個參數」。
+        # ⚠ 只驗簽章是代理指標——本專案踩過「函式在、字串在、資料到不了照樣綠」。
+        self.assertIn("patent_id = ANY(%s)", conn.cursor_obj.sql)
+        self.assertEqual(conn.cursor_obj.params, ([1, 2, 3],))
         self.assertEqual(summary["tally"], {"設計": 1, "新型": 1, "發明": 1})
         self.assertIn("設計 1 件", summary["design_note"])
 

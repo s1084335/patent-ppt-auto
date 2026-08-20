@@ -1,4 +1,4 @@
-"""R-3／R-4（2026-08-05 第七輪實機驗收發現）的 regression 測試。
+﻿"""R-3／R-4（2026-08-05 第七輪實機驗收發現）的 regression 測試。
 
 R-3 象限圖底注壓住頁尾：hero 圖框底緣 1.86+5.0=6.86in 落進頁尾帶
 （footnote.top 6.78in）。**高度受限**的圖（象限板長寬比 ~1.47，比框的 1.78 高）
@@ -48,7 +48,10 @@ class R4ApplicantUnionTests(unittest.TestCase):
             },
         }
         original = handlers._load_report_cluster_data
-        handlers._load_report_cluster_data = lambda ws, sf: parts.get(sf)
+        # ⚠ 簽名跟隨真函式（2026-08-20 加了 report_scope）——少一個參數會
+        #   TypeError 而被上層 except 吞掉，測試以假失敗的姿勢紅。
+        handlers._load_report_cluster_data = (
+            lambda ws, sf, report_scope="company": parts.get(sf))
         try:
             merged = handlers._merge_cluster_channels(
                 3, ["wips_independent_claims", "effect_summary"])
@@ -76,7 +79,10 @@ class R4ApplicantUnionTests(unittest.TestCase):
             },
         }
         original = handlers._load_report_cluster_data
-        handlers._load_report_cluster_data = lambda ws, sf: parts.get(sf)
+        # ⚠ 簽名跟隨真函式（2026-08-20 加了 report_scope）——少一個參數會
+        #   TypeError 而被上層 except 吞掉，測試以假失敗的姿勢紅。
+        handlers._load_report_cluster_data = (
+            lambda ws, sf, report_scope="company": parts.get(sf))
         try:
             merged = handlers._merge_cluster_channels(
                 3, ["wips_independent_claims", "effect_summary"])
@@ -87,3 +93,4 @@ class R4ApplicantUnionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

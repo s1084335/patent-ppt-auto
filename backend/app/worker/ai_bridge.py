@@ -585,9 +585,62 @@ def _run_ai_topic_backfill_job(payload: dict[str, Any], context: JobContext) -> 
 
 
 
+def _run_ai_report_deck_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """執行簡報產製：runner 驅動機械步，CLI 只接撰稿與逐頁目視迴圈。
+
+    payload：based_on_version（要產簡報的報表版本；缺省取最新）、
+    cli_kind／model／cli_timeout_seconds（沿 ai:narrative 慣例）、
+    max_visual_rounds（可選；不給＝env `DECK_VISUAL_LOOP_MAX_ROUNDS`，預設 4）。
+
+    誠實進度（tasks 3.4）：階段由 runner 逐步回報——素材 5 → 機械步 10–25 →
+    CLI 撰稿 30–55 → 目視第 n 輪 60+ → 回存 92–97 → 完成 100。
+    百分比是**階段推進**不是內部量測（AI 任務無內部百分比），但階段文字
+    如實反映正在做的事，不會停在同一句話空轉。
+    """
+    from . import ai_report_deck_runner
+
+    context.heartbeat("開始簡報產製", 2)
+
+    stage_text = {
+        "materialize": "取得報表素材",
+        "assemble": "組裝簡報素材",
+        "plan": "排頁規劃",
+        "chip": "chip 圖表重排",
+        "fit": "圖表字級擬合與轉圖",
+        "cli_writing": "CLI 撰稿中",
+        "persist": "回存簡報產物",
+    }
+
+    def _progress(stage: str, percent: int) -> None:
+        if stage.startswith("visual_round_"):
+            text = f"逐頁目視第 {stage.rsplit('_', 1)[-1]} 輪"
+        else:
+            text = stage_text.get(stage, stage)
+        context.heartbeat(text, percent)
+
+    max_rounds = payload.get("max_visual_rounds")
+    result = ai_report_deck_runner.run_deck(
+        payload.get("based_on_version"),
+        cli_kind=str(payload.get("cli_kind") or "claude"),
+        model=payload.get("model") or None,
+        # _cli_runner／_step_runner 供測試注入；正式跑真 CLI 與真 subprocess。
+        cli_runner=payload.get("_cli_runner"),
+        step_runner=payload.get("_step_runner"),
+        timeout_seconds=float(
+            payload.get("cli_timeout_seconds")
+            or ai_report_deck_runner.DEFAULT_CLI_TIMEOUT_SECONDS
+        ),
+        max_visual_rounds=int(max_rounds) if max_rounds else None,
+        progress=_progress,
+    )
+    context.heartbeat("完成", 100)
+    return result
+
+
 _AI_JOB_RUNNERS: dict[str, str] = {
     # ⚠ ai:report_plan／ai:report_ppt 已隨 PPT 交付線移除（2026-08-10）。
     "ai:narrative": "_run_ai_narrative_job",
+    "ai:report_deck": "_run_ai_report_deck_job",
     "ai:topic_backfill": "_run_ai_topic_backfill_job",
     "ai:topic_label": "_run_ai_topic_label_job",
     "ai:patent_note": "_run_ai_patent_note_job",

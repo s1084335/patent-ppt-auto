@@ -203,6 +203,7 @@ def handle_clustering_incremental(payload: dict[str, Any], context: JobContext) 
 def _load_report_cluster_data(
     workspace_id: int,
     source_field: str,
+    report_scope: str = "company",
 ) -> dict[str, Any] | None:
     """取該 workspace／通道的分群資料供分群類圖表使用；無主題回 None。
 
@@ -226,7 +227,10 @@ def _load_report_cluster_data(
 
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row,
                          connect_timeout=15) as conn:
-        cluster_data = load_cluster_workspace_data(workspace_id, source_field, conn)
+        # 🔴 2026-08-20：scope 必須跟著報表其餘各表走。不傳的話主題表固定用
+        #    未歸集團的申請人名，與同一份報表的排名表口徑不同（見 loader 註解）。
+        cluster_data = load_cluster_workspace_data(
+            workspace_id, source_field, conn, report_scope=report_scope)
     if not cluster_data["topics"]:
         # 尚未分群（或該通道無主題）：分群類圖表沒有輸入，靜默跳過。
         return None
@@ -273,8 +277,12 @@ def _resolve_report_cluster_data(payload: dict[str, Any], context: JobContext) -
         from backend.app.clustering.sources import source_fields
 
         targets = list(source_fields())
+    # ⚠ scope 取自同一個 payload，與 `handle_report_generate` 給 run_chart_trial
+    #   的是同一個值——主題表與排名表口徑一致的唯一保證就在這裡。
+    report_scope = str(payload.get("report_scope") or "company")
     try:
-        return _merge_cluster_channels(int(workspace_id), targets)
+        return _merge_cluster_channels(int(workspace_id), targets,
+                                       report_scope=report_scope)
     except Exception:  # noqa: BLE001 - 分群區塊是輔助，缺了照樣出報表
         LOGGER.exception("report cluster_data load failed: workspace_id=%s", workspace_id)
         return None
@@ -283,6 +291,7 @@ def _resolve_report_cluster_data(payload: dict[str, Any], context: JobContext) -
 def _merge_cluster_channels(
     workspace_id: int,
     source_fields_: list[str],
+    report_scope: str = "company",
 ) -> dict[str, Any] | None:
     """載入多個通道的分群資料並合併成單一 cluster_data；全部無主題時回 None。
 
@@ -295,7 +304,8 @@ def _merge_cluster_channels(
     """
     merged: dict[str, Any] | None = None
     for source_field in source_fields_:
-        part = _load_report_cluster_data(workspace_id, source_field)
+        part = _load_report_cluster_data(workspace_id, source_field,
+                                         report_scope=report_scope)
         if part is None:
             continue
         # ⚠ assignment 的 source_field 已由 _load_report_cluster_data 標記
@@ -361,6 +371,54 @@ def _resolve_workspace_name(workspace_id: Any) -> str | None:
         return None
 
 
+def _fetch_workspace_row(workspace_id: int) -> dict[str, Any] | None:
+    """取 workspace 的成員與全庫旗標。
+
+    ⚠ 成員的唯一事實來源＝`app_layer.workspaces.patent_ids_json`
+    （`global_workspace.sync_global_workspace_patents` 也寫這裡）——
+    不另建第二份成員快照。查詢走 `workspace_id` 主鍵，不需額外索引。
+    """
+    from backend.app.db.connection import get_pool
+
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT is_global, patent_ids_json FROM app_layer.workspaces"
+            " WHERE workspace_id = %s",
+            (int(workspace_id),),
+        ).fetchone()
+    if row is None:
+        return None
+    return {"is_global": bool(row[0]), "patent_ids_json": list(row[1] or [])}
+
+
+def _resolve_workspace_patent_ids(workspace_id: Any) -> list[int] | None:
+    """workspace → 報表母體（`run_chart_trial` 的 `patent_ids`）。
+
+    🔴 2026-08-17 實機 bug 的修正點：前端只送 `workspace_id`，而引擎的母體入口
+    是 `patent_ids`（見 `run_chart_trial` docstring：「worker 的 report_generate
+    payload 走這條」）。原本沒人把兩者接起來，於是選了 workspace 仍跑全庫——
+    **標題寫該 workspace、數字是全庫**，比整份壞掉更難察覺。
+
+    回 None＝全庫（未指定或 `is_global`）；⚠ 成員為空或 workspace 不存在時
+    **fail loud**：靜默退回全庫正是本 bug 的形態。
+    """
+    if workspace_id is None:
+        return None
+    row = _fetch_workspace_row(int(workspace_id))
+    if row is None:
+        raise ValueError(
+            f"report_generate 指定的 workspace_id={workspace_id} 不存在；"
+            "不得靜默改用全庫母體（報表會掛著錯的範圍）")
+    if row["is_global"]:
+        return None                      # 全庫＝不篩，傳整串 id 只會拖慢查詢
+    members = [int(i) for i in row["patent_ids_json"]]
+    if not members:
+        raise ValueError(
+            f"workspace {workspace_id} 沒有成員專利，無法產製該範圍的報表；"
+            "不得靜默改用全庫母體")
+    return members
+
+
 def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
     """產製完整報表：跑報表引擎、渲染圖表，並把整包產物落 DB 供 backend 容器讀取。
 
@@ -397,7 +455,11 @@ def handle_report_generate(payload: dict[str, Any], context: JobContext) -> dict
     chart_kwargs: dict[str, Any] = {
         "report_names": [str(name) for name in report_names],
         "filters": payload.get("filters"),
-        "patent_ids": payload.get("patent_ids"),
+        # 🔴 母體：payload 明給 patent_ids 以它為準；否則由 workspace 解出成員。
+        #    沒有這一行，選了 workspace 也會跑全庫（2026-08-17 實機 bug）。
+        "patent_ids": (payload.get("patent_ids")
+                       if payload.get("patent_ids") is not None
+                       else _resolve_workspace_patent_ids(payload.get("workspace_id"))),
         "report_scope": str(payload.get("report_scope") or "company"),
         "cluster_data": cluster_data,
         "workspace_name": _resolve_workspace_name(payload.get("workspace_id")),
@@ -836,14 +898,24 @@ def _refresh_family_only() -> dict[str, Any]:
     return refresh_report_family_country()
 
 
+def _refresh_search_terms_only() -> dict[str, Any]:
+    """只刷搜尋 terms。依賴 report_patent_base 的顯示名，所以必須排在其後。"""
+    from backend.app.derived.patent_search_terms import refresh_patent_search_terms
+
+    return refresh_patent_search_terms()
+
+
 def _refresh_all_derived(context: JobContext | None = None) -> dict[str, Any]:
-    """刷新全部 derived 產出：report_patent_base ＋ 家族兩張表。
+    """刷新全部 derived 產出：report_patent_base + 搜尋 terms + 家族兩張表。
 
     ⚠ 失敗隔離：兩者是獨立產出，家族計算掛掉不該讓已完成的 report_patent_base 刷新
     一起報廢（公司名收斂是匯入後顯示的必要條件，優先度更高）。家族失敗以
     family_error 明確回報，不靜默吞掉——靜默正是這兩張表空了這麼久沒被發現的原因。
     """
     result: dict[str, Any] = {"report_patent_base": _refresh_patent_base_only()}
+    if context is not None:
+        context.heartbeat("刷新專利搜尋索引", 45)
+    result["patent_search_terms"] = _refresh_search_terms_only()
     if context is not None:
         context.heartbeat("刷新家族國別報表視圖", 60)
     try:

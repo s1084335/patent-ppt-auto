@@ -43,6 +43,23 @@ query_database(sql="SELECT ...", limit=500)
 什麼時候需要它：個別案件清單、完整同族、快照沒有的交叉統計
 （例如「某公司在某年的每一件案子」）。這些是彙總表答不出來的問題。
 
+### 關鍵字找專利：先用 search terms
+
+若要用公司名、第二申請人、第二專利權人、受讓人、發明人、IPC/CPC All 任一分類碼、
+法律狀態或專利號片段找專利，請查 `derived_layer.patent_search_terms`：
+
+```sql
+SELECT DISTINCT st.patent_id
+FROM derived_layer.patent_search_terms st
+WHERE st.term_lookup LIKE '%創科%'
+ORDER BY st.patent_id
+LIMIT 200
+```
+
+不要用 `core_layer.patents` + `core_layer.patent_people` 的多欄 ILIKE 掃大表；那會漏掉
+WIPS `A | B | C` 欄位中的第二個以後的值，也繞過 trigram index。拿到 patent_id 後，
+再 JOIN `core_layer.patents` 或 `derived_layer.report_patent_base` 取證。
+
 ⚠ 數字**只能**來自這些工具或你手上的選圖數據，不得自行推算或憑印象填。
 每個帶數字的敘述都要有 `evidence_ref`。
 

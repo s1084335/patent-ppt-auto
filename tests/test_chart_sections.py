@@ -31,18 +31,26 @@ from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 # 回空 dict＝沒有專利種類資料，封面就不印設計案備註（與真實情境一致：
 # 選擇性出圖時本來就可能沒有這份資料）。
 _patent_kind_patcher = None
+_cover_stats_patcher = None
 
 
 def setUpModule():
-    global _patent_kind_patcher
+    global _patent_kind_patcher, _cover_stats_patcher
     _patent_kind_patcher = mock.patch.object(
         chart_runner, "fetch_patent_kind_summary", dict)
     _patent_kind_patcher.start()
+    # 2026-08-18：封面數字（§2）是**第二個** DB 接縫。這些測試的用意是「不碰 DB」，
+    # 接縫多一個就要多擋一個；真正的行為驗證在 test_cover_stats*.py。
+    _cover_stats_patcher = mock.patch.object(
+        chart_runner, "fetch_cover_stats", dict)
+    _cover_stats_patcher.start()
 
 
 def tearDownModule():
     if _patent_kind_patcher is not None:
         _patent_kind_patcher.stop()
+    if _cover_stats_patcher is not None:
+        _cover_stats_patcher.stop()
 
 
 def fake_report(name: str, rows: list[dict]) -> dict:
@@ -356,7 +364,7 @@ class DisplaySpecTests(unittest.TestCase):
         self.assertEqual(len(layout["years"]), 25, "年份軸最多最新 25 年")
         self.assertEqual(layout["years"][-1], 2019)
 
-    def test_segmented_bar_two_segments_and_hatch(self):
+    def test_segmented_bar_two_segments_and_transferred(self):
         """#3（2026-08-05）：兩段色（單獨／共同）＋各段右端斜紋（已轉讓）。
 
         ⚠ 契約反轉：舊版是「總長條＋青色區段靠右端」的單一屬性編碼，
@@ -378,8 +386,9 @@ class DisplaySpecTests(unittest.TestCase):
         self.assertAlmostEqual(float(total.group(1)) + float(total.group(2)),
                                float(seg.group(1)), delta=0.5,
                                msg="共同段應緊接單獨段右緣")
-        hatches = re.findall(r'class="bar-hatch" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"', svg)
-        self.assertEqual(len(hatches), 2, "單獨段與共同段各要有一段斜紋")
+        hatches = re.findall(r'class="bar-transferred" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"', svg)
+        self.assertEqual(len(hatches), 2,
+                         "單獨段與共同段各要有一段已轉讓（2026-08-17 由斜線改第三色）")
         for x, w in hatches:
             self.assertGreater(float(w), 0)
 
@@ -473,7 +482,7 @@ class PersistenceTruncationTests(unittest.TestCase):
     驗 report_data.json 落檔內容，不驗顯示（顯示已由 DisplaySpecTests 覆蓋）。"""
 
     @staticmethod
-    def _stub_run_report(name, filters=None, limit=None, patent_ids=None):
+    def _stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
         if name in ("ipc_main_distribution", "cpc_main_distribution"):
             # 2026-07-23 定案：分類來源改 Orig. Main，stub 的 row key 須跟著報表定義走
             source = REPORT_DEFINITIONS[name].columns[0]
@@ -759,7 +768,7 @@ class NarrativeRefreshTests(unittest.TestCase):
     版本不符顯示過期、舊 run 無 sections 鍵明確報錯不猜）。"""
 
     @staticmethod
-    def _stub_run_report(name, filters=None, limit=None, patent_ids=None):
+    def _stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
         rows = [{"applicant_display_name": f"App {i:02d}", "application_year": 2020,
                  "patent_count": 30 - i} for i in range(12)]
         return fake_report(name, rows)
@@ -855,7 +864,7 @@ class SelectiveRenderTests(unittest.TestCase):
     def test_application_trend_only(self):
         fetched: list[str] = []
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             fetched.append(name)
             rows = {
                 "application_trend": [
@@ -915,7 +924,7 @@ class SelectiveRenderTests(unittest.TestCase):
     def test_report_cache_deduplicates_fetch(self):
         calls: list[str] = []
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             calls.append(name)
             return fake_report(name, [{"application_year": 2020, "patent_count": 1}])
 
@@ -932,7 +941,7 @@ class SelectiveRenderTests(unittest.TestCase):
     def test_manifest_hash_and_snapshot_metadata(self):
         """小型 fixture 驗證 SVG、hash、filters 與 patent_ids 快照 metadata。"""
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             self.assertEqual(patent_ids, [7, 9])
             rows = {
                 "applicant_ranking": [
@@ -973,7 +982,7 @@ class SelectiveRenderTests(unittest.TestCase):
     def test_applicant_ranking_outputs_transfer_segment_and_detail_fields(self):
         """申請人排名圖表、JSON 保留最新受讓人統計與公司明細。"""
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             self.assertEqual(name, "applicant_ranking")
             return fake_report(name, [{
                 "applicant_display_name": "REXON",
@@ -1019,7 +1028,7 @@ class SelectiveRenderTests(unittest.TestCase):
         self.assertAlmostEqual(
             float(total_rect.group(1)) + float(total_rect.group(2)),
             float(segment_rect.group(1)), delta=0.5)
-        self.assertEqual(len(re.findall(r'class="bar-hatch"', svg)), 2,
+        self.assertEqual(len(re.findall(r'class="bar-transferred"', svg)), 2,
                          "單獨段與共同段各要有一段已轉讓斜紋")
         self.assertIn("共同申請：Gamma 2件", svg)
         row = report_data["reports"]["applicant_ranking"]["rows"][0]
@@ -1040,7 +1049,7 @@ class SelectiveRenderTests(unittest.TestCase):
             for index in range(1, 23)
         ]
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             self.assertEqual(name, "applicant_year_matrix")
             return fake_report(name, matrix_rows)
 
@@ -1082,7 +1091,7 @@ class SelectiveRenderTests(unittest.TestCase):
             for index in range(1, 23)
         ]
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             self.assertEqual(name, "applicant_year_matrix")
             return fake_report(name, matrix_rows)
 
@@ -1110,7 +1119,7 @@ class SelectiveRenderTests(unittest.TestCase):
             for index in range(30)
         ]
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             self.assertEqual(name, "applicant_year_matrix")
             return fake_report(name, matrix_rows)
 
@@ -1267,7 +1276,7 @@ class SectionReportKeyTests(unittest.TestCase):
         ],
     }
 
-    def _stub_run_report(self, name, filters=None, limit=None, patent_ids=None):
+    def _stub_run_report(self, name, filters=None, limit=None, patent_ids=None, **kwargs):
         return fake_report(name, self._ROWS.get(name, []))
 
     def _render(self, report_names):
@@ -1585,31 +1594,32 @@ class SparseChartFillsFrameTests(unittest.TestCase):
             svg = path.read_text(encoding="utf-8")
         return int(re.search(r'height="(\d+)"', svg).group(1))
 
-    def test_few_rows_still_fill_the_frame(self):
-        """3 列以上要填到六成；1–2 列另計。
+    def test_canvas_height_tracks_row_count(self):
+        """圖高隨資料量成長，不再撐開填滿固定畫布。
 
-        🔴 **本項判準 2026-08-03 依 H-6 下修（規格被實機推翻）**：
-        原本 1 列 0.45、2 列 0.6。實機 p9（CPC L4 只有 1 列）照這個標準撐開後，
-        那根長條橫貫全寬、粗到變成**一整塊色帶**，已經不像圖表——
-        用一個可讀性問題換掉另一個。
+        🔴 **本項 2026-08-19 依使用者裁決改寫（規格被推翻）**。原名
+        `test_few_rows_still_fill_the_frame`，斷言 1/2/3 列各要填到畫布上限的
+        0.26／0.35／0.6——那是 G-7／H-6（2026-08-03）「圖要填滿 PPT 3.2in 圖框」
+        的判準。使用者實機看 IPC/CPC 分頁後裁決：
+        「bar 間距縮小，文字同樣大小，圖不一定要撐那麼大張，根據資料變動」。
 
-        ⚠ 「不要大片留白」的意圖仍然保留：少列時列高照樣撐開（`_fill_row_height`
-        仍會放大），只是上限收到 `SPARSE_ROW_CEILING_FACTOR`＝2 倍。
-        剩下的留白是**內容量的問題**（CPC L4 就只有一個分類），
-        要靠版型或插圖補（W-3），不是把長條拉粗。
+        ⚠ 推翻的依據不只是偏好：`chart_scale()` 自 2026-08-12
+        （unify-chart-source）起**恆為 1.0**，PPT 二次縮放補償已退場、
+        簡報端改由 deck skill 逐圖 refit——「填滿圖框」的前提本身已不存在。
+        填框留下的病徵是列距毫無規律（2/3/5/8/10 列＝54/108/91/57/45），
+        同一張圖的兩個分頁切換時條會跳位。
 
-        🔴 2026-08-12 契約更新（unify-chart-source）：畫布綁 WEB 後
-        max 高 460→560（+21.7%）、列高 28→32（+14.3%）——分母長得比分子快，
-        1 列的實際佔比由 ~0.30 降為 0.279，舊下限 0.28 差線。填框**機制零改動**
-        （實測 1/2/3 列＝156/210/426px），下限依新幾何校準為 0.26/0.35/0.6
-        ——此為量測後校準，範圍在 change 事前核准的「幾何測試逐支更新」內，
-        已於完成回報揭露。
+        ⚠ 新判準斷言的是**單調性**不是絕對值：列多的圖要比列少的高。
+        寫死「n 列＝多少 px」會在字級或 profile 一變就假紅；
+        列距是否一致由 `test_chart_row_density.py` 專責。
         """
-        for n, floor in ((1, 0.26), (2, 0.35), (3, 0.6)):
-            height = self._height(n)
-            self.assertGreaterEqual(
-                height, chart_runner.CHART_CANVAS_MAX_HEIGHT * floor,
-                f"{n} 列的圖只有 {height}px，框會空掉一大半")
+        heights = {n: self._height(n) for n in (1, 2, 3, 5, 10)}
+        counts = sorted(heights)
+        for smaller, larger in zip(counts, counts[1:]):
+            self.assertLess(
+                heights[smaller], heights[larger],
+                f"{smaller} 列 {heights[smaller]}px 不低於 {larger} 列 "
+                f"{heights[larger]}px——高度沒有隨資料量變動：{heights}")
 
     def test_many_rows_unchanged(self):
         """⚠ 列多時維持原列高——撐開會讓畫布爆高、整張圖反而被縮小（P-2）。"""

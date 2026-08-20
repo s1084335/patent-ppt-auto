@@ -14,6 +14,7 @@ from backend.app.db import report_artifact_store
 from backend.app.api import (
     ai_tasks,
     clustering,
+    deck_exports,
     company_aliases,
     company_groups,
     comparison,
@@ -47,6 +48,7 @@ app.include_router(patents.router, prefix=settings.API_V1_PREFIX)
 app.include_router(company_groups.router, prefix=settings.API_V1_PREFIX)
 # 公司中文名草稿確認：補上三態流程的「確認」環節（原本產得出草稿但無處確認）。
 app.include_router(company_aliases.router, prefix=settings.API_V1_PREFIX)
+app.include_router(deck_exports.router, prefix=settings.API_V1_PREFIX)
 
 _STATIC_DIR = settings.PROJECT_ROOT / "backend" / "app" / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
@@ -130,10 +132,16 @@ class _DbRunSource:
     一次撈整版檔名集合（只查 filename，一趟往返），exists 查集合。
     """
 
-    def __init__(self, version: str, *, has_narratives: bool | None = None):
+    #: 未提供 hint 的哨兵——None 是合法值（＝不歸屬任何 workspace），不能拿它當「沒帶」。
+    _NO_HINT = object()
+
+    def __init__(self, version: str, *, has_narratives: bool | None = None,
+                 workspace_id=_NO_HINT):
         self.name = version
         # list_versions 已用 SQL 聚合算出有無解讀；帶進來讓列表端點不必為一個布林值撈內容。
         self.has_narratives_hint = has_narratives
+        # 同理，workspace 歸屬也由同一趟聚合帶回（2026-08-17）——不逐版讀 meta 小檔。
+        self.workspace_id_hint = workspace_id
         self._cache: dict[str, bytes | None] = {}
         self._filenames: set[str] | None = None
 
@@ -163,7 +171,15 @@ def _db_list_filenames(version: str) -> set:
     """
     from backend.app.db import report_artifact_store
 
-    return report_artifact_store.list_filenames(version)
+    # ⚠ DB 不可用時回空集合，讓呼叫端走「版本不存在 → 404」，不要把連線例外
+    #   往上丟成 500。同層的 `_db_read_artifact` 與 `_list_run_sources` 早就
+    #   這樣做了（「DB 不可用時仍回本機版本，不讓報表頁整個掛掉」），只有這支
+    #   在 3f48b8b 新增時漏了——於是 DB 連不上時 /reports/versions/{v}/content
+    #   會炸而不是 404，而錯誤訊息是 PoolTimeout，看不出是版本不存在。
+    try:
+        return report_artifact_store.list_filenames(version)
+    except Exception:  # noqa: BLE001 - 同 _db_read_artifact：不可用＝視為沒有
+        return set()
 
 
 def _db_read_artifact(version: str, filename: str):
@@ -188,7 +204,14 @@ def _list_run_sources():
         for entry in report_artifact_store.list_versions():
             sources.setdefault(
                 entry["version"],
-                _DbRunSource(entry["version"], has_narratives=bool(entry.get("has_narratives"))),
+                _DbRunSource(
+                    entry["version"],
+                    has_narratives=bool(entry.get("has_narratives")),
+                    # ⚠ 用 `in` 判斷而非 `.get()`：workspace_id 為 None 是**有意義的值**
+                    # （不歸屬任何 workspace），與「這批資料沒帶這個欄位」必須分得開。
+                    workspace_id=(entry["workspace_id"] if "workspace_id" in entry
+                                  else _DbRunSource._NO_HINT),
+                ),
             )
     except Exception:  # noqa: BLE001 - DB 不可用時仍回本機版本，不讓報表頁整個掛掉
         pass
@@ -412,6 +435,11 @@ def _report_content_payload(run_dir):
                         narrative = {"text": entry["text"]}  # v1 相容：單一 text 當所有變體預設
                     if narrative is not None:
                         break
+            # 🔴 2026-08-19：variant 原本不給 `row_count`，前端 `viewSection` 就退回用
+            #    section 的——主題演進 12 列（完整）被標成「目前顯示 12 筆，總計 13 筆」，
+            #    13 其實是**主題表**的列數。那是對讀者說「資料被截斷了」的假訊息，
+            #    而且五個 variant 全中。row_count 與 rows 必須出自同一份清單。
+            variant_rows = variant.get("rows", [])
             variants_out.append({
                 "label": variant.get("label", ""),
                 "variant_key": variant_key,
@@ -421,8 +449,10 @@ def _report_content_payload(run_dir):
                 "chart_url": (asset_base + resolve_web_asset(file_name, run_dir.exists)
                               if run_dir.exists(file_name) else None),
                 "narrative": narrative,
-                "rows": variant.get("rows", []),
-                "column_labels": _column_labels(variant.get("rows", [])),
+                "row_count": len(variant_rows),
+                # 顯示上限與 section 同一條規則：不同步的話「總計 N 筆」會對不上實際被截的量。
+                "rows": _limit_rows_per_source(variant_rows, 20),
+                "column_labels": _column_labels(variant_rows),
                 "thresholds": variant.get("thresholds", {}),
             })
         sections_out.append({
@@ -481,9 +511,16 @@ def _version_workspace_id(source) -> int | None:
     """讀版本歸屬的 workspace_id（version_meta.json，~120B 小檔）。
 
     無 meta（舊版本）或無鍵＝不歸屬任何 workspace → 回 None。
+
+    🔴 DB 來源優先用 `list_versions` 同一趟聚合帶回的 hint（2026-08-17）——
+    逐版讀這個小檔要兩趟往返，48 版就是 96 趟、開頁 4.3 秒。同 `_has_narratives`
+    的作法。本機目錄來源仍直接讀檔（本機 I/O，不是瓶頸）。
     """
     import json as _json
 
+    hint = getattr(source, "workspace_id_hint", _DbRunSource._NO_HINT)
+    if hint is not _DbRunSource._NO_HINT:
+        return hint
     raw = source.read_bytes("version_meta.json")
     if raw is None:
         return None

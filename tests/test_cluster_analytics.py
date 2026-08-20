@@ -318,10 +318,32 @@ class TopicTableWithPatentsTests(unittest.TestCase):
         self.assertNotIn("representative", row)
 
     def test_with_patents_emits_status(self):
-        row = self._rows(self._patents({pid: (2022 if pid > 3 else 2015)
-                                        for pid in range(1, 11)}))[0]
+        """給了 patents 就要有 status 與早期／近期切分。
+
+        ⚠ 2026-08-19 時間窗改為由本批資料推導後，年份要**延伸到接近「本批最新年」
+        之外兩年**，切分才落在有資料的區間——`STATUS_TAIL_EXCLUDED_YEARS` 會把
+        最末兩年當「資料截止效應」剔除。原 fixture 只有 2015／2022 兩個年份，
+        7 件全在最末兩年內而被整批剔除（recent_count 變 0）。
+        那不是 bug，是**推導規則相對「本批最新年」而非「今年」**的已知限制
+        （見 `threshold_basis.STATUS_TAIL_EXCLUDED_YEARS`，標 pending 待裁決）。
+        """
+        years = {pid: (2022 if pid > 3 else 2015) for pid in range(1, 11)}
+        years[99] = 2024          # 讓本批最新年到 2024，末兩年＝2023–2024
+        row = self._rows(self._patents(years))[0]
         self.assertIn("status", row)
-        self.assertEqual(row["recent_count"], 7)
+        self.assertEqual(row["recent_count"], 7, "2022 應落在近期窗（2018–2022）")
+        self.assertEqual(row["early_count"], 3, "2015 應落在早期窗")
+
+    def test_tail_years_are_excluded_from_both_windows(self):
+        """最末兩年不計入任何一窗——這是「資料截止效應」的具體後果。
+
+        ⚠ 反面鎖住：若哪天有人把末端排除拿掉，本測試會紅，
+        而不是讓每個主題悄悄多出一批「近期」件數。
+        """
+        years = {pid: (2024 if pid > 3 else 2015) for pid in range(1, 11)}
+        row = self._rows(self._patents(years))[0]
+        self.assertEqual(row["recent_count"], 0,
+                         "2024 是本批最新年，應被當截止效應剔除")
         self.assertEqual(row["early_count"], 3)
 
     def test_effect_channel_has_no_status_column(self):

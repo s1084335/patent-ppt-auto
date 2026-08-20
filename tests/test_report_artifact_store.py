@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import tempfile
 import unittest
@@ -105,15 +106,35 @@ class ReportArtifactStoreTests(unittest.TestCase):
 
     def test_list_versions_does_not_read_content(self):
         """列版本只取 metadata，不得把 content 撈進來（版本一多也不會慢）。"""
-        pool, cur = _mock_pool(
-            fetchall_returns=[[("report_trial_20260723_120000", True), ("v0", False)]]
-        )
+        # ⚠ 三欄（version／has_narratives／meta）——03dd621「版本清單去 N+1」把
+        #   workspace 歸屬併進同一次查詢，SQL 從兩欄變三欄卻沒同步這裡的假回傳，
+        #   於是 `row[2]` IndexError。假資料的欄數就是契約，少一欄等於契約沒對上。
+        pool, cur = _mock_pool(fetchall_returns=[[
+            ("report_trial_20260723_120000", True, b'{"workspace_id": 3}'),
+            ("v0", False, None),
+        ]])
         with mock.patch.object(report_artifact_store, "get_pool", return_value=pool):
             versions = report_artifact_store.list_versions()
         self.assertEqual(versions[0]["version"], "report_trial_20260723_120000")
         self.assertTrue(versions[0]["has_narratives"])
+        self.assertEqual(versions[0]["workspace_id"], 3)
+        # 沒有 meta 的舊版本＝不歸屬任何 workspace，不得變成 0 或 KeyError
+        self.assertIsNone(versions[1]["workspace_id"])
         sql = cur.execute.call_args.args[0]
-        self.assertNotIn("content", sql.lower().replace("content_", ""))
+        # ⚠ 斷言從「SQL 不准出現 content」收緊成真正的不變量。
+        #   原本是字面禁令，而 03dd621 去 N+1 時要把 version_meta.json（幾百
+        #   bytes）併進同一次查詢——那正是這條規則想達成的「版本一多也不會慢」，
+        #   卻被字面禁令擋下。字面禁令與它想守的東西不是同一件事。
+        #   真正要守的是：**不得撈大檔**（report_data.json／narratives.json 的
+        #   blob）。所以先把「限定 version_meta.json 的那個 content 取用」拿掉，
+        #   再要求剩下的 SQL 完全不碰 content。
+        stripped = re.sub(
+            r"array_agg\(content\)\s*filter\s*\(\s*where\s+filename\s*=\s*"
+            r"'version_meta\.json'\s*\)",
+            "", sql.lower(), flags=re.S)
+        self.assertNotIn(
+            "content", stripped.replace("content_", ""),
+            "除了 version_meta.json 以外還撈了 content——版本一多就會慢")
 
     def test_list_ppt_files_returns_pptx_of_version_without_content(self):
         """列某報表版本下的 .pptx 清單（#10 R10-1）：只回 metadata（filename／byte_size），
@@ -187,8 +208,10 @@ class ReportGenerateHandlerTests(unittest.TestCase):
                 "sections_rendered": ["annual_trend"],
             }
 
-        def _fake_load_cluster(workspace_id, source_field, pain_data=None):
-            # ⚠ 簽名跟隨真函式（2026-07-28 雙通道改版加了第三參數 pain_data）。
+        def _fake_load_cluster(workspace_id, source_field, pain_data=None,
+                               report_scope="company"):
+            # ⚠ 簽名跟隨真函式（2026-07-28 雙通道改版加了第三參數 pain_data；
+            # 2026-08-20 申請人口徑改版加了 report_scope）。
             # 原 2 參數 fake 會 TypeError → _merge_cluster_channels 內部吞掉 →
             # cluster_data 靜默變 None，測試以「參數不合」的姿勢假失敗，
             # 錯誤訊息（None != {...}）與真因完全對不上——昨日 5 個懸案 F 之一。
@@ -343,17 +366,29 @@ class CrossContainerReadTests(unittest.TestCase):
             return files.get(filename)
 
         def _list_versions():
-            return [{"version": self._VERSION, "has_narratives": False}]
+            # workspace_id 要明給：main.py 用 `in` 分辨「不歸屬」與「沒帶這欄」，
+            # 缺鍵會退回逐版讀 version_meta.json。
+            return [{"version": self._VERSION, "has_narratives": False,
+                     "workspace_id": None}]
 
+        def _list_filenames(version):
+            return set(files) if version == self._VERSION else set()
+
+        # ⚠ `list_filenames` 也必須替身化。它是 3f48b8b（content 端點 12 秒修復）
+        #   為了「一次列檔名、不逐檔 exists 往返」新增的，而這個替身沒跟上——
+        #   於是 `_DbRunSource.exists()` 掉去打**真** DB，四條測試各卡 30 秒
+        #   PoolTimeout。⚠ 假替身只補一半比完全沒有更難查：錯誤訊息是連線逾時，
+        #   看起來像環境問題，不像測試替身漏了一個函式。
         return (
             mock.patch.object(main_module.report_artifact_store, "read_file", _read_file),
             mock.patch.object(main_module.report_artifact_store, "list_versions", _list_versions),
+            mock.patch.object(main_module.report_artifact_store, "list_filenames", _list_filenames),
         )
 
     def test_latest_content_reads_from_db_when_filesystem_empty(self):
         """/report-latest/content 在本機無檔時改由 DB 取回，不再 404。"""
-        p1, p2 = self._patched_store()
-        with p1, p2:
+        p1, p2, p3 = self._patched_store()
+        with p1, p2, p3:
             resp = client.get("/api/v1/report-latest/content")
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
@@ -364,8 +399,8 @@ class CrossContainerReadTests(unittest.TestCase):
 
     def test_asset_endpoint_reads_single_file_from_db(self):
         """asset 端點在本機無檔時單檔從 DB 取回（不撈整版）。"""
-        p1, p2 = self._patched_store()
-        with p1, p2:
+        p1, p2, p3 = self._patched_store()
+        with p1, p2, p3:
             resp = client.get(
                 f"/api/v1/report-latest/asset/{self._VERSION}/annual_trend.svg")
         self.assertEqual(resp.status_code, 200)
@@ -373,8 +408,8 @@ class CrossContainerReadTests(unittest.TestCase):
 
     def test_versions_listing_includes_db_versions(self):
         """/reports/versions 列出 DB 內的版本（worker 產的版本 backend 也看得到）。"""
-        p1, p2 = self._patched_store()
-        with p1, p2:
+        p1, p2, p3 = self._patched_store()
+        with p1, p2, p3:
             resp = client.get("/api/v1/reports/versions")
         self.assertEqual(resp.status_code, 200)
         names = [v["version"] for v in resp.json()["versions"]]
@@ -382,8 +417,8 @@ class CrossContainerReadTests(unittest.TestCase):
 
     def test_version_content_endpoint_reads_from_db(self):
         """/reports/versions/{v}/content 同樣走 DB，形狀與 latest 一致。"""
-        p1, p2 = self._patched_store()
-        with p1, p2:
+        p1, p2, p3 = self._patched_store()
+        with p1, p2, p3:
             resp = client.get(f"/api/v1/reports/versions/{self._VERSION}/content")
             latest = client.get("/api/v1/report-latest/content")
         self.assertEqual(resp.status_code, 200)
@@ -391,33 +426,18 @@ class CrossContainerReadTests(unittest.TestCase):
 
     def test_unknown_version_still_404_from_db(self):
         """DB 也沒有的版本仍回 404，不 500。"""
-        p1, p2 = self._patched_store()
-        with p1, p2:
+        p1, p2, p3 = self._patched_store()
+        with p1, p2, p3:
             resp = client.get("/api/v1/reports/versions/report_trial_不存在/content")
         self.assertEqual(resp.status_code, 404)
 
-    def test_ppt_files_endpoint_lists_pptx_with_download_url(self):
-        """#10 R10-1：GET /reports/versions/{v}/ppt-files 回該版本 .pptx 清單，
-        每筆帶 filename／byte_size／download_url（指向既有 /report-latest/ppt 下載端點）。"""
-        def _list_ppt_files(version):
-            if version != self._VERSION:
-                return []
-            return [
-                {"filename": "patent_report.pptx", "byte_size": 1024},
-                {"filename": "patent_report_r2.pptx", "byte_size": 2048},
-            ]
-        with mock.patch.object(main_module.report_artifact_store,
-                               "list_ppt_files", _list_ppt_files):
-            resp = client.get(f"/api/v1/reports/versions/{self._VERSION}/ppt-files")
-        self.assertEqual(resp.status_code, 200)
-        body = resp.json()
-        files = body["ppt_files"]
-        self.assertEqual([f["filename"] for f in files],
-                         ["patent_report.pptx", "patent_report_r2.pptx"])
-        self.assertEqual(files[0]["byte_size"], 1024)
-        # download_url 指向既有 PPT 下載端點，前端可直接用
-        self.assertIn(f"/report-latest/ppt/{self._VERSION}/patent_report.pptx",
-                      files[0]["download_url"])
+    # ⚠ 原 `test_ppt_files_endpoint_lists_pptx_with_download_url`（#10 R10-1）
+    #   於 2026-08-19 移除：它守的 `GET /reports/versions/{v}/ppt-files` 端點
+    #   已隨 2026-08-11 `remove-ppt-delivery-line` 一併刪掉（main.py:575 留有
+    #   移除註記），測試卻沒跟著走，於是永遠 404。守著不存在的端點的測試不會
+    #   保護任何東西，只會讓紅燈變成背景雜訊。
+    #   store 層的 `list_ppt_files` 仍在（見上方 ReportArtifactStoreTests），
+    #   那支測試保留——函式還在就還該有契約。
 
 
 if __name__ == "__main__":

@@ -152,13 +152,10 @@ _WS_PATENTS_SELECT_KEYS = ",\n       ".join(
     )
 )
 
-# keyword 為 NULL 時不過濾；否則對 title／patent_number／applicant_display_name 做 ILIKE
-# （傳入值已包 %）。
+# keyword 為 NULL 時不過濾；否則走 derived_layer.patent_search_terms，避免多值欄位漏查。
 _WS_PATENTS_WHERE = (
-    "WHERE (%(kw)s::text IS NULL "
-    "OR title ILIKE %(kw)s "
-    "OR patent_number ILIKE %(kw)s "
-    "OR applicant_display_name ILIKE %(kw)s)"
+    "WHERE (%(kw_lookup)s::text IS NULL "
+    f"OR {patent_queries.search_terms_exists_sql('ws_patents')})"
 )
 
 _WS_PATENTS_ITEMS_SQL = f"""
@@ -186,6 +183,7 @@ _TOPIC_PATENTS_ITEMS_SQL = f"""
 SELECT {_WS_PATENTS_SELECT_KEYS}
 FROM ws_patents
 WHERE patent_id = ANY(%(pids)s)
+  AND (%(kw_lookup)s::text IS NULL OR {patent_queries.search_terms_exists_sql('ws_patents')})
 ORDER BY patent_id
 LIMIT %(limit)s OFFSET %(offset)s
 """
@@ -195,6 +193,7 @@ _TOPIC_PATENTS_COUNT_SQL = f"""
 SELECT count(*) AS total
 FROM ws_patents
 WHERE patent_id = ANY(%(pids)s)
+  AND (%(kw_lookup)s::text IS NULL OR {patent_queries.search_terms_exists_sql('ws_patents')})
 """
 
 
@@ -339,9 +338,8 @@ def list_workspace_patents(
     keyword 去空白後為空視為不過濾。
     """
     # keyword 去空白；有值才包成 ILIKE pattern，空字串或全空白視為不過濾。
-    cleaned = keyword.strip() if keyword else None
-    kw = f"%{cleaned}%" if cleaned else None
-    params = {"workspace_id": workspace_id, "limit": limit, "offset": offset, "kw": kw}
+    kw_lookup = patent_queries.keyword_lookup_pattern(keyword)
+    params = {"workspace_id": workspace_id, "limit": limit, "offset": offset, "kw_lookup": kw_lookup}
     with get_pool().connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             # 先確認 workspace 存在，才能區分「不存在（404）」與「存在但無符合成員（空清單）」。
@@ -403,6 +401,7 @@ def list_topic_patents(
     patent_ids: list[int],
     limit: int = 50,
     offset: int = 0,
+    keyword: str | None = None,
 ) -> dict[str, Any]:
     """分頁列出指派到某 topic 的專利明細（供分類區點主題後列該主題專利）。
 
@@ -418,6 +417,7 @@ def list_topic_patents(
         "pids": list(patent_ids),
         "limit": limit,
         "offset": offset,
+        "kw_lookup": patent_queries.keyword_lookup_pattern(keyword),
     }
     with get_pool().connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:

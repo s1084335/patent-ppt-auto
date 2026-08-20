@@ -54,8 +54,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SOURCE_FIELD_WIPS_INDEPENDENT_CLAIMS = SOURCE_FIELD_TECHNICAL
 PCA_COMPONENTS = 100
 # 分群文件數下限（2026-07-27 使用者定：50→30）。
-# 實機動因：滑雪機 60 筆專利，但各通道**可用文件數**不足 50——技術（獨立項）40、
-# 功效（效果摘要）49，兩通道都被舊門檻擋下。可用數＜專利數，因為不是每筆都有該欄位。
+#
+# 🔴 2026-08-19 依據改寫。原註解寫的是**觸發場合**不是**理由**：
+# 「實機動因：滑雪機 60 筆專利，但各通道可用文件數不足 50——技術 40、功效 49，
+# 兩通道都被舊門檻擋下」。那說明了為什麼當時要調，沒說明為什麼是 30。
+#
+# 真正的理由可以從本檔內部推導：下方 k 掃描規則規定 30–49 筆掃 `k=(3, 5, 8)`，
+# 而分群品質指標 `model.small_topic_ratio` 以 `min_topic_docs=5` 認定「太小的群」。
+#   最小 k=3 × 每群至少 5 篇 ⇒ **15 筆是絕對下限**
+#   取 30 讓最粗的 k=3 每群約 10 篇 ⇒ 下限的 2 倍
+#
+# ⚠ 本項**不推導**：它決定「這批能不能分群」。由本批推導等於「資料少就把標準
+#   放寬」，而資料少正是分群不可靠的時候——那是循環論證。
 # ⚠ 低於本門檻改由 AI 提主題草稿、使用者定案（罕用備案），不走 BERTopic。
 MIN_CLUSTERING_DOCUMENTS = 30
 CANDIDATE_REFERENCE_PARAMETER_KEY = "_representative_document_references"
@@ -372,14 +382,27 @@ def top_level_k_values(
     return tuple(range(10, maximum_k + 1, 5))
 
 
-def load_clustering_corpus(
-    conn: psycopg.Connection[Any],
-    *,
-    workspace_id: int | None,
-    source_field: str,
-) -> ClusteringCorpus:
-    """從 global 或 workspace 的技術／功效向量表讀取對齊文本與 embedding。"""
+def build_corpus_query(*, source_field: str, workspace_id: int | None):
+    """組出分群語料查詢與參數（抽出來是為了讓排除規則可被測試）。
+
+    🔴 2026-08-20：加入**設計案排除**。原本只有
+    `WHERE NULLIF(BTRIM(source_column), '') IS NOT NULL`——那是拿「有沒有文字」
+    當「是不是技術案」的**代理指標**。
+
+    ⚠ 實測分岔：滑雪機 11 件設計案剛好都沒有獨立項文字，於是代理恰好等價；
+    割草機有 1 件（patent_id 452）帶了獨立項文字，就**漏進技術分群**
+    ——226 件裡技術分群吃到 217 件，而 226−10＝216。
+    ⚠ 分岔完全靜默：不報錯、不警告，只有母體對帳行的數字差 1。
+    而且 `patent_kind.design_exclusion_note` 對外**宣稱**「設計 N 件不列入主題分類」
+    ——對那一件而言那句話是假的。
+
+    ⚠ 排除規則的唯一定義處是 `transforms.patent_kind.DESIGN_DOCUMENT_KINDS`。
+    SQL **不得**自己寫 `'S'`／`'S1'`——散開後改一處另一處不會報錯。
+    故以參數帶入，讓 SQL 消費那個常數而不是複製它。
+    """
     from psycopg import sql
+
+    from backend.app.transforms.patent_kind import DESIGN_DOCUMENT_KINDS
 
     spec = get_source_spec(source_field)
     embedding_schema, embedding_table = spec.embedding_table.split(".", maxsplit=1)
@@ -395,6 +418,8 @@ def load_clustering_corpus(
             JOIN ({ANALYSIS_MEMBER_SUBQUERY}) wp ON wp.patent_id = p.id
         """
         parameters = (workspace_id,)
+    # ⚠ 設計案參數排在 workspace 之後，順序與 SQL 佔位一致
+    parameters = parameters + (sorted(DESIGN_DOCUMENT_KINDS),)
 
     # 顯示號鏈唯一定義處＝transforms.patent_numbers（2026-08-04 治本收斂）。
     # 本查詢走 psycopg sql.SQL 的 {} 佔位，故以字串串接嵌入靜態鏈，不用 f-string。
@@ -421,6 +446,8 @@ def load_clustering_corpus(
             LIMIT 1
         ) e ON true
         WHERE NULLIF(BTRIM(p.{source_column}), '') IS NOT NULL
+          -- 🔴 設計案不入主題分群（規則來自 DESIGN_DOCUMENT_KINDS，以參數帶入）
+          AND UPPER(BTRIM(COALESCE(p.document_kind, ''))) <> ALL(%s)
         ORDER BY p.id
         """
     ).format(
@@ -428,6 +455,18 @@ def load_clustering_corpus(
         workspace_join=sql.SQL(workspace_join),
         embedding_table=sql.Identifier(embedding_schema, embedding_table),
     )
+    return query, parameters
+
+
+def load_clustering_corpus(
+    conn: psycopg.Connection[Any],
+    *,
+    workspace_id: int | None,
+    source_field: str,
+) -> ClusteringCorpus:
+    """從 global 或 workspace 的技術／功效向量表讀取對齊文本與 embedding。"""
+    query, parameters = build_corpus_query(
+        source_field=source_field, workspace_id=workspace_id)
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(query, parameters)
         rows = cur.fetchall()
