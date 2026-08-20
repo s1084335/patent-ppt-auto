@@ -224,15 +224,23 @@ def load_cluster_workspace_data(
     # ⚠ 母體＝**該 workspace 全部專利**，不是有主題指派的那些——布局量要算
     # 設計案等未分群件（2026-08-07 真資料抓到：只取 44 件會讓曾晴少算 1 件、
     # 帝瑪斯少算 2 件，與排名頁 55 件口徑對不上）。主題數則自然只計有指派者。
+    # 🔴 2026-08-20 晚場：申請人名稱改走 scope 換算（原本寫死未歸集團的欄與 VIEW）。
+    # 實測割草機：該表 10 列與**原始名口徑 10/10 相符、與集團口徑僅 6/10**——
+    # 排名頁合併成「創科 44 件」，這裡拆成創科 16／美沃奇 21／Chuang Ke Limited 5。
+    # ⚠ 這是本檔第二個同型缺陷（第一個是 `normalized_applicants`／`top_applicants_ws`，
+    #   同日稍早已修）。修 bug 時要問「這個錯誤假設還有誰也在用」——當時沒問到這裡。
+    # ⚠ alias 回 `applicant_display_name`：下游 `content_blocks.key_player_profiles`
+    #   只認這個欄名，換來源不該連帶改動消費端。
     try:
         cur = conn.cursor()
         cur.execute(
-            'SELECT e.applicant_display_name, e.patent_id, e.application_year, '
+            f'SELECT e."{applicant_col}" AS applicant_display_name, '
+            '       e.patent_id, e.application_year, '
             '       e.country_code, p."WIPS同族ID" AS family_id, p.legal_status, '
             '       p.patent_type, p.document_kind, '
             '       LEFT(NULLIF(BTRIM(p."Orig. IPC(Main)"), \'\'), 4) AS ipc_subclass, '
             '       ta.topic_key '
-            'FROM derived_layer.report_patent_applicant_expanded e '
+            f'FROM {applicant_view} e '
             'JOIN core_layer.patents p ON p.id = e.patent_id '
             'LEFT JOIN LATERAL ('
             '    SELECT ta.topic_key FROM derived_layer.topic_assignments ta '

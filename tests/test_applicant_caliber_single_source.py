@@ -128,6 +128,41 @@ class ApplicantCaliberTests(unittest.TestCase):
         self.assertEqual(result["top_applicants_ws"], ["泉峰"])
 
 
+class StrengthRowsCaliberTests(ApplicantCaliberTests):
+    """🔴 第四個落點：`strength_rows`（Key Players 競爭定位）也要同口徑。
+
+    2026-08-20 晚場實測：該表 10 列與**原始名口徑 10/10 相符**、與集團口徑僅 6/10
+    ——排名頁合併成「創科 44 件」，這裡拆成創科 16／美沃奇 21／Chuang Ke Limited 5。
+
+    ⚠ 這一項是 **AI 解讀自己抓到的**（它在該圖判讀裡寫「比較兩頁前要先對齊口徑」），
+    而當次的全覆蓋數字驗收沒抓到——因為只對三張申請人報表問過「哪一種口徑」。
+    驗值相同不等於驗過口徑。
+    """
+
+    def _strength_sql(self, scope: str) -> str:
+        _, sqls = self._run(scope)
+        hits = [s for s in sqls if "ipc_subclass" in s or "WIPS同族ID" in s]
+        self.assertTrue(hits, f"沒送出 strength_rows 查詢，實際 {len(sqls)} 句")
+        return hits[0]
+
+    def test_group_scope_uses_group_view_and_column(self):
+        sql = self._strength_sql("group")
+        self.assertIn(GROUP_COLUMN, sql, f"strength_rows 仍用未歸集團的名稱：{sql[:200]}")
+        self.assertIn(GROUP_VIEW, sql, f"strength_rows 沒走集團歸戶的來源：{sql[:200]}")
+
+    def test_company_scope_keeps_plain_names(self):
+        sql = self._strength_sql("company")
+        self.assertNotIn(GROUP_COLUMN, sql, f"company scope 卻用集團欄：{sql[:200]}")
+        self.assertIn(PLAIN_COLUMN, sql, sql[:200])
+
+    def test_downstream_column_name_is_unchanged(self):
+        """⚠ 下游 `key_player_profiles` 只認 `applicant_display_name`——
+        換來源欄要 alias 回去，不能連帶改動消費端。"""
+        sql = self._strength_sql("group")
+        self.assertIn("applicant_display_name", sql,
+                      f"沒有 alias 回 applicant_display_name：{sql[:200]}")
+
+
 class ReportScopeThreadingTests(unittest.TestCase):
     """🔴 payload 的 report_scope 必須真的傳到 loader。
 

@@ -107,7 +107,12 @@ class SourceScopeTests(unittest.TestCase):
 
         src = inspect.getsource(cluster_data_loader.load_cluster_workspace_data)
         idx = src.index("四面向的來源列")
-        block = src[idx:idx + 1600]
+        # ⚠ 2026-08-20：原本切固定長度 `src[idx:idx+1600]`。加了幾行註解就會把
+        #   `app_layer.workspaces` 擠出視窗，測試以「來源未圈定 workspace」的姿勢
+        #   假失敗——而該子句一個字都沒動。改用**語意邊界**：切到這個 try 的
+        #   except 為止，視窗就不再隨註解長度漂移。
+        end = src.index("except Exception", idx)
+        block = src[idx:end]
         self.assertIn("app_layer.workspaces", block, "四面向來源未以 workspace 成員圈定")
         self.assertNotIn("ANY(%s)', \n            (source_field, workspace_id, all_patent_ids",
                          block)
