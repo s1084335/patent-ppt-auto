@@ -203,6 +203,7 @@ def handle_clustering_incremental(payload: dict[str, Any], context: JobContext) 
 def _load_report_cluster_data(
     workspace_id: int,
     source_field: str,
+    report_scope: str = "company",
 ) -> dict[str, Any] | None:
     """取該 workspace／通道的分群資料供分群類圖表使用；無主題回 None。
 
@@ -226,7 +227,10 @@ def _load_report_cluster_data(
 
     with psycopg.connect(**get_connection_kwargs(), row_factory=dict_row,
                          connect_timeout=15) as conn:
-        cluster_data = load_cluster_workspace_data(workspace_id, source_field, conn)
+        # 🔴 2026-08-20：scope 必須跟著報表其餘各表走。不傳的話主題表固定用
+        #    未歸集團的申請人名，與同一份報表的排名表口徑不同（見 loader 註解）。
+        cluster_data = load_cluster_workspace_data(
+            workspace_id, source_field, conn, report_scope=report_scope)
     if not cluster_data["topics"]:
         # 尚未分群（或該通道無主題）：分群類圖表沒有輸入，靜默跳過。
         return None
@@ -273,8 +277,12 @@ def _resolve_report_cluster_data(payload: dict[str, Any], context: JobContext) -
         from backend.app.clustering.sources import source_fields
 
         targets = list(source_fields())
+    # ⚠ scope 取自同一個 payload，與 `handle_report_generate` 給 run_chart_trial
+    #   的是同一個值——主題表與排名表口徑一致的唯一保證就在這裡。
+    report_scope = str(payload.get("report_scope") or "company")
     try:
-        return _merge_cluster_channels(int(workspace_id), targets)
+        return _merge_cluster_channels(int(workspace_id), targets,
+                                       report_scope=report_scope)
     except Exception:  # noqa: BLE001 - 分群區塊是輔助，缺了照樣出報表
         LOGGER.exception("report cluster_data load failed: workspace_id=%s", workspace_id)
         return None
@@ -283,6 +291,7 @@ def _resolve_report_cluster_data(payload: dict[str, Any], context: JobContext) -
 def _merge_cluster_channels(
     workspace_id: int,
     source_fields_: list[str],
+    report_scope: str = "company",
 ) -> dict[str, Any] | None:
     """載入多個通道的分群資料並合併成單一 cluster_data；全部無主題時回 None。
 
@@ -295,7 +304,8 @@ def _merge_cluster_channels(
     """
     merged: dict[str, Any] | None = None
     for source_field in source_fields_:
-        part = _load_report_cluster_data(workspace_id, source_field)
+        part = _load_report_cluster_data(workspace_id, source_field,
+                                         report_scope=report_scope)
         if part is None:
             continue
         # ⚠ assignment 的 source_field 已由 _load_report_cluster_data 標記

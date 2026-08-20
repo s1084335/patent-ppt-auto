@@ -208,8 +208,10 @@ class ReportGenerateHandlerTests(unittest.TestCase):
                 "sections_rendered": ["annual_trend"],
             }
 
-        def _fake_load_cluster(workspace_id, source_field, pain_data=None):
-            # ⚠ 簽名跟隨真函式（2026-07-28 雙通道改版加了第三參數 pain_data）。
+        def _fake_load_cluster(workspace_id, source_field, pain_data=None,
+                               report_scope="company"):
+            # ⚠ 簽名跟隨真函式（2026-07-28 雙通道改版加了第三參數 pain_data；
+            # 2026-08-20 申請人口徑改版加了 report_scope）。
             # 原 2 參數 fake 會 TypeError → _merge_cluster_channels 內部吞掉 →
             # cluster_data 靜默變 None，測試以「參數不合」的姿勢假失敗，
             # 錯誤訊息（None != {...}）與真因完全對不上——昨日 5 個懸案 F 之一。
