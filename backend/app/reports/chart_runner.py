@@ -4261,13 +4261,20 @@ def _build_applicant_ranking_section(ctx: ChartContext) -> None:
 
 
 def design_strategy_chart_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """各策略型有幾**家**申請人。
+
+    🔴 2026-08-20 更名：欄名原本叫 `patent_count`，但這裡數的是 `strategy_rows`
+    的列數＝申請人家數（一家一列）。`table_display` 把 `patent_count` 顯示成
+    「專利件數」，於是實機出現「技術+設計 4 件」——那 4 家手上的設計案其實
+    共 9 件。⚠ 數字沒錯，錯的是它自稱是什麼；這種缺陷加總與對帳全都會過。
+    """
     counts: dict[str, int] = {}
     for row in rows:
         strategy_type = str(row.get("strategy_type") or "").strip()
         if strategy_type:
             counts[strategy_type] = counts.get(strategy_type, 0) + 1
     return [
-        {"strategy_type": key, "patent_count": value}
+        {"strategy_type": key, "applicant_count": value}
         for key, value in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
 

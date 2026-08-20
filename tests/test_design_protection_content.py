@@ -104,7 +104,9 @@ class DesignProtectionContentTests(unittest.TestCase):
 
         rows = design_strategy_chart_rows(design_protection_strategy(self._rows()))
 
-        self.assertEqual(sum(row["patent_count"] for row in rows), 2)
+        # ⚠ 2026-08-20 更名 patent_count → applicant_count：這裡數的是申請人家數，
+        #   舊欄名會被 table_display 顯示成「專利件數」（見 test_design_strategy_unit_label）。
+        self.assertEqual(sum(row["applicant_count"] for row in rows), 2)
         self.assertFalse(any("pdf" in row or "url" in row for row in rows))
 
 
