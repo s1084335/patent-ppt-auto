@@ -93,16 +93,22 @@ class PopulationCoverageTests(unittest.TestCase):
         self.assertIn("opportunity_quadrant", NON_PATENT_UNIT_REPORTS)
 
     def test_every_report_is_accounted_for(self):
-        """⚠ 每張報表都要落在四類之一：有原因／會重複計數／非件數單位／
-        母體等於總數。沒有第五類——「沒登記」等於「沒人檢查過它的母體對不對」。
+        """⚠ 每張報表都要落在五類之一：有原因／理由由資料算出／會重複計數／
+        非件數單位／母體等於總數。沒有第六類——「沒登記」等於「沒人檢查過
+        它的母體對不對」。
+
+        ⚠ 2026-08-20 加入 `DERIVED_REASON_REPORTS`（理由算出來的）時，是**擴充
+        分類**不是放寬閘門：那類報表仍必須明列，只是理由不寫在查表裡。
         """
         from backend.app.reports.population import (
+            DERIVED_REASON_REPORTS,
             NON_PATENT_UNIT_REPORTS,
             SAME_AS_TOTAL_REPORTS,
         )
 
         classified = (set(POPULATION_REASONS) | set(OVER_COUNTING_REPORTS)
-                      | set(NON_PATENT_UNIT_REPORTS) | set(SAME_AS_TOTAL_REPORTS))
+                      | set(NON_PATENT_UNIT_REPORTS) | set(SAME_AS_TOTAL_REPORTS)
+                      | set(DERIVED_REASON_REPORTS))
         missing = sorted(set(REPORT_DEFINITIONS) - classified)
         self.assertEqual(missing, [], f"這些報表的母體沒有人檢查過：{missing}")
 

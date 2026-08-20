@@ -87,18 +87,24 @@ def design_exclusion_note(rows: list[dict[str, Any]]) -> str:
 
     ⚠ **要同時交代排除誰與為什麼**：只寫「設計 11 件」讀者仍不知道為何被排除。
     ⚠ 沒有設計案時不得硬印一句——那會讓讀者以為有東西被排除了。
+
+    🔴 2026-08-20 改口徑：原本寫「無技術請求項，不列入主題分類」——**那是代理
+    指標不是事實**。實測割草機 10 件設計案中有 1 件（patent_id 452）確實帶獨立項
+    文字，靠「有沒有請求項」判定會把它漏進技術分群（08-19 實機發生）。排除依據
+    已改為 `document_kind`（見模組說明），說明文字跟著改，兩處不得再各說各話。
     """
     count = sum(1 for row in rows if is_design(row))
     if not count:
         return ""
-    return f"設計 {count} 件無技術請求項，不列入主題分類"
+    return f"設計 {count} 件依文獻種類排除，不列入主題分類"
 
 
 def kind_summary(rows: list[dict[str, Any]]) -> str:
     """封面／母體說明用的一句話：總量、分析母體、設計案三個數字講完。
 
-    分析母體＝總量 − 設計案：設計專利法律上沒有技術請求項，兩個分群通道
-    本來就收不到它們（無獨立項、無效果摘要），此處只是把既成事實寫出來。
+    分析母體＝總量 − 設計案：主題分群依 `DESIGN_DOCUMENT_KINDS` 明確排除設計案。
+    ⚠ 2026-08-20 修正原說法（「本來就收不到它們——無獨立項、無效果摘要」）：
+      那是**推測不是機制**，且已被實測推翻（有設計案帶獨立項文字）。
     """
     total = len(rows)
     designs = sum(1 for row in rows if is_design(row))

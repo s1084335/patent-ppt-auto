@@ -96,7 +96,11 @@ class KindTallyTests(unittest.TestCase):
         note = design_exclusion_note(self._rows())
         self.assertIn("11", note)
         self.assertIn("設計", note)
-        self.assertIn("技術請求項", note, "只寫件數不寫原因，讀者仍不知道為何被排除")
+        # ⚠ 2026-08-20 改判準：原本要求出現「技術請求項」——但那是**代理指標**，
+        #   實測有設計案帶獨立項文字，排除依據已改為 document_kind。
+        #   判準本身不變（要交代為什麼），變的是正確的理由。
+        self.assertIn("文獻種類", note, "只寫件數不寫原因，讀者仍不知道為何被排除")
+        self.assertNotIn("技術請求項", note, "仍以有無請求項當排除依據")
 
     def test_no_note_when_no_design_patents(self):
         """⚠ 沒有設計案時不得硬印一句——那會讓讀者以為有東西被排除。"""

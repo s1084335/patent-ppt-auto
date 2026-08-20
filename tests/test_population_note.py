@@ -251,10 +251,23 @@ class ChannelSplitPopulationTests(unittest.TestCase):
 
         技術 35/55 → 少 20 件；功效 44/55 → 少 11 件。
         合併算法會得出 79 > 55 而完全不印理由。
+
+        ⚠ 2026-08-20 改判準：本 fixture 沒有 `design_protection_detail`，
+        設計案件數判不出來，故**只驗數字、不驗理由**——理由的正確性改由
+        `test_population_reason_accuracy.py` 以帶種類資料的 fixture 驗。
+        原本這裡斷言「20 件無分群來源文本」，那句話本身就是後來查出的錯誤歸因。
         """
         notes = self._notes(self._reports())
-        self.assertIn("20 件無分群來源文本", notes["cluster_topic_table:tech"])
-        self.assertIn("11 件無分群來源文本", notes["cluster_topic_table:effect"])
+        self.assertTrue(notes["cluster_topic_table:tech"].startswith("母體 35/55 件"),
+                        notes["cluster_topic_table:tech"])
+        self.assertTrue(notes["cluster_topic_table:effect"].startswith("母體 44/55 件"),
+                        notes["cluster_topic_table:effect"])
+
+    def test_no_cause_is_invented_without_kind_data(self):
+        """⚠ 判不出設計案時只印數字——不得沿用任何舊理由。"""
+        notes = self._notes(self._reports())
+        for key in ("cluster_topic_table:tech", "cluster_topic_table:effect"):
+            self.assertNotIn("（", notes[key], f"沒有依據卻編了理由：{notes[key]}")
 
     def test_slug_comes_from_one_definition_point(self):
         """⚠ 通道 slug 只能有一個定義處（`clustering.sources`）。

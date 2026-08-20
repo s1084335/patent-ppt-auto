@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 from backend.app.clustering.sources import SOURCE_SEGMENT_SLUGS
+from backend.app.transforms.patent_kind import is_design
 
 # 專利總數的來源報表。
 # ⚠ 為什麼是申請趨勢：每件專利恰好落在一個申請年，逐年加總即總數；
@@ -37,8 +38,8 @@ POPULATION_REASONS: dict[str, str] = {
     "cpc_main_distribution": "{excluded} 件無 CPC 分類",
     # ⚠ 同族合併後仍是「件」（2026-08-05 單位定案），故與其他頁同句型，不寫「家族 48 個」。
     "family_country_layout": "同族合併後",
-    # 分群兩通道：技術缺無獨立項者、功效缺設計案。
-    "cluster_topic_table": "{excluded} 件無分群來源文本",
+    # ⚠ `cluster_topic_table` 不放在這張表：它的理由要看設計案件數才寫得出來，
+    #   走 `_cluster_reason()`（見該函式說明）。
     # ⚠ 2026-08-09 補：未授權公告的專利沒有公告年，母體**必然**小於總數。
     # 先前沒登記，讀者看到「母體 40/55 件」只會認為資料錯誤——那正是本模組
     # 當初要解決的問題本身。
@@ -49,12 +50,26 @@ POPULATION_REASONS: dict[str, str] = {
 #: 單位不是「件」的報表。
 #: ⚠ 機會四象限的一個點是**一個主題**不是一件專利——沿用件數句型會產出
 #: 「母體 7/55 件」這種語意錯誤的註記。這類報表不套用專利母體對帳。
+#
+# 🔴 2026-08-20：設計保護策略區的分析對象是**外觀設計案**，母體＝設計案件數。
+# 原本理由文字沒問題，但**數字是 0**——該報表一列一件專利、沒有 `patent_count`
+# 欄，`_sum_patent_count` 找不到就回 0，於是印出「母體 0/226 件」而該區實際
+# 顯示 5 家申請人、10 件設計案。讀者看到 0 只會認為整區壞了。
 POPULATION_REASONS["design_protection_detail"] = (
-    "外觀策略只覆蓋可判定申請人與文獻種類的外觀/技術交叉資料"
+    "全部外觀設計案；技術案僅作同申請人交叉比對"
 )
 
 NON_PATENT_UNIT_REPORTS = frozenset({
     "opportunity_quadrant",
+})
+
+#: 理由**算出來**而不是查表的報表（2026-08-20）。
+#: ⚠ 必須明列：涵蓋率閘門（`test_every_report_is_accounted_for`）要能認得它們，
+#:   否則移出 `POPULATION_REASONS` 就會被判成「沒人檢查過母體」。
+#:   登記在這裡＝「有理由，只是要看資料才寫得出來」，不是「不用理由」。
+DERIVED_REASON_REPORTS = frozenset({
+    # 排除的是設計案（規則）還是缺文本（資料），要看設計案件數才分得出來。
+    "cluster_topic_table",
 })
 
 #: 母體恆等於專利總數的報表（每件專利都會落進去，不需要理由）。
@@ -99,21 +114,77 @@ def _sum_patent_count(rows: list[dict[str, Any]]) -> int:
     return total
 
 
-def population_note(report_key: str, rows: list[dict[str, Any]], total: int) -> str:
+def _count_design_rows(rows: list[dict[str, Any]]) -> int:
+    """rows 中的外觀設計件數。判定走 `transforms/patent_kind` 唯一入口。"""
+    return sum(1 for row in rows if is_design(row))
+
+
+#: 母體算法**不是**「rows 的 patent_count 加總」的報表（唯一定義處）。
+#: ⚠ 只列真的需要的，不做成通用 fallback——「沒有 patent_count 就數列數」會讓
+#:   日後任何忘了帶件數欄的報表靜默得到一個看似合理的母體。
+COVERED_COUNTERS = {
+    # 分析對象是設計案本身；rows 是全部專利的明細，供交叉比對用。
+    "design_protection_detail": _count_design_rows,
+}
+
+
+def _covered(report_key: str, rows: list[dict[str, Any]]) -> int:
+    counter = COVERED_COUNTERS.get(report_key)
+    return counter(rows) if counter else _sum_patent_count(rows)
+
+
+def _cluster_reason(excluded: int, design_count: int | None) -> str:
+    """分群母體的排除理由。
+
+    🔴 2026-08-20：原本固定寫「{excluded} 件無分群來源文本」——**數字對、理由錯**。
+    技術通道的排除規則早已改成依 `DESIGN_DOCUMENT_KINDS` 擋設計案，與有沒有文本
+    無關；實測 10 件設計案中有 1 件確實帶獨立項文字（patent_id 452），先前正是
+    靠「有沒有文本」這個代理指標把它漏進技術分群。理由留著舊說法，下次有人依它
+    判斷「補上文本就能進分群」就會做錯事。
+
+    ⚠ 判不出設計案件數（該報表不在本次選取範圍）時回空字串——**不得沿用舊理由**。
+    錯的理由比沒有理由更糟：沒有理由讀者會去問，錯的理由讀者會直接相信。
+    """
+    if design_count is None:
+        return ""
+    if excluded == design_count:
+        return f"排除外觀設計 {design_count}，不列入主題分群"
+    if excluded > design_count:
+        rest = excluded - design_count
+        return f"排除外觀設計 {design_count}，另 {rest} 件無分群來源文本"
+    # 排除數少於設計案數：機制與資料不一致，此處不編故事，交由數字自己說話。
+    return ""
+
+
+def population_note(report_key: str, rows: list[dict[str, Any]], total: int,
+                    *, design_count: int | None = None) -> str:
     """組「母體 X/Y 件（原因）」。總數未知時回空字串。
 
     🔴 母體＝總數時**也要印**：省略會讓讀者無從分辨「這頁是全量」與「這頁忘了標」。
+
+    design_count : int | None
+        本批外觀設計件數，供分群報表寫出正確的排除理由；拿不到就不編理由。
     """
     if total <= 0:
         return ""
-    covered = _sum_patent_count(rows)
+    covered = _covered(report_key, rows)
     head = f"母體 {covered}/{total} 件"
 
     if report_key in OVER_COUNTING_REPORTS:
         return f"{head}（{OVER_COUNTING_NOTE}）"
 
+    if covered >= total:
+        return head
+
+    # ⚠ 條件是「理由要算」（`DERIVED_REASON_REPORTS`）而不是「分通道」
+    #   （`CHANNEL_SPLIT_REPORTS`）——兩者恰好有交集，但語意不同：`opportunity_quadrant`
+    #   也是分通道，卻沿用原本的「只印數字」，不在本次改動範圍內。
+    if report_key in DERIVED_REASON_REPORTS:
+        reason = _cluster_reason(total - covered, design_count)
+        return f"{head}（{reason}）" if reason else head
+
     template = POPULATION_REASONS.get(report_key)
-    if not template or covered >= total:
+    if not template:
         return head
     return f"{head}（{template.format(excluded=total - covered)}）"
 
@@ -127,7 +198,20 @@ CHANNEL_SPLIT_REPORTS = frozenset({"cluster_topic_table", "opportunity_quadrant"
 CHANNEL_FIELD = "source_field"
 
 
-def _channel_notes(report_key: str, rows: list[dict[str, Any]], total: int) -> dict[str, str]:
+#: 設計案件數的來源報表——它的 rows 帶 `document_kind`，是唯一判得出來的地方。
+DESIGN_KIND_SOURCE_REPORT = "design_protection_detail"
+
+
+def _design_count(reports: dict[str, Any]) -> int | None:
+    """本批外觀設計件數；判不出來回 None（呼叫端據此不編理由）。"""
+    rows = ((reports.get(DESIGN_KIND_SOURCE_REPORT) or {}).get("rows")) or []
+    if not rows:
+        return None
+    return _count_design_rows(rows)
+
+
+def _channel_notes(report_key: str, rows: list[dict[str, Any]], total: int,
+                   *, design_count: int | None = None) -> dict[str, str]:
     """把分通道報表拆成 `report_key:slug` 逐通道註記。
 
     ⚠ 只產逐通道鍵、**不產合併鍵**：合併鍵的數字是錯的，寧可讓消費端拿不到而不印，
@@ -141,7 +225,8 @@ def _channel_notes(report_key: str, rows: list[dict[str, Any]], total: int) -> d
     return {
         f"{report_key}:{slug}": note
         for slug, channel_rows in by_channel.items()
-        if (note := population_note(report_key, channel_rows, total))
+        if (note := population_note(report_key, channel_rows, total,
+                                    design_count=design_count))
     }
 
 
@@ -160,13 +245,16 @@ def population_notes(reports: dict[str, Any]) -> dict[str, str]:
         ((reports.get(TOTAL_SOURCE_REPORT) or {}).get("rows")) or [])
     if total <= 0:
         return {}
+    # 設計案件數算一次、兩個分群報表共用——各自算等於同一份知識兩個落點。
+    design_count = _design_count(reports)
     notes: dict[str, str] = {}
     for name, report in reports.items():
         rows = report.get("rows") or []
         if name in CHANNEL_SPLIT_REPORTS:
-            notes.update(_channel_notes(name, rows, total))
+            notes.update(_channel_notes(name, rows, total,
+                                        design_count=design_count))
             continue
-        if note := population_note(name, rows, total):
+        if note := population_note(name, rows, total, design_count=design_count):
             notes[name] = note
     return notes
 
