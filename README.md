@@ -7,8 +7,9 @@
             → 產製報表（圖＋數據表）→ AI 解讀每張圖 → 匯出自包單檔 HTML
 ```
 
-> **交付物就是那份 HTML。** PPT 交付線已於 2026-08-20 停產，
-> 前端「匯出報告」工作台整塊移除，殘餘文件見 `archive/deprecated/ppt-delivery-line/`。
+> **交付物就是那份 HTML。** 簡報線已全面停產（2026-08-20 定案）：
+> 舊 PPT 線見 `archive/deprecated/ppt-delivery-line/`、後起的 deck 線見
+> `archive/deprecated/deck-delivery-line/`；前端「匯出報告」頁與工作台整塊移除。
 > **HTML 的版面正在重新設計中**——目前的樣式是工程過渡版，不是最終外觀。
 
 ---
