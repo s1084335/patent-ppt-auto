@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
@@ -5576,8 +5576,8 @@ const JOB_REFRESH_TARGETS = {
   // job_id 去重，由 fetchTasks 觸發；updateTaskFromEvent 終結時本來就 fetchTasks）
   // ——不重複接第二條刷新線。
   'ai:narrative': [],
-  // 簡報產製：完成／失敗都刷新匯出頁的 deck 紀錄（design §6：落點改頁後刷新目標跟著改）。
-  'ai:report_deck': ['deckExports'],
+  // ⚠ 2026-08-21 移除 'ai:report_deck'：該 job type 已隨 deck 交付線退場，
+  //    後端白名單不再接受，前端留著等於掛一條永遠不會觸發的刷新線。
   'embeddings': [],          // 無可見面（供之後的分群消費）
   'ai:company_zh_name': [],  // 草稿區已移除（2026-07-29 使用者定案）
   'ai:company_group_suggestion': ['companyGroups'],
@@ -5595,7 +5595,9 @@ const RESOURCE_REFRESHERS = {
   'reports': { navs: ['reports'], run: refreshReportsArea },
   'workspaces': { navs: null, run: loadWorkspaces },  // 頂列下拉；自恢復上次選定
   'companyGroups': { navs: ['browse'], run: renderCompanyGroupRegistry },
-  'deckExports': { navs: ['export'], run: refreshDeckExports },
+  // ⚠ 2026-08-21 移除 'deckExports'：deck 交付線退場後 refreshDeckExports 已不存在，
+  //    而本物件是 const 字面量、載入時即求值——留著會 ReferenceError 讓**整個前端掛掉**。
+  //    語法檢查抓不到（未定義參照不是語法錯），這種缺陷只有真的開頁面才會現形。
   'companyAliases': { navs: ['browse'], run: renderCompanyCodeRegistry },
 };
 
