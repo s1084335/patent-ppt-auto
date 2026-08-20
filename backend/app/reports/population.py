@@ -1,4 +1,4 @@
-"""母體對帳器（A3，2026-08-06）：算出每張報表的分析母體並組成頁尾註記。
+﻿"""母體對帳器（A3，2026-08-06）：算出每張報表的分析母體並組成頁尾註記。
 
 ## 為什麼要有這一層
 
@@ -39,7 +39,7 @@ POPULATION_REASONS: dict[str, str] = {
     # ⚠ 同族合併後仍是「件」（2026-08-05 單位定案），故與其他頁同句型，不寫「家族 48 個」。
     "family_country_layout": "同族合併後",
     # ⚠ `cluster_topic_table` 不放在這張表：它的理由要看設計案件數才寫得出來，
-    #   走 `_cluster_reason()`（見該函式說明）。
+    #   走 `cluster_exclusion_reason()`（見該函式說明）。
     # ⚠ 2026-08-09 補：未授權公告的專利沒有公告年，母體**必然**小於總數。
     # 先前沒登記，讀者看到「母體 40/55 件」只會認為資料錯誤——那正是本模組
     # 當初要解決的問題本身。
@@ -133,8 +133,13 @@ def _covered(report_key: str, rows: list[dict[str, Any]]) -> int:
     return counter(rows) if counter else _sum_patent_count(rows)
 
 
-def _cluster_reason(excluded: int, design_count: int | None) -> str:
-    """分群母體的排除理由。
+def cluster_exclusion_reason(excluded: int, design_count: int | None) -> str:
+    """分群母體的排除理由。**公開**——HTML 卡片的揭露句也要用同一份。
+
+    🔴 2026-08-20 晚場：原本是私有的 `_cluster_reason`，只服務頁尾註記（deck 消費）。
+    但 HTML 報表**不讀 population**，它顯示的是 `chart_runner` 自己拼的另一句話
+    ——同一件事兩種說法，而改到的那一份讀者根本看不到。故改為公開，
+    由 `cluster_section_note()` 與 `population_note()` 共用。
 
     🔴 2026-08-20：原本固定寫「{excluded} 件無分群來源文本」——**數字對、理由錯**。
     技術通道的排除規則早已改成依 `DESIGN_DOCUMENT_KINDS` 擋設計案，與有沒有文本
@@ -154,6 +159,28 @@ def _cluster_reason(excluded: int, design_count: int | None) -> str:
         return f"排除外觀設計 {design_count}，另 {rest} 件無分群來源文本"
     # 排除數少於設計案數：機制與資料不一致，此處不編故事，交由數字自己說話。
     return ""
+
+
+def cluster_section_note(clustered: int, total: int,
+                         design_count: int | None) -> str:
+    """分群卡片的母體揭露句（**HTML 報表讀者看到的就是這一句**）。
+
+    🔴 2026-08-20 晚場：這句話原本寫死在 `chart_runner`，內容是被推翻的代理指標
+    說法「無獨立項文字者（如設計案）不進分群」。實測使用者匯出的 HTML：
+    `population` 產的頁尾註記**一次都沒出現**（那份只給 deck 用），
+    出現的是 chart_runner 那句——所以先前把 `population` 與 `patent_kind`
+    兩處理由改對，對 HTML 讀者一個字都沒變。
+
+    ⚠ 本模組 docstring 自陳「母體數字與排除原因只在這裡算一次」；那條規則先前
+    只兌現了一半（頁尾算了、卡片沒有）。此函式把卡片那半也收進來。
+
+    母體等於總數時回空字串——沒有東西被排除，硬印一句會讓讀者以為有。
+    """
+    if not clustered or not total or clustered == total:
+        return ""
+    head = f" ⚠ 本表母體為分群涵蓋的 {clustered} 件（workspace 共 {total} 件）"
+    reason = cluster_exclusion_reason(total - clustered, design_count)
+    return f"{head}；{reason}，故與封面件數不同。" if reason else f"{head}。"
 
 
 def population_note(report_key: str, rows: list[dict[str, Any]], total: int,
@@ -180,7 +207,7 @@ def population_note(report_key: str, rows: list[dict[str, Any]], total: int,
     #   （`CHANNEL_SPLIT_REPORTS`）——兩者恰好有交集，但語意不同：`opportunity_quadrant`
     #   也是分通道，卻沿用原本的「只印數字」，不在本次改動範圍內。
     if report_key in DERIVED_REASON_REPORTS:
-        reason = _cluster_reason(total - covered, design_count)
+        reason = cluster_exclusion_reason(total - covered, design_count)
         return f"{head}（{reason}）" if reason else head
 
     template = POPULATION_REASONS.get(report_key)
@@ -274,3 +301,4 @@ def compose_footnote(population: str, *, sources: str, period: str) -> str:
     parts.append(f"來源：{sources}" if sources else "來源：本次報表版本")
     parts.append(f"期間 {period}" if period else "期間 未標示")
     return "｜".join(parts)
+

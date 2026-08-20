@@ -18,7 +18,8 @@ from backend.app.reports.cluster_analytics import (
     build_opportunity_matrix,
     build_topic_effect_table,
 )
-from backend.app.reports.population import population_notes
+from backend.app.reports.population import cluster_section_note, population_notes
+from backend.app.transforms.patent_kind import KIND_DESIGN
 from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 from backend.app.reports.report_engine import parse_json_arg, run_report
 
@@ -3963,6 +3964,9 @@ class ChartContext:
     # 消費端無從發現。
     cluster_reports: dict[str, dict[str, Any]] = field(default_factory=dict)
     _report_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # ⚠ 與 `_report_cache` 分開：那一份會整包進 report_data["reports"]，
+    #   不是報表的東西不能混進去（見 `design_count()`）。
+    _kind_cache: dict[str, int] = field(default_factory=dict)
 
     def report(self, name: str) -> dict[str, Any]:
         """取報表結果（有快取），filters／快照與數據端 run_reports_batch 同口徑。
@@ -3984,6 +3988,24 @@ class ChartContext:
     def fetched_reports(self) -> dict[str, dict[str, Any]]:
         """本次實際查過的報表結果（report_data.json 落檔用）。"""
         return dict(self._report_cache)
+
+    def design_count(self) -> int | None:
+        """本批外觀設計件數；判不出來回 None。**同一次產製只查一次 DB。**
+
+        分群卡片的揭露句要它。判定走 `transforms/patent_kind` 唯一入口，
+        不在此自行比對欄位。
+
+        ⚠ 用獨立的 `_kind_cache` 而**不是** `_report_cache`：後者會被
+        `fetched_reports()` 整包倒進 `report_data["reports"]`，再依
+        `REPORT_DEFINITIONS[name]` 分流——塞一個不是報表的鍵進去會直接 KeyError。
+        """
+        if self.patent_ids is None:
+            return None
+        if "design" not in self._kind_cache:
+            tally = (fetch_patent_kind_summary(patent_ids=self.patent_ids)
+                     or {}).get("tally") or {}
+            self._kind_cache["design"] = int(tally.get(KIND_DESIGN, 0))
+        return self._kind_cache["design"]
 
 
 def _build_trend_section(ctx: ChartContext) -> None:
@@ -5314,10 +5336,13 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     if backfill_n:
         note += f" 其中 {backfill_n} 件為 AI 建議、人工核准之補分指派。"
     # 🔴 母體揭露（2026-08-18，§7e.5）：本表的分母是**分群母體**，不是封面的件數。
-    #    外觀設計案沒有獨立項文字，分不了群——實測滑雪機 workspace 55 件、
-    #    分群指派只有 44 件。不講出來的話，讀者看到封面 55、這裡 44 只會覺得數字錯，
-    #    而真相是「11 件被排除」從來沒有人說。
-    #    ⚠ 這裡只負責**揭露**；「為什麼排除、要不要改」是 deepen §3 的事。
+    #    實測滑雪機 workspace 55 件、分群指派只有 44 件。不講出來的話，
+    #    讀者看到封面 55、這裡 44 只會覺得數字錯，而真相是「11 件被排除」沒人說。
+    #
+    # 🔴 2026-08-20 晚場：句子本身**改由 population 產生**，本處只提供數字。
+    #    原本這裡寫死「無獨立項文字者（如設計案）不進分群」——那是已被推翻的
+    #    代理指標（實測有設計案帶獨立項文字），而且它才是 HTML 讀者實際看到的
+    #    那一句；先前只改了 population 與 patent_kind，讀者一個字都沒變。
     clustered_ids = {
         int(a["patent_id"]) for a in (data.get("assignments") or [])
         if isinstance(a, dict) and a.get("patent_id") is not None
@@ -5326,10 +5351,8 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     #   是 dataclass、`patent_ids` 必有此欄，不會靜默少掉這段揭露。
     ctx_patent_ids = getattr(ctx, "patent_ids", None)
     cover_total = len(ctx_patent_ids) if ctx_patent_ids is not None else None
-    if clustered_ids and cover_total and len(clustered_ids) != cover_total:
-        note += (f" ⚠ 本表母體為分群涵蓋的 {len(clustered_ids)} 件"
-                 f"（workspace 共 {cover_total} 件）；"
-                 "無獨立項文字者（如設計案）不進分群，故與封面件數不同。")
+    _design_n = ctx.design_count() if hasattr(ctx, "design_count") else None
+    note += cluster_section_note(len(clustered_ids), cover_total or 0, _design_n)
     # 顯示規格（2026-07-21 二次修正）：板狀佈局完成，象限圖回歸 index——
     # cluster 卡片＝主題統計表＋各來源機會矩陣 tabs。
     ctx.sections.append({
