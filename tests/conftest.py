@@ -22,8 +22,8 @@ from urllib.parse import quote
 def _local_test_database_url() -> str:
     """組出本機測試庫連線字串（與各測試檔 _kw() 預設同一組參數）。
 
-    ⚠ 帳密必須 percent-encode：實測 `PGPASSWORD=Rexon@001` 組出
-    `postgresql://postgres:Rexon@001@127.0.0.1:5433/...`，第一個 `@` 就被當成
+    ⚠ 帳密必須 percent-encode：密碼含 `@` 時（例如 `PGPASSWORD=Pw@001`）組出
+    `postgresql://postgres:Pw@001@127.0.0.1:5433/...`，第一個 `@` 就被當成
     user/host 分隔 → host 變成 `001@127.0.0.1`，測試噴
     `failed to resolve host '001@127.0.0.1'` 並卡到 PoolTimeout 30 秒才失敗
     （錯誤訊息完全看不出是密碼沒轉義，2026-07-30 實測）。

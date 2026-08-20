@@ -38,7 +38,7 @@
 | **Python** | **3.12**（`pyproject` 要求 `>=3.11`；正式容器用 `3.12.13-slim-bookworm`） | 3.13+ 未驗證過，請用 3.12 |
 | **uv** | **0.11.27**（正式容器同版） | 套件管理與執行器；本專案**不用** pip／poetry |
 | **Git** | 任意近版 | |
-| **PostgreSQL** | **18 ＋ pgvector 0.8.5** | Supabase 已內建；自架時用 `pgvector/pgvector:0.8.5-pg18-trixie` |
+| **PostgreSQL** | 連 Supabase 者**不必自己裝**（實測該實例為 **17.6**，pgvector 已內建） | 自架時用 `pgvector/pgvector:0.8.5-pg18-trixie`（PG 18 ＋ pgvector 0.8.5） |
 
 安裝 uv（Windows PowerShell）：
 
@@ -61,8 +61,7 @@ uv --version   # 應顯示 0.11.27 以上
 ### 資料庫以外的外部相依
 
 - **PatentSBERTa 模型權重（405 MB）**：不進版控，worker 第一次啟動時自動下載，
-  來源是本 repo 的 GitHub Release `patentsberta-v1`。
-  ⚠ **這個 repo 是 private**——你必須先被加為 collaborator，否則下載會 404。
+  來源是本 repo 的 GitHub Release `patentsberta-v1`（公開可下載）。
 - **HuggingFace Token**（選用）：只有分群候選說明／主題標籤走 HF router 時需要。
 
 ---
@@ -75,37 +74,51 @@ Supabase 主控台 → 你的專案 → **Connect** → 取 **Transaction pooler
 形如：
 
 ```
-postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require
+postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:<port>/postgres?sslmode=require
 ```
 
-| 欄位 | 值 | 注意 |
+Supabase 有三個連線位址，本專案走 **pooler**：
+
+| 位址 | port | 說明 |
 |---|---|---|
-| host | `aws-0-<region>.pooler.supabase.com` | |
-| port | **6543**（transaction pooler） | 5432 是 direct connection，本專案用 6543 |
-| database | `postgres` | |
-| user | `postgres.<project-ref>` | ⚠ 含專案 ref，不是單純 `postgres` |
-| sslmode | `require` | 必填 |
+| `db.<ref>.supabase.co` | 5432 | direct connection，**本專案不用** |
+| `aws-0-<region>.pooler.supabase.com` | **5432** | **session pooler** |
+| `aws-0-<region>.pooler.supabase.com` | **6543** | transaction pooler |
 
-### 3.2 寫進 `.env`
+⚠ user 是 `postgres.<project-ref>`（含專案 ref），不是單純 `postgres`。`sslmode=require` 必填。
 
-在專案根目錄 `cp .env.example .env`，然後填：
+### 3.2 取得 `.env`
 
-```dotenv
-# 連線字串優先於 PG* 個別變數（見 backend/app/db/connection.py::get_database_url）
-DATABASE_URL=postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require
+**連線設定不放在這個 repo 裡，由專案負責人另外給你一份 `.env`。**
 
-PGHOST=aws-0-<region>.pooler.supabase.com
-PGPORT=6543
-PGDATABASE=postgres
-PGUSER=postgres.<ref>
-PGPASSWORD=<password>
+拿到後放在**專案根目錄**（與 `pyproject.toml` 同層），檔名就叫 `.env`，不要改名、
+不要加副檔名。裡面已經填好可直接使用的值，你不需要自己拼連線字串、也不需要註冊
+Supabase 帳號。
 
-# 必填：守 AI 任務端點的 bearer token。留空會讓 /api/v1/ai-tasks* 一律回 503（fail closed）。
-# 產生方式：python -c "import secrets; print(secrets.token_urlsafe(32))"
-PATENT_API_TOKEN=<隨機長字串>
-```
+該檔包含：
 
-⚠ `.env` **不進版控**（`.gitignore` 已擋）。不要把它 commit 上去。
+| 變數 | 用途 | 沒有會怎樣 |
+|---|---|---|
+| `DATABASE_URL` | Supabase 連線字串（優先於下列 `PG*`） | 什麼都連不上 |
+| `PGHOST`／`PGPORT`／`PGDATABASE`／`PGUSER`／`PGPASSWORD` | 同上的個別欄位，供工具鏈使用 | — |
+| `PATENT_API_TOKEN` | 守 AI 任務端點的 bearer token | `/api/v1/ai-tasks*` 一律回 **503**（fail closed，不是壞掉）；Web UI 的「AI 任務金鑰」欄位要貼同一個值 |
+| `CLUSTERING_LLM_*`／`HF_TOKEN` | 分群候選說明與主題標籤用的 LLM | 分群本身照跑，只是沒有 AI 產的說明文字 |
+| `ANTHROPIC_API_KEY` | 正式切換 Claude 供應商時才用，目前留空 | — |
+
+⚠ **`.env` 絕對不要 commit**（`.gitignore` 已擋，別用 `-f` 硬加）。
+⚠ 值不要加引號；`DATABASE_URL` 結尾 `require` 後不可有空白或換行，
+否則會報 `invalid sslmode value`。
+
+⚠ **這組連的是共用的正式資料庫，不是沙箱。** 匯入／分群會動到真實資料，
+測試性質的操作請先跟專案負責人確認。
+
+#### port 該用 5432 還是 6543？
+
+目前 `.env` 用的是 **6543（transaction pooler）**，日常查詢與報表都正常。
+
+⚠ 但實測記錄指出 **6543 在大量寫入時會斷線**（例如匯入大批專利）。遇到匯入中途斷開，
+把 `DATABASE_URL` 與 `PGPORT` 的 `6543` 改成 **5432（session pooler）** 再試一次。
+兩個 port 的帳號密碼相同，只有連線模式不同。
 
 ### 3.3 兩個會讓你查很久的坑
 
@@ -140,6 +153,9 @@ uv run alembic upgrade head
 54 個 migration，會建出 `raw_layer` / `core_layer` / `derived_layer` / `app_layer` 四層 schema。
 重跑安全（冪等）。
 
+⚠ 這個 Supabase 已經是**跑過的正式庫**，schema 通常已在 head——這一步多半只會顯示
+「已是最新」。它的用途是確認你連得上、且版本對得起來。
+
 ---
 
 ## 四、起一套臨時系統
@@ -151,17 +167,17 @@ git clone https://github.com/s1084335/patent-ppt-auto.git
 cd patent-ppt-auto
 
 uv sync                       # 建 .venv 並依 uv.lock 裝套件（鎖定版本，不會漂）
-copy .env.example .env        # 然後照第三節填 Supabase 連線與 PATENT_API_TOKEN
-uv run alembic upgrade head   # 建 schema
+# 把專案負責人給你的 .env 放進專案根目錄（見 3.2 節）
+uv run alembic upgrade head   # 確認連得上、schema 版本對得起來
 ```
 
 開**三個**終端機（各自常駐，不要關）：
 
 ```powershell
-# 1) backend
+# 1) backend（同時服務 API 與前端頁面）
 uv run python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 
-# 2) worker（匯入／分群／報表）
+# 2) worker（匯入／向量化／分群／產報表）
 uv run python -m backend.app.worker.runner serve --poll-seconds 3 --log-level INFO
 
 # 3) companion（AI 解讀；需要已登入的 Claude Code CLI）
@@ -170,6 +186,12 @@ uv run python -m backend.app.worker.ai_bridge serve --poll-seconds 3 `
 ```
 
 開瀏覽器 → <http://127.0.0.1:8000/>
+
+**前端不需要另外啟動、也沒有建置步驟。** 它是單一 `backend/app/static/index.html`，
+由 backend 直接服務——沒有 npm、沒有 node_modules、沒有 dev server。
+改了檔案重整瀏覽器就看得到。
+
+⚠ 這份前端是**工程過渡版**，版面正在重新設計中，不是最終外觀。
 
 ⚠ worker 第一次啟動會下載 PatentSBERTa（405 MB），需要幾分鐘且需要 repo 存取權。
 
@@ -202,6 +224,7 @@ powershell -ExecutionPolicy Bypass -File scripts\companion_install.ps1
 
 | 檢查 | 怎麼做 | 應該看到 |
 |---|---|---|
+| 連線 | `uv run python -c "import os,psycopg;print(psycopg.connect(os.environ['DATABASE_URL']).execute('select version()').fetchone())"` | `PostgreSQL 17.6 …`（該 Supabase 實例的實測版本） |
 | backend | 開 <http://127.0.0.1:8000/api/v1/ready> | JSON，DB 連線 ok |
 | DB | `uv run alembic current` | 顯示 head revision |
 | worker | 看第 2 個終端機 | 每 3 秒輪詢，無例外堆疊 |
@@ -252,9 +275,10 @@ uv run python scripts/verify_module.py      # 模組驗證
 
 | 事項 | 影響 |
 |---|---|
-| repo 是 **private** | 沒有 collaborator 權限就 clone 不了，模型權重也下載不到 |
-| `PATENT_API_TOKEN` 未填 | AI 任務端點一律 503（刻意 fail closed，不是壞掉） |
-| PatentSBERTa 未就位 | 向量化／分群跑不動；worker 啟動時會自動下載 |
-| `data/raw/` 為空 | 系統起得來但沒有資料，要自己匯入 WIPS 檔 |
+| **沒拿到 `.env`** | 連不上資料庫，什麼都跑不起來。向專案負責人索取（見 3.2） |
+| PatentSBERTa 未就位 | 向量化／分群跑不動；worker 啟動時會自動下載（405 MB，第一次要等幾分鐘） |
+| DB 是**共用正式庫** | 匯入／分群會動到真實資料，不是沙箱 |
+| transaction pooler（6543） | 大量寫入時可能斷線，改用 5432 session pooler |
 | companion 非 Windows | 排程腳本不適用，改手動跑 `ai_bridge serve` |
+| Claude Code CLI 未登入 | 只有 AI 解讀不會動，其餘功能正常 |
 | HTML 版面 | 目前為工程過渡版，正在重新設計 |
