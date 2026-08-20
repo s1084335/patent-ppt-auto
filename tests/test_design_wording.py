@@ -60,7 +60,6 @@ SCOPE = [
     ROOT / "backend/app/reports/report_definitions.py",
     ROOT / "backend/app/static/index.html",
     ROOT / "backend/app/worker/prompts/report-narrative-flow.md",
-    ROOT / "skills/html-report-to-deck/references/narrative.md",
 ]
 
 

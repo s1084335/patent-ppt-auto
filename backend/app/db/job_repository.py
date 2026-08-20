@@ -75,10 +75,9 @@ AI_JOB_TYPES: frozenset[str] = frozenset(
         # c-TF-IDF keywords/分數/主題 label；各筆獨立判讀、不混批。CLI 白名單為空。
         "ai:irrelevant_filter",
         # ⚠ ai:report_ppt 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
-        # 簡報產製（add-deck-delivery-line）：runner 驅動機械步（intake→排頁→fit→
-        # 組版→截圖），CLI 只接撰稿與逐頁目視迴圈；產物落 DECK_ARTIFACT_ROOT，
-        # manifest（相對 key＋SHA-256＋逐輪目視紀錄）隨 job result 落 workflow_outputs。
-        "ai:report_deck",
+        # ⚠ ai:report_deck 已隨 deck 交付線移除（2026-08-20 停產定案，2026-08-21 合併時
+        #   一併清掉 job type、handler 與 API 路由）。整條線封存於
+        #   tag archive/2026-08-20/add-deck-delivery-line。
     }
 )
 

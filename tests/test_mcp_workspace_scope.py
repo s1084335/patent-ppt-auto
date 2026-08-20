@@ -96,46 +96,7 @@ class ScopeEnvTests(unittest.TestCase):
             os.environ.pop(rr.SCOPE_WORKSPACE_ENV, None)
 
 
-class DeckRunnerScopeTests(unittest.TestCase):
-    """deck runner 起 CLI 時要把 workspace scope 掛上 env（版本→workspace 綁定鏈）。"""
-
-    def test_cli_calls_carry_workspace_scope(self):
-        import json
-        from pathlib import Path
-        from tempfile import TemporaryDirectory
-
-        from backend.app.worker import ai_report_deck_runner as deck
-        from tests.test_report_deck_runner import FakeCli, FakeSteps, _write
-
-        tmp = TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        base = Path(tmp.name)
-        root = base / "reports"
-        run_dir = root / "report_trial_20990101_000000"
-        _write(run_dir / "report_data.json", "{}")
-        _write(run_dir / "narratives.json", "{}")   # 已有解讀，不觸發前置
-        # scope 來源＝version_meta.json（workspace_id 的起點；report_meta 是衍生）
-        _write(run_dir / "version_meta.json",
-               json.dumps({"workspace_id": 3, "workspace_name": "滑雪機"}))
-        work = base / "deck_work" / run_dir.name
-
-        seen: list[str | None] = []
-
-        class ScopeProbeCli(FakeCli):
-            def __call__(self, argv, timeout):
-                seen.append(os.environ.get(rr.SCOPE_WORKSPACE_ENV))
-                return super().__call__(argv, timeout)
-
-        deck.run_deck(
-            run_dir.name, root=root, work_root=work.parent,
-            artifact_root=base / "artifacts",
-            step_runner=FakeSteps(work),
-            cli_runner=ScopeProbeCli(work))
-        # 撰稿與目視兩次 CLI 都要帶 scope
-        self.assertEqual(seen, ["3", "3"])
-        # 跑完要還原，不汙染後續 job
-        self.assertIsNone(os.environ.get(rr.SCOPE_WORKSPACE_ENV))
+# ⚠ 2026-08-21：deck 交付線退場，相關落點自本檔移除（封存於 tag archive/2026-08-20/add-deck-delivery-line）。
+#   （原 DeckRunnerScopeTests 驗 deck runner 的 env 掛載）
 
 
-if __name__ == "__main__":
-    unittest.main()

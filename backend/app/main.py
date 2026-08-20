@@ -14,7 +14,6 @@ from backend.app.db import report_artifact_store
 from backend.app.api import (
     ai_tasks,
     clustering,
-    deck_exports,
     company_aliases,
     company_groups,
     comparison,
@@ -48,7 +47,8 @@ app.include_router(patents.router, prefix=settings.API_V1_PREFIX)
 app.include_router(company_groups.router, prefix=settings.API_V1_PREFIX)
 # 公司中文名草稿確認：補上三態流程的「確認」環節（原本產得出草稿但無處確認）。
 app.include_router(company_aliases.router, prefix=settings.API_V1_PREFIX)
-app.include_router(deck_exports.router, prefix=settings.API_V1_PREFIX)
+# ⚠ 2026-08-21：deck_exports 路由隨 deck 交付線退場移除（PPT 停產定案 2026-08-20）。
+#   模組本體封存於 tag archive/2026-08-20/add-deck-delivery-line，要復活從那裡撈。
 
 _STATIC_DIR = settings.PROJECT_ROOT / "backend" / "app" / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")

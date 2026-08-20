@@ -22,10 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 CLI_DOCS = {
-    "SKILL.md": ROOT / "skills/html-report-to-deck/SKILL.md",
-    "narrative.md": ROOT / "skills/html-report-to-deck/references/narrative.md",
-    "content-template.json": (
-        ROOT / "skills/html-report-to-deck/references/content-template.json"),
+    # ⚠ 2026-08-21：deck 交付線退場，相關落點自本檔移除（封存於 tag archive/2026-08-20/add-deck-delivery-line）。
     "report-narrative-flow.md": (
         ROOT / "backend/app/worker/prompts/report-narrative-flow.md"),
     "content_standard.md": ROOT / "backend/app/worker/prompts/content_standard.md",
@@ -64,39 +61,12 @@ class DocsDoNotTeachRetiredThingsTests(unittest.TestCase):
             offences, [],
             "文件仍在教已退場的東西（CLI 會照抄）：\n  " + "\n  ".join(offences))
 
-    def test_change_notes_are_preserved(self):
-        """⚠ 反面：變更說明**不該**被清掉。
-
-        把「roadmap 已移除」一起刪掉，下一個人只會看到一個沒有來歷的空缺，
-        然後在某次重構時「順手加回來」。
-        """
-        skill = CLI_DOCS["SKILL.md"].read_text(encoding="utf-8")
-        self.assertIn("§7d", skill, "SKILL.md 的變更說明被清掉了")
+    # ⚠ 2026-08-21：deck 交付線退場，相關落點自本檔移除（封存於 tag archive/2026-08-20/add-deck-delivery-line）。
+    #   （原 test_change_notes_are_preserved 驗的是已刪的 SKILL.md）
 
 
-class TemplateMatchesLayoutRegistryTests(unittest.TestCase):
-    """§5.6：範本示範的版型必須就是 `LAYOUTS`（§7a.2 的三處同步，這裡再驗一次）。"""
-
-    def test_template_layouts_match_registry(self):
-        import importlib.util
-        import json
-        import sys
-
-        scripts = ROOT / "skills/html-report-to-deck/scripts"
-        if str(scripts) not in sys.path:
-            sys.path.insert(0, str(scripts))
-        spec = importlib.util.spec_from_file_location(
-            "deck_layout", scripts / "deck_layout.py")
-        dl = importlib.util.module_from_spec(spec)
-        sys.modules["deck_layout"] = dl
-        spec.loader.exec_module(dl)
-
-        data = json.loads(CLI_DOCS["content-template.json"].read_text(encoding="utf-8"))
-        shown = {p.get("layout") or "chart" for p in data.get("pages") or []}
-        self.assertEqual(
-            shown, set(dl.LAYOUTS),
-            "範本示範的版型與 LAYOUTS 不一致——CLI 只照抄範本，"
-            "沒示範的版型等於不存在")
+# ⚠ 2026-08-21：deck 交付線退場，相關落點自本檔移除（封存於 tag archive/2026-08-20/add-deck-delivery-line）。
+#   （原 TemplateMatchesLayoutRegistryTests 驗 deck_layout.LAYOUTS）
 
 
 class PromptCoversProducedReportsTests(unittest.TestCase):

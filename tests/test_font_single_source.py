@@ -29,9 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # 掃描範圍：會產出字型宣告的檔案。
 TARGETS = [
     PROJECT_ROOT / "backend" / "app" / "reports" / "chart_runner.py",
-    SCRIPTS / "deck_layout.py",
-    SCRIPTS / "rebuild_chip_chart.py",
-    SCRIPTS / "svg_canvas.py",
+    # ⚠ 2026-08-21：deck 交付線退場，相關落點自本檔移除（封存於 tag archive/2026-08-20/add-deck-delivery-line）。
 ]
 
 
@@ -97,26 +95,8 @@ class NoHardcodedFontTests(unittest.TestCase):
                          f"這些函式產 SVG 卻沒宣告字型：{offenders}")
 
 
-class SkillReadsFromSingleSourceTests(unittest.TestCase):
-    """deck skill 的字型來自 `chart_sizing`，不自己定義。"""
-
-    def test_deck_layout_font_comes_from_chart_sizing(self):
-        code = _code_only(SCRIPTS / "deck_layout.py")
-        self.assertRegex(code, r"from backend\.app\.reports\.chart_sizing import",
-                         "deck_layout 應從唯一定義處取字型")
-        self.assertNotRegex(code, r'^FONT\s*=\s*["\']', "不得自己寫死 FONT")
-
-    def test_runtime_value_matches(self):
-        """實際載入後兩邊的值要相同——只看原始碼會漏掉載入期的覆寫。"""
-        import importlib.util
-
-        from backend.app.reports.chart_sizing import FONT_FAMILY
-
-        spec = importlib.util.spec_from_file_location("dl_font", SCRIPTS / "deck_layout.py")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules["dl_font"] = module
-        spec.loader.exec_module(module)
-        self.assertEqual(module.FONT, FONT_FAMILY)
+# ⚠ 2026-08-21：deck 交付線退場，相關落點自本檔移除（封存於 tag archive/2026-08-20/add-deck-delivery-line）。
+#   （原 SkillReadsFromSingleSourceTests 驗 deck_layout 的字型來源）
 
 
 if __name__ == "__main__":

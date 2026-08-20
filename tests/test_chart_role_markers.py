@@ -111,69 +111,9 @@ class EngineEmitsRoleMarkersTests(unittest.TestCase):
                     f"{role} 出現不只一次，消費端會取到不確定的那個")
 
 
-class ParseUsesRoleNotColorTests(unittest.TestCase):
-    """🔴 本檔的重點：顏色變了，解析仍要對。"""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.mod = _load("rebuild_chip_chart")
-        cls.svg = _quadrant_svg()
-
-    def test_parse_finds_note_and_footer(self):
-        d = self.mod.parse(self.svg)
-        self.assertTrue(d["note"].strip(), "解析不到口徑防呆註")
-        self.assertTrue(d["footer"].strip(), "解析不到 FTO 頁尾")
-
-    def test_parse_survives_recolor(self):
-        """把 SVG 裡所有 #9CA3AF 換掉（＝§6.2 的 deck 換色會做的事）。
-
-        ⚠ 這條就是 §6.2 上線後的實況預演。原實作在這裡會回空字串而不報錯。
-        """
-        before = self.mod.parse(self.svg)
-        recolored = self.svg.replace("#9CA3AF", "#53698B")
-        self.assertNotEqual(recolored, self.svg, "測試素材裡沒有該色，這條沒驗到東西")
-        after = self.mod.parse(recolored)
-        self.assertEqual(
-            after["note"], before["note"],
-            "換色後解析不到註記——顏色被當成語意標記了（換色會靜默吃掉內容）")
-        self.assertEqual(
-            after["footer"], before["footer"],
-            "換色後解析不到頁尾")
-
-    def test_rebuild_output_keeps_role_markers(self):
-        """重排後吐出的 SVG 自己也要帶角色標記。
-
-        ⚠ 只在**讀**的那一端認角色、**寫**的那一端不打，等於把問題往下游推一格：
-        重排過的圖被誰再讀一次，就又回到「猜」。`build` 已經幫 `chart-title`
-        打了標記，note／footer 沒有理由例外。
-
-        ⚠ 這裡**不驗完整往返**（`parse(build(...))`）：`build` 吐的象限方塊
-        與 `parse` 期望的 rect 格式本來就不同——這支腳本的設計是對引擎原圖跑
-        **一次**、就地覆寫，從來不支援讀自己的輸出。要求它往返是我測過頭，
-        會逼出一個沒人需要的相容層。此限制記錄於此，不靜默略過。
-        """
-        rebuilt = self.mod.build(self.mod.parse(self.svg))
-        for role in (NOTE_ROLE, FOOTER_ROLE):
-            with self.subTest(role=role):
-                self.assertIn(
-                    f'data-role="{role}"', rebuilt,
-                    f"重排輸出沒帶 {role} 標記——下游只能靠顏色認")
-
-    def test_no_color_literal_used_as_selector(self):
-        """結構性判準：`parse` 裡不得出現用色值當條件的比對。
-
-        ⚠ 這條是輔助，不是主證據——主證據是上面的換色突變。
-        單獨用它會變成「改個寫法就綠」的字面檢查。
-        """
-        import inspect
-
-        from tests.source_assertions import executable_source
-
-        src = executable_source(inspect.getsource(self.mod.parse))
-        hits = re.findall(r'"#[0-9A-Fa-f]{6}" in ', src)
-        self.assertEqual(
-            hits, [],
-            f"仍用色值當選擇器：{hits}——顏色是樣式，樣式會改；角色才是語意")
+# ⚠ 2026-08-21：deck 交付線退場，相關落點自本檔移除（封存於 tag archive/2026-08-20/add-deck-delivery-line）。
+#   （原 ParseUsesRoleNotColorTests 驗 rebuild_chip_chart／recolor_for_deck；
+#     引擎側「產出 role marker」的覆蓋仍在 EngineEmitsRoleMarkersTests）
 
 
 if __name__ == "__main__":

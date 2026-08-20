@@ -281,41 +281,8 @@ class ChartRunnerConsumesPaletteTests(unittest.TestCase):
         self.assertEqual(chart_runner.COLOR_TEXT, "#00094A")
 
 
-class DeckLayoutConsumesPaletteTests(unittest.TestCase):
-    """deck 側的主文字色也必須來自色票（§6.3b）。"""
-
-    def test_deck_text_comes_from_palette(self):
-        """⚠ `deck_layout.TEXT` 原本自己寫 `RGBColor(0x0B, 0x25, 0x45)`。
-
-        它與 `chart_runner.COLOR_TEXT` 是「改一邊就得改另一邊」的同一份知識
-        （§6.2 的媒介對照表就是在描述這個關係），所以只能有一處。
-        """
-        code = (SKILL_SCRIPTS / "deck_layout.py").read_text(encoding="utf-8")
-        m = re.search(r"^TEXT\s*=\s*(.+)$", code, re.M)
-        self.assertIsNotNone(m, "deck_layout.TEXT 不見了")
-        self.assertNotRegex(
-            m.group(1), r"RGBColor\(\s*0x0B",
-            "deck_layout.TEXT 仍自己寫色值——色票不是唯一定義處")
-
-    def test_deck_text_value_unchanged(self):
-        """⚠ 接色票不得順手改掉值：§6.2 裁決是「都留」，不是收斂成一個。"""
-        import deck_layout
-
-        self.assertEqual(
-            (deck_layout.TEXT[0], deck_layout.TEXT[1], deck_layout.TEXT[2]),
-            (0x0B, 0x25, 0x45),
-            "deck 主文字色被改動了——使用者裁決是兩套都留")
-
-    def test_hex_to_rgbcolor_helper_is_shared(self):
-        """hex → RGBColor 的換算只能有一份（兩份會在大小寫／前綴上分岔）。"""
-        import deck_layout
-
-        self.assertTrue(
-            hasattr(deck_layout, "rgb"),
-            "缺 hex→RGBColor 的共用換算——每個用到的地方各寫一次必然分岔")
-        self.assertEqual(
-            tuple(deck_layout.rgb("#0B2545")), (0x0B, 0x25, 0x45))
+# ⚠ 2026-08-21：deck 交付線退場，相關落點自本檔移除（封存於 tag archive/2026-08-20/add-deck-delivery-line）。
+#   （原 DeckLayoutConsumesPaletteTests：deck 側色票消費與
+#     hex→RGBColor 共用換算，兩者都以 deck_layout 為對象）
 
 
-if __name__ == "__main__":
-    unittest.main()
