@@ -38,6 +38,11 @@ archive/taxonomy-v0/taxonomy/out/
 .tmp_visual/
 # 參考資料（範例報告 PDF/pptx，非 code；22MB 不進 repo）
 docs/reference/報告範例/
+# ⚠ 2026-08-20：上一行只擋未追蹤檔，那批 PDF 早已進版控故 ignore 對它們無效，
+# 已用 git rm --cached 退出版控（本機檔案保留）。連同其餘參考檔一併排除。
+docs/reference/*.pdf
+docs/reference/*.xlsx
+docs/reference/*.docx
 # 匯入/比對抓下的專利資產（執行期產物）
 data/patent_assets/
 # Companion 常駐執行期狀態與輪替日誌（heartbeat、ai_bridge.log）

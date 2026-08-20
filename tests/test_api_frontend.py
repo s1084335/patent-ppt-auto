@@ -69,7 +69,11 @@ class FrontendSkeletonTests(unittest.TestCase):
                 self.assertRegex(self.html, rf'id="{region_id}"')
 
     def test_nav_items_present(self):
-        """左導覽（workspace 內功能）：分類區 / 報表種類 / 匯出報告 / 系統狀態。
+        """左導覽（workspace 內功能）：分類區 / 報表種類 / 系統狀態。
+
+        （🔴 匯出報告於 2026-08-20 使用者定案**整塊移除**：PPT 交付線停產、HTML 為
+        唯一交付物，該工作台整頁圍繞 .pptx 預覽與就地編輯打造。交付物匯出改由報表
+        種類頁版本區的「匯出 HTML 檔」提供，功能未移入其他區塊。）
 
         （分群任務已移除：分群改為匯入後自動背景觸發，使用者不需手動點。）
         （專利總覽於 2026-07-24 移至頂列：它是跨 workspace 的全庫視角，與左導覽的
@@ -80,7 +84,6 @@ class FrontendSkeletonTests(unittest.TestCase):
         for nav_key in (
             "topics",      # 分類區
             "reports",     # 報表種類勾選
-            "export",      # 匯出報告
             "status",      # 系統狀態
         ):
             with self.subTest(nav_key=nav_key):
@@ -579,9 +582,10 @@ class FrontendSkeletonTests(unittest.TestCase):
         nav = re.search(r'<nav id="nav-panel">(.*?)</nav>', self.html, re.S)
         self.assertIsNotNone(nav, "找不到 nav-panel")
         self.assertNotIn('data-nav="patents"', nav.group(1))
-        # ⚠ comparison 於 2026-08-03 收起入口（見 test_comparison_entry_removed），
-        # 故不列入；其餘 workspace 內功能仍須留在左導覽。
-        for nav_key in ("topics", "reports", "export", "status"):
+        # ⚠ comparison 於 2026-08-03 收起入口（見 test_comparison_entry_removed）、
+        # export 於 2026-08-20 整塊移除（見 test_nav_items_present），故均不列入；
+        # 其餘 workspace 內功能仍須留在左導覽。
+        for nav_key in ("topics", "reports", "status"):
             with self.subTest(nav_key=nav_key):
                 self.assertIn(f'data-nav="{nav_key}"', nav.group(1))
 
@@ -725,17 +729,6 @@ class FrontendSkeletonTests(unittest.TestCase):
 
     # ── E. 匯出報告：完整預覽 + 編輯模式 + 匯出 HTML/PDF ──
 
-    def test_export_has_full_report_preview_container(self):
-        """匯出報告＝預覽工作台：有預覽容器與封面區，內容由 report-latest/content 動態載入。"""
-        for needle in (
-            "export-preview",           # 完整報告預覽容器
-            "export-cover",             # 封面區掛點
-            "loadExportPreview",        # 載入結構化報表內容
-            "/report-latest/content",   # 結構化內容端點（一次取回，不逐卡打 API）
-        ):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, self.html)
-
     def test_export_preview_cards_dynamic_not_hardcoded(self):
         """卡片（數據表→圖→解讀三區）由回傳的 sections 動態產生，不寫死報表清單。"""
         for needle in ("exportCardHtml", "sections", "variants", "narrative"):
@@ -755,28 +748,6 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertNotIn("export-edit-toggle", self.html)
         self.assertNotIn('onchange="toggleExportEditMode', self.html)
 
-    def test_export_edit_three_editable_kinds(self):
-        """可編輯三類掛點：解讀文案／封面資訊／自由段落。"""
-        for needle in (
-            "export-narrative-edit",   # 1. 解讀文案就地編輯
-            "saveNarrativeEdit",
-            "export-cover-title",      # 2. 封面標題
-            "export-cover-scope",      # 分析範圍說明
-            "export-cover-date",       # 日期
-            "export-cover-count",      # 專利件數
-            "export-note-block",       # 3. 自由段落／備註
-            "addExportNote",
-            "removeExportNote",
-        ):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, self.html)
-
-    def test_export_edit_keeps_ai_original(self):
-        """AI 原稿不得被覆蓋：人工修改另存欄位，原稿保留可還原。"""
-        for needle in ("ai_original", "manual_text", "resetNarrativeEdit"):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, self.html)
-
     def test_export_html_entry_moved_to_reports_page(self):
         """🔴 契約改版（2026-08-11 使用者：「單頁 HTML 預覽移去報表種類，
         按下去匯出 HTML 檔」）：匯出工作台不再有 btn-export-html 預覽鈕，
@@ -787,109 +758,43 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("data:image/svg+xml", self.html, "匯出檔需內嵌 SVG（自包）")
         self.assertNotIn("confirmExportOutput", self.html, "舊確認框流程應已退場")
 
+    def test_export_workbench_and_ppt_removed(self):
+        """🔴 2026-08-20 使用者定案：PPT 停產、HTML 為唯一交付物，「匯出報告」工作台整塊移除。
+
+        ⚠ 守的是「不得回來」：後端 ai:report_ppt／ppt-files 端點早在 2026-08-10 就拔了，
+        前端卻留著整套打 404 的死碼近十天沒人發現——沒有測試守著就是這個下場。
+        ⚠ 同時守「報表種類頁不受影響」：交付物匯出入口與內嵌報表渲染必須仍在。
+        """
+        for gone in (
+            'data-nav="export"',        # 左導覽入口
+            "renderExport(",            # 工作台主渲染
+            "requestExportPpt",         # 產生 PPT
+            "loadExportPptFiles",       # PPT 版本清單
+            "renderRealPptPreview",     # .pptx 瀏覽器渲染
+            "pptx-renderer",            # vendor 資產
+            "buildExportHtml",          # 工作台版單頁匯出（已由 exportReportHtmlFile 取代）
+            "export-ppt-result",        # 工作台 DOM
+        ):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, self.html, f"匯出工作台殘留：{gone}")
+
+        # 報表種類頁不得被波及：交付物匯出入口與共用渲染函式仍在。
+        for kept in ("exportReportHtmlFile", "匯出 HTML 檔",
+                     "renderReportContentHtml", "readOnlyReportView"):
+            with self.subTest(kept=kept):
+                self.assertIn(kept, self.html, f"報表種類頁被波及：{kept} 不見了")
+
     def test_export_output_is_selfcontained_html_with_print_css(self):
         """匯出單頁 HTML：自包含（圖以 data URI 內嵌）且含 @media print 列印樣式。"""
-        for needle in ("buildExportHtml", "@media print", "data:image/svg+xml", "Blob"):
+        # ⚠ 2026-08-20：入口由已退場的匯出工作台 buildExportHtml 改為報表種類頁的
+        # exportReportHtmlFile；自包（data URI）與列印樣式的要求不變。
+        for needle in ("exportReportHtmlFile", "@media print", "data:image/svg+xml", "Blob"):
             with self.subTest(needle=needle):
                 self.assertIn(needle, self.html)
         # 下載：以 a[download] 觸發，不需後端另存檔。
         self.assertIn("download", self.html)
 
     # ── E2. 匯出報告：輸出 PPT（預覽閘門後送 ai:report_ppt → SSE 回流 → 下載連結） ──
-
-    def test_export_has_output_ppt_button(self):
-        """「產生 PPT」鈕**過渡保留**（2026-08-10 使用者：「按鈕先留」）。
-
-        ⚠ 後端 PPT 端點已隨交付線移除——按下會得到明確的 unsupported task_type
-        錯誤，不是靜默；按鈕何時收斂由使用者決定。
-        單頁 HTML 鈕已移去報表種類頁（見 test_export_html_entry_moved_to_reports_page），
-        不再斷言它在工作台。
-        """
-        for needle in ("btn-export-ppt", "requestExportPpt"):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, self.html)
-
-    def test_export_ppt_sends_ai_report_ppt_task(self):
-        """輸出 PPT＝送 POST /ai-tasks，task_type=ai:report_ppt，帶 report version／workspace_id。
-
-        ⚠ workspace_id 放進 params（to_payload exclude 具名 workspace_id）；
-        報表版本以 based_on_version 帶入（runner 解析報表目錄）。
-        """
-        self.assertIn("ai:report_ppt", self.html)
-        m = re.search(r"function requestExportPpt\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
-        self.assertIsNotNone(m, "找不到 requestExportPpt() 定義")
-        body = m.group(0)
-        self.assertIn("/ai-tasks", body)
-        self.assertIn("ai:report_ppt", body)
-        self.assertIn("params", body)
-        self.assertIn("based_on_version", body)
-
-    def test_export_ppt_preview_gate_not_skipped(self):
-        """預覽閘門不跳過：輸出 PPT 需已有預覽內容（exportPreview.content）才送。"""
-        m = re.search(r"function requestExportPpt\([^)]*\)\s*\{.*?\n\}", self.html, re.S)
-        self.assertIsNotNone(m, "找不到 requestExportPpt() 定義")
-        self.assertIn("exportPreview.content", m.group(0))
-
-    def test_export_ppt_polls_and_shows_download_link(self):
-        """PPT job 完成後（經輪詢／SSE 回流）顯示 .pptx 下載連結（打下載路由）。"""
-        body = self.js_function("pollExportPptJob")
-        self.assertIn("pollExportPptJob", self.html)
-        # 下載連結走 report-latest/ppt 下載路由。
-        self.assertIn("/report-latest/ppt/", body)
-        self.assertIn("loadExportPptFiles(version)", body)
-
-    def test_export_ppt_uses_vendored_real_pptx_renderer(self):
-        """批次二：匯出報告 PPT 預覽必須用 repo 內 vendored renderer，不走 CDN。"""
-        self.assertIn("/static/vendor/pptx-renderer/aiden0z-pptx-renderer.browser.es.js", self.html)
-        self.assertIn("PptxViewer", self.html)
-        self.assertNotIn("unpkg.com/@aiden0z/pptx-renderer", self.html)
-
-    def test_vendored_pptx_renderer_asset_is_served(self):
-        """批次二：repo 內 renderer asset 必須能由 FastAPI static route 取到。"""
-        resp = client.get("/static/vendor/pptx-renderer/aiden0z-pptx-renderer.browser.es.js")
-
-        self.assertEqual(resp.status_code, 200)
-        self.assertIn("PptxViewer", resp.text)
-
-    def test_export_preview_loads_ppt_files_and_renders_latest_pptx(self):
-        """批次二：選報表版本後，從 /ppt-files 取最新 .pptx 並以真實檔案預覽。"""
-        load_body = self.js_function("loadExportPreview")
-        ppt_body = self.js_function("loadExportPptFiles")
-        real_body = self.js_function("renderRealPptPreview")
-
-        self.assertIn("loadExportPptFiles", load_body)
-        self.assertIn("/reports/versions/", ppt_body)
-        self.assertIn("/ppt-files", ppt_body)
-        self.assertIn("renderRealPptPreview", ppt_body)
-        self.assertIn("download_url", real_body)
-
-    def test_export_preview_without_ppt_shows_generate_button(self):
-        """批次二：該版本沒有 PPT 時顯示「請先產生 PPT」與產生按鈕。"""
-        body = self.js_function("renderMissingPptState")
-
-        self.assertIn("請先產生 PPT", body)
-        self.assertIn("btn-generate-ppt", body)
-        self.assertIn("requestExportPpt", body)
-
-    def test_export_ppt_missing_narrative_chains_narrative_before_ppt(self):
-        """按產生 PPT 時，缺 narrative 要先送 ai:narrative，並帶接續旗標。
-
-        🔴 契約變更（R-5，2026-08-05）：接續派 `ai:report_ppt` 由**前端輪詢**改為
-        **worker 端**（`_enqueue_chained_report_ppt`）——原做法在使用者關掉分頁時
-        整條鏈斷在解讀完成，PPT 任務從未建立（實測 #200 後無 #201）。
-        故本測試改為斷言「前端送旗標、且輪詢不再重複派工」；
-        兩邊都派會產生兩個 PPT 任務。
-        """
-        request_body = self.js_function("requestExportPpt")
-        chain_body = self.js_function("runNarrativeThenExportPpt")
-        poll_body = self.js_function("pollNarrativeThenExportPpt")
-
-        self.assertIn("exportReportHasNarratives", request_body)
-        self.assertIn("runNarrativeThenExportPpt", request_body)
-        self.assertIn("ai:narrative", chain_body)
-        self.assertIn("then_export_ppt", chain_body)
-        self.assertIn("pollNarrativeThenExportPpt", chain_body)
-        self.assertNotIn("requestExportPpt({ skipNarrativeCheck: true })", poll_body)
 
     # ── 2026-07-30 起：CSS 模擬版面移除，預覽一律走真實 .pptx 渲染 ──
     # 原本這裡有五支測試斷言「模擬投影片渲染器存在」（loadPptLayout／
@@ -906,13 +811,6 @@ class FrontendSkeletonTests(unittest.TestCase):
                                  f"模擬版面的 {gone} 仍在")
         self.assertNotIn("exportPreview.pptLayout", self.html,
                          "pptLayout state 仍在——前端已不需要版型座標")
-
-    def test_export_preview_renders_content_view(self):
-        """匯出預覽沿用 #export-preview，畫的是內容視圖（與報表種類頁共用）。"""
-        body = self.js_function("renderExportPreview")
-
-        self.assertIn("renderReportContentHtml(exportPreview)", body)
-        self.assertIn("export-preview", self.html)
 
     # ⚠ test_edit_mode_toggles_between_content_and_real_pptx 已移除
     #   （2026-08-11）：編輯模式與 .pptx 預覽皆隨 PPT 交付線退場，
@@ -970,18 +868,6 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("maybeRefreshReportNarratives", task_body)
         self.assertIn("ai:narrative", refresh_body)
         self.assertIn("reloadCurrentReportContentOnly", refresh_body)
-
-    def test_export_ppt_edit_overrides_are_separated(self):
-        """PPT 編輯覆寫必須分 slots/layout_overrides/position_overrides 三個 key。"""
-        default_body = self.js_function("exportEditsDefault")
-        request_body = self.js_function("requestExportPpt")
-
-        for key in ("slots", "layout_overrides", "position_overrides"):
-            with self.subTest(key=key):
-                self.assertIn(key, default_body)
-                self.assertIn(key, request_body)
-        self.assertIn("exportPptApprovalOverrides", self.html)
-        self.assertIn("approval_overrides", request_body)
 
     def test_export_ppt_drag_editing_removed(self):
         """⚠ 拖曳定位（2026-07-29 已定案取消）與模擬版面的就地編輯一併移除。
@@ -1060,10 +946,6 @@ class FrontendSkeletonTests(unittest.TestCase):
         self.assertIn("報表版本", self.html)
         self.assertIn("/report-latest/asset/", self.html)
         self.assertIn('loading="lazy"', self.html)
-
-    def test_inline_report_keeps_export_entry(self):
-        """保留前往匯出報告（編輯/匯出）的入口，讓使用者要編輯時能過去。"""
-        self.assertIn("navTo('export')", self.html)
 
     def test_report_page_auto_loads_latest_on_entry(self):
         """進「報表種類」頁即自動載入既有最新報表（不用先產製、也不重新產製）。

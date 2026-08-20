@@ -19,7 +19,8 @@ dependencies = [
     "psycopg[binary]>=3.2.0",
     "pymupdf>=1.28.0",
     "python-dotenv>=1.1",
-    "python-pptx>=1.0.2",
+    # ⚠ 2026-08-20 移除 python-pptx：PPT 交付線停產、HTML 為唯一交付物，
+    # 全庫已無任何 `import pptx`（實測掃過 backend／scripts／tests）。
     "scikit-learn>=1.9.0",
     "sentence-transformers>=5.6.0",
     "torch>=2.13.0",
