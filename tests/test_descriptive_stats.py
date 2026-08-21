@@ -219,8 +219,61 @@ class SeamGuardTests(unittest.TestCase):
                     "——第三個接縫沒擋住，測試會偷連本機 DB")
 
 
+class PreviewCardTests(unittest.TestCase):
+    """敘述統計在預覽區是**一張可選的卡**，不是黏在趨勢圖上方的常駐區塊。
+
+    使用者 2026-08-21 三句連續修正：
+      「敘述統計在前端預覽單獨放一區塊好了」
+      「我是說敘述統計**單獨一張卡**」
+      「**檢視那裏也要能選**」「也就是**不要再放在趨勢圖那裡**」
+
+    ⇒ 它要成為 `report-view-select` 的一個選項，選中時渲染進 `report-inline-view`
+    （卡片外殼由 `#report-inline-view:not(:empty)` 的 CSS 提供，不必自訂卡片樣式）。
+    """
+
+    def setUp(self):
+        from pathlib import Path
+
+        self.html = Path("backend/app/static/index.html").read_text(encoding="utf-8")
+
+    def test_is_an_option_in_the_view_select(self):
+        """檢視選單要選得到它。"""
+        start = self.html.find("function buildReportViewOptions(")
+        self.assertGreater(start, -1)
+        end = self.html.find("\nfunction ", start + 1)
+        body = self.html[start:end]
+        self.assertIn(
+            "descriptive_stats", body,
+            "buildReportViewOptions 沒有把敘述統計加進選項——檢視選單裡選不到")
+
+    def test_viewer_renders_the_card(self):
+        """選中時 renderReportViewer 要畫得出來。"""
+        start = self.html.find("function renderReportViewer(")
+        self.assertGreater(start, -1)
+        end = self.html.find("\nfunction ", start + 1)
+        body = self.html[start:end]
+        self.assertIn(
+            "descriptive", body.lower(),
+            "renderReportViewer 沒有處理敘述統計選項——選了也畫不出來")
+
+    def test_standalone_block_is_gone(self):
+        """🔴 不得再黏在趨勢圖上方（使用者：不要再放在趨勢圖那裡）。"""
+        self.assertNotIn(
+            'id="report-descriptive-stats"', self.html,
+            "常駐區塊還在——它會出現在趨勢圖卡片上方，看起來像趨勢圖的一部分")
+
+    def test_no_separate_card_css(self):
+        """卡片外殼沿用 #report-inline-view 的既有樣式，不另寫一套。
+
+        ⚠ 另寫一套 = 同一種卡片視覺有兩個定義處，改版時只會改到一邊。
+        """
+        self.assertNotIn(
+            ".descriptive-stats {", self.html,
+            "又自訂了一份卡片樣式——卡片外殼已由 #report-inline-view 提供")
+
+
 class PreviewRenderTests(unittest.TestCase):
-    """前端預覽區塊要真的畫出來（使用者：預覽區塊敘述統計做一下，不用圖）。"""
+    """前端預覽要真的畫出來（使用者：預覽區塊敘述統計做一下，不用圖）。"""
 
     def setUp(self):
         from pathlib import Path
