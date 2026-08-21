@@ -1,4 +1,4 @@
-"""報表版本與 PPT 依 workspace 區隔（2026-07-31 使用者定案）。
+﻿"""報表版本與 PPT 依 workspace 區隔（2026-07-31 使用者定案）。
 
 ## 問題
 
@@ -44,7 +44,8 @@ class VersionMetaWrittenTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(chart_runner, "run_report", self._stub_run_report), \
                  mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict), \
-                 mock.patch.object(chart_runner, "fetch_cover_stats", dict):
+                 mock.patch.object(chart_runner, "fetch_cover_stats", dict), \
+                 mock.patch.object(chart_runner, "fetch_descriptive_stats", dict):
                 result = chart_runner.run_chart_trial(
                     output_dir=Path(tmp), report_names=["application_trend"],
                     workspace_id=7, workspace_name="滑雪機")
@@ -61,7 +62,8 @@ class VersionMetaWrittenTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(chart_runner, "run_report", self._stub_run_report), \
                  mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict), \
-                 mock.patch.object(chart_runner, "fetch_cover_stats", dict):
+                 mock.patch.object(chart_runner, "fetch_cover_stats", dict), \
+                 mock.patch.object(chart_runner, "fetch_descriptive_stats", dict):
                 result = chart_runner.run_chart_trial(
                     output_dir=Path(tmp), report_names=["application_trend"],
                     workspace_id=7, workspace_name="滑雪機")
@@ -74,7 +76,8 @@ class VersionMetaWrittenTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(chart_runner, "run_report", self._stub_run_report), \
                  mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict), \
-                 mock.patch.object(chart_runner, "fetch_cover_stats", dict):
+                 mock.patch.object(chart_runner, "fetch_cover_stats", dict), \
+                 mock.patch.object(chart_runner, "fetch_descriptive_stats", dict):
                 result = chart_runner.run_chart_trial(
                     output_dir=Path(tmp), report_names=["application_trend"])
             meta = json.loads((Path(result["output_dir"]) / "version_meta.json")

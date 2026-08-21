@@ -31,10 +31,11 @@ from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 # 選擇性出圖時本來就可能沒有這份資料）。
 _patent_kind_patcher = None
 _cover_stats_patcher = None
+_descriptive_stats_patcher = None
 
 
 def setUpModule():
-    global _patent_kind_patcher, _cover_stats_patcher
+    global _patent_kind_patcher, _cover_stats_patcher, _descriptive_stats_patcher
     _patent_kind_patcher = mock.patch.object(
         chart_runner, "fetch_patent_kind_summary", dict)
     _patent_kind_patcher.start()
@@ -42,6 +43,11 @@ def setUpModule():
     _cover_stats_patcher = mock.patch.object(
         chart_runner, "fetch_cover_stats", dict)
     _cover_stats_patcher.start()
+    # 2026-08-21：敘述統計（EXP-026）是第三個 DB 接縫。
+    # ⚠ 擋 fetch_cover_stats 擋不住它——它自己另外查狀態分布與年份範圍。
+    _descriptive_stats_patcher = mock.patch.object(
+        chart_runner, "fetch_descriptive_stats", dict)
+    _descriptive_stats_patcher.start()
 
 
 def tearDownModule():
@@ -49,6 +55,8 @@ def tearDownModule():
         _patent_kind_patcher.stop()
     if _cover_stats_patcher is not None:
         _cover_stats_patcher.stop()
+    if _descriptive_stats_patcher is not None:
+        _descriptive_stats_patcher.stop()
 
 
 

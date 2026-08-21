@@ -489,6 +489,13 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 #report-market-row { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-start; margin-top: 0.9rem; }
 #report-market-row > #market-side-by-side:empty,
 #report-market-row > #report-inline-view:empty { display: none; }
+/* 敘述統計（EXP-026）：純數字區塊，無圖表資產。 */
+.descriptive-stats { background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 16px; margin-top: 12px; }
+.descriptive-stats h3 { margin: 0 0 8px; font-size: 16px; }
+.descriptive-stats-grid { display: grid; grid-template-columns: max-content 1fr;
+  gap: 4px 16px; font-size: 14px; }
+.descriptive-stats-grid .k { color: var(--muted); }
 /* 市場側欄：無內容時不占位（:empty 隱藏）；有內容時為較窄的一欄。 */
 #market-side-by-side { display: flex; flex-direction: column; gap: 1rem; align-items: stretch; flex: 1 1 320px; min-width: 0; }
 #market-side-by-side:empty { display: none; }
@@ -4065,6 +4072,8 @@ function renderReports() {
     + '<div id="report-job"></div>'
     // 報表顯示區：市場側摘要（只讀已確認現行版）與專利側報表卡「同一列」左右並排，
     // 對標範例 PPT 第 9 頁版型（非上下分區）。兩者各查各的、確定性組版，AI 不融合。
+    // 敘述統計（EXP-026）：排在報表卡之前——讀者先知道這份資料是什麼，再看圖。
+    + '<div id="report-descriptive-stats"></div>'
     + '<div id="report-market-row">'
     + '<div id="report-inline-view"></div>'
     + '</div>';
@@ -4502,6 +4511,8 @@ function buildReportViewOptions(content) {
 
 function fillReportViewSelect(content) {
   reportViewContent = content;
+  // 敘述統計與檢視選單同一個進入點：content 一到就渲染，不另開載入路徑。
+  renderDescriptiveStats(content);
   const sel = el('report-view-select');
   if (!sel) return;
   reportViewOptions = buildReportViewOptions(content);
@@ -4589,6 +4600,47 @@ async function runNarrative(scopeKey) {
 // R1：單份版面＝左數據、右圖表、下解讀。
 
 // 單份報表：左數據表、右圖表、下解讀（橫跨整寬）。
+// ══════════ 敘述統計（EXP-026）══════════
+// 位置：結論之後、圖表章節之前，回答「這份資料是什麼」——讀者在看第一張圖之前，
+// 先知道涵蓋多少件、哪些類型、什麼年份、還活著多少。
+// ⚠ 使用者 2026-08-21 明示「不用圖」：本區塊是純數字，不引入任何圖表資產。
+// 🔴 數字一律由後端 descriptive_stats 供給，前端**不自行計算**——前端算一份就會
+//    出現「這裡 216、圖上 214」這種不會報錯的不一致（一方產生、一方消費）。
+function renderDescriptiveStatsHtml(stats) {
+  if (!stats || !Object.keys(stats).length) return '';
+  const rows = [];
+  const num = function (v) { return (v === null || v === undefined) ? '—' : v; };
+
+  rows.push(['總件數', num(stats.patent_count)]);
+  rows.push(['家族數', num(stats.family_count)]);
+  rows.push(['受理局數', num(stats.jurisdiction_count)]);
+
+  const yr = stats.year_range || {};
+  rows.push(['申請年範圍',
+    (yr.min === null || yr.min === undefined) ? '—' : (yr.min + '–' + num(yr.max))]);
+
+  const kindPairs = Object.keys(stats.kind_tally || {})
+    .map(function (k) { return k + ' ' + stats.kind_tally[k] + ' 件'; });
+  if (kindPairs.length) rows.push(['專利類型', kindPairs.join('、')]);
+
+  const statusPairs = Object.keys(stats.legal_status_tally || {})
+    .map(function (k) { return k + ' ' + stats.legal_status_tally[k] + ' 件'; });
+  if (statusPairs.length) rows.push(['法律狀態', statusPairs.join('、')]);
+
+  const body = rows.map(function (r) {
+    return '<span class="k">' + escHtml(r[0]) + '</span>'
+      + '<span>' + escHtml(String(r[1])) + '</span>';
+  }).join('');
+  return '<section class="descriptive-stats"><h3>敘述統計</h3>'
+    + '<div class="descriptive-stats-grid">' + body + '</div></section>';
+}
+
+function renderDescriptiveStats(content) {
+  const wrap = el('report-descriptive-stats');
+  if (!wrap) return;
+  wrap.innerHTML = renderDescriptiveStatsHtml(content && content.descriptive_stats);
+}
+
 function renderReportViewer() {
   const wrap = el('report-inline-view');
   const sel = el('report-view-select');

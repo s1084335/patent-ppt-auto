@@ -1,4 +1,4 @@
-"""report_data.parameters 帶 workspace 顯示名稱（P3-2，2026-07-31）。
+﻿"""report_data.parameters 帶 workspace 顯示名稱（P3-2，2026-07-31）。
 
 ## 為什麼
 
@@ -39,7 +39,8 @@ class RunChartTrialWorkspaceNameTests(unittest.TestCase):
             # 本測試寫於 A4 之前漏補 stub，DB 不可達時整個 trial 炸（2026-08-07 補）。
             with mock.patch.object(chart_runner, "run_report", self._stub_run_report), \
                  mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict), \
-                 mock.patch.object(chart_runner, "fetch_cover_stats", dict):
+                 mock.patch.object(chart_runner, "fetch_cover_stats", dict), \
+                 mock.patch.object(chart_runner, "fetch_descriptive_stats", dict):
                 result = chart_runner.run_chart_trial(
                     output_dir=Path(tmp), report_names=["application_trend"],
                     workspace_name="拉繩訓練機")
@@ -52,7 +53,8 @@ class RunChartTrialWorkspaceNameTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(chart_runner, "run_report", self._stub_run_report), \
                  mock.patch.object(chart_runner, "fetch_patent_kind_summary", dict), \
-                 mock.patch.object(chart_runner, "fetch_cover_stats", dict):
+                 mock.patch.object(chart_runner, "fetch_cover_stats", dict), \
+                 mock.patch.object(chart_runner, "fetch_descriptive_stats", dict):
                 result = chart_runner.run_chart_trial(
                     output_dir=Path(tmp), report_names=["application_trend"])
             rd = json.loads((Path(result["output_dir"]) / "report_data.json")
