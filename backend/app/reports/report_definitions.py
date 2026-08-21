@@ -80,6 +80,20 @@ APPLICANT_EXPANDED_TABLE = "derived_layer.report_patent_applicant_expanded"
 #   `legal_status`／`patent_type`／`document_kind`。沒補 `權利要求的項數`——
 #   權利強度已收斂為三維，「權利範圍」該維度已否決。
 
+#: 申請趨勢與授權公告趨勢合併呈現時的章節名稱（使用者 2026-08-21 定案）。
+#:
+#: ⚠ 兩張報表**早就固定同圖**（`chart_runner._build_trend_section`，雙線：申請年／
+#: 授權公告年），但標題原本是 `f'{申請 label_zh}與{公告 label_zh}'` 串出來的
+#: 「專利申請趨勢與專利授權公告趨勢」——「趨勢」出現兩次。
+#:
+#: 🔴 合併名稱屬**報表定義的知識**，落點在本檔而不是 `chart_runner`：後者的註解
+#: 已明訂「標題一律取自報表引擎定義的 label_zh（唯一來源），chart_runner 不自己
+#: 寫標題字串」。在組版層硬寫標題會多一份會漂移的定義。
+#:
+#: ⚠ 兩張報表各自的 `label_zh` 維持不變——它們在勾選清單與單張報表語境下仍要
+#: 各自可辨識，只有「合起來那一張」用本名稱。
+MERGED_TREND_LABEL_ZH = "專利申請與授權公告趨勢"
+
 REPORT_DEFINITIONS: dict[str, ReportDefinition] = {
     "application_trend": ReportDefinition(
         name="application_trend",
