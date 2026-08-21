@@ -3,7 +3,9 @@
 ## Purpose
 
 定義從報表版本、AI 文案槽、deterministic 組版、真實 PPT 預覽到 artifact 下載的現行輸出契約。
+
 ## Requirements
+
 ### Requirement: EXP-001 AI 產內容、程式負責組版
 
 系統 SHALL 只讓 AI 產生受契約約束的敘述／確認槽內容；頁面幾何、字級、圖表放置、數字與 `.pptx` 組裝由 deterministic 程式負責。
@@ -147,3 +149,21 @@
   `backend/app/worker/prompts/` 載入（可用 `REPORT_NARRATIVE_FLOW_PATH` 覆寫）
 - **AND** 不得依賴已移除的 `skills/patent-report-ppt/`
 
+### Requirement: Narrative Evidence Must Be Scoped To Report Workspace
+
+When an AI narrative is generated from a report version that has `parameters.workspace_id`, the system SHALL constrain live database evidence gathering to that workspace.
+
+#### Scenario: CLI receives workspace scope
+
+- **GIVEN** a report version whose `report_data.json` contains `parameters.workspace_id`
+- **WHEN** `ai:narrative` runs the CLI to write narratives
+- **THEN** the report research MCP context SHALL include that workspace id and the report snapshot id for the duration of the CLI run
+- **AND** the scope SHALL be restored after the CLI run completes
+
+#### Scenario: scoped raw SQL is row-level only
+
+- **GIVEN** the narrative CLI is running with a workspace scope
+- **WHEN** it calls `query_database`
+- **THEN** aggregate SQL SHALL be rejected
+- **AND** the query SHALL expose `patent_id` or `id` so results can be filtered
+- **AND** rows outside the workspace patent ids SHALL not be returned
