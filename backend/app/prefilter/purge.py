@@ -89,11 +89,26 @@ def purge_candidates(*, retention_days: int = RETENTION_DAYS,
             GROUP BY patent_id
         ),
         membership AS (
-            -- 展開所有 workspace 的成員名單（jsonb 陣列，無 FK）
+            -- 展開 workspace 的成員名單（jsonb 陣列，無 FK）
+            --
+            -- 🔴 排除全庫（2026-08-21 修）：全庫是**總覽**，依定義收錄所有專利，
+            -- 它的成員身分不是使用者的範圍決策而是自動的。把它算進「還有人在用」
+            -- 的話，`purge_candidates` 會**恆為空**——任何專利都永遠刪不掉。
+            --
+            -- ⚠ 這個 bug 第一版就有，而且看不出來：正式庫 dry-run 回 0 筆，
+            -- 我當成「因為還沒有剔除紀錄」——兩個原因都成立，症狀完全一樣。
+            -- 實測正式庫 281 筆專利**每一筆**都同時屬於全庫與專屬 workspace，
+            -- 所以它必然觸發，無一例外。
+            -- ⚠ 本註解在 SQL 字串內，不得出現裸的百分比符號——psycopg 會把它
+            -- 當成佔位符而 ProgrammingError（寫「100 趴」那版當場炸）。
+            --
+            -- ⚠ 排除的只是「擋刪除」這件事；刪掉後全庫的成員名單**仍要清**
+            -- （見 `_delete_one`），否則會留一個指向不存在專利的孤兒 id。
             SELECT w.workspace_id, (m.value)::bigint AS patent_id
             FROM app_layer.workspaces w
             CROSS JOIN LATERAL jsonb_array_elements(
                 COALESCE(w.patent_ids_json, '[]'::jsonb)) AS m(value)
+            WHERE w.is_global IS NOT TRUE
         ),
         active_member AS (
             -- 仍是「有效成員」＝在該 workspace 的名單上且未被剔除

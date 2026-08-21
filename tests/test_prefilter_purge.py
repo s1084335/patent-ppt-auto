@@ -202,6 +202,73 @@ class PurgeTests(unittest.TestCase):
         ids = [c["patent_id"] for c in purge.purge_candidates(conn=self.conn)]
         self.assertIn(3002, ids)
 
+    def test_global_workspace_does_not_block_purge(self):
+        """🔴 全庫不算「還在用」——否則任何專利都永遠刪不掉。
+
+        全庫是**總覽**，依定義收錄所有專利（`is_global`）。它的成員身分不是
+        使用者的範圍決策，是自動的。把它算進「還有人在用」的話，
+        `purge_candidates` 會恆為空——而症狀是「跑了但沒刪到東西」，
+        看起來像沒有候選，不像壞掉。
+
+        ⚠ 2026-08-21 實測正式庫：281 筆專利每一筆都同時屬於全庫與專屬
+        workspace，所以這個 bug 會 100% 觸發。
+        """
+        from backend.app.prefilter import purge
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_layer.workspaces "
+                "(workspace_id, workspace_name, is_global, patent_ids_json) "
+                "VALUES (899, '全庫', true, %s)", (Jsonb(PATENTS),))
+        self._archive(3003, days_ago=400)
+        ids = [c["patent_id"] for c in purge.purge_candidates(conn=self.conn)]
+        self.assertIn(3003, ids, "全庫的成員身分擋住了刪除——任何專利都刪不掉")
+
+    def test_three_workspaces_all_must_release(self):
+        """🔴 使用者 2026-08-21：「三個以上喔不是兩個」。
+
+        ⚠ 同一筆專利可以同時屬於多個非全庫 workspace（資料模型無任何約束）。
+        只要**還有一個**沒剔除，就不准刪——擋的條件是「全部釋出」不是「多數」。
+        """
+        from backend.app.prefilter import purge
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_layer.workspaces "
+                "(workspace_id, workspace_name, is_global, patent_ids_json) "
+                "VALUES (803, 'C', false, %s)", (Jsonb([3002]),))
+
+        # A、B 都剔除了，C 還在用 → 不准刪
+        self._archive(3002, days_ago=400, workspace_id=WS_A)
+        self._archive(3002, days_ago=400, workspace_id=WS_B)
+        ids = [c["patent_id"] for c in purge.purge_candidates(conn=self.conn)]
+        self.assertNotIn(3002, ids, "只剩一個 workspace 在用就放行了")
+
+        # C 也剔除 → 可以刪
+        self._archive(3002, days_ago=400, workspace_id=803)
+        ids = [c["patent_id"] for c in purge.purge_candidates(conn=self.conn)]
+        self.assertIn(3002, ids)
+
+    def test_purge_also_clears_global_membership(self):
+        """⚠ 全庫不擋刪除，但刪掉後**它的成員名單也要清乾淨**。
+
+        不清的話全庫會留一個指向不存在專利的 id——無 FK 保護，不會報錯。
+        """
+        from backend.app.prefilter import purge
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_layer.workspaces "
+                "(workspace_id, workspace_name, is_global, patent_ids_json) "
+                "VALUES (899, '全庫', true, %s)", (Jsonb(PATENTS),))
+        self._archive(3003, days_ago=400)
+        purge.purge_patents([3003], dry_run=False, conn=self.conn)
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT patent_ids_json FROM app_layer.workspaces "
+                        "WHERE workspace_id = 899")
+            self.assertNotIn(3003, cur.fetchone()[0],
+                             "全庫的成員名單留下了已刪專利的孤兒 id")
+
     # ── F.2 dry-run ─────────────────────────────────────
     def test_dry_run_changes_nothing(self):
         """🔴 dry-run 不得變更任何資料。"""
