@@ -32,8 +32,6 @@
 - **THEN** SHALL 依權責邊界判斷需更新哪幾份文件
 - **AND** 一致性檢查 SHALL 能指出未更新的指引
 
-## MODIFIED Requirements
-
 ### Requirement: 解讀取證的資料來源
 
 解讀端 SHALL 透過報表列提供的內部識別碼自行取證，資料層 SHALL NOT 預先計算

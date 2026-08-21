@@ -62,8 +62,6 @@
 - **THEN** SHALL NOT 顯示家族數欄位
 - **AND** SHALL 於 `chart_rows` 保留家族數供解讀端查用
 
-## MODIFIED Requirements
-
 ### Requirement: 外觀保護策略報表
 
 系統 SHALL 提供 `design_protection_detail` 報表與對應 section，用於輸出
