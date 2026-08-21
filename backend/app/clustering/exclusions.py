@@ -32,6 +32,9 @@ from typing import Any, Iterable, Sequence
 from psycopg.types.json import Jsonb
 
 from backend.app.db.connection import get_pool
+# 🔴 顯示用專利號的唯一定義處——該檔註解記著它曾被複製四份而各自漂移
+# （TW 案顯示西元前綴、M 開頭授權案空白）。消費端一律 import，不自寫 COALESCE。
+from backend.app.transforms.patent_numbers import display_number_sql
 
 
 # 需要使用者裁決的 AI 判讀值（繁體中文，對齊
@@ -338,6 +341,12 @@ def pending_reviews(workspace_id: int, *, conn: Any | None = None) -> list[dict[
 
     ⚠ 另帶 **topic_label（所屬主題）** 與 **patent_note（文獻備註）**
     （2026-07-27 使用者要求）：原本只有 patent_id，光看 ID 判斷不了要保留還是確定。
+
+    ⚠ 2026-08-21 再補 **patent_number（顯示用專利號）** 與 **title**：
+    初階篩選發生在**分群之前**，`topic_label` 對它永遠是 NULL，`patent_note` 也
+    未必產過——那條線要靠標題判斷（關鍵字通常就命中在標題上）。
+    🔴 專利號走 `transforms.patent_numbers.display_number_sql` 唯一定義處：
+    該檔註解記著它曾被複製四份而漂移（TW 案顯示西元前綴、M 開頭授權案空白）。
     - 主題**跨 run 取**（DISTINCT ON 每個 patent 最新一筆）——incremental 只寫新增
       專利的 assignment，只查最新 run 會讓舊專利的主題顯示空白。
     - label 由該通道最新「topics 非空」的 run 的 state 解析（incremental run 無 topics）。
@@ -367,9 +376,16 @@ def pending_reviews(workspace_id: int, *, conn: Any | None = None) -> list[dict[
                     WHERE wr.workspace_id = %(workspace_id)s
                     ORDER BY t.value->>'topic_code', tr.run_id DESC
                 )
+                -- ⚠ 新欄位一律加在**最後**：下方映射是按位置取值
+                --   （row[0..N]），插在中間會讓既有欄位全部位移，
+                --   而症狀是「主題欄顯示成 ai」這種看起來像資料錯的東西。
                 SELECT ex.patent_id, ex.ai_verdict, ex.reason, ex.excluded_at,
                        tl.label   AS topic_label,
-                       p."文獻備註" AS patent_note
+                       p."文獻備註" AS patent_note,
+                       ex.source,
+                       """ + display_number_sql("p") + """ AS patent_number,
+                       p."title"  AS title,
+                       p."country_code" AS country_code
                 FROM derived_layer.workspace_excluded_patents ex
                 LEFT JOIN latest_assign la ON la.patent_id = ex.patent_id
                 LEFT JOIN topic_labels  tl ON tl.topic_code = la.topic_key
@@ -384,18 +400,27 @@ def pending_reviews(workspace_id: int, *, conn: Any | None = None) -> list[dict[
     for row in rows:
         if isinstance(row, dict):
             values = (row["patent_id"], row["ai_verdict"], row["reason"],
-                      row["excluded_at"], row["topic_label"], row["patent_note"])
+                      row["excluded_at"], row["topic_label"], row["patent_note"],
+                      row["source"], row["patent_number"], row["title"],
+                      row["country_code"])
         else:
-            values = (row[0], row[1], row[2], row[3], row[4], row[5])
-        patent_id, verdict, reason, reviewed_at, topic_label, note = values
+            values = tuple(row[i] for i in range(10))
+        (patent_id, verdict, reason, reviewed_at, topic_label, note,
+         source, patent_number, title, country_code) = values
         result.append({
             "patent_id": int(patent_id),
             "ai_verdict": verdict,
             "reason": reason,
             "reviewed_at": reviewed_at,
-            # 供前端逐筆判斷用；尚未分群／備註未產生時為 None，該筆仍列出。
+            # 供前端逐筆判斷用；尚未分群／備註未產生時為 None，該筆仍要列出。
             "topic_label": topic_label,
             "patent_note": note,
+            # 2026-08-21 補：初階篩選發生在分群之前，topic_label 對它永遠是 None、
+            # patent_note 也未必產過——那條線靠標題與專利號判斷。
+            "source": source,
+            "patent_number": patent_number,
+            "title": title,
+            "country_code": country_code,
         })
     return result
 
