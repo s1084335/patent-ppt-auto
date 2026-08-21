@@ -489,10 +489,9 @@ table.data td.cell-wrap, table.data th.cell-wrap {
 #report-market-row { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-start; margin-top: 0.9rem; }
 #report-market-row > #market-side-by-side:empty,
 #report-market-row > #report-inline-view:empty { display: none; }
-/* 敘述統計（EXP-026）：純數字區塊，無圖表資產。 */
-.descriptive-stats { background: var(--panel); border: 1px solid var(--border);
-  border-radius: 8px; padding: 12px 16px; margin-top: 12px; }
-.descriptive-stats h3 { margin: 0 0 8px; font-size: 16px; }
+/* 敘述統計（EXP-026）：純數字卡，渲染進 #report-inline-view。
+   ⚠ 卡片外殼（底色／框線／圓角／內距）由上一條 #report-inline-view:not(:empty)
+   提供，這裡只定義內容排版——另寫一套卡片樣式＝同一種視覺兩個定義處。 */
 .descriptive-stats-grid { display: grid; grid-template-columns: max-content 1fr;
   gap: 4px 16px; font-size: 14px; }
 .descriptive-stats-grid .k { color: var(--muted); }
@@ -4072,8 +4071,6 @@ function renderReports() {
     + '<div id="report-job"></div>'
     // 報表顯示區：市場側摘要（只讀已確認現行版）與專利側報表卡「同一列」左右並排，
     // 對標範例 PPT 第 9 頁版型（非上下分區）。兩者各查各的、確定性組版，AI 不融合。
-    // 敘述統計（EXP-026）：排在報表卡之前——讀者先知道這份資料是什麼，再看圖。
-    + '<div id="report-descriptive-stats"></div>'
     + '<div id="report-market-row">'
     + '<div id="report-inline-view"></div>'
     + '</div>';
@@ -4472,6 +4469,13 @@ function clusterVariantMatchesSource(variant, sourceField) {
 function buildReportViewOptions(content) {
   const sections = (content && content.sections) || [];
   const options = [];
+  // 敘述統計（EXP-026）排第一項：讀者在挑任何一張報表之前，先能看到「這份資料是什麼」。
+  // ⚠ 它不是 section——沒有 sectionIndex、沒有圖、沒有解讀，靠 kind 分派。
+  // 舊版本（本功能上線前產的）沒有這個鍵，回空物件，此時不提供這個選項。
+  if (content && content.descriptive_stats
+      && Object.keys(content.descriptive_stats).length) {
+    options.push({ kind: 'descriptive_stats', label: '敘述統計' });
+  }
   sections.forEach(function (section, sectionIndex) {
     if (isClusterSection(section)) {
       // 2026-08-12 使用者定案：主題分析家族**逐 variant** 攤成五個選項
@@ -4511,8 +4515,6 @@ function buildReportViewOptions(content) {
 
 function fillReportViewSelect(content) {
   reportViewContent = content;
-  // 敘述統計與檢視選單同一個進入點：content 一到就渲染，不另開載入路徑。
-  renderDescriptiveStats(content);
   const sel = el('report-view-select');
   if (!sel) return;
   reportViewOptions = buildReportViewOptions(content);
@@ -4635,12 +4637,6 @@ function renderDescriptiveStatsHtml(stats) {
     + '<div class="descriptive-stats-grid">' + body + '</div></section>';
 }
 
-function renderDescriptiveStats(content) {
-  const wrap = el('report-descriptive-stats');
-  if (!wrap) return;
-  wrap.innerHTML = renderDescriptiveStatsHtml(content && content.descriptive_stats);
-}
-
 function renderReportViewer() {
   const wrap = el('report-inline-view');
   const sel = el('report-view-select');
@@ -4648,6 +4644,13 @@ function renderReportViewer() {
   const sections = (reportViewContent && reportViewContent.sections) || [];
   const idx = parseInt(sel.value, 10);
   const option = reportViewOptions[idx];
+  // 敘述統計卡：不是 section，先分派掉再走報表卡那條路。
+  // ⚠ 卡片外殼由 #report-inline-view:not(:empty) 的 CSS 提供，這裡不另寫一套。
+  if (option && option.kind === 'descriptive_stats') {
+    wrap.innerHTML = renderDescriptiveStatsHtml(
+      reportViewContent && reportViewContent.descriptive_stats);
+    return;
+  }
   if (!sections.length || Number.isNaN(idx) || !option || !sections[option.sectionIndex]) {
     wrap.innerHTML = '';
     return;
