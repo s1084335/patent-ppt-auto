@@ -49,7 +49,18 @@
 ## 7. 組合驗收與交付閘門
 
 - [x] 7.1 跑 OpenSpec strict、新增測試、受影響 company/AI bridge/derived/SSE/frontend 回歸；`scripts/verify_module.py` 未跑（本 worktree uv 需下載依賴且網路受限，改以既有 venv 跑目標測試）。
-- [ ] 7.2 隔離 PostgreSQL 驗 schema、suggestion、confirmed guard、多選、rollback、TEMP、person metadata、derived refresh；不得清 Supabase 現有資料。
+- [x] 7.2 隔離 PostgreSQL 驗 schema、suggestion、confirmed guard、多選、rollback、TEMP、person metadata、derived refresh；不得清 Supabase 現有資料。
+      → 2026-08-21 拋棄式本機 DB（`alembic upgrade head` exit 0）＋ `RUN_DB_TESTS=1`，
+      跑 12 個公司正規化／集團／中文名相關測試檔：**129 passed、7 failed**。
+      驗畢 `DROP DATABASE`，殘留檢查為「無」；**完全未碰 Supabase**。
+
+      ⚠ 那 7 紅**不屬本 change**：全部是
+      `psycopg.errors.UndefinedColumn: column "公司名稱" of relation "company_aliases" does not exist`
+      ——該欄在 migration `0041`（2026-07-28）就移除了。已查證：
+      `backend/` 僅剩兩處**註解**提到它（非 SQL），且專門守門的
+      `test_company_legacy_column_removed.py` **9 passed**。
+      ⇒ **測試過時，不是程式壞掉**，歸 `known-issues-optimization.md` 的 **D-6 第三類**。
+      🔴 這批測試因 D-4 的 env 污染長期靜默 skip，從 2026-07-28 起就沒真的跑過。
 - [ ] 7.3 跑真 Companion/CLI job，驗 heartbeat、Search/Fetch-only、法人中文名與 person/director evidence、非法 code/target 拒絕；保存 job/log/result。
 - [ ] 7.4 Playwright 驗桌面與行動：啟動、running、收合／隱藏、法人名依據、person 警示、證據、多選、修改、略過、確認、衝突、SSE、不跳頁、無重疊。
 - [ ] 7.5 比較建議前／待審／確認後的 aliases、raw/core、report base、公司／集團統計、cluster assignments；只有人工確認後公司 projection 可變。

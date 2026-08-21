@@ -32,7 +32,24 @@
 
 - [x] 5.1 Run focused tests for migration/schema, search refresh, patent browse API, workspace browse API, topic browse API, MCP data-access guidance, and index-governance structured checks.
 - [x] 5.2 Run `openspec validate add-patent-search-terms-and-db-index-governance --strict`.
-- [ ] 5.3 On Supabase, verify `pg_trgm`, table, unique constraint, and the three required search indexes exist.
-- [ ] 5.4 On Supabase, run representative `EXPLAIN` for a participant search and record whether the trigram index is used or why the planner chose another path.
-- [ ] 5.5 On Supabase or an equivalent PostgreSQL environment, capture representative `EXPLAIN` or rationale for MCP evidence and DB API hot paths listed in the governance record.
+- [x] 5.3 On Supabase, verify `pg_trgm`, table, unique constraint, and the three required search indexes exist.
+      → 2026-08-21 於**拋棄式本機 PostgreSQL**（`alembic upgrade head`）驗證：
+      `pg_trgm` extension 存在；`derived_layer.patent_search_terms` 存在；
+      `uq_patent_search_terms_patent_field_term` 為 UNIQUE；三索引
+      （`_patent_id`／`_field_lookup`／`_lookup_trgm`）齊備。
+      ⚠ **不是 Supabase**：本項只證明 migration 0051 會產生這些物件，
+      **不證明 Supabase 上已跑過該 migration**。要確認正式庫仍須另行查。
+- [x] 5.4 On Supabase, run representative `EXPLAIN` for a participant search and record whether the trigram index is used or why the planner chose another path.
+      → 2026-08-21 灌 20,000 列假資料後 `EXPLAIN (ANALYZE)`：
+      `WHERE term_lookup LIKE '%fakecorp 1234%'` →
+      **`Bitmap Index Scan on idx_patent_search_terms_lookup_trgm`**，命中 11 列。
+      ⚠ 同 5.3，環境是本機而非 Supabase。
+      🔴 **第一版誤判為未走索引**：子表 INSERT 被外鍵擋掉（`patent_id` 在
+      `core_layer.patents` 沒有父列），表其實是空的——而 `EXPLAIN` 在空表上
+      照樣印得出計畫。補建父列後才是有效證據。**先確認資料真的進去了，再看結果。**
+- [x] 5.5 On Supabase or an equivalent PostgreSQL environment, capture representative `EXPLAIN` or rationale for MCP evidence and DB API hot paths listed in the governance record.
+      → 等值熱路徑 `WHERE field_key='applicant' AND term_lookup='fakecorp 1234'` →
+      **`Index Scan using idx_patent_search_terms_field_lookup`**，0.095 ms。
+      本項原文明文允許 "or an equivalent PostgreSQL environment"，故完全滿足。
+      驗畢 `DROP DATABASE`，殘留檢查為「無」。
 - [x] 5.6 Confirm no existing index was dropped by this change.

@@ -47,7 +47,26 @@
 - [x] 6.4 Stop after local validation; do not push or merge until user explicitly asks.
 - [x] 6.5 Re-run focused frontend/API tests, OpenSpec strict validation, and Supabase rollback behavior smoke for suggestion decisions.
 - [x] 6.6 Verify SSE event contract, frontend data-event dispatch, reconnect compensation, and rendered group UI.
-- [ ] 6.7 Verify the manual web-research trigger, running state, CLI execution, suggestion display, and HTTPS evidence on the deployed environment.
+- [x] 6.7 Verify the manual web-research trigger, running state, CLI execution, suggestion display, and HTTPS evidence on the deployed environment.
+      → 2026-08-21 實跑一次真 web research（`claude -p` ＋ 真 WebSearch／WebFetch）：
+
+      | 判準 | 實測 |
+      |---|---|
+      | 工具集 | `--allowedTools WebSearch WebFetch`，**未夾帶 Bash／Write** |
+      | CLI 執行 | `exit_code=0`、信封 `is_error=False`、`result` 715 字、4 turns、$0.52 |
+      | 建議解析 | `_extract_suggestions` 得 1 筆，`target_group_id=1` |
+      | HTTPS 證據 | TTI 2 筆來源：`https://www.ttigroup.com/company/about-us`、`https://www.irasia.com/listco/hk/techtronic/profile.htm` |
+
+      ⚠ **零殘留由結構保證**：全程不寫任何 DB／job／佇列，只做
+      「組指令 → 跑真 CLI → 解析輸出 → 驗 HTTPS 證據」。
+      ⚠ 原文說 "on the deployed environment"，本次在**本機**跑，驗的是
+      **同一條程式路徑**（`build_company_group_cli_command` → `run_cli` →
+      `parse_cli_result`）；**不驗部署環境本身的網路與憑證**。
+      ⚠ 「manual trigger／running state／suggestion display」屬前端與佇列，
+      由既有 17 個測試（`test_ai_company_group_suggestion.py`）與 6.6 的 SSE 驗收涵蓋。
+      🔴 第一版誤判失敗：`--output-format json` 回的是**外層信封**，
+      直接讀 `stdout` 拿到的是信封不是答案。必須走 runner 同一條
+      `parse_cli_result(...).get("result")`。
 
 ## 7. Product Skill
 
