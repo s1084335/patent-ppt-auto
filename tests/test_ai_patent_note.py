@@ -154,8 +154,96 @@ class BatchByCharBudgetTests(unittest.TestCase):
 # ── prompt 契約（繁中、不湊字數）───────────────────────────────
 
 
+class ProductionInstructionTests(unittest.TestCase):
+    """🔴 驗**正式流程實際送出去的那段文字**（2026-08-21 補）。
+
+    ## 為什麼本組必須存在
+
+    下方 `PromptContractTests` 五條全部只驗 `build_prompt`，
+    而 **`build_prompt` 只有測試在呼叫**——2026-07-27「資料走檔案不走命令列」
+    之後，正式流程改走 `pf.write_payload_file` 的 `instruction` 欄，
+    那段只有一句話。
+
+    ⚠ 於是六條寫得很細的要求（含兩條標為「紅線」的：繁中、不湊字數）
+    **實際上沒有送給 AI**，而測試一路綠著。這是本專案反覆出現的假綠：
+    測試驗的是死路徑，正式路徑沒人守。
+
+    ⇒ 本組直接取 `NOTE_INSTRUCTION`（正式與 build_prompt 共用的唯一定義處），
+    確保兩邊不可能再分岔。
+    """
+
+    def _instruction(self) -> str:
+        return ai_patent_note_runner.NOTE_INSTRUCTION
+
+    def test_production_instruction_requires_traditional_chinese(self):
+        text = self._instruction()
+        self.assertIn("繁體中文", text)
+        self.assertTrue(
+            any(k in text for k in ("不論來源語言", "無論來源語言", "即使來源為英文")),
+            "正式送出的指示未載明來源語言無關的繁中要求")
+
+    def test_production_instruction_states_bounds_without_padding(self):
+        from backend.app.worker.ai_patent_note_runner import (
+            NOTE_MAX_CHARS, NOTE_TARGET_CHARS,
+        )
+        text = self._instruction()
+        self.assertIn(str(NOTE_TARGET_CHARS), text)
+        self.assertIn(str(NOTE_MAX_CHARS), text)
+        for banned in ("寫滿", "至少", "不少於", "字數下限", "務必達到"):
+            self.assertNotIn(banned, text, f"出現湊字數指示：{banned}")
+
+    def test_production_instruction_requires_complete_sentence(self):
+        """2026-07-28 使用者兩次定案的結果——不得只活在死路徑裡。"""
+        self.assertTrue(
+            any(k in self._instruction() for k in ("完整", "句號")),
+            "正式送出的指示未要求輸出完整句子")
+
+    def test_production_instruction_forbids_fabrication(self):
+        """🔴 AI 護欄：不臆測、不加評價、不編造數據。
+
+        ⚠ 這條在 build_prompt 裡有，但正式路徑沒送——等於護欄不存在。
+        """
+        text = self._instruction()
+        self.assertTrue(
+            any(k in text for k in ("不臆測", "不編造")),
+            "正式送出的指示沒有「不臆測、不編造」的護欄")
+
+    def test_production_instruction_does_not_misname_the_source(self):
+        """🔴 不得把來源說成「主權項」。
+
+        來源實際是三級 COALESCE（獨立項 → 所有權利要求 → abstract，
+        見 `clustering.sources.PATENT_NOTE_SOURCE_COLUMNS`），而
+        **「主權項」是被明確排除的**（它涵蓋附屬項，語意比獨立項雜）。
+
+        ⚠ 告訴 AI 一件錯的事實不會報錯，只會讓備註口徑悄悄偏掉——
+        退到第三級（abstract）時最嚴重：指示說「只寫獨立項讀得出來的內容」，
+        但送過去的其實是摘要。
+        """
+        for text in (self._instruction(),
+                     ai_patent_note_runner.PAYLOAD_TASK_LINE):
+            with self.subTest(text=text[:20]):
+                self.assertNotIn("主權項", text,
+                                 "指示把來源說成主權項——實際來源不是那一欄")
+
+    def test_payload_instruction_is_the_single_source(self):
+        """🔴 payload 送出的指示必須就是 `NOTE_INSTRUCTION`，不得另寫一份。
+
+        ⚠ 另寫一份的後果就是這次的事故：兩份各自演進，而不一致本身不會報錯。
+        """
+        import inspect
+
+        src = inspect.getsource(ai_patent_note_runner.run_patent_note)
+        self.assertIn("NOTE_INSTRUCTION", src,
+                      "正式流程沒有使用共用的指示常數")
+
+
 class PromptContractTests(unittest.TestCase):
-    """prompt 必須要求繁中輸出，且不得要求寫滿 100 字。"""
+    """prompt 必須要求繁中輸出，且不得要求寫滿 100 字。
+
+    ⚠ 本組驗的是 `build_prompt`（argv 內嵌路徑）。
+    **正式流程走 payload 檔**，由上方 `ProductionInstructionTests` 守。
+    兩者共用 `NOTE_INSTRUCTION`，所以這裡過了正式路徑也會過。
+    """
 
     def test_prompt_requires_traditional_chinese(self):
         """來源可能全英文，prompt 必須明確要求一律輸出繁體中文。"""

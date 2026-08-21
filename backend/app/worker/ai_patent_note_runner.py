@@ -148,15 +148,57 @@ def build_batches(
     return batches
 
 
-def build_prompt(batch: Sequence[tuple[int, str]]) -> str:
-    """把一批專利的獨立項組成 headless CLI 提示。
+#: 派工那一行（payload 檔外層，CLI 先看到的）。
+#: ⚠ 不說「主權項」——來源是三級 COALESCE，見 NOTE_INSTRUCTION 的說明。
+PAYLOAD_TASK_LINE = "任務：為專利的請求項內容產生文獻備註（系統派工、非互動、一次性）。"
 
-    ⚠ 兩條 prompt 紅線都在這裡執行：
-    - **繁中**：明寫「不論來源語言」，因為實測有全英文專利，不特別交代模型會跟著回英文。
-    - **不湊字數**：只寫「100 字以內」「更少也可以」，**不寫**任何下限或「寫滿」字樣。
+#: 🔴 撰寫要求的**唯一定義處**（2026-08-21 收斂）。
+#:
+#: ## 為什麼要抽出來
+#:
+#: 2026-07-27「資料走檔案不走命令列」之後，正式流程改走 payload 檔的
+#: `instruction` 欄，而那欄當時只寫了一句話——`build_prompt` 裡六條寫得很細的
+#: 要求（含兩條標為「紅線」的：繁中、不湊字數）**實際上沒有送給 AI**，
+#: 而五個 prompt 測試全部只驗 `build_prompt`，一路綠著。
+#:
+#: ⚠ 這是本專案反覆出現的假綠：測試驗的是死路徑，正式路徑沒人守。
+#: 收斂成一個常數後，兩條路徑不可能再分岔。
+#:
+#: ## ⚠ 來源不是「主權項」
+#:
+#: 實際來源是三級 COALESCE（獨立項 → 所有權利要求 → abstract，唯一定義在
+#: `clustering.sources.PATENT_NOTE_SOURCE_COLUMNS`），而**「主權項」是被明確
+#: 排除的**——它涵蓋附屬項，語意比獨立項雜（2026-07-28 使用者定）。
+#:
+#: 🔴 故本文一律用「請求項內容」這種中性說法，不指名任何一欄：
+#: 告訴 AI 一件錯的事實不會報錯，只會讓備註口徑悄悄偏掉——退到第三級
+#: （abstract）時最嚴重，指示說「只寫獨立項讀得出來的」但送的其實是摘要。
+NOTE_INSTRUCTION = (
+    "為每一筆專利的請求項內容寫一段「文獻備註」。\n\n"
+    "撰寫要求：\n"
+    "1. 說明該專利保護的技術方案重點：解決什麼問題、用什麼結構或手段。\n"
+    "2. **一律輸出繁體中文**，不論來源語言為何——來源可能是英文或中英混雜，\n"
+    "   仍必須以繁體中文書寫。技術術語、型號、化學式、代號可保留英文原文。\n"
+    f"3. 長度以 {NOTE_TARGET_CHARS} 字為目標，{NOTE_MAX_CHARS} 字為上限。\n"
+    "   兩個數字都是天花板而非目標——更短更好，句子夠用就停，不要為湊長度補充空話、\n"
+    "   不要重複同一件事。\n"
+    f"4. 系統**不會**幫你截斷或修剪，你寫多長就存多長——因此請自己在 {NOTE_MAX_CHARS} 字內\n"
+    "   把話講完整：先想好要講什麼再動筆，**最後一句必須完整並以句號結束**。\n"
+    "   寧可寫短寫完整，不要寫長。\n"
+    "5. 只寫來源文字讀得出來的內容，不臆測用途、不加評價、不編造數據。\n"
+    "6. 不要輸出「本專利」「本發明」以外的來源標記，也不要標註是誰產生的。"
+)
+
+
+def build_prompt(batch: Sequence[tuple[int, str]]) -> str:
+    """把一批專利的請求項內容組成 headless CLI 提示（argv 內嵌路徑）。
+
+    ⚠ **正式流程不走這裡**——2026-07-27 起改走 payload 檔（見 `run_patent_note`）。
+    本函式保留供 argv 路徑與既有測試使用，撰寫要求共用 `NOTE_INSTRUCTION`，
+    兩條路徑不可能分岔。
 
     ⚠ **本線的安全保證來自任務設計，不是 CLI 沙箱**（2026-07-23 使用者定案）：
-    獨立項全文**直接內嵌在 prompt 內**，CLI 不需讀取任何檔案、不需連網即可完成任務——
+    來源全文**直接內嵌在 prompt 內**，CLI 不需讀取任何檔案、不需連網即可完成任務——
     「沒必要做」比「不准做」可靠。CLI 端的權限旗標（`_NOTE_TAIL_ARGS` 的空白名單、
     Codex 的 `-s read-only` 與 config 的 `network_access`）只是額外保險，且**只在本機
     設定得了**；使用者端機器的 CLI 設定不在本專案控制範圍內，故不得把安全性寄託於此。
@@ -167,20 +209,8 @@ def build_prompt(batch: Sequence[tuple[int, str]]) -> str:
     claims_block = "\n\n".join(blocks)
 
     return (
-        "任務：閱讀每件專利的獨立項（申請專利範圍第一項），為每件寫一段「文獻備註」\n"
-        "（系統派工、非互動、一次性）。\n\n"
-        "撰寫要求：\n"
-        "1. 說明該專利保護的技術方案重點：解決什麼問題、用什麼結構或手段。\n"
-        f"2. **一律輸出繁體中文**，不論來源語言為何——來源獨立項可能是英文或中英混雜，\n"
-        "   仍必須以繁體中文書寫。技術術語、型號、化學式、代號可保留英文原文。\n"
-        f"3. 長度以 {NOTE_TARGET_CHARS} 字為目標，{NOTE_MAX_CHARS} 字為上限。\n"
-        "   兩個數字都是天花板而非目標——更短更好，句子夠用就停，不要為湊長度補充空話、\n"
-        "   不要重複同一件事。\n"
-        f"4. 系統**不會**幫你截斷或修剪，你寫多長就存多長——因此請自己在 {NOTE_MAX_CHARS} 字內\n"
-        "   把話講完整：先想好要講什麼再動筆，**最後一句必須完整並以句號結束**。\n"
-        "   寧可寫短寫完整，不要寫長。\n"
-        "5. 只寫獨立項讀得出來的內容，不臆測用途、不加評價、不編造數據。\n"
-        "6. 不要輸出「本專利」「本發明」以外的來源標記，也不要標註是誰產生的。\n\n"
+        f"{PAYLOAD_TASK_LINE}\n\n"
+        f"{NOTE_INSTRUCTION}\n\n"
         f"{claims_block}\n\n"
         "輸出契約：只輸出一個 JSON 物件，形狀為\n"
         '{"notes": [{"patent_id": 123, "note": "..."}, ...]}\n'
@@ -347,16 +377,17 @@ def run_patent_note(
             progress(f"產生文獻備註（第 {index}/{total_batches} 批，{len(batch)} 件）", percent)
 
         known_ids = {pid for pid, _ in batch}
-        # 資料走檔案不走命令列（2026-07-27）：主權項全文塞 argv 在 Windows
+        # 資料走檔案不走命令列（2026-07-27）：請求項全文塞 argv 在 Windows
         # （CreateProcess 上限 32,767）會 WinError 206；本支雖已按 CHAR_BUDGET 分批、
         # 目前尚未超標，但與 topic_label 同屬「靠剛好塞得下」的脆弱設計，一併收斂。
+        #
+        # 🔴 instruction 用共用常數（2026-08-21 修）：原本這裡只寫一句話，
+        # 而 `build_prompt` 那六條要求（含繁中、不湊字數、不臆測）**根本沒送出去**
+        # ——五個 prompt 測試卻全部只驗 build_prompt，一路綠著。
         path = pf.write_payload_file(
             "patent_note",
             {
-                "instruction": (
-                    f"為每一筆專利的主權項產生繁體中文文獻備註，"
-                    f"目標約 {NOTE_TARGET_CHARS} 字、不得超過 {NOTE_MAX_CHARS} 字。"
-                ),
+                "instruction": NOTE_INSTRUCTION,
                 "output_contract": {"notes": [{"patent_id": 0, "note": ""}]},
                 "items": [{"patent_id": pid, "claim": text} for pid, text in batch],
             },
@@ -365,7 +396,7 @@ def run_patent_note(
         )
         argv = pf.build_cli_command_with_payload(
             cli_kind,
-            instruction="任務：為專利主權項產生文獻備註（系統派工、非互動、一次性）。",
+            instruction=PAYLOAD_TASK_LINE,
             payload_path=path,
             model=model,
         )

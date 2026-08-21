@@ -51,8 +51,14 @@ AI_JOB_TYPES: frozenset[str] = frozenset(
         # 無獨立項且非設計案者產「建議主題＋理由」，批核走 API，不碰正式指派。
         "ai:topic_backfill",
         # ⚠ ai:report_plan 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
-        # 文獻備註：AI 讀專利獨立項（patents."主權項"）摘要成備註，寫回
-        # patent_attributes."文獻備註"。批次按字數切（獨立項最長逾萬字），不按件數。
+        # 文獻備註：AI 讀專利的請求項內容摘要成備註，寫回 patents."文獻備註"
+        # （0032 起搬到主表，不再是 patent_attributes）。
+        # ⚠ 來源是**三級 COALESCE**（獨立項 → 所有權利要求 → abstract），唯一定義在
+        # `clustering.sources.PATENT_NOTE_SOURCE_COLUMNS`；**「主權項」是被明確排除的**
+        # （涵蓋附屬項、語意比獨立項雜，2026-07-28 使用者定）。
+        # 🔴 本行原寫「獨立項（patents."主權項"）」，自相矛盾且兩者都不完整——
+        # 2026-08-21 有人照著它回答而講錯，故改為指路唯一定義處，不在此重述欄名。
+        # 批次按字數切（來源最長逾萬字），不按件數。
         "ai:patent_note",
         # 候選方案 AI 輔助說明：calibrate 完成後 AI 讀三組候選的指標
         # （coherence／diversity／balance／score／k／document_count，不含專利內容/keywords/refs）
