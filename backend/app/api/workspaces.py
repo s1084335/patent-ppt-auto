@@ -647,6 +647,7 @@ async def prefilter_summary(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
     ⚠ 待辦數由**後端算**：前端自數會變成第二份計數邏輯，兩份必然漂移
     ——本專案已反覆踩過。
     """
+    from backend.app.prefilter import decisions
     from backend.app.prefilter import keywords as kw
 
     def _collect() -> dict[str, int]:
@@ -654,7 +655,10 @@ async def prefilter_summary(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
         return {
             "keyword_count": len(rows),
             "unconfirmed_count": sum(1 for r in rows if not r["terms_confirmed"]),
-            "pending_count": len(pending_reviews(workspace_id)),
+            # 🔴 與 `/prefilter/reviews` **同一個口徑**（只算 source='prefilter'）。
+            # ⚠ 用 pending_reviews 會把 AI 線的待複核也算進來，於是出現
+            # 「徽章說 5 筆、點進去只有 3 筆」——使用者會以為系統壞了。
+            "pending_count": len(decisions.pending_prefilter_reviews(workspace_id)),
             "archived_count": len(excluded_patent_rows(workspace_id)),
         }
 
@@ -662,6 +666,67 @@ async def prefilter_summary(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
     # 入口徽章顯示的單一數字＝待確認比對詞 ＋ 待裁決，兩者都是「等使用者動作」。
     counts["todo_count"] = counts["unconfirmed_count"] + counts["pending_count"]
     return {"workspace_id": workspace_id, **counts}
+
+
+class PrefilterTermCountsRequest(BaseModel):
+    """要試算的比對詞（通常是尚未確認的 AI 建議詞）。"""
+
+    terms: list[str] = []
+
+
+@router.post("/workspaces/{workspace_id}/prefilter/term-counts")
+async def prefilter_term_counts(
+    request: PrefilterTermCountsRequest,
+    workspace_id: int = Path(ge=1),
+) -> dict[str, Any]:
+    """試算比對詞的命中件數與**實際命中的詞形**（確認畫面用）。
+
+    ## 🔴 為什麼不共用 `/prefilter/preview`
+
+    那支只算**已確認**的關鍵字（PRE-002：未確認者不得產生任何命中）。
+    確認畫面要看的正好是還沒確認的那些。
+
+    ## 為什麼要回詞形
+
+    AI 給的是**詞幹**（`machin`、`mechaniz`），因為比對採前綴詞界——
+    實測 `mow` 用完整詞界只中 11 件、用前綴中 177 件。
+
+    ⚠ 但同一機制讓 `engine` 也命中 `engineering`。畫面上只給幾個看起來像
+    拼錯的字，使用者沒有依據判斷哪個太寬，就只剩「全部照按」或
+    「全部不敢按」兩條路。回詞形是把這件事變成看得到的。
+
+    ⚠ 以 POST 而非 GET：比對詞是一組不定長字串，塞 query string 會遇到
+    長度與跳脫問題（使用者輸入 `c++`／`a|b` 是常態）。
+    """
+    from backend.app.clustering.exclusions import display_member_patent_ids
+    from backend.app.prefilter import matching
+
+    def _collect() -> list[dict[str, Any]]:
+        # 🔴 只算本 workspace 的成員：掃全庫的話畫面數字與實際套用結果不同，
+        # 使用者會照著一個永遠對不上的數字做決定。
+        member_ids = display_member_patent_ids(workspace_id)
+        return matching.term_hit_summary(request.terms, patent_ids=member_ids)
+
+    items = await run_in_threadpool(_collect)
+    return {"workspace_id": workspace_id, "items": items}
+
+
+@router.get("/workspaces/{workspace_id}/prefilter/reviews")
+async def list_prefilter_reviews(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """初階篩選的待裁決清單：命中原文 ＋ AI 建議（PRE-005／PRE-008）。
+
+    ⚠ 只列 `source='prefilter'`——AI 線的待複核沒有命中關鍵字，混進來會是
+    一列「沒有命中原因」的東西。它有自己的呈現處（分類頁）。
+
+    ⚠ `scope_verdict` 為 `null` 代表**尚未產生建議**，`'no_basis'` 代表
+    跑過但三個判讀欄位皆空。🔴 前端必須把兩者顯示成不同的東西，
+    不得都留白——空白會被讀成「沒問題」。
+    """
+    from backend.app.prefilter import decisions
+
+    items = await run_in_threadpool(
+        decisions.pending_prefilter_reviews, workspace_id)
+    return {"workspace_id": workspace_id, "items": items}
 
 
 @router.post("/workspaces/{workspace_id}/prefilter/apply")

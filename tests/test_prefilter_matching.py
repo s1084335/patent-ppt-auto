@@ -63,6 +63,12 @@ CORPUS = [
     (1013, None, None, "x" * 4000 + " a hydraulic drive unit " + "y" * 4000),
     #   三欄皆命中：驗欄位優先序與「其他欄位也命中」的標示。
     (1014, "Rotary cutter head", "the cutter rotates fast", "a cutter mounted on"),
+    # ── 詞幹過寬的實例（2026-08-21）──
+    # 🔴 使用者實測時看到「機器」被轉成 `engine`，而 `engine` 會命中
+    #   `engineering`。這不是 bug，是前綴詞界的**同一枚硬幣的另一面**：
+    #   放寬到能抓 mower，就同時放寬到會抓 engineering。
+    #   本列讓「詞形揭露」測得到這件事。
+    (1015, "Engineering method for engines", "engineered parts", None),
 ]
 
 
@@ -383,6 +389,89 @@ class PrefilterMatchingTests(unittest.TestCase):
         from backend.app.prefilter import matching
 
         self.assertEqual(matching.match_snippets([], conn=self.conn), {})
+
+    # ── 詞形揭露（2026-08-21 使用者裁決）────────────────
+    #
+    # 🔴 為什麼需要：確認畫面丟四個詞幹給使用者（`machin`、`mechaniz`），
+    # 看起來像拼錯，而使用者**沒有任何依據**判斷哪個太寬。
+    # 沒有依據就只剩兩條路：全部照按（可能誤剔）或全部不敢按（功能等於沒有）。
+
+    def test_term_summary_count_reuses_single_source(self):
+        """🔴 件數必須與 `match_patent_ids` 完全一致。
+
+        ⚠ 另寫一份計數 SQL 就是同一份知識的第二個定義處——兩份會各自演進，
+        而不一致本身不會報錯，只會讓預覽數字與實際套用結果對不上。
+        """
+        from backend.app.prefilter import matching
+
+        terms = ["mow", "blade", "engine", "zzzznotfound"]
+        expected = {t: len(ids)
+                    for t, ids in matching.match_patent_ids(
+                        terms, conn=self.conn).items()}
+        actual = {r["term"]: r["patent_count"]
+                  for r in matching.term_hit_summary(terms, conn=self.conn)}
+        self.assertEqual(actual, expected)
+
+    def test_term_summary_shows_actual_word_forms(self):
+        """要揭露**實際命中的詞形**，不只是件數。"""
+        from backend.app.prefilter import matching
+
+        rows = {r["term"]: r for r in
+                matching.term_hit_summary(["mow"], conn=self.conn)}
+        forms = set(rows["mow"]["forms"])
+        self.assertTrue({"mower", "mowing"} <= forms,
+                        f"沒有揭露詞形變化，實際：{sorted(forms)}")
+
+    def test_term_summary_reveals_overbroad_term(self):
+        """🔴 `engine` 會命中 `engineering`——這件事必須看得見。
+
+        ⚠ 這是前綴詞界的固有代價，不是缺陷；但使用者要能在**按下去之前**
+        看到它，否則就是拿誤剔換涵蓋率而當事人不知情。
+        """
+        from backend.app.prefilter import matching
+
+        rows = {r["term"]: r for r in
+                matching.term_hit_summary(["engine"], conn=self.conn)}
+        forms = set(rows["engine"]["forms"])
+        self.assertIn("engineering", forms,
+                      f"沒揭露過寬的詞形，實際：{sorted(forms)}")
+
+    def test_term_summary_zero_hits_still_listed(self):
+        """零命中要回 0 並列出，不得省略（同 PRE-004 口徑）。"""
+        from backend.app.prefilter import matching
+
+        rows = {r["term"]: r for r in
+                matching.term_hit_summary(["zzzznotfound"], conn=self.conn)}
+        self.assertEqual(rows["zzzznotfound"]["patent_count"], 0)
+        self.assertEqual(rows["zzzznotfound"]["forms"], [])
+
+    def test_term_summary_caps_forms(self):
+        """🔴 詞形數量要有上限。
+
+        ⚠ 沒有上限的話，一個很寬的詞幹會回傳上百個詞形，把確認畫面灌爆
+        ——而那正是使用者最需要看清楚的一格。
+        """
+        from backend.app.prefilter import matching
+
+        rows = matching.term_hit_summary(["m"], conn=self.conn)
+        self.assertLessEqual(len(rows[0]["forms"]), matching.MAX_FORMS)
+
+    def test_term_summary_works_for_unconfirmed_terms(self):
+        """🔴 這支的存在理由：算**尚未確認**的詞。
+
+        ⚠ `preview_counts` 刻意只算已確認的（PRE-004）。確認畫面要看的
+        正好是還沒確認的那些，不能共用那支。
+        """
+        from backend.app.prefilter import matching
+
+        rows = matching.term_hit_summary(["mow"], conn=self.conn)
+        self.assertEqual(rows[0]["patent_count"], 4,
+                         "未確認的詞算不出件數——確認畫面就沒有判斷依據")
+
+    def test_term_summary_empty_terms_returns_empty(self):
+        from backend.app.prefilter import matching
+
+        self.assertEqual(matching.term_hit_summary([], conn=self.conn), [])
 
     # ── 成員清單走唯一來源（使用者 2026-08-21：不要寫死在某些專利上）──
     def test_membership_uses_existing_single_source(self):

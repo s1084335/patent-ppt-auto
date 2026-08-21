@@ -54,6 +54,11 @@ SNIPPET_CONTEXT = 40
 #: 沒有上限就會把整份請求項灌進畫面與 AI prompt。
 SNIPPET_MAX = 200
 
+#: 每個比對詞最多揭露幾種詞形。
+#: ⚠ 沒有上限的話，一個很寬的詞幹會回傳上百個詞形，把確認畫面灌爆
+#: ——而那正好是使用者最需要看清楚的一格。
+MAX_FORMS = 8
+
 
 def normalize_term(term: str) -> str:
     """把使用者／AI 給的比對詞轉成可直接放進 `~*` 的正規式片段。
@@ -227,6 +232,66 @@ def match_snippets(terms: list[str], *,
                         "also": [k for k, _, _ in matched[1:]],
                     })
     return out
+
+
+def term_hit_summary(terms: list[str], *,
+                     patent_ids: list[int] | None = None,
+                     conn: Any | None = None) -> list[dict[str, Any]]:
+    """逐比對詞回傳「命中件數 ＋ 實際命中的詞形」，供**確認畫面**判斷詞夠不夠準。
+
+    ## 🔴 為什麼需要這支
+
+    AI 依 prompt 給的是**詞幹**（`machin`、`mechaniz`），因為比對採前綴詞界。
+    詞幹的好處實測過：正式庫 `mow` 用完整詞界只中 **11** 件、用前綴中 **177**
+    件——專利文字幾乎不會單獨出現 `mow`，都是 `mower`／`mowing deck`。
+
+    ⚠ 但同一個機制的另一面是：`engine` 會命中 `engineering`。
+    這不是缺陷，是放寬涵蓋率的固有代價——**但使用者要能在按下去之前看到它**，
+    否則就是拿誤剔換涵蓋率而當事人不知情。
+
+    畫面上只給四個看起來像拼錯的字，使用者沒有依據判斷哪個太寬，
+    就只剩兩條路：全部照按（可能誤剔）或全部不敢按（功能等於沒有）。
+
+    ## ⚠ 與 `preview_counts` 的分工
+
+    `preview_counts` 只算**已確認**的關鍵字（PRE-002：未確認者不得產生命中）。
+    確認畫面要看的正好是**還沒確認**的那些，故不能共用。
+
+    🔴 但件數一律走 `match_patent_ids`——**計數只能有一個定義處**。
+    另寫一份計數 SQL 的話兩份會各自演進，而不一致本身不會報錯，
+    只會讓預覽數字與實際套用結果對不上。本函式只多做「詞形」這件事。
+    """
+    clean = [t for t in (terms or []) if str(t or "").strip()]
+    if not clean:
+        return []
+
+    scope_sql, scope_params = _scope(patent_ids)
+    quoted = _quoted_columns()
+    # 三欄接成一段再抓詞形：用空白分隔，不會在欄位交界處拼出假的字。
+    # ⚠ 這裡**只用來取詞形**，件數仍以 match_patent_ids 為準。
+    joined = "concat_ws(' ', " + ", ".join(quoted) + ")"
+
+    with _conn_ctx(conn) as c:
+        counts = match_patent_ids(clean, patent_ids=patent_ids, conn=c)
+        out: list[dict[str, Any]] = []
+        with c.cursor() as cur:
+            for term in clean:
+                pattern = normalize_term(term)
+                forms: list[str] = []
+                if pattern:
+                    cur.execute(
+                        "SELECT DISTINCT lower(m[1]) AS form FROM ("
+                        f"  SELECT regexp_matches({joined}, %s, 'gi') AS m "
+                        f"  FROM {SOURCE_TABLE} WHERE true{scope_sql}"
+                        ") s ORDER BY form LIMIT %s",
+                        (f"({pattern}\\w*)",) + scope_params + (MAX_FORMS,))
+                    forms = [r[0] for r in cur.fetchall()]
+                out.append({
+                    "term": term,
+                    "patent_count": len(counts.get(term, [])),
+                    "forms": forms,
+                })
+        return out
 
 
 def preview_counts(workspace_id: int, *,

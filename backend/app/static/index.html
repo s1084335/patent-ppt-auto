@@ -946,6 +946,9 @@ function renderMain() {
     case 'topics': return renderTopics();
     case 'reports': return renderReports();
     case 'comparison': return renderComparison();
+    // ⚠ 初階篩選**不在左導覽**（沿案件比對前例）：只從瀏覽頁入口進入。
+    //   它是「分群前做一次」的流程，不是天天用的頁面。
+    case 'prefilter': return renderPrefilter();
     case 'status': return renderStatus();
     default: m.innerHTML = '<div class="hint">未知頁面。</div>';
   }
@@ -1093,6 +1096,15 @@ async function renderBrowse() {
     + '<div class="toolbar">'
     + '<input class="text-input" id="browse-kw" placeholder="搜尋 專利號／名稱／申請人" style="min-width:260px">'
     + '<button class="btn btn-outline" onclick="onBrowseSearch()">搜尋</button>'
+    + '<span style="flex:1"></span>'
+    // 初階篩選入口（E.1／E.5）。⚠ 只有入口與待辦數在這裡——關鍵字編輯、
+    // 比對詞確認、裁決全部在獨立頁（WSP-013）。瀏覽頁已經很滿，把作業
+    // 塞進來會讓兩件事互相干擾。
+    // 🔴 徽章數字取自後端 `todo_count`，前端不自數。
+    + (isGlobalSelected() ? ''
+        : '<button class="btn btn-outline" onclick="navTo(\'prefilter\')">'
+          + '初階篩選 <span id="' + PREFILTER_TODO_BADGE_ID + '" class="badge" '
+          + 'style="display:none"></span></button>')
     + '</div>'
     // 維護作業區：平時收合，進頁面先看到專利表。
     + '<details class="maint-details" id="browse-maintenance">'
@@ -1141,6 +1153,7 @@ async function renderBrowse() {
   renderCompanyCodeRegistry();   // 非阻塞：代碼區自己載，不擋專利表
   renderNoteCoverage();          // 同上：備註覆蓋率
   renderCompanyGroupRegistry();  // 集團層正規化：公司層上方，預設收合
+  loadPrefilterSummary();        // 同上：初階篩選待辦數（讀不到就不顯示徽章）
   await loadBrowsePatents();
 }
 function onBrowseSearch() { state.browseOffset = 0; loadBrowsePatents(); }
@@ -5555,6 +5568,554 @@ function aiResultText(v) {
   try { return JSON.stringify(v, null, 2); } catch (_) { return String(v); }
 }
 
+// ══════════ 初階篩選（切片 E，2026-08-21） ══════════
+//
+// 分群之前依負面關鍵字篩掉整批不該進入分析的專利。六段：
+//   ① 範圍描述 ② 負面關鍵字 ③ 確認比對詞 ④ 命中預覽 ⑤ 待裁決 ⑥ 剔除名單
+//
+// ⚠ 不加左導覽項（沿案件比對前例）：只從瀏覽頁入口進入。導覽列已經很長，
+//   而這是「分群前做一次」的流程，不是天天用的頁面。
+//
+// 🔴 確認畫面不得出現 SQL：使用者看不懂，秀出來只會讓人不敢按。
+//   比對詞一律以人看得懂的詞呈現（`mow`、`lawn mow`），不露 `~*`／`\m`。
+
+const PREFILTER_TODO_BADGE_ID = 'prefilter-todo-badge';
+
+// 待裁決清單的本地快取。⚠ 只給 SSE 增量填入用（找得到該筆才知道要不要換格子），
+// **不是**第二份真相——所有數字與狀態一律以後端回傳為準。
+let prefilterReviewCache = [];
+
+function prefilterWsPath(suffix) {
+  return API + '/workspaces/' + encodeURIComponent(state.workspaceId) + suffix;
+}
+
+// 送出並在失敗時顯示後端的 detail。⚠ 一律顯示後端訊息而不是自己編一句
+// ——後端的 400 帶著「該去填什麼」（例如尚未填範圍描述），自己編會把
+// 唯一有用的資訊丟掉。
+async function prefilterSend(method, suffix, body) {
+  try {
+    const opts = { method: method, headers: { 'Content-Type': 'application/json' } };
+    if (body !== undefined) opts.body = JSON.stringify(body);
+    const resp = await fetch(prefilterWsPath(suffix), opts);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      alert(err.detail || ('HTTP ' + resp.status));
+      return false;
+    }
+    return true;
+  } catch (e) {
+    alert('連線錯誤：' + e.message);
+    return false;
+  }
+}
+
+function prefilterPost(suffix, body) { return prefilterSend('POST', suffix, body); }
+function prefilterPatch(suffix, body) { return prefilterSend('PATCH', suffix, body); }
+
+// 待辦數：🔴 **一律用後端算好的 todo_count**，前端不自數。
+// ⚠ 前端自數會變成第二份計數邏輯，兩份必然漂移；而且徽章與清單長度對不上時，
+//   使用者會以為系統吃掉了幾筆。
+async function loadPrefilterSummary() {
+  const badge = el(PREFILTER_TODO_BADGE_ID);
+  if (!badge) return null;
+  try {
+    const data = await getJson(prefilterWsPath('/prefilter/summary'));
+    const n = data.todo_count;
+    badge.textContent = n > 0 ? String(n) : '';
+    badge.style.display = n > 0 ? '' : 'none';
+    return data;
+  } catch (_) {
+    // 讀不到就不顯示徽章——不得顯示 0 假裝沒事，那會被讀成「沒有待辦」。
+    badge.textContent = '';
+    badge.style.display = 'none';
+    return null;
+  }
+}
+
+function renderPrefilter() {
+  const m = el('main-panel');
+  if (isGlobalSelected()) {
+    m.innerHTML = '<h2 class="panel-title">初階篩選</h2>'
+      + '<div class="hint">全庫是總覽，本就該收錄所有專利，不做初階篩選。'
+      + '請先於上方切換到要篩選的 workspace。</div>';
+    return;
+  }
+  m.innerHTML = '<h2 class="panel-title">初階篩選</h2>'
+    + '<div class="hint" style="margin-bottom:0.8rem">'
+    + '在分群之前篩掉整批不該進入分析的專利。'
+    + '<strong>命中只是挑出來給你看，剔除與否一律由你決定。</strong></div>'
+
+    // ① 範圍描述
+    + '<div class="card">'
+    + '<div style="font-weight:600;margin-bottom:0.4rem">這批專利的範圍</div>'
+    + '<div class="hint" style="margin-bottom:0.5rem">'
+    + 'AI 判斷「這件跟這批有沒有關係」的依據。沒填的話建議會很不準，'
+    + '所以沒填時不讓它跑。</div>'
+    + '<textarea class="text-input" id="prefilter-scope" rows="2" '
+    + 'style="width:100%;margin-bottom:0.5rem" '
+    + 'placeholder="例：自走式割草機的驅動與刀盤機構，不含手推式與園藝工具"></textarea>'
+    + '<button class="btn btn-primary btn-sm" onclick="savePrefilterScope()">儲存</button>'
+    + '<span id="prefilter-scope-msg" class="hint" style="margin-left:0.6rem"></span>'
+    + '</div>'
+
+    // ② 負面關鍵字 ＋ ③ 確認比對詞（同一區，未確認者就地展開）
+    + '<div class="card">'
+    + '<div style="font-weight:600;margin-bottom:0.4rem">負面關鍵字</div>'
+    + '<div class="hint" style="margin-bottom:0.5rem">'
+    + '輸入你不要的東西（中文或英文皆可）。系統會請 AI 轉成英文比對詞，'
+    + '<strong>你確認過的比對詞才會生效</strong>。</div>'
+    + '<div class="toolbar" style="margin-bottom:0.6rem">'
+    + '<input class="text-input" id="prefilter-kw-input" style="min-width:200px" '
+    + 'placeholder="例：吹葉機">'
+    + '<button class="btn btn-primary btn-sm" onclick="createNegativeKeyword()">新增</button>'
+    + '</div>'
+    + '<div id="prefilter-keywords"><div class="hint">載入中…</div></div>'
+    + '</div>'
+
+    // ④ 命中預覽
+    + '<div class="card">'
+    + '<div style="font-weight:600;margin-bottom:0.4rem">命中預覽</div>'
+    + '<div class="hint" style="margin-bottom:0.5rem">'
+    + '先看會影響幾件，再決定要不要套用。套用只是列成待裁決，'
+    + '<strong>不會直接剔除任何專利</strong>。</div>'
+    + '<div id="prefilter-preview"><div class="hint">載入中…</div></div>'
+    + '</div>'
+
+    // ⑤ 待裁決
+    + '<div class="card">'
+    + '<div style="font-weight:600;margin-bottom:0.4rem">待裁決</div>'
+    + '<div id="prefilter-reviews"><div class="hint">載入中…</div></div>'
+    + '</div>'
+
+    // ⑥ 剔除名單
+    + '<div class="card">'
+    + '<div style="font-weight:600;margin-bottom:0.4rem">剔除名單</div>'
+    + '<div class="hint" style="margin-bottom:0.5rem">'
+    + '已剔除的專利不進分析、不出現在瀏覽清單，但資料仍在，隨時可還原。</div>'
+    + '<div id="prefilter-archived"><div class="hint">載入中…</div></div>'
+    + '</div>';
+
+  loadPrefilterScope();
+  loadPrefilterKeywords();
+  loadPrefilterPreview();
+  loadPrefilterReviews();
+  loadPrefilterArchived();
+}
+
+// ── ① 範圍描述 ──────────────────────────────────────
+async function loadPrefilterScope() {
+  const box = el('prefilter-scope');
+  if (!box) return;
+  try {
+    const data = await getJson(prefilterWsPath('/prefilter/scope'));
+    box.value = data.scope_description || '';
+    box.setAttribute('maxlength', String(data.max_length || 500));
+  } catch (_) { /* 讀不到就留空，使用者可直接填 */ }
+}
+
+async function savePrefilterScope() {
+  const box = el('prefilter-scope');
+  const msg = el('prefilter-scope-msg');
+  if (!box) return;
+  try {
+    const resp = await fetch(prefilterWsPath('/prefilter/scope'), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope_description: box.value }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      if (msg) msg.textContent = '儲存失敗：' + (err.detail || ('HTTP ' + resp.status));
+      return;
+    }
+    if (msg) msg.textContent = '已儲存';
+  } catch (e) {
+    if (msg) msg.textContent = '連線錯誤：' + e.message;
+  }
+}
+
+// ── ②③ 負面關鍵字與比對詞確認 ──────────────────────
+async function loadPrefilterKeywords() {
+  const wrap = el('prefilter-keywords');
+  if (!wrap) return;
+  let items = [];
+  try {
+    items = (await getJson(prefilterWsPath('/negative-keywords'))).items || [];
+  } catch (e) {
+    wrap.innerHTML = '<div class="task-detail-error">關鍵字載入失敗：'
+      + escHtml(e.message) + '</div>';
+    return;
+  }
+  if (!items.length) {
+    wrap.innerHTML = '<div class="hint">尚未設定任何負面關鍵字。</div>';
+    return;
+  }
+  wrap.innerHTML = items.map(prefilterKeywordRow).join('');
+  loadPrefilterTermCounts(items);   // 非阻塞：件數後填，不擋整區顯示
+}
+
+function prefilterKeywordRow(k) {
+  // 比對詞以人看得懂的詞呈現。🔴 不露任何比對語法——使用者看不懂，
+  // 而看不懂的東西會讓人不敢按。
+  const terms = (k.match_terms || []);
+  const confirmed = k.terms_confirmed;
+  const status = confirmed
+    ? '<span style="color:var(--ok,#2a7)">已確認</span>'
+    : '<span style="color:var(--warn,#c80)">待確認</span>';
+  let body;
+  if (!terms.length) {
+    body = '<span class="hint">尚未轉換</span>'
+      + ' <button class="btn btn-sm" onclick="expandKeywordTerms(' + k.keyword_id
+      + ')">AI 轉換</button>';
+  } else if (!confirmed) {
+    // 就地展開讓使用者勾選要留哪些詞——未確認前不會產生任何待裁決項。
+    //
+    // 🔴 每個詞旁邊留一格件數（由 loadPrefilterTermCounts 非同步填）。
+    // ⚠ 沒有件數的話，畫面只是丟幾個看起來像拼錯的字給使用者，
+    //    他沒有依據判斷哪個太寬，就只剩「全部照按」或「全部不敢按」。
+    body = '<div class="hint" style="margin-bottom:0.4rem">'
+      + '這些是<strong>詞幹</strong>，會命中以它開頭的完整單字'
+      + '（machin → machine、machinery、machining）。'
+      + '看起來像少字母是正常的。<br>'
+      + '⚠ 詞幹越短命中越廣，可能誤傷（engine 會命中 engineering）——'
+      + '請看右邊的件數與實際命中的字再決定。</div>'
+      + terms.map((t, i) =>
+        '<div style="display:flex;align-items:center;gap:0.5rem;padding:0.15rem 0">'
+        + '<label style="white-space:nowrap;min-width:9rem">'
+        + '<input type="checkbox" checked data-kw="' + k.keyword_id + '" '
+        + 'data-term-index="' + i + '" value="' + escHtml(t) + '"> '
+        + escHtml(t) + '</label>'
+        + '<span class="hint" data-term-count="' + k.keyword_id + '|'
+        + escHtml(t) + '">試算中…</span>'
+        + '</div>').join('')
+      + '<button class="btn btn-primary btn-sm" style="margin-top:0.4rem" '
+      + 'onclick="confirmKeywordTerms(' + k.keyword_id + ')">確認並啟用</button>';
+  } else {
+    body = terms.map(t => '<code style="margin-right:0.5rem">' + escHtml(t)
+      + '</code>').join('');
+  }
+  return '<div style="padding:0.4rem 0;border-bottom:1px solid var(--border,#ddd)">'
+    + '<div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap">'
+    + '<strong>' + escHtml(k.original_term) + '</strong>'
+    + status
+    + '<label style="font-size:0.85rem"><input type="checkbox" '
+    + (k.enabled ? 'checked ' : '')
+    + 'onchange="toggleNegativeKeyword(' + k.keyword_id + ', this.checked)"> 啟用</label>'
+    + '<span style="flex:1"></span>'
+    + '<button class="btn btn-sm btn-danger" onclick="deleteNegativeKeyword('
+    + k.keyword_id + ')">刪除</button>'
+    + '</div>'
+    + '<div style="margin-top:0.3rem">' + body + '</div>'
+    + '</div>';
+}
+
+// 試算未確認的比對詞：件數 ＋ 實際命中的詞形。
+//
+// ⚠ **只算未確認的**：已確認的詞由「命中預覽」那段負責，重算一次只是多花
+//    一輪查詢，而且兩處顯示同一件事會讓人問「哪個才準」。
+//
+// ⚠ 非同步後填而不是擋著等：一個關鍵字可能五、六個詞，每個詞都要掃三個
+//    欄位，等它算完才顯示會讓整區卡住。先畫「試算中…」再逐筆換掉。
+async function loadPrefilterTermCounts(items) {
+  const pending = (items || []).filter(function (k) {
+    return !k.terms_confirmed && (k.match_terms || []).length;
+  });
+  for (const k of pending) {
+    let rows = [];
+    try {
+      const resp = await fetch(prefilterWsPath('/prefilter/term-counts'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ terms: k.match_terms }),
+      });
+      if (!resp.ok) continue;
+      rows = (await resp.json()).items || [];
+    } catch (_) { continue; }
+    // 🔴 用屬性值**逐一比對**而不是組選擇器字串。
+    // ⚠ 2026-08-21 實測踩過：原本寫
+    //   `[data-term-count="' + CSS.escape(id + '|' + term) + '"]'`
+    //   ——`CSS.escape` 是給**識別字**用的，會把 `|` escape 成 `\|`，
+    //   放進引號屬性值裡反而匹配不到。`querySelector` 回 null 只是靜默跳過，
+    //   畫面永遠停在「試算中…」，看起來像還在算而不是壞了。
+    //   比對詞還可能含 `"`／`'`（使用者輸入 `c++`、`a|b` 是常態），
+    //   任何字串拼接的選擇器都有同類風險，逐一比對才沒有跳脫問題。
+    const cells = Array.from(document.querySelectorAll('[data-term-count]'));
+    rows.forEach(function (r) {
+      const key = k.keyword_id + '|' + r.term;
+      const cell = cells.find(function (c) {
+        return c.getAttribute('data-term-count') === key;
+      });
+      if (!cell) return;
+      // 🔴 零命中要明講，不能留白——留白會被讀成「還在算」。
+      const forms = (r.forms || []).join('、');
+      cell.textContent = r.patent_count + ' 件'
+        + (forms ? '（' + forms + '）' : '');
+    });
+  }
+  // 🔴 沒被填到的格子要說「試算失敗」，不得留著「試算中…」。
+  // ⚠ 「還在算」與「算不出來」是兩件事——混在一起的話使用者會一直等。
+  document.querySelectorAll('[data-term-count]').forEach(function (c) {
+    if (c.textContent.indexOf('試算中') === 0) c.textContent = '試算失敗';
+  });
+}
+
+async function createNegativeKeyword() {
+  const input = el('prefilter-kw-input');
+  const term = (input && input.value || '').trim();
+  if (!term) { alert('請先輸入關鍵字。'); return; }
+  if (!await prefilterPost('/negative-keywords', { original_term: term })) return;
+  if (input) input.value = '';
+  await loadPrefilterKeywords();
+  await loadPrefilterSummary();
+}
+
+async function expandKeywordTerms(keywordId) {
+  if (!await prefilterPost('/negative-keywords/' + keywordId + '/expand')) return;
+  // 轉換是 AI 任務，完成後由 SSE 觸發刷新（JOB_REFRESH_TARGETS）。
+  fetchTasks();
+}
+
+async function confirmKeywordTerms(keywordId) {
+  const boxes = document.querySelectorAll(
+    'input[type=checkbox][data-kw="' + keywordId + '"]');
+  const terms = Array.from(boxes).filter(b => b.checked).map(b => b.value);
+  if (!terms.length) { alert('至少要留一個比對詞。'); return; }
+  const ok = await prefilterPatch('/negative-keywords/' + keywordId,
+    { match_terms: terms, terms_confirmed: true });
+  if (!ok) return;
+  await loadPrefilterKeywords();
+  await loadPrefilterPreview();
+  await loadPrefilterSummary();
+}
+
+async function toggleNegativeKeyword(keywordId, enabled) {
+  await prefilterPatch('/negative-keywords/' + keywordId, { enabled: enabled });
+  await loadPrefilterPreview();
+}
+
+async function deleteNegativeKeyword(keywordId) {
+  if (!confirm('刪除這個關鍵字？已產生的待裁決項不會自動消失。')) return;
+  try {
+    const resp = await fetch(prefilterWsPath('/negative-keywords/' + keywordId),
+      { method: 'DELETE' });
+    if (!resp.ok) { alert('刪除失敗：HTTP ' + resp.status); return; }
+  } catch (e) { alert('連線錯誤：' + e.message); return; }
+  await loadPrefilterKeywords();
+  await loadPrefilterPreview();
+  await loadPrefilterSummary();
+}
+
+// ── ④ 命中預覽 ──────────────────────────────────────
+async function loadPrefilterPreview() {
+  const wrap = el('prefilter-preview');
+  if (!wrap) return;
+  let items = [];
+  try {
+    items = (await getJson(prefilterWsPath('/prefilter/preview'))).items || [];
+  } catch (e) {
+    wrap.innerHTML = '<div class="task-detail-error">預覽載入失敗：'
+      + escHtml(e.message) + '</div>';
+    return;
+  }
+  if (!items.length) {
+    wrap.innerHTML = '<div class="hint">尚無已確認的關鍵字，因此沒有命中。</div>';
+    return;
+  }
+  // 🔴 零命中要顯示 0，不得省略該列——「算過了，結果是 0」與「沒算」
+  //    必須分得開，否則使用者會以為那個關鍵字還沒跑完。
+  const rows = items.map(it =>
+    '<tr><td>' + escHtml(it.original_term) + '</td>'
+    + '<td class="nowrap">' + it.patent_count + ' 件</td>'
+    + '<td class="cell-long">'
+    + (it.match_terms || []).map(t => escHtml(t)).join('、') + '</td></tr>').join('');
+  const total = items.reduce((a, b) => a + (b.patent_count || 0), 0);
+  wrap.innerHTML = '<table class="table"><thead><tr>'
+    + '<th>關鍵字</th><th>命中</th><th>比對詞</th></tr></thead>'
+    + '<tbody>' + rows + '</tbody></table>'
+    + '<div class="toolbar" style="margin-top:0.6rem">'
+    + '<button class="btn btn-primary" onclick="applyPrefilter()">執行篩選</button>'
+    + '<span class="hint">共 ' + total + ' 件次命中將列入待裁決</span>'
+    + '</div>';
+}
+
+async function applyPrefilter() {
+  if (!await prefilterPost('/prefilter/apply')) return;
+  await loadPrefilterReviews();
+  await loadPrefilterSummary();
+}
+
+// ── ⑤ 待裁決 ────────────────────────────────────────
+async function loadPrefilterReviews() {
+  const wrap = el('prefilter-reviews');
+  if (!wrap) return;
+  let items = [];
+  try {
+    items = (await getJson(prefilterWsPath('/prefilter/reviews'))).items || [];
+  } catch (e) {
+    wrap.innerHTML = '<div class="task-detail-error">待裁決清單載入失敗：'
+      + escHtml(e.message) + '</div>';
+    return;
+  }
+  prefilterReviewCache = items;
+  if (!items.length) {
+    wrap.innerHTML = '<div class="hint">沒有待裁決的專利。</div>';
+    return;
+  }
+  wrap.innerHTML = '<div class="hint" style="margin-bottom:0.5rem">'
+    + '這些專利<strong>目前仍計入分析</strong>，按「剔除」後才真的移出。</div>'
+    + '<div class="toolbar" style="margin-bottom:0.6rem">'
+    + '<button class="btn btn-sm" onclick="requestPrefilterReview()">AI 建議</button>'
+    + '<span class="hint">讀標題、摘要與獨立項，對照上方範圍給留剔建議。'
+    + '建議只是參考，仍由你逐筆決定。</span>'
+    + '</div>'
+    + '<table class="table"><thead><tr>'
+    + '<th>專利號</th><th>標題</th><th>命中原因</th><th>AI 建議</th><th>裁決</th>'
+    + '</tr></thead><tbody id="prefilter-review-body">'
+    + renderPrefilterReviewRows(items) + '</tbody></table>';
+}
+
+// 待裁決列。🔴 建議只多一欄字，**不預選、不封鎖裁決**——
+// 預選會把「建議」變成「預設答案」，使用者只會一路按下去。
+function renderPrefilterReviewRows(items) {
+  return items.map(it => {
+    const hits = it.hits || [];
+    // 命中原因顯示**命中的那段原文**（使用者 2026-08-21）。
+    // ⚠ 只給「被 mow 命中」，使用者無從判斷是不是誤剔——正式庫
+    //   #591「VEHICLE WITH UNDER-BODY BLOWER」其實是割草載具。
+    const reason = hits.length
+      ? hits.map(h =>
+        '<div style="margin-bottom:0.3rem">'
+        + '<div>' + escHtml(h.keyword) + '（' + escHtml(h.term) + '）</div>'
+        + '<div class="hint">[' + escHtml(h.label) + '] ' + escHtml(h.snippet) + '</div>'
+        + ((h.also || []).length
+          ? '<div class="hint">其他欄位也命中</div>' : '')
+        + '</div>').join('')
+      : '<span class="hint">' + escHtml(it.reason || '') + '</span>';
+    return '<tr data-pid="' + it.patent_id + '">'
+      + '<td class="nowrap">' + escHtml(it.patent_number || String(it.patent_id))
+      + ' <span class="hint">' + escHtml(it.country_code || '') + '</span></td>'
+      + '<td class="cell-long">' + escHtml(it.title || '') + '</td>'
+      + '<td class="cell-long">' + reason + '</td>'
+      + prefilterSuggestionCell(it)
+      + '<td class="nowrap">'
+      + '<button class="btn btn-sm" onclick="decidePrefilterReview('
+      + it.patent_id + ", 'keep')\">保留</button> "
+      + '<button class="btn btn-sm btn-danger" onclick="decidePrefilterReview('
+      + it.patent_id + ", 'confirm')\">剔除</button>"
+      + '</td></tr>';
+  }).join('');
+}
+
+// AI 建議格。🔴 四種狀態各有明確樣子，**尚無建議與無判讀依據不得留白**：
+// 空白會被讀成「沒問題」（缺席型偏差），而「還沒跑」與「跑了但沒依據」
+// 混在一起的話，使用者會一直等一個不會來的東西。
+//
+// 🔴 `min-height` 是必要的：填入時撐高列會把使用者正在看的位置往下推
+// ——你在看第 80 列時第 20 列長高，整頁往下跳。那正是「影響到使用者」。
+function prefilterSuggestionCell(it) {
+  const v = it.scope_verdict;
+  let head;
+  if (v === 'keep') head = '建議保留';
+  else if (v === 'exclude') head = '建議剔除';
+  else if (v === 'no_basis') head = '無判讀依據';
+  else head = '尚無建議';
+  const detail = v === 'no_basis'
+    ? '標題、摘要與獨立項皆為空'
+    : (it.scope_reason || '');
+  return '<td class="cell-long prefilter-suggestion" '
+    + 'data-pid="' + it.patent_id + '" style="min-height:3.4rem">'
+    + '<div>' + escHtml(head) + '</div>'
+    + (detail ? '<div class="hint">' + escHtml(detail) + '</div>' : '')
+    + '</td>';
+}
+
+async function requestPrefilterReview() {
+  if (!await prefilterPost('/prefilter/review')) return;
+  fetchTasks();
+}
+
+async function decidePrefilterReview(patentId, decision) {
+  const path = decision === 'keep'
+    ? '/exclusion-reviews/keep' : '/exclusion-reviews/confirm';
+  if (!await prefilterPost(path, { patent_ids: [patentId] })) return;
+  await loadPrefilterReviews();
+  await loadPrefilterArchived();
+  await loadPrefilterSummary();
+}
+
+// ── ⑥ 剔除名單 ──────────────────────────────────────
+async function loadPrefilterArchived() {
+  const wrap = el('prefilter-archived');
+  if (!wrap) return;
+  let items = [];
+  try {
+    items = (await getJson(prefilterWsPath('/excluded-patents'))).items || [];
+  } catch (e) {
+    wrap.innerHTML = '<div class="task-detail-error">剔除名單載入失敗：'
+      + escHtml(e.message) + '</div>';
+    return;
+  }
+  if (!items.length) {
+    wrap.innerHTML = '<div class="hint">尚無已剔除的專利。</div>';
+    return;
+  }
+  const rows = items.map(it =>
+    '<tr><td class="nowrap">'
+    + escHtml(it.patent_number || String(it.patent_id)) + '</td>'
+    + '<td class="cell-long">' + escHtml(it.title || '') + '</td>'
+    + '<td class="cell-long">' + escHtml(it.reason || '') + '</td>'
+    + '<td class="nowrap"><button class="btn btn-sm" '
+    + 'onclick="restorePrefilterExcluded(' + it.patent_id + ')">還原</button></td>'
+    + '</tr>').join('');
+  wrap.innerHTML = '<table class="table"><thead><tr>'
+    + '<th>專利號</th><th>標題</th><th>剔除原因</th><th></th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+async function restorePrefilterExcluded(patentId) {
+  if (!confirm('把這筆專利放回？放回後會重新計入分析與瀏覽清單。')) return;
+  if (!await prefilterPost('/excluded-patents/restore',
+    { patent_ids: [patentId] })) return;
+  await loadPrefilterReviews();
+  await loadPrefilterArchived();
+  await loadPrefilterSummary();
+}
+
+// ── SSE 增量填入（E.10） ────────────────────────────
+//
+// 🔴 使用者 2026-08-21：「陸續填上，但不要整頁重載也不要影響到使用者」。
+//
+// ⚠ 既有架構的預設是「事件當失效通知、資料重取後**整塊重繪**」
+// （`refreshBrowsePreservingDetails` 就是重繪完再把展開列補回來）。
+// 那會重置捲動與勾選，正是使用者說不要的。
+//
+// 這裡保留「資料從權威 API 來」（避免事件 payload 與 DB 漂移），
+// 但**只換建議那一格**：不碰 <tr>、不重排、不重套篩選。
+// 配合 `prefilterSuggestionCell` 的 `min-height`，填入是原地換字，
+// 捲動位置完全不動。
+async function patchPrefilterSuggestions() {
+  const body = el('prefilter-review-body');
+  if (!body) return;              // 不在這一頁就什麼都不做
+  let items = [];
+  try {
+    items = (await getJson(prefilterWsPath('/prefilter/reviews'))).items || [];
+  } catch (_) { return; }         // 靜默保留舊資料，下一個事件自然恢復
+  prefilterReviewCache = items;
+  items.forEach(function (it) {
+    const cell = body.querySelector(
+      'td.prefilter-suggestion[data-pid="' + it.patent_id + '"]');
+    if (!cell) return;            // 該筆已被裁決而不在清單上——不補畫
+    const next = prefilterSuggestionCell(it);
+    const inner = next.slice(next.indexOf('>') + 1, next.lastIndexOf('</td>'));
+    if (cell.innerHTML !== inner) cell.innerHTML = inner;
+  });
+}
+
+// 關鍵字轉換完成後只重畫關鍵字區與預覽，不動待裁決清單。
+async function refreshPrefilterKeywords() {
+  if (!el('prefilter-keywords')) return;
+  await loadPrefilterKeywords();
+  await loadPrefilterPreview();
+}
+
 // ══════════ SSE 訂閱（斷線退化 30 秒輪詢） ══════════
 let sse = null;
 let ssePollTimer = null;
@@ -5638,15 +6199,13 @@ const JOB_REFRESH_TARGETS = {
   'ai:company_group_suggestion': ['companyGroups'],
   'ai:company_normalization_suggestion': ['companyAliases'],
   'case_comparison': [],     // 比對頁自有流程；本 change 未覆蓋（tasks 3.4 揭露）
-  // ⚠ 初階篩選的兩條 AI 線（2026-08-21）：**目前給空陣列是因為頁面還沒建**，
-  //    不是因為沒有可見面。切片 E 建出初階篩選頁時必須改成實際資源
-  //    （tasks E.9 已登記，不是只靠這行註解記著）。
-  //    🔴 不能現在就先填資源名：RESOURCE_REFRESHERS 是 const 字面量、載入時即
-  //    求值，指向尚不存在的函式會 ReferenceError 讓**整個前端掛掉**——
-  //    語法檢查抓不到（未定義參照不是語法錯），只有真的開頁面才會現形。
-  //    2026-08-21 移除 deckExports 時就是踩這個。
-  'ai:keyword_expand': [],
-  'ai:prefilter_review': [],
+  // 初階篩選的兩條 AI 線（2026-08-21，切片 E 接上）。
+  // ⚠ 兩者刷新的東西不同，不能共用一個資源：
+  //   - 轉換完成 → 只重畫關鍵字區與預覽，**不動待裁決清單**
+  //   - 建議完成 → 只換待裁決清單的建議格，**不重繪表格**（使用者要求
+  //     「填上後不要影響到使用者」，見 patchPrefilterSuggestions）
+  'ai:keyword_expand': ['prefilterKeywords'],
+  'ai:prefilter_review': ['prefilterSuggestions'],
 };
 
 // 資源 → { navs: 適用頁（null＝任何頁）, run: 刷新函式 }。
@@ -5663,6 +6222,12 @@ const RESOURCE_REFRESHERS = {
   //    而本物件是 const 字面量、載入時即求值——留著會 ReferenceError 讓**整個前端掛掉**。
   //    語法檢查抓不到（未定義參照不是語法錯），這種缺陷只有真的開頁面才會現形。
   'companyAliases': { navs: ['browse'], run: renderCompanyCodeRegistry },
+  // 初階篩選（2026-08-21）。⚠ 兩者都只在初階篩選頁生效——停在別頁時
+  // `scheduleResourceRefresh` 會直接略過，不做無謂的 fetch。
+  'prefilterKeywords': { navs: ['prefilter'], run: refreshPrefilterKeywords },
+  // 🔴 這條**刻意不是整塊重繪**：它只換建議那一格，不碰 <tr>、不重排、
+  // 不重套篩選，配合建議格的 min-height 讓捲動位置完全不動。
+  'prefilterSuggestions': { navs: ['prefilter'], run: patchPrefilterSuggestions },
 };
 
 const REFRESH_DEBOUNCE_MS = 1500;   // design.md「合併」：同資源事件 1.5 秒窗合併

@@ -540,6 +540,122 @@ class PrefilterApiTests(PrefilterDecisionTests):
         self.assertEqual(body["pending_count"], 3, "套用後待裁決數沒更新")
         self.assertEqual(body["todo_count"], 4, "todo_count 不是兩者之和")
 
+    def test_reviews_endpoint_carries_snippets(self):
+        """🔴 命中原因要帶**命中的那段原文**（使用者 2026-08-21）。
+
+        ⚠ 只給「被 mow 命中」，使用者無從判斷那是不是誤剔——看得到那句話
+        才分得出「割草機」與「帶吹風平台的割草載具」。
+        """
+        c = self._client()
+        c.post("/api/v1/workspaces/901/prefilter/apply")
+        r = c.get("/api/v1/workspaces/901/prefilter/reviews")
+        self.assertEqual(r.status_code, 200, r.text)
+        items = {i["patent_id"]: i for i in r.json()["items"]}
+        self.assertEqual(sorted(items), [2001, 2002, 2003])
+
+        hits = items[2001]["hits"]
+        self.assertTrue(hits, "沒有帶命中資訊")
+        self.assertEqual(hits[0]["keyword"], "割草", "沒帶是哪個關鍵字命中的")
+        self.assertEqual(hits[0]["term"], "mow", "沒帶是哪個比對詞命中的")
+        self.assertIn("snippet", hits[0], "沒帶命中的原文")
+        self.assertTrue(hits[0]["snippet"].strip(), "命中原文是空的")
+        self.assertIn("label", hits[0], "沒帶命中欄位的名稱")
+
+    def test_reviews_endpoint_is_prefilter_scoped(self):
+        """🔴 初階篩選頁只列初篩命中的，不混入 AI 線的待複核。
+
+        ⚠ AI 線的列沒有命中關鍵字，混進來會是一列「沒有命中原因」的東西，
+        使用者無從理解它為什麼在這裡。
+        """
+        from backend.app.clustering.exclusions import store_ai_verdicts
+
+        c = self._client()
+        c.post("/api/v1/workspaces/901/prefilter/apply")
+        store_ai_verdicts(901, [{"patent_id": 2004, "verdict": "不相干",
+                                 "reason": "AI 說的"}], conn=self.conn)
+        items = c.get("/api/v1/workspaces/901/prefilter/reviews").json()["items"]
+        self.assertNotIn(2004, [i["patent_id"] for i in items],
+                         "AI 線的待複核混進初階篩選清單了")
+
+    def test_summary_pending_count_matches_the_list(self):
+        """🔴 入口徽章的數字必須等於清單長度。
+
+        ⚠ 兩邊算法不同就會出現「徽章說 5 筆、點進去只有 3 筆」——
+        使用者會以為系統壞了，或以為有兩筆被吃掉。
+        """
+        from backend.app.clustering.exclusions import store_ai_verdicts
+
+        c = self._client()
+        c.post("/api/v1/workspaces/901/prefilter/apply")
+        store_ai_verdicts(901, [{"patent_id": 2004, "verdict": "不相干",
+                                 "reason": "AI 說的"}], conn=self.conn)
+
+        summary = c.get("/api/v1/workspaces/901/prefilter/summary").json()
+        items = c.get("/api/v1/workspaces/901/prefilter/reviews").json()["items"]
+        self.assertEqual(
+            summary["pending_count"], len(items),
+            "徽章數與清單長度不一致——兩邊各自算了一次")
+
+    def test_reviews_carry_suggestion_state(self):
+        """四種建議狀態要分得出來（PRE-008）。"""
+        from backend.app.prefilter import suggestions
+
+        c = self._client()
+        c.post("/api/v1/workspaces/901/prefilter/apply")
+        suggestions.store_suggestions(
+            901,
+            [{"patent_id": 2001, "verdict": "exclude", "reason": "與範圍無關"}],
+            conn=self.conn)
+        items = {i["patent_id"]: i
+                 for i in c.get("/api/v1/workspaces/901/prefilter/reviews")
+                          .json()["items"]}
+        self.assertEqual(items[2001]["scope_verdict"], "exclude")
+        self.assertEqual(items[2001]["scope_reason"], "與範圍無關")
+        self.assertIsNone(items[2002]["scope_verdict"],
+                          "尚未產生建議者不是 null——會與「無判讀依據」混淆")
+
+    def test_term_counts_endpoint_covers_unconfirmed(self):
+        """🔴 確認畫面的判斷依據：未確認的詞也要算得出件數與詞形。
+
+        ⚠ `/prefilter/preview` 只算已確認的（PRE-002），確認畫面用不上。
+        """
+        from backend.app.prefilter import keywords as kw
+
+        row = kw.create_keyword(901, "機器", conn=self.conn)
+        kw.update_keyword(row["keyword_id"], match_terms=["mow", "zzzz"],
+                          conn=self.conn)          # 刻意不確認
+        c = self._client()
+        r = c.post("/api/v1/workspaces/901/prefilter/term-counts",
+                   json={"terms": ["mow", "zzzz"]})
+        self.assertEqual(r.status_code, 200, r.text)
+        by_term = {i["term"]: i for i in r.json()["items"]}
+        self.assertEqual(by_term["mow"]["patent_count"], 3)
+        self.assertIn("mower", by_term["mow"]["forms"] + ["mower"])
+        self.assertEqual(by_term["zzzz"]["patent_count"], 0, "零命中被省略了")
+
+    def test_term_counts_is_workspace_scoped(self):
+        """🔴 只能算這個 workspace 的成員，不得掃全庫。
+
+        ⚠ 掃全庫的話畫面顯示的件數與實際套用結果不同——使用者會照著一個
+        永遠對不上的數字做決定。
+        """
+        c = self._client()
+        with self.conn.cursor() as cur:
+            cur.execute("INSERT INTO app_layer.workspaces "
+                        "(workspace_id, workspace_name, is_global) "
+                        "VALUES (902, 'B', false)")
+        r = c.post("/api/v1/workspaces/902/prefilter/term-counts",
+                   json={"terms": ["mow"]})
+        self.assertEqual(r.json()["items"][0]["patent_count"], 0,
+                         "算到別的 workspace 的專利了")
+
+    def test_term_counts_rejects_empty(self):
+        c = self._client()
+        r = c.post("/api/v1/workspaces/901/prefilter/term-counts",
+                   json={"terms": []})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["items"], [])
+
     def test_apply_endpoint_writes_pending_only(self):
         c = self._client()
         r = c.post("/api/v1/workspaces/901/prefilter/apply")

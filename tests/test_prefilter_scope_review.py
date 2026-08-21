@@ -215,7 +215,44 @@ class PrefilterScopeReviewTests(unittest.TestCase):
         self.assertNotIn("Lawn mower blade assembly", joined,
                          "專利內文被塞進 argv 了")
 
-    # ── 5. 空輸入 ────────────────────────────────────────
+    # ── 5. 內部名稱不得洩漏到給人看的文字 ────────────────
+    def test_prompt_forbids_internal_field_names(self):
+        """🔴 2026-08-21 實跑抓到：AI 把 payload 的欄位名寫進理由。
+
+        實際產出：「…屬於 **batch_scope** 的割草機刀盤機構範圍。」
+
+        ⚠ `batch_scope`／`title`／`claims` 是我給機器看的鍵名，不是使用者的詞彙。
+        洩漏出來的後果不只是難看——使用者會以為那是系統的某個設定項而去找它，
+        或乾脆看不懂整句話而略過建議，等於這欄白做。
+
+        🔴 根因是**我在 instruction 裡自己這樣寫的**（「說明它與 batch_scope 的
+        關係」）——模型只是照做。所以修在 prompt，不是事後用字串比對過濾：
+        過濾會漏掉沒列舉到的名稱，而且改欄名時不會有人記得同步。
+        """
+        from backend.app.worker import ai_prefilter_review_runner as m
+
+        text = m.build_payload("割草機", ITEMS)["instruction"]
+        self.assertIn("不要提到", text, "沒有明令禁止提及內部名稱")
+
+        # ⚠ 禁止用語本身要舉那些名字當**反例**（具體反例對 LLM 遠比抽象指示
+        #   有效），所以不能整段禁掉——只檢查它們沒出現在**其他**行。
+        lines = [ln for ln in text.splitlines() if "不要提到" not in ln]
+        for name in ("batch_scope", "output_contract", "patent_id"):
+            with self.subTest(name=name):
+                self.assertNotIn(
+                    name, "\n".join(lines),
+                    f"instruction 在禁止句以外的地方叫模型引用內部鍵名 {name}")
+
+    def test_payload_still_carries_the_three_fields(self):
+        """⚠ 禁止**提及**欄位名，不等於不給欄位內容——依據還是要送過去。"""
+        from backend.app.worker import ai_prefilter_review_runner as m
+
+        payload = m.build_payload("割草機", ITEMS)
+        first = payload["items"][0]
+        for key in ("title", "abstract", "claims"):
+            self.assertIn(key, first, f"payload 缺 {key}")
+
+    # ── 6. 空輸入 ────────────────────────────────────────
     def test_no_targets_is_not_an_error(self):
         """沒有待判讀的專利＝正常結果，不是失敗。"""
         out = self._run(items=[], cli_runner=self._fake_cli([]))

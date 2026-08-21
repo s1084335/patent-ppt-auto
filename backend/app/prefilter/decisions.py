@@ -94,6 +94,57 @@ def apply_prefilter(workspace_id: int, *, conn: Any | None = None) -> int:
         return len(rows)
 
 
+def pending_prefilter_reviews(workspace_id: int, *,
+                              conn: Any | None = None) -> list[dict[str, Any]]:
+    """初階篩選的待裁決清單：既有欄位 ＋ **命中的那段原文**。
+
+    ## 🔴 為什麼只列 `source='prefilter'`
+
+    AI 線（`ai:irrelevant_filter`）也往同一張表寫 pending，但它的列**沒有
+    命中關鍵字**。混進來會是一列「沒有命中原因」的東西，使用者無從理解
+    它為什麼在這裡。兩條線的待裁決各自呈現在各自的頁面。
+
+    ⚠ `prefilter/summary` 的 `pending_count` 必須用同一個口徑，否則會出現
+    「徽章說 5 筆、點進去只有 3 筆」——使用者會以為系統壞了。
+
+    ## 命中文本即算不落庫
+
+    ⚠ 文本是**推導得出**的（見 0057 註解）：存下來就是專利內文的第二份副本，
+    會與來源漂移。這裡每次查詢重算，成本是每個關鍵字一次索引查詢。
+
+    ⚠ **逐關鍵字分開查**而不是把所有詞混在一起：使用者要看到
+    「割草（mow）」而不只是「mow」，而詞屬於哪個關鍵字只有分開查才知道。
+
+    回傳每筆多一個 `hits`：`[{keyword, term, field, label, snippet, also}]`。
+    """
+    from backend.app.clustering.exclusions import pending_reviews
+    from backend.app.prefilter import keywords as kw
+
+    with _conn_ctx(conn) as c:
+        rows = [r for r in pending_reviews(workspace_id, conn=c)
+                if r.get("source") == SOURCE]
+        if not rows:
+            return []
+
+        pending_ids = [r["patent_id"] for r in rows]
+        hits_by_patent: dict[int, list[dict[str, Any]]] = {}
+        for row in kw.list_keywords(workspace_id, conn=c):
+            if not (row["enabled"] and row["terms_confirmed"]):
+                continue
+            terms = [t for t in (row["match_terms"] or []) if str(t).strip()]
+            if not terms:
+                continue
+            found = matching.match_snippets(terms, patent_ids=pending_ids, conn=c)
+            for pid, hits in found.items():
+                for hit in hits:
+                    hits_by_patent.setdefault(pid, []).append(
+                        {"keyword": row["original_term"], **hit})
+
+    for row in rows:
+        row["hits"] = hits_by_patent.get(row["patent_id"], [])
+    return rows
+
+
 def browsable_patent_ids(workspace_id: int, *,
                          conn: Any | None = None) -> list[int]:
     """瀏覽清單用的成員：全部成員**扣除已封存者**（PRE-006）。
