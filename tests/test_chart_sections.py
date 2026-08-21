@@ -1,4 +1,4 @@
-"""⚠ 2026-08-06 契約變更（RPT-011，openspec improve-report-professionalism）：
+﻿"""⚠ 2026-08-06 契約變更（RPT-011，openspec improve-report-professionalism）：
 owner_ranking／owner_year_matrix／family_quality_detail 三張報表已刪
 （留痕見 tests/test_report_catalog_removals.py 檔頭）。本檔原以 applicant_year_matrix
 當泡泡矩陣／refresh 的 fixture——**防護意圖不變**，fixture 全面改用仍存在的
@@ -1319,7 +1319,7 @@ class SectionReportKeyTests(unittest.TestCase):
         """
         # 🔴 2026-08-07：國家佈局（現有保護）獨立卡已刪——併入受理局合併頁。
         expected = {
-            "專利申請趨勢與專利授權公告趨勢": "application_trend",
+            "專利申請與授權公告趨勢": "application_trend",
             "專利受理局分布": "country_distribution",
             "公司×國家交叉表": "applicant_country_distribution",
         }
@@ -1362,7 +1362,7 @@ class SectionReportKeyTests(unittest.TestCase):
             title = re.search(r"<h2>(.*?)</h2>", block).group(1)
             by_title[title] = block
         # 🔴 2026-08-07：國家佈局卡已刪（併入受理局合併頁），不再驗其獨立卡。
-        for title in ("專利申請趨勢與專利授權公告趨勢", "專利受理局分布",
+        for title in ("專利申請與授權公告趨勢", "專利受理局分布",
                       "公司×國家交叉表"):
             self.assertIn(title, by_title, f"缺少卡片 {title}")
             self.assertNotIn(

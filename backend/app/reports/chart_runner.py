@@ -4068,10 +4068,15 @@ class ChartContext:
 
 def _build_trend_section(ctx: ChartContext) -> None:
     """申請＋公告趨勢雙線圖（兩張報表固定同圖，選其一也會補齊另一條線）。"""
-    # 標題一律取自報表引擎定義的 label_zh（唯一來源），chart_runner 不自己寫標題字串。
+    # 標題一律取自報表引擎定義（唯一來源），chart_runner 不自己寫標題字串。
+    # ⚠ 2026-08-21 使用者定案：合併章節有自己的名稱，不再用
+    # `f'{申請 label_zh}與{公告 label_zh}'` 串接——那會串出「專利申請趨勢與
+    # 專利授權公告趨勢」，「趨勢」出現兩次。兩張報表各自的 label_zh 不變。
+    from backend.app.reports.report_definitions import MERGED_TREND_LABEL_ZH
+
     application = ctx.report("application_trend")
     publication = ctx.report("publication_trend")
-    trend_title = f'{application["label_zh"]}與{publication["label_zh"]}'
+    trend_title = MERGED_TREND_LABEL_ZH
     render_line_chart(ctx.run_dir / "annual_trend.svg", trend_title, application["rows"], publication["rows"])
     # 年度四欄（問題 9）：圖不改（仍是件數雙線），四欄只進數據表與解讀素材。
     ctx.chart_rows["annual_trend"] = merge_annual_trend_rows(
