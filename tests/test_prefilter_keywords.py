@@ -371,6 +371,82 @@ class PrefilterScopeApiTests(PrefilterKeywordTests):
         self.assertEqual(r.status_code, 400, r.text)
 
 
+class PrefilterAiTriggerApiTests(PrefilterKeywordTests):
+    """兩條 AI 線的派工端點（C2.5／B）。
+
+    ⚠ 只驗**接線**：job 有沒有被建出來、型別對不對、擋不擋得住不該跑的情形。
+    runner 本身的行為在 `test_prefilter_scope_review.py`（不連 DB）。
+    """
+
+    def _client(self):
+        from fastapi.testclient import TestClient
+
+        from backend.app.main import app
+
+        return TestClient(app)
+
+    def _job(self, job_id):
+        # ⚠ 表名是 workflow_runs、欄名是 run_type／request_json——
+        #   job 是 API 層的說法，DB 層叫 run。憑印象寫成 processing_jobs 會
+        #   得到 UndefinedTable，症狀看起來像端點壞了，實際是查詢寫錯。
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT run_type, request_json FROM app_layer.workflow_runs "
+                "WHERE run_id = %s", (job_id,))
+            return cur.fetchone()
+
+    def test_keyword_expand_enqueues_job(self):
+        from backend.app.prefilter import keywords as kw
+
+        row = kw.create_keyword(901, "割草", conn=self.conn)
+        c = self._client()
+        r = c.post(f"/api/v1/workspaces/901/negative-keywords/"
+                   f"{row['keyword_id']}/expand")
+        self.assertEqual(r.status_code, 200, r.text)
+        job_type, payload = self._job(r.json()["job_id"])
+        self.assertEqual(job_type, "ai:keyword_expand")
+        self.assertEqual(payload["keyword_id"], row["keyword_id"])
+        self.assertEqual(payload["original_term"], "割草")
+
+    def test_keyword_expand_rejects_cross_workspace(self):
+        """🔴 路徑帶了 workspace_id 不等於守住了——不驗歸屬就能改別人的關鍵字。"""
+        from backend.app.prefilter import keywords as kw
+
+        row = kw.create_keyword(902, "割草", conn=self.conn)
+        c = self._client()
+        r = c.post(f"/api/v1/workspaces/901/negative-keywords/"
+                   f"{row['keyword_id']}/expand")
+        self.assertEqual(r.status_code, 404, r.text)
+
+    def test_review_requires_scope_description(self):
+        """🔴 沒填範圍描述就派工，等於讓 AI 憑空判斷。
+
+        ⚠ 擋在派工端而不是等 job 失敗：使用者按下按鈕後要**立刻**知道
+        該去填什麼，而不是等幾分鐘看到一個失敗的任務卡。
+        """
+        c = self._client()
+        r = c.post("/api/v1/workspaces/901/prefilter/review")
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("範圍描述", r.json()["detail"])
+
+    def test_review_enqueues_job_when_scope_present(self):
+        from backend.app.prefilter import scope
+
+        scope.set_scope_description(901, "自走式割草機的驅動與刀盤機構",
+                                    conn=self.conn)
+        c = self._client()
+        r = c.post("/api/v1/workspaces/901/prefilter/review")
+        self.assertEqual(r.status_code, 200, r.text)
+        job_type, payload = self._job(r.json()["job_id"])
+        self.assertEqual(job_type, "ai:prefilter_review")
+        self.assertEqual(payload["workspace_id"], 901)
+
+    def test_review_rejects_global_workspace(self):
+        c = self._client()
+        r = c.post("/api/v1/workspaces/903/prefilter/review")
+        self.assertEqual(r.status_code, 400, r.text)
+
+
 class PrefilterKeywordApiTests(PrefilterKeywordTests):
     """A.4／A.6：CRUD 端點與 workspace 範圍守門。
 

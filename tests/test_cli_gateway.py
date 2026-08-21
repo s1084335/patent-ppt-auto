@@ -116,6 +116,11 @@ class MinimalPrivilegePreservedTests(unittest.TestCase):
         # ⚠ runner 自行 partial(tools=NO_TOOLS)，不從其他 runner import
         # ——那些是 partial(tools=RESEARCH_TOOLS)，會靜默取得 12 支工具＋MCP。
         "ai:keyword_expand": "NO_TOOLS",
+        # 初階篩選的範圍相關性判讀（2026-08-21，PRE-008）：讀 payload 檔裡的
+        # 標題／摘要／獨立項，不寫檔、不上網、不執行任何東西 ⇒ 只有 Read。
+        # ⚠ 專利文字是**外部輸入**，不給 Bash／WebFetch 是為了避免文字內的
+        # prompt injection 取得執行或連外能力（與 patent_note 同一理由）。
+        "ai:prefilter_review": "READ_ONLY_TOOLS",
         }
 
     DATA_FILE_RUNNERS: ClassVar[dict[str, tuple[str, str]]] = {
@@ -123,6 +128,7 @@ class MinimalPrivilegePreservedTests(unittest.TestCase):
         "ai:patent_note": ("ai_patent_note_runner", "run_patent_note"),
         "ai:company_zh_name": ("ai_company_zh_name_runner", "run_company_zh_name"),
         "ai:irrelevant_filter": ("ai_irrelevant_filter_runner", "run_irrelevant_filter"),
+        "ai:prefilter_review": ("ai_prefilter_review_runner", "run_prefilter_review"),
     }
 
     def _assert_policy_is_complete(self, job_types):

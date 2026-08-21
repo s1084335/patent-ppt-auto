@@ -369,6 +369,136 @@ class PrefilterDecisionTests(unittest.TestCase):
                       "已保留者不在瀏覽清單裡")
 
 
+class PrefilterScopeVerdictTests(PrefilterDecisionTests):
+    """PRE-008：AI 對命中專利建議留或剔（0057 + suggestions 模組）。
+
+    ## 🔴 本組守的核心是「建議不得變成決定」
+
+    AI 只能建議，使用者才有決定權。這件事有兩個層面，都要守：
+    1. 寫入建議**不得改變 status**（護欄，非 code review）
+    2. 「還沒跑」與「跑了但沒依據」**不得混為一談**——混在一起的話，
+       使用者會把後者當成前者而一直等，而空白會被讀成「沒問題」。
+    """
+
+    def _scope_rows(self):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT patent_id, status, reason, scope_verdict, scope_reason, "
+                "       scope_judged_at "
+                "FROM derived_layer.workspace_excluded_patents "
+                "WHERE workspace_id = 901 ORDER BY patent_id")
+            return {r[0]: {"status": r[1], "reason": r[2], "verdict": r[3],
+                           "scope_reason": r[4], "judged_at": r[5]}
+                    for r in cur.fetchall()}
+
+    def test_suggestion_does_not_change_status(self):
+        """🔴 PRE-008：建議完成後該專利仍為待裁決。"""
+        from backend.app.prefilter import decisions, suggestions
+
+        decisions.apply_prefilter(901, conn=self.conn)
+        suggestions.store_suggestions(
+            901, [{"patent_id": 2001, "verdict": "exclude", "reason": "與範圍無關"}],
+            conn=self.conn)
+        row = self._scope_rows()[2001]
+        self.assertEqual(row["status"], "pending", "建議把狀態改掉了——AI 越權裁決")
+        self.assertEqual(row["verdict"], "exclude")
+        self.assertEqual(row["scope_reason"], "與範圍無關")
+
+    def test_suggestion_kept_separate_from_match_reason(self):
+        """🔴 命中原因與建議理由必須分欄——使用者要分得出這兩件事。"""
+        from backend.app.prefilter import decisions, suggestions
+
+        decisions.apply_prefilter(901, conn=self.conn)
+        suggestions.store_suggestions(
+            901, [{"patent_id": 2001, "verdict": "keep", "reason": "屬本批範圍"}],
+            conn=self.conn)
+        row = self._scope_rows()[2001]
+        self.assertIn("割草", row["reason"], "命中原因被建議覆蓋了")
+        self.assertEqual(row["scope_reason"], "屬本批範圍")
+
+    def test_no_suggestion_is_distinguishable_from_no_basis(self):
+        """🔴 「還沒跑」與「跑了但沒依據」是兩件事，不得都用空白表示。
+
+        ⚠ 混在一起的後果：使用者把「無判讀依據」當成「還在跑」而一直等。
+        空白會被讀成「沒問題」——缺席型偏差。
+        """
+        from backend.app.prefilter import decisions, suggestions
+
+        decisions.apply_prefilter(901, conn=self.conn)
+        suggestions.store_suggestions(
+            901, [{"patent_id": 2001, "verdict": "no_basis", "reason": None}],
+            conn=self.conn)
+        rows = self._scope_rows()
+        self.assertEqual(rows[2001]["verdict"], "no_basis")
+        self.assertIsNone(rows[2002]["verdict"], "沒跑過的被填成某個建議了")
+
+    def test_invalid_verdict_rejected(self):
+        """值域由 DB CHECK 守住，不是靠呼叫端自律。"""
+        import psycopg
+
+        from backend.app.prefilter import decisions, suggestions
+
+        decisions.apply_prefilter(901, conn=self.conn)
+        with self.assertRaises((ValueError, psycopg.errors.CheckViolation)):
+            suggestions.store_suggestions(
+                901, [{"patent_id": 2001, "verdict": "maybe", "reason": "x"}],
+                conn=self.conn)
+
+    def test_suggestion_never_touches_excluded_or_kept(self):
+        """🔴 已裁決者不得因建議到達而回到待裁決或被改動。
+
+        ⚠ 使用者 2026-08-21：「填上後不要影響使用者」。已按過保留／剔除的列
+        被建議寫回 pending，等於把使用者的決定作廢。
+        """
+        from backend.app.clustering.exclusions import confirm_exclusions, keep_patents
+        from backend.app.prefilter import decisions, suggestions
+
+        decisions.apply_prefilter(901, conn=self.conn)
+        keep_patents(901, [2001], conn=self.conn)
+        confirm_exclusions(901, [2002], conn=self.conn)
+
+        suggestions.store_suggestions(
+            901,
+            [{"patent_id": 2001, "verdict": "exclude", "reason": "r1"},
+             {"patent_id": 2002, "verdict": "keep", "reason": "r2"}],
+            conn=self.conn)
+
+        rows = self._scope_rows()
+        self.assertEqual(rows[2001]["status"], "kept", "已保留者被建議改掉了")
+        self.assertEqual(rows[2002]["status"], "excluded", "已剔除者被建議改掉了")
+
+    def test_pending_reviews_carries_suggestion(self):
+        """待裁決清單要帶得出建議，前端才拿得到（PRE-008 分別呈現）。"""
+        from backend.app.clustering.exclusions import pending_reviews
+        from backend.app.prefilter import decisions, suggestions
+
+        decisions.apply_prefilter(901, conn=self.conn)
+        suggestions.store_suggestions(
+            901, [{"patent_id": 2001, "verdict": "exclude", "reason": "與範圍無關"}],
+            conn=self.conn)
+        by_pid = {r["patent_id"]: r for r in pending_reviews(901, conn=self.conn)}
+        self.assertEqual(by_pid[2001]["scope_verdict"], "exclude")
+        self.assertEqual(by_pid[2001]["scope_reason"], "與範圍無關")
+        self.assertIsNone(by_pid[2002]["scope_verdict"], "沒建議的欄位不是 None")
+
+    def test_targets_lists_only_pending_without_verdict(self):
+        """要送去判讀的對象＝待裁決且尚無建議者。
+
+        ⚠ 已有建議者不重送：重跑要花錢，而且同一批輸入的答案不保證相同，
+        重送只會讓使用者看到建議無故變動。
+        """
+        from backend.app.prefilter import decisions, suggestions
+
+        decisions.apply_prefilter(901, conn=self.conn)
+        self.assertEqual(sorted(suggestions.pending_targets(901, conn=self.conn)),
+                         [2001, 2002, 2003])
+        suggestions.store_suggestions(
+            901, [{"patent_id": 2001, "verdict": "keep", "reason": "x"}],
+            conn=self.conn)
+        self.assertEqual(sorted(suggestions.pending_targets(901, conn=self.conn)),
+                         [2002, 2003])
+
+
 class PrefilterApiTests(PrefilterDecisionTests):
     """初階篩選的三支端點（預覽／待辦數／套用）。
 

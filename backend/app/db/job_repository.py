@@ -78,6 +78,13 @@ AI_JOB_TYPES: frozenset[str] = frozenset(
         # ⚠ 產出一律為**未確認草稿**，使用者確認才生效（PRE-002）。
         # 工具權限 NO_TOOLS——只做中英轉換，不讀檔、不查 DB、不上網。
         "ai:keyword_expand",
+        # 初階篩選：AI 讀命中專利的標題／摘要／獨立項，對照使用者填的整批範圍描述，
+        # 建議保留或剔除（PRE-008）。🔴 只是建議——不改變任何專利的排除狀態，
+        # 使用者仍逐筆確認；護欄在 prefilter.suggestions（SET 裡沒有 status）。
+        # ⚠ 判讀依據限那三個欄位＋範圍描述，**不得依賴分群結果**——
+        #   初階篩選發生在分群之前，topic_label 對它永遠是 NULL。
+        # 資料走 payload 檔、按字數切批（獨立項單篇逾萬字）；權限 READ_ONLY_TOOLS。
+        "ai:prefilter_review",
         # ⚠ ai:report_ppt 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
         # ⚠ ai:report_deck 已隨 deck 交付線移除（2026-08-20 停產定案，2026-08-21 合併時
         #   一併清掉 job type、handler 與 API 路由）。整條線封存於

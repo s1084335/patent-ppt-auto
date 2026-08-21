@@ -385,7 +385,8 @@ def pending_reviews(workspace_id: int, *, conn: Any | None = None) -> list[dict[
                        ex.source,
                        """ + display_number_sql("p") + """ AS patent_number,
                        p."title"  AS title,
-                       p."country_code" AS country_code
+                       p."country_code" AS country_code,
+                       ex.scope_verdict, ex.scope_reason
                 FROM derived_layer.workspace_excluded_patents ex
                 LEFT JOIN latest_assign la ON la.patent_id = ex.patent_id
                 LEFT JOIN topic_labels  tl ON tl.topic_code = la.topic_key
@@ -402,11 +403,13 @@ def pending_reviews(workspace_id: int, *, conn: Any | None = None) -> list[dict[
             values = (row["patent_id"], row["ai_verdict"], row["reason"],
                       row["excluded_at"], row["topic_label"], row["patent_note"],
                       row["source"], row["patent_number"], row["title"],
-                      row["country_code"])
+                      row["country_code"], row["scope_verdict"],
+                      row["scope_reason"])
         else:
-            values = tuple(row[i] for i in range(10))
+            values = tuple(row[i] for i in range(12))
         (patent_id, verdict, reason, reviewed_at, topic_label, note,
-         source, patent_number, title, country_code) = values
+         source, patent_number, title, country_code,
+         scope_verdict, scope_reason) = values
         result.append({
             "patent_id": int(patent_id),
             "ai_verdict": verdict,
@@ -421,6 +424,13 @@ def pending_reviews(workspace_id: int, *, conn: Any | None = None) -> list[dict[
             "patent_number": patent_number,
             "title": title,
             "country_code": country_code,
+            # PRE-008（2026-08-21）：AI 對「與整批範圍的關係」的建議。
+            # 🔴 與 `reason`（為什麼被列入）分欄——使用者要分得出
+            # 「為什麼被抓到」與「為什麼建議剔除」。
+            # ⚠ None＝尚未產生建議；'no_basis'＝跑過但三欄皆空。
+            # 兩者前端必須顯示成不同的東西，不得都留白。
+            "scope_verdict": scope_verdict,
+            "scope_reason": scope_reason,
         })
     return result
 

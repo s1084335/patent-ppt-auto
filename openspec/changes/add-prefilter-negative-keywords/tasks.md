@@ -140,20 +140,32 @@ Red → Green → Refactor 才進下一個。
 （使用者：「要看的欄位是獨立項、摘要和標題，去給建議說和整批專利範圍要不要留」）。
 已整段移除，不留半套。
 
-- [ ] C2.1 Green：workspace 存一句**範圍描述**（使用者填）
+- [x] C2.1 Green：workspace 存一句**範圍描述**（使用者填）
       → 落 `workspaces.settings_json`，**不需 migration**。
       ⚠ 使用者裁決不用 workspace 名稱：「自走式割草機」五個字，
       AI 判斷不了「刀片結構算不算範圍內」。
-- [ ] C2.2 Red：建議**不改變**任何專利狀態（護欄，非 code review）
-- [ ] C2.3 Red：三個欄位皆空者標示「無判讀依據」，**不得產生沒有根據的建議**
-- [ ] C2.4 Red：建議失敗或尚未產生時，待裁決清單仍可正常呈現與裁決；
+- [x] C2.2 Red：建議**不改變**任何專利狀態（護欄，非 code review）
+- [x] C2.3 Red：三個欄位皆空者標示「無判讀依據」，**不得產生沒有根據的建議**
+- [x] C2.4 Red：建議失敗或尚未產生時，待裁決清單仍可正常呈現與裁決；
       該筆明確標示「尚無建議」——🔴 **不得以空白混充為「建議保留」**
-- [ ] C2.5 Green：新增 `ai:prefilter_review` job type（**四處**註冊，見切片 B 教訓）
-- [ ] C2.6 Green：runner。⚠ payload 走檔案且**按字數切批**——
+- [x] C2.5 Green：新增 `ai:prefilter_review` job type（**五處**註冊——切片 B 以為
+      是四處，實際還有前端 `JOB_REFRESH_TARGETS`，見下方）
+- [x] C2.6 Green：runner。⚠ payload 走檔案且**按字數切批**——
       獨立項單篇可逾萬字，183 件塞進 prompt 必爆；沿 `ai:patent_note` 既有做法。
-- [ ] C2.7 Green：命中原因與 AI 建議**分欄保存**（PRE-008）——
+- [x] C2.7 Green：命中原因與 AI 建議**分欄保存**（PRE-008）——
       使用者要分得出「為什麼被抓到」與「為什麼建議剔除」
 - [ ] C2.8 驗收：實跑一批，檢視建議是否引用得到三個欄位的內容
+
+### ⚠ C-2 過程中發現：切片 B 漏了第五處註冊
+
+AI job 註冊點是**五處**不是四處——前端 `JOB_REFRESH_TARGETS` 也是一處，
+而且它有跨層對帳測試（`test_sse_data_refresh_frontend`）。切片 B 的
+`ai:keyword_expand` 漏了，該測試自那時起一直紅。已補。
+
+- [ ] E.9 把 `ai:keyword_expand` 與 `ai:prefilter_review` 的刷新目標從 `[]`
+      改成實際資源。🔴 **現在不能先填**：`RESOURCE_REFRESHERS` 是 const 字面量、
+      載入時即求值，指向尚不存在的函式會 ReferenceError 讓整個前端掛掉
+      （語法檢查抓不到，只有真的開頁面才現形）。
 
 ## 切片 D：裁決與封存——2026-08-21 完成，28 passed
 

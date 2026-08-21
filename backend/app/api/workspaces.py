@@ -518,6 +518,71 @@ async def update_negative_keyword(
     return {"workspace_id": workspace_id, "keyword": row}
 
 
+@router.post("/workspaces/{workspace_id}/negative-keywords/{keyword_id}/expand")
+async def trigger_keyword_expand(
+    workspace_id: int = Path(ge=1),
+    keyword_id: int = Path(ge=1),
+) -> dict[str, Any]:
+    """派工把負面關鍵字轉成英文比對詞（PRE-002）。
+
+    ⚠ 先驗歸屬：路徑帶了 workspace_id 不等於守住了——不驗的話，
+    知道 keyword_id 就能替別的 workspace 派工。
+
+    ⚠ 產出一律為未確認草稿，使用者確認才生效；轉換失敗也不阻斷——
+    使用者仍可自行輸入英文比對詞（那條路徑不經過本端點）。
+    """
+    from backend.app.prefilter import keywords as kw
+
+    owned = await run_in_threadpool(kw.list_keywords, workspace_id)
+    row = next((r for r in owned if r["keyword_id"] == keyword_id), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="關鍵字不存在或不屬於此 workspace")
+
+    # ⚠ create_job 回的是 ProcessingJob 物件不是 id。本檔既有的
+    # trigger_irrelevant_filter／trigger_patent_notes 直接把物件放在 `job_id`
+    # 鍵下（前端只看 resp.ok，所以一直沒人發現）。新端點回真正的整數，
+    # 讓鍵名與內容相符——追進度要拿它去打 /tasks。
+    job = create_job(
+        "ai:keyword_expand",
+        {"keyword_id": keyword_id, "original_term": row["original_term"]},
+        workspace_id=workspace_id,
+    )
+    return {"workspace_id": workspace_id, "keyword_id": keyword_id,
+            "job_id": job.job_id}
+
+
+@router.post("/workspaces/{workspace_id}/prefilter/review")
+async def trigger_prefilter_review(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """派工讓 AI 對命中專利建議留或剔（PRE-008）。
+
+    🔴 **沒填範圍描述就擋在這裡**（400），不讓 job 建出來再失敗：
+    使用者按下按鈕後要**立刻**知道該去填什麼，而不是等幾分鐘看到一個
+    失敗的任務卡——後者不但慢，還會被誤讀成「AI 壞了」。
+
+    ⚠ 全庫擋下：初階篩選是 workspace 級，全庫是總覽本就該全收。
+    """
+    from backend.app.prefilter import scope
+
+    if await run_in_threadpool(is_global_workspace, workspace_id):
+        raise HTTPException(
+            status_code=400,
+            detail="全庫 workspace 不做初階篩選：全庫是總覽，本就該全收")
+
+    text = await run_in_threadpool(scope.get_scope_description, workspace_id)
+    if not text:
+        raise HTTPException(
+            status_code=400,
+            detail="尚未填寫這批專利的範圍描述。AI 需要它才能判斷命中專利"
+                   "是否屬於本批範圍；請先於初階篩選頁填寫一句範圍描述。")
+
+    job = create_job(
+        "ai:prefilter_review",
+        {"workspace_id": workspace_id},
+        workspace_id=workspace_id,
+    )
+    return {"workspace_id": workspace_id, "job_id": job.job_id}
+
+
 class PrefilterScopeRequest(BaseModel):
     """整批專利的範圍描述（PRE-008 的判讀依據）。"""
 
