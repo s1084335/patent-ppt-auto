@@ -45,16 +45,23 @@ class ApplicantYearTablePivotTests(unittest.TestCase):
         chart_runner._build_applicant_year_matrix_section(ctx)
         return ctx.sections[0]
 
-    def test_section_rows_are_pivoted(self):
+    def test_section_rows_are_summarised(self):
+        """🔴 契約更新（2026-08-17 使用者「這樣做誰看得懂」→「這樣就好」）：
+
+        section rows 從**年份展開交叉表**改為五欄摘要。原表把每個年份攤成
+        一欄、大半是空格——稀疏矩陣不適合當表格，分布交給圖（已改跨度圖）。
+        表格改回答：誰、幾件、活躍區間、跨幾年、最近一次。
+        """
         rows = self._section().get("rows")
-        self.assertTrue(rows, "section 未帶顯示用交叉表 rows——前端會退回長格式")
+        self.assertTrue(rows, "section 未帶顯示用 rows——前端會退回長格式")
         top = rows[0]
         self.assertEqual(top["applicant_display_name"], "甲公司")
-        self.assertEqual(top["2022"], 3)
-        self.assertEqual(top["2024"], 5)
-        self.assertEqual(top["total"], 8)
-        # 乙公司 2024 無資料＝空字串（0 讀起來像「查過但沒有」）
-        self.assertEqual(rows[1]["2024"], "")
+        self.assertEqual(top["patent_count"], 8)
+        self.assertEqual(top["active_years"], "2022–2024")
+        self.assertEqual(top["year_span"], 2)
+        self.assertEqual(top["latest_year"], 2024)
+        # ⚠ 年份不得再是欄位，否則就是舊的稀疏表
+        self.assertNotIn("2022", top)
 
     def test_total_column_has_chinese_label(self):
         self.assertIn("total", chart_runner.DATA_COLUMN_LABELS)

@@ -190,6 +190,89 @@ def query_audit_file():
         path.unlink(missing_ok=True)
 
 
+#: workspace 取證範圍的環境變數（2026-08-14 使用者裁決「加 workspace 參數過濾」）。
+#: 通道與 AUDIT_PATH_ENV 同一條：runner 起 CLI 前設定，MCP server 子行程繼承。
+#: ⚠ 防的是**正確性**不是安全——同一申請人出現在兩個 workspace 時，CLI 可能
+#: 引到別包的專利且不會報錯；惡意繞過不在威脅模型（CLI 吃我們自己的 prompt）。
+SCOPE_WORKSPACE_ENV = "PATENT_RESEARCH_WORKSPACE_ID"
+
+#: patent 級資料表：scope 生效時查它們必須 join workspace_scope。
+#: ⚠ 判準是「一列＝一件專利」的表；彙總表（company_aliases、workspaces）不在列。
+_PATENT_SCOPED_TABLES = ("patents", "patent_attributes")
+_SCOPED_TABLE_RE = re.compile(
+    r"\b(" + "|".join(_PATENT_SCOPED_TABLES) + r")\b", re.IGNORECASE)
+
+
+def _scope_workspace_id() -> int | None:
+    """目前生效的 workspace scope；未設／壞值＝不啟用（壞值不該讓查詢掛掉）。"""
+    raw = os.environ.get(SCOPE_WORKSPACE_ENV, "").strip()
+    try:
+        return int(raw) if raw else None
+    except ValueError:
+        return None
+
+
+@contextlib.contextmanager
+def workspace_scope_env(workspace_id: int | None):
+    """為一次 AI 任務綁定取證範圍（None＝不綁，例如素材沒有 workspace）。
+
+    ⚠ 落點在此（SCOPE_WORKSPACE_ENV 的定義處）而非各 runner——與
+    query_audit_file 同理：deck 與 narrative 線都要用，複製第二份會漂移。
+    """
+    if workspace_id is None:
+        yield
+        return
+    previous = os.environ.get(SCOPE_WORKSPACE_ENV)
+    os.environ[SCOPE_WORKSPACE_ENV] = str(int(workspace_id))
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(SCOPE_WORKSPACE_ENV, None)
+        else:
+            os.environ[SCOPE_WORKSPACE_ENV] = previous
+
+
+def _apply_workspace_scope(text: str, patent_ids: list[int]) -> str:
+    """把 workspace 成員注入查詢（CTE）＋ join 閘門。
+
+    閘門：查 patent 級資料表卻沒引用 workspace_scope → 拒絕。
+    ⚠ 錯誤訊息就是使用說明——CLI 收到後知道怎麼改，偏差是「多出來的」
+    （查詢被拒、可見），不是缺席（靜默查到別包）。
+    """
+    if not patent_ids:
+        raise ReportResearchError(
+            "workspace 取證範圍是空的（該 workspace 沒有成員專利）；"
+            "scoped 查詢無意義，不得靜默退回全庫")
+    if _SCOPED_TABLE_RE.search(text) and "workspace_scope" not in text.lower():
+        raise ReportResearchError(
+            "本任務已綁定 workspace 取證範圍：查 "
+            + "／".join(_PATENT_SCOPED_TABLES)
+            + " 時必須 JOIN workspace_scope（欄位 patent_id）過濾，例如 "
+              "SELECT p.* FROM patents p JOIN workspace_scope s "
+              "ON s.patent_id = p.patent_id WHERE …——"
+              "workspace_scope 由系統注入，直接引用即可")
+    values = ", ".join(f"({int(i)})" for i in patent_ids)
+    cte = f"workspace_scope(patent_id) AS (VALUES {values})"
+    if re.match(r"^WITH\s+RECURSIVE\b", text, re.IGNORECASE):
+        return re.sub(r"^WITH\s+RECURSIVE\b", f"WITH RECURSIVE {cte},",
+                      text, count=1, flags=re.IGNORECASE)
+    if re.match(r"^WITH\b", text, re.IGNORECASE):
+        return re.sub(r"^WITH\b", f"WITH {cte},", text, count=1, flags=re.IGNORECASE)
+    return f"WITH {cte} {text}"
+
+
+def _fetch_workspace_patent_ids(cur, workspace_id: int) -> list[int]:
+    """workspace 成員（唯一來源＝app_layer.workspaces.patent_ids_json）。"""
+    cur.execute(
+        "SELECT patent_ids_json FROM app_layer.workspaces WHERE workspace_id = %s",
+        (workspace_id,))
+    row = cur.fetchone()
+    if row is None:
+        raise ReportResearchError(f"workspace {workspace_id} 不存在，無法綁定取證範圍")
+    return [int(i) for i in (row[0] or [])]
+
+
 def read_query_audit(path: Path) -> list[dict[str, Any]]:
     """讀回稽核 JSONL。⚠ 讀不到就回空清單——稽核缺失不得讓任務失敗。"""
     try:
@@ -582,6 +665,25 @@ def query_database(sql: str, limit: int | None = SQL_DEFAULT_ROWS) -> dict[str, 
     with psycopg.connect(get_database_url()) as conn, conn.cursor() as cur:
         cur.execute("SET TRANSACTION READ ONLY")
         cur.execute(f"SET LOCAL statement_timeout = {_SQL_TIMEOUT_MS}")
+        # 🔴 2026-08-18 合併 deck 線與主線時發現：**兩條線各自實作了 workspace 隔離**，
+        #    讀的還是不同的環境變數——
+        #      · deck：`PATENT_RESEARCH_WORKSPACE_ID` → 改寫 SQL（成員 CTE ＋ join 閘門），
+        #        在**彙總之前**就把範圍限住，且查 patent 級表卻沒引用 scope 會被拒絕
+        #      · 主線：`PATENT_REPORT_WORKSPACE_ID` → 執行後**過濾回傳列**
+        #    ⚠ 兩者不是等價的：post-filter 擋不住 `SELECT count(*)` 這類彙總——
+        #      數字會用全庫算完再濾列，結果是錯的但看起來很正常。
+        #    合併時**兩層都保留**（誰的環境變數有設誰就生效），不弱化任何一邊；
+        #    但「這個任務綁哪個 workspace」有兩個來源是同一份知識的兩個定義處，
+        #    待收斂成一個（見 work-log 2026-08-18）。
+        scope_ws = _scope_workspace_id()
+        if scope_ws is not None:
+            try:
+                text = _apply_workspace_scope(
+                    text, _fetch_workspace_patent_ids(cur, scope_ws))
+            except ReportResearchError as exc:
+                _audit("query_database", snapshot_id=None, sql=text,
+                       rows=0, truncated=False, error=str(exc), row_hash=None)
+                raise
         allowed_patent_ids = _workspace_patent_ids(cur, workspace_id) if workspace_id is not None else None
         cur.execute(text)
         columns = [d.name for d in cur.description] if cur.description else []

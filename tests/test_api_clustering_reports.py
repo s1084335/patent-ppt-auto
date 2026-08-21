@@ -31,7 +31,11 @@ class ClusteringReportsConstantTests(unittest.TestCase):
         # 數字鎖在這裡是刻意的——報表增減必須是有意識的決定，不能悄悄漂移。
         # RPT-011（2026-08-06）刪三張（owner_ranking／owner_year_matrix／
         # family_quality_detail）→ 15 - 3 = 12。留痕見 test_report_catalog_removals.py。
-        self.assertEqual(len(DEFAULT_REPORT_NAMES), 12)
+        # 2026-08-19：`cf3fb37` 加 applicant_strength_profile（KP 象限引擎端配套）
+        # → 12 + 1 = 13。⚠ 那次加報表沒同步更新本鎖，於是這條紅一直掛著——
+        # 鎖的用途正是逼「增減報表」變成有意識的決定，補值時必須連理由一起寫，
+        # 只改數字等於把鎖拆了。
+        self.assertEqual(len(DEFAULT_REPORT_NAMES), 13)
         # ⚠ 不再等於 tuple(REPORT_DEFINITIONS)：痛點四象限的**定義保留**（市場線做好後
         # 只需解除過濾，不必重寫報表），只是不進預設批次。改驗「扣除需市場資料者相等」，
         # 順序仍鎖住。

@@ -22,6 +22,14 @@ from backend.app.reports.report_definitions import (
 )
 from backend.app.reports.report_engine import run_reports_batch
 
+
+#: 母體範圍豁免（見 backend/app/db/population_scope.py）。
+#: ⚠ 理由是給複核的人看的——「忘了接母體」與「刻意全庫」在程式碼上長得一樣。
+POPULATION_SCOPE_EXEMPT = {
+    "get_data_status":
+        "連線健檢：回答「連到的庫有沒有資料、derived 有沒有刷新」，全庫用途。⚠ 回傳值必須標明是全庫（見 tasks 1.7），否則 CLI 會誤讀為本報告母體",
+}
+
 # 回傳給 client 的預設列數上限：保護 LLM context 不被 detail 報表灌爆。
 # 完整數據（各報表自己的預設列數）在出圖時落在 report_data.json。
 DEFAULT_ROW_LIMIT = 50
@@ -255,6 +263,17 @@ def get_data_status() -> dict[str, Any]:
         {
             "status": "warning" if warnings else "ok",
             "database": target,
+            # 🔴 2026-08-18：欄名與註記都要說清楚這是**全庫**。
+            #    本工具是連線健檢（「連到的庫有沒有資料」），數字必然是全庫；
+            #    但 CLI 讀到 `patents: 281` 很容易當成本報告的母體——
+            #    封面顯示 281 件（實際 55）就是這個形態的錯。
+            #    ⚠ 這裡不改數字（改了就不是健檢了），只讓它不可能被誤讀。
+            "row_counts_scope": "whole_database",
+            "row_counts_note": (
+                "以下為**全庫**筆數，用於確認連線與 derived 是否刷新；"
+                "**不是任何報告的母體**。報告母體請看該版本 report_data.json 的 "
+                "parameters.workspace_id 與封面數字。"
+            ),
             "row_counts": counts,
             "family_tables_refreshed_at": family_refreshed_at,
             "warnings": warnings,

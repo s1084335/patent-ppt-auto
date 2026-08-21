@@ -16,6 +16,14 @@ from backend.app.db import job_repository
 from backend.app.db.connection import get_connection_kwargs
 
 
+#: 母體範圍豁免（見 backend/app/db/population_scope.py）。
+#: ⚠ 理由是給複核的人看的——「忘了接母體」與「刻意全庫」在程式碼上長得一樣。
+POPULATION_SCOPE_EXEMPT = {
+    "ready":
+        "健康檢查：回答「這個庫有沒有資料」，本來就是全庫問題",
+}
+
+
 router = APIRouter(tags=["jobs"])
 
 

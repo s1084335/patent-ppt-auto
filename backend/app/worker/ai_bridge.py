@@ -585,6 +585,11 @@ def _run_ai_topic_backfill_job(payload: dict[str, Any], context: JobContext) -> 
 
 
 
+# ⚠ 2026-08-21：_run_ai_report_deck_job 隨 deck 交付線退場移除
+#   （PPT 停產定案 2026-08-20）。handler 與 runner 封存於
+#   tag archive/2026-08-20/add-deck-delivery-line。
+
+
 _AI_JOB_RUNNERS: dict[str, str] = {
     # ⚠ ai:report_plan／ai:report_ppt 已隨 PPT 交付線移除（2026-08-10）。
     "ai:narrative": "_run_ai_narrative_job",

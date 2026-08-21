@@ -109,7 +109,9 @@ class MinimalPrivilegePreservedTests(unittest.TestCase):
         # 歸屬本來就要連外查公開資料，但不得碰檔案系統或 Bash。
         "ai:company_normalization_suggestion": "WEB_RESEARCH_TOOLS",
         "ai:irrelevant_filter": "READ_ONLY_TOOLS",
-    }
+        # 簡報產製（撰稿＋逐頁目視）：與 narrative 同級（design §2 定案）——
+        # 讀素材、唯讀 MCP 取證、寫 content.json／verdict；無 Bash。
+        }
 
     DATA_FILE_RUNNERS: ClassVar[dict[str, tuple[str, str]]] = {
         "ai:topic_label": ("ai_topic_label_runner", "run_topic_label"),

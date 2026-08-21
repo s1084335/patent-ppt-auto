@@ -39,20 +39,176 @@ TOPIC_STATUS_MEANINGS: dict[str, str] = {
     TOPIC_STATUS_INSUFFICIENT: "件數過少，趨勢判斷不可靠",
 }
 
-# 時間窗（申請年）。⚠ 這三個數字是從實際資料切出來的，不是慣例：
+# 時間窗（申請年）。
+#
+# 🔴 2026-08-19：改為**由本批資料推導**（`derive_status_windows`）。
+# 原本這兩個是絕對年份，切自滑雪機那批的年度分布：
 #   2011–2019 共 17 件（9 年）／2020–2024 共 38 件（5 年）／2025–2026 僅 5 件。
-# 末兩年偏低是**資料截止效應**（新案還在審查中未公開），不是活動衰退，
-# 併進近期窗會把每個主題都拉成「衰退」。故整段排除，不計入任何一窗。
+# ⚠ 絕對年份套到別批資料上的失效方式是**靜默**的：例如一批 2000–2010 的資料，
+#   兩個窗都落在資料之外 → recent＝early＝0 → `classify_topic_status` 的四個比較
+#   全是 `0 < 0`＝假 → **每個主題都回「未分類」**，不報錯也不警告。
+#
+# 下列兩個常數**保留**，降為兩種用途：①推導失敗（跨度不足）時的退路
+# ②`threshold_basis` 雙向對帳的對象（刪了會變成「宣告了但常數不存在」）。
 STATUS_EARLY_YEARS = (2011, 2019)
 STATUS_RECENT_YEARS = (2020, 2024)
 
-# 「成長率高」與「成長停滯」的分界：近期件數佔該主題總件數的比例 R。
-# 全庫基準 R＝38/55＝0.69——高於它才叫成長得比整體快。
+# 推導參數。⚠ 具名而非寫在算式裡——寫在算式裡就沒人知道它代表什麼，也改不動。
+#: 近期窗長度（年）。固定不隨資料量浮動，否則兩批報表的「近期」不是同一回事。
+STATUS_RECENT_WINDOW_YEARS = 5
+#: 末端排除幾年的**退路值**。**資料截止效應**：新案還在審查中未公開，件數天然
+#: 偏低，併進近期窗會把每個主題都拉成「衰退」。故整段排除，不計入任何一窗。
+#: 🔴 2026-08-19 起正式路徑改由 `derive_tail_exclusion` 依**法律狀態**推導；
+#: 本常數只在狀態資料缺席時使用。
+STATUS_TAIL_EXCLUDED_YEARS = 2
+
+#: 判定「這一年還沒跑完」的未決比門檻。
+#: 🔴 兩批實測夾出來的：50% 會多排除滑雪機的 2024、70% 會少排除割草機的 2025，
+#: **只有 60% 在兩批上都重現現行行為**。
+#: ⚠ 誠實界線：判準是「與既有行為相容」，而既有行為（固定排除末 2 年）本身
+#: 沒被獨立驗證過——60% 是兩批夾出的相容區間，**不是被證明的最佳值**。
+STATUS_TAIL_PENDING_RATIO = 0.60
+
+
+def derive_tail_exclusion(patents) -> int:
+    """依法律狀態推導要排除幾個末端年份（資料截止效應）。
+
+    🔴 2026-08-19 使用者裁決：「應該以專利狀態去推，不直接用年分」。
+
+    原本固定排除末 2 年，在滑雪機與割草機**剛好都對**——但那是巧合，
+    它不知道自己在排除什麼，只是數了兩年。改用**未決比**（該年可見案件中仍在
+    審查／公開的比例）直接量到真相：未決比高代表「這一年看得到的案子幾乎都還
+    沒有結局」，看到的只是最早公開的那一小撮。
+
+    ⚠ 這同時解掉「相對本批最新年 vs 相對今年」的兩難：**不需要知道今天是哪一年**。
+    一份 2022 年匯出的舊資料，它的 2021 年未決比自然偏高，會被正確排除；
+    不必靠「相對今年」去猜，報表也不會隨時間變動（可重現性保住）。
+
+    ⚠ 只排除**連續的末端**：中間年份未決比高（割草機 2018 年 90% 是個別案件還在
+    審）不代表那一年沒跑完。截止效應必然從最新年開始連續往回。
+
+    ⚠ 三個退化情形各有理由：
+    - 沒有年份／沒有任何可判狀態 → 回常數，**不是回 0**。回 0 等於當成「全部
+      已結案」，末端的假低值會把每個主題拉成衰退。
+    - 每一年都超過門檻 → 至少留一年，否則兩窗全空、每個主題回「未分類」，
+      正是本輪在修的那種靜默失效。
+    """
+    from backend.app.mappings.legal_status import (
+        STATUS_PENDING, normalize_legal_status)
+
+    if not patents:
+        return STATUS_TAIL_EXCLUDED_YEARS
+    total: dict[int, int] = {}
+    pending: dict[int, int] = {}
+    judged = 0
+    for p in patents:
+        year = p.get("application_year")
+        if not isinstance(year, int):
+            continue
+        raw = p.get("legal_status")
+        if raw is None or not str(raw).strip():
+            continue                      # 狀態缺席者不計入分母，避免稀釋未決比
+        judged += 1
+        total[year] = total.get(year, 0) + 1
+        if normalize_legal_status(raw) == STATUS_PENDING:
+            pending[year] = pending.get(year, 0) + 1
+    if not judged or not total:
+        return STATUS_TAIL_EXCLUDED_YEARS
+
+    years = sorted(total)
+    excluded = 0
+    for year in reversed(years):
+        if pending.get(year, 0) / total[year] < STATUS_TAIL_PENDING_RATIO:
+            break                          # 一遇到已跑完的年份就停（只砍連續末端）
+        excluded += 1
+    return min(excluded, len(years) - 1)   # 至少留一年
+
+
+def derive_status_windows(years, *, tail_excluded: int | None = None
+                          ) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    """從本批資料的申請年推導（早期窗, 近期窗）；跨度不足以切窗時回 `None`。
+
+    規則就是原本註解已經寫下的那三件事，只是改成對**任何一批**都成立：
+    末 `STATUS_TAIL_EXCLUDED_YEARS` 年排除 → 其餘的最後
+    `STATUS_RECENT_WINDOW_YEARS` 年為近期窗 → 再往前全部為早期窗。
+
+    ⚠ 套在滑雪機那批（2011–2026）上的結果**與原本寫死的常數逐字相同**
+    ——`test_status_windows_relative` 鎖住這點。移除資料綁定不該順手改動
+    現有報表的判定結果，那是兩個決定。
+
+    ⚠ 回 `None` 而不是回一組落在資料外的窗：沉默地回假窗會讓所有主題變成
+    「未分類」而沒有人知道為什麼。
+    """
+    usable = sorted({int(y) for y in (years or [])
+                     if isinstance(y, (int, float)) and not isinstance(y, bool)}
+                    ) if years else []
+    if not usable:
+        return None
+    # ⚠ 排除年數由呼叫端傳入（正式路徑走 `derive_tail_exclusion` 依狀態推導）；
+    #   未傳時退回常數，既有呼叫端零修改。
+    tail = (STATUS_TAIL_EXCLUDED_YEARS if tail_excluded is None
+            else max(0, int(tail_excluded)))
+    cutoff = usable[-1] - tail                            # 末端排除後的最後一年
+    recent_start = cutoff - STATUS_RECENT_WINDOW_YEARS + 1
+    early_end = recent_start - 1
+    # 早期窗至少要有一年才算切得出來——否則整批都被近期窗吃掉，比不到東西。
+    if early_end < usable[0]:
+        return None
+    return (usable[0], early_end), (recent_start, cutoff)
+
+# 「成長率高」與「成長停滯」的分界：近期件數佔（近期＋早期）的比例 R。
+#
+# 🔴 2026-08-19 改為**由本批推導**（`derive_growth_baseline`）。
+# 語意本來就是比較型的——原註解寫著「高於它才叫成長得**比整體快**」，
+# 而「整體」隨批次改變。寫成常數等於拿甲批的整體去衡量乙批的主題。
+#
+# ⚠ 實測還發現這個常數連**它自己宣稱的依據**都對不上：原註解說「全庫基準
+#   R＝38/55＝0.69」，但 55 是 **workspace 成員數**，判定實際跑在 **44 件的
+#   分群母體**上——真正的 R＝30/40＝**0.75**。0.70 既不是別批的尺也不是本批的尺。
+# ⚠ 改成推導後實測滑雪機 13 個主題狀態**變動 0 個**（主因是「件數與家數同步
+#   上升就判成長」的優先序排在這兩個門檻之前，多數主題走不到這裡）。
+#
+# 下列兩個常數**保留**為推導失敗（母體空）時的退路與基準宣告的對象。
 STATUS_GROWTH_HIGH = 0.70
 STATUS_STAGNANT_BAND = (0.59, 0.79)
 
+#: 停滯帶的半寬。⚠ 這是**選擇**不是推導——帶要多寬沒有資料能告訴你，
+#: 具名是為了讓它可以被宣告、被追問，而不是藏在 (0.59, 0.79) 這組數字裡。
+STATUS_STAGNANT_HALF_WIDTH = 0.10
+
+
+def derive_growth_baseline(recent_total: int, early_total: int) -> float | None:
+    """本批的「整體成長率」R＝近期 ÷（近期＋早期）；母體空時回 `None`。
+
+    ⚠ 回 `None` 而不是 0：回 0 會讓每個主題的 `ratio >= baseline` 都成立，
+    整批誤判成「新興」——那是比沒有基準更糟的失效方式。
+    """
+    total = int(recent_total) + int(early_total)
+    if total <= 0:
+        return None
+    return int(recent_total) / total
+
+
+def derive_stagnant_band(baseline: float) -> tuple[float, float]:
+    """停滯帶＝以本批基準為中心、`STATUS_STAGNANT_HALF_WIDTH` 為半寬。
+
+    ⚠ 夾限在 [0, 1]：基準接近兩端時帶會溢出比例的定義域，
+    不夾限會出現負數下界（等於帶變單邊）或 >1 的上界（等於帶失效）。
+    """
+    lo = max(0.0, baseline - STATUS_STAGNANT_HALF_WIDTH)
+    hi = min(1.0, baseline + STATUS_STAGNANT_HALF_WIDTH)
+    return (round(lo, 4), round(hi, 4))
+
 # 件數過少時不判狀態。⚠ 切窗後「近期 2 件 vs 早期 1 件」在數學上是成長 100%，
-# 但那是噪音不是訊號；本案 13 個主題有 3 個落在這裡。
+# 但那是噪音不是訊號。
+#
+# 🔴 2026-08-19 依據改寫：原註解是「本案 13 個主題有 3 個落在這裡」——那是用
+# 本批的分布去 justify 一個本該與批次無關的門檻。量級的來源是 **Cochran 期望
+# 次數規則**（列聯表／比例比較每格期望次數 ≥ 5，低於此常態近似不成立）。
+# ⚠ 誠實界線：這裡**沒有真的跑檢定**，只是拿總件數當閘門，而且擋的是主題
+#   **總件數**、比「每格 ≥5」寬鬆。引用慣例是為了說明 5 從何而來，不是宣稱做了檢定。
+# ⚠ 本項**不推導**：它問的是「樣本夠不夠讓計算有意義」，不隨批次縮放。
+#   改成推導是循環論證——「這批少所以把標準放寬」，而少正是不可靠的時候。
 STATUS_MIN_SAMPLE = 5
 
 # 代表專利取幾件：前三大申請人各一件。⚠ 上限與 `_compute_top_applicants` 的前三大
@@ -64,7 +220,9 @@ REPRESENTATIVE_MAX = 3
 TECH_MEANS_MAX = 3
 
 
-def classify_topic_status(metrics: dict[str, Any], median_count: float) -> str:
+def classify_topic_status(metrics: dict[str, Any], median_count: float,
+                          *, growth_high: float | None = None,
+                          stagnant_band: tuple[float, float] | None = None) -> str:
     """依五類條件判定技術狀態；判定優先序見下。
 
     優先序 **衰退／轉型 → 競爭集中 → 成長 → 成熟 → 新興 → 未分類**。
@@ -92,6 +250,9 @@ def classify_topic_status(metrics: dict[str, Any], median_count: float) -> str:
     in_window = recent + early
     ratio = (recent / in_window) if in_window else 0.0
     high_volume = total >= median_count
+    # ⚠ 未傳入就退回常數：既有呼叫端零修改，且推導失敗（母體空）時仍有退路。
+    high_bar = STATUS_GROWTH_HIGH if growth_high is None else growth_high
+    band = STATUS_STAGNANT_BAND if stagnant_band is None else stagnant_band
 
     if recent < early and share_recent < share_early and apps_recent < apps_early:
         return TOPIC_STATUS_DECLINING
@@ -99,9 +260,9 @@ def classify_topic_status(metrics: dict[str, Any], median_count: float) -> str:
         return TOPIC_STATUS_CONCENTRATED
     if recent > early and apps_recent > apps_early:
         return TOPIC_STATUS_GROWING
-    if high_volume and STATUS_STAGNANT_BAND[0] <= ratio <= STATUS_STAGNANT_BAND[1]:
+    if high_volume and band[0] <= ratio <= band[1]:
         return TOPIC_STATUS_MATURE
-    if not high_volume and ratio >= STATUS_GROWTH_HIGH and share_recent > share_early:
+    if not high_volume and ratio >= high_bar and share_recent > share_early:
         return TOPIC_STATUS_EMERGING
     return TOPIC_STATUS_UNCLASSIFIED
 
@@ -242,6 +403,19 @@ def build_topic_effect_table(
     def _key(item: dict[str, Any], code: str) -> tuple[str, str]:
         return (code, str(item.get("source_field") or ""))
 
+    # 🔴 2026-08-19：時間窗改由**本批資料**推導，不再用寫死的絕對年份。
+    # ⚠ 推導一次、兩個通道共用：逐主題各推一次的話，主題間的「近期」會不一樣，
+    #   跨主題比較就失去意義（而症狀只會表現成幾個主題的狀態怪怪的）。
+    # ⚠ 跨度不足以切窗時退回常數：那組值仍出自滑雪機，但**退路比假窗誠實**
+    #   ——回一組落在資料外的窗會讓每個主題都變「未分類」且無人知情。
+    # 🔴 2026-08-19 使用者裁決：截止效應改**以專利狀態推**，不直接數年份。
+    _members = list((patents or {}).values())
+    _tail = derive_tail_exclusion(_members)
+    _windows = derive_status_windows(
+        [p.get("application_year") for p in _members], tail_excluded=_tail)
+    early_window, recent_window = _windows if _windows else (
+        STATUS_EARLY_YEARS, STATUS_RECENT_YEARS)
+
     topic_patents: dict[tuple[str, str], set[int]] = {}
     for t in topics:
         topic_patents.setdefault(_key(t, t["topic_code"]), set())
@@ -307,19 +481,60 @@ def build_topic_effect_table(
             "top_applicants": top3,
         }
         if patents is not None:
-            early = _window_metrics(patents_of_topic, patents, STATUS_EARLY_YEARS, app_by_patent)
-            recent = _window_metrics(patents_of_topic, patents, STATUS_RECENT_YEARS, app_by_patent)
+            early = _window_metrics(patents_of_topic, patents, early_window, app_by_patent)
+            recent = _window_metrics(patents_of_topic, patents, recent_window, app_by_patent)
             row.update({
                 "early_count": early[0], "early_applicants": early[1], "concentration_early": early[2],
                 "recent_count": recent[0], "recent_applicants": recent[1], "concentration_recent": recent[2],
             })
             row.update(_pick_representative(patents_of_topic, patents, app_by_patent, top3))
+            row.update(_status_breakdown(patents_of_topic, patents))
         result.append(row)
 
     if patents is not None:
         _attach_topic_status(result)
     _attach_technical_means(result, topic_patents, topic_map)
     return result
+
+
+def _status_breakdown(
+    patent_ids: set[int],
+    patents: dict[int, dict[str, Any]],
+) -> dict[str, int]:
+    """該主題的法律狀態分解（2026-08-18，§7e）：審查中／已授權／失效／未知。
+
+    用途：結論頁拿掉期程後，改依**外部訊號**排序——該主題有多少件他人的審查中
+    案件。那是對手給的時間壓力，可查證；`短期 0–3 個月` 則是系統編的。
+
+    ⚠ 桶收斂一律走 `mappings/legal_status.normalize_legal_status`（唯一定義處），
+    本函式**不比對任何狀態字面**。
+
+    ⚠ 沒有狀態的算進「未知」而**不是不算**——不算的話分解合計會對不上件數，
+    而讀者不會發現少了什麼（缺席型偏差）。
+
+    ⚠ 分母是**分群母體**（滑雪機 44）不是 workspace 成員（55）：外觀設計案沒有
+    獨立項文字，分不了群。合計寫成 55 等於把「11 件被靜默排除」偽裝成
+    「全都算到了」。這裡只保證合計＝該主題件數；整體 44 vs 55 的揭露見 chart_runner。
+    """
+    from backend.app.mappings.legal_status import (
+        STATUS_ALIVE,
+        STATUS_DEAD,
+        STATUS_PENDING,
+        normalize_legal_status,
+    )
+
+    tally = {"pending_count": 0, "granted_count": 0,
+             "inactive_count": 0, "unknown_status_count": 0}
+    bucket_key = {
+        STATUS_PENDING: "pending_count",
+        STATUS_ALIVE: "granted_count",
+        STATUS_DEAD: "inactive_count",
+    }
+    for pid in patent_ids:
+        raw = (patents.get(pid) or {}).get("legal_status")
+        key = bucket_key.get(normalize_legal_status(raw), "unknown_status_count")
+        tally[key] += 1
+    return tally
 
 
 def _attach_technical_means(
@@ -368,10 +583,21 @@ def _attach_topic_status(rows: list[dict[str, Any]]) -> None:
         by_source.setdefault(str(row.get("source_field") or ""), []).append(row)
 
     for source_field, channel_rows in by_source.items():
-        recent_total = sum(r["recent_count"] for r in channel_rows) or 1
-        early_total = sum(r["early_count"] for r in channel_rows) or 1
+        # ⚠ 原始總數與除法用的分母要分開：下面兩個 `or 1` 是除零保護，
+        #   拿它去算成長基準會把「近期 0 件」變成「近期 1 件」，基準整個偏掉。
+        recent_sum = sum(r["recent_count"] for r in channel_rows)
+        early_sum = sum(r["early_count"] for r in channel_rows)
+        recent_total = recent_sum or 1
+        early_total = early_sum or 1
         counts = [r["patent_count"] for r in channel_rows] or [0]
         median_count = statistics.median(counts)
+        # 🔴 2026-08-19：「成長得比整體快」的基準由**本通道的整體**推導，
+        # 不再用寫死的 0.70。⚠ 逐通道各推一份——技術與功效的量級本來就不同，
+        # 共用一個基準等於拿技術的尺量功效（同 median_count 的理由）。
+        baseline = derive_growth_baseline(recent_sum, early_sum)
+        growth_high = STATUS_GROWTH_HIGH if baseline is None else baseline
+        stagnant_band = (STATUS_STAGNANT_BAND if baseline is None
+                         else derive_stagnant_band(baseline))
         # 🔴 狀態分類**只給技術通道**（2026-08-03 使用者定案）。
         # 使用者實機看到「提升訓練成效 → 成長技術」後指出這是技術通道的設計。
         # 他 08-02 定的五類講的是技術；功效通道的用途是**跟技術主題對照**，
@@ -384,7 +610,9 @@ def _attach_topic_status(rows: list[dict[str, Any]]) -> None:
             row["share_recent"] = round(row["recent_count"] / recent_total, 4)
             row["share_early"] = round(row["early_count"] / early_total, 4)
             if classify:
-                row["status"] = classify_topic_status(row, median_count)
+                row["status"] = classify_topic_status(
+                    row, median_count,
+                    growth_high=growth_high, stagnant_band=stagnant_band)
                 row["status_meaning"] = TOPIC_STATUS_MEANINGS.get(row["status"], "")
 
 

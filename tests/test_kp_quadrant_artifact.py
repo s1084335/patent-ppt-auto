@@ -68,7 +68,7 @@ class SectionWiringTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             ctx = cr.ChartContext(
                 run_dir=Path(tmp), ranking_limit=10, ipc_levels=(4,), cpc_levels=(4,),
-                patent_ids=None, filters=None, analysis_id=None)
+                patent_ids=None, filters=None, report_scope="company", analysis_id=None)
             cr.emit_kp_quadrant(ctx, ROWS)
             self.assertTrue((Path(tmp) / cr.KP_QUADRANT_FILENAME).is_file())
             keys = [s.get("report_key") for s in ctx.sections]
@@ -78,7 +78,7 @@ class SectionWiringTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             ctx = cr.ChartContext(
                 run_dir=Path(tmp), ranking_limit=10, ipc_levels=(4,), cpc_levels=(4,),
-                patent_ids=None, filters=None, analysis_id=None)
+                patent_ids=None, filters=None, report_scope="company", analysis_id=None)
             cr.emit_kp_quadrant(ctx, [])
             self.assertFalse((Path(tmp) / cr.KP_QUADRANT_FILENAME).exists())
             self.assertEqual(ctx.sections, [])

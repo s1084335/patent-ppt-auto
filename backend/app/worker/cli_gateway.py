@@ -91,8 +91,15 @@ READ_ONLY_TOOLS = "Read"
 WEB_RESEARCH_TOOLS = ("WebSearch", "WebFetch")
 
 # 取證等級：檔案工具＋MCP 唯讀工具（工具名由 TOOL_NAMES 推導，不另抄一份）。
+#
+# 🔴 `Edit` 於 2026-08-19 補入（實機 job #426）：deck 目視迴圈的職責就是改
+# content.json，但白名單只有 `Write`。第 1 輪整檔重寫成功，第 2 輪要做兩個字元的
+# 定點替換時改用 `Edit` → 被權限層擋下 → 檔案 sha256 沒變 → runner 判定「停滯」
+# 硬失敗。3763 秒與一次完整重跑就這樣沒了，而錯誤訊息長得像模型不聽話。
+# ⚠ 定點替換是**更小**的權限，不是更大的：只給 Write 等於「要改兩個字就得整檔
+# 重寫」，每次重寫都多一次連帶改壞別處的機會。兩者並存才是最小必要。
 RESEARCH_TOOLS: tuple[str, ...] = (
-    "Read", "Glob", "Grep", "Write",
+    "Read", "Glob", "Grep", "Write", "Edit",
     *(f"mcp__{MCP_SERVER_NAME}__{name}" for name in _RESEARCH_TOOL_NAMES),
 )
 

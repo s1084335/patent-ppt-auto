@@ -52,14 +52,14 @@ class CatalogTests(unittest.TestCase):
         for name in ("application_trend", "publication_trend", "country_distribution",
                      "family_country_layout", "applicant_country_distribution",
                      "ipc_main_distribution", "cpc_main_distribution",
-                     "applicant_ranking", "applicant_year_matrix",
+                     "applicant_ranking", "design_protection_detail", "applicant_year_matrix",
                      "cluster_topic_table", "opportunity_quadrant"):
             self.assertIn(name, REPORT_DEFINITIONS)
 
     def test_catalog_size(self):
         """13 → 12（本批只刪 lifecycle）。⚠ applicant_strength_profile 待 2.3
         與 kp_quadrant 一起重新設計後才決定去留。"""
-        self.assertEqual(len(REPORT_DEFINITIONS), 12)
+        self.assertEqual(len(REPORT_DEFINITIONS), 13)
 
     def test_pending_redesign_still_present(self):
         """⚠ 對照組：待重新設計的報表現在必須還在——刪早了 Key Player 會沒資料。"""
@@ -93,16 +93,22 @@ class PopulationCoverageTests(unittest.TestCase):
         self.assertIn("opportunity_quadrant", NON_PATENT_UNIT_REPORTS)
 
     def test_every_report_is_accounted_for(self):
-        """⚠ 每張報表都要落在四類之一：有原因／會重複計數／非件數單位／
-        母體等於總數。沒有第五類——「沒登記」等於「沒人檢查過它的母體對不對」。
+        """⚠ 每張報表都要落在五類之一：有原因／理由由資料算出／會重複計數／
+        非件數單位／母體等於總數。沒有第六類——「沒登記」等於「沒人檢查過
+        它的母體對不對」。
+
+        ⚠ 2026-08-20 加入 `DERIVED_REASON_REPORTS`（理由算出來的）時，是**擴充
+        分類**不是放寬閘門：那類報表仍必須明列，只是理由不寫在查表裡。
         """
         from backend.app.reports.population import (
+            DERIVED_REASON_REPORTS,
             NON_PATENT_UNIT_REPORTS,
             SAME_AS_TOTAL_REPORTS,
         )
 
         classified = (set(POPULATION_REASONS) | set(OVER_COUNTING_REPORTS)
-                      | set(NON_PATENT_UNIT_REPORTS) | set(SAME_AS_TOTAL_REPORTS))
+                      | set(NON_PATENT_UNIT_REPORTS) | set(SAME_AS_TOTAL_REPORTS)
+                      | set(DERIVED_REASON_REPORTS))
         missing = sorted(set(REPORT_DEFINITIONS) - classified)
         self.assertEqual(missing, [], f"這些報表的母體沒有人檢查過：{missing}")
 

@@ -264,7 +264,10 @@ class AssignmentsCarrySourceFieldTests(unittest.TestCase):
 
         from backend.app.worker import handlers
 
-        def fake_load_ws(workspace_id, source_field, conn):
+        # ⚠ 簽名跟隨真函式（2026-08-20 加了 report_scope）。fake 少一個參數會
+        #   TypeError，被 `_resolve_report_cluster_data` 的 except 吞掉 →
+        #   cluster_data 靜默變 None，測試以「參數不合」的姿勢假失敗。
+        def fake_load_ws(workspace_id, source_field, conn, report_scope="company"):
             n = 5 if source_field == TECH else 8
             return {
                 "topics": [{"topic_code": f"T{i:03d}", "label": f"L{i}",
@@ -325,7 +328,10 @@ class AssignmentsCarrySourceFieldTests(unittest.TestCase):
 
         captured = {}
 
-        def fake_load_ws(workspace_id, source_field, conn):
+        # ⚠ 簽名跟隨真函式（2026-08-20 加了 report_scope）。fake 少一個參數會
+        #   TypeError，被 `_resolve_report_cluster_data` 的 except 吞掉 →
+        #   cluster_data 靜默變 None，測試以「參數不合」的姿勢假失敗。
+        def fake_load_ws(workspace_id, source_field, conn, report_scope="company"):
             return {
                 "topics": [{"topic_code": "T001", "label": "L", "source_field": source_field}],
                 "assignments": [{"topic_code": "T001", "patent_id": 1}],

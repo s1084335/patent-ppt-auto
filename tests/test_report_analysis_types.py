@@ -30,18 +30,25 @@ from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 # 回空 dict＝沒有專利種類資料，封面就不印設計案備註（與真實情境一致：
 # 選擇性出圖時本來就可能沒有這份資料）。
 _patent_kind_patcher = None
+_cover_stats_patcher = None
 
 
 def setUpModule():
-    global _patent_kind_patcher
+    global _patent_kind_patcher, _cover_stats_patcher
     _patent_kind_patcher = mock.patch.object(
         chart_runner, "fetch_patent_kind_summary", dict)
     _patent_kind_patcher.start()
+    # 2026-08-18：封面數字（§2）是第二個 DB 接縫，同樣要擋。
+    _cover_stats_patcher = mock.patch.object(
+        chart_runner, "fetch_cover_stats", dict)
+    _cover_stats_patcher.start()
 
 
 def tearDownModule():
     if _patent_kind_patcher is not None:
         _patent_kind_patcher.stop()
+    if _cover_stats_patcher is not None:
+        _cover_stats_patcher.stop()
 
 
 

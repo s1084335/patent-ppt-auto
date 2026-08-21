@@ -356,6 +356,7 @@ def list_topic_patents(
     source_field: str,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
+    keyword: Annotated[str | None, Query(max_length=200)] = None,
     state_repo: PostgresTopicStateRepository = Depends(get_topic_state_repository),
 ) -> TopicPatentsResponse:
     """回傳該 topic 指派到的專利明細（分頁）。
@@ -398,6 +399,7 @@ def list_topic_patents(
         ),
         limit=limit,
         offset=offset,
+        keyword=keyword,
     )
     return TopicPatentsResponse(
         workspace_id=workspace_id,

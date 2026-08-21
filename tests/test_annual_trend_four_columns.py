@@ -53,56 +53,6 @@ class FamilyCountAggregateTests(unittest.TestCase):
         self.assertIn('AS "family_count"', sql)
 
 
-class AnnualTopicColumnsTests(unittest.TestCase):
-    """純函式：cluster_data → {年: {topic_count, new_topic_count}}（技術通道限定）。"""
-
-    CLUSTER = {
-        "topics": [
-            {"topic_code": "T001", "source_field": "wips_independent_claims"},
-            {"topic_code": "T002", "source_field": "wips_independent_claims"},
-            {"topic_code": "E001", "source_field": "effect_summary"},
-        ],
-        "assignments": [
-            {"topic_code": "T001", "patent_id": 1},
-            {"topic_code": "T001", "patent_id": 2},
-            {"topic_code": "T002", "patent_id": 3},
-            {"topic_code": "T001", "patent_id": 4},
-            {"topic_code": "E001", "patent_id": 1},   # 功效通道不得混入
-        ],
-        "patents": {
-            1: {"application_year": 2020},
-            2: {"application_year": 2022},
-            3: {"application_year": 2022},
-            4: {"application_year": None},            # 缺年份不入任何年
-        },
-    }
-
-    def _cols(self):
-        from backend.app.reports.chart_runner import annual_topic_columns
-
-        return annual_topic_columns(self.CLUSTER)
-
-    def test_topic_count_per_year(self):
-        cols = self._cols()
-        self.assertEqual(cols[2020]["topic_count"], 1)   # T001
-        self.assertEqual(cols[2022]["topic_count"], 2)   # T001+T002
-
-    def test_new_topic_first_appearance_year(self):
-        cols = self._cols()
-        self.assertEqual(cols[2020]["new_topic_count"], 1)  # T001 首現
-        self.assertEqual(cols[2022]["new_topic_count"], 1)  # T002 首現（T001 已現過）
-
-    def test_effect_channel_excluded(self):
-        """功效通道不算——技術演進看技術線；E001 混入會虛增 2020 的主題數。"""
-        cols = self._cols()
-        self.assertEqual(cols[2020]["topic_count"], 1)
-
-    def test_empty_cluster_returns_empty(self):
-        from backend.app.reports.chart_runner import annual_topic_columns
-
-        self.assertEqual(annual_topic_columns(None), {})
-        self.assertEqual(annual_topic_columns({}), {})
-
 
 class TrendRowEnrichmentTests(unittest.TestCase):
     """合併表：四欄進前端數據表 rows；無分群時技術群欄不出現。"""
@@ -113,25 +63,27 @@ class TrendRowEnrichmentTests(unittest.TestCase):
     ]
     PUB_ROWS = [{"授權公告年": 2022, "patent_count": 3}]
 
-    def test_merge_carries_family_and_topic_columns(self):
+
+    def test_merge_carries_family_count(self):
+        """family_count 仍隨 application_rows 帶入。
+
+        ⚠ 原本這支同時驗 topic_count／new_topic_count，那條路已於 2026-08-18
+        隨「趨勢表不放技術主題」整段移除（含 `topic_columns` 參數與
+        `annual_topic_columns`）——留著參數卻不產生欄位，等於每次算完就丟。
+        """
         from backend.app.reports.chart_runner import merge_annual_trend_rows
 
-        rows = merge_annual_trend_rows(
-            self.APP_ROWS, self.PUB_ROWS,
-            topic_columns={2022: {"topic_count": 5, "new_topic_count": 2}})
-        by_year = {r["year"]: r for r in rows}
+        by_year = {r["year"]: r for r in
+                   merge_annual_trend_rows(self.APP_ROWS, self.PUB_ROWS)}
         self.assertEqual(by_year[2020]["family_count"], 2)
         self.assertEqual(by_year[2022]["family_count"], 10)
-        self.assertEqual(by_year[2022]["topic_count"], 5)
-        self.assertEqual(by_year[2022]["new_topic_count"], 2)
-        # 有分群、該年沒觸及 → 0（與「沒分群」不同）
-        self.assertEqual(by_year[2020]["topic_count"], 0)
+        self.assertNotIn("topic_count", by_year[2022])
 
     def test_without_cluster_topic_columns_absent(self):
         """⚠ 無分群 → 技術群欄**缺鍵**，不補 0——0 與「沒分群」是兩回事。"""
         from backend.app.reports.chart_runner import merge_annual_trend_rows
 
-        rows = merge_annual_trend_rows(self.APP_ROWS, self.PUB_ROWS, topic_columns=None)
+        rows = merge_annual_trend_rows(self.APP_ROWS, self.PUB_ROWS)
         self.assertNotIn("topic_count", rows[0])
         self.assertNotIn("new_topic_count", rows[0])
         self.assertEqual(rows[0]["family_count"], 2)
@@ -141,8 +93,8 @@ class TrendRowEnrichmentTests(unittest.TestCase):
         from backend.app.reports.chart_runner import DATA_COLUMN_LABELS
 
         for key, zh in (("family_count", "家族數"),
-                        ("topic_count", "涉及技術群"),
-                        ("new_topic_count", "首現技術群")):
+                        ("topic_count", "涉及技術主題"),
+                        ("new_topic_count", "首現技術主題")):
             self.assertEqual(DATA_COLUMN_LABELS.get(key), zh)
 
 
@@ -157,7 +109,7 @@ class TrendSectionIntegrationTests(unittest.TestCase):
         app_rows = [{"application_year": 2022, "patent_count": 10, "family_count": 10}]
         pub_rows = [{"授權公告年": 2022, "patent_count": 3}]
 
-        def stub_run_report(name, filters=None, limit=None, patent_ids=None):
+        def stub_run_report(name, filters=None, limit=None, patent_ids=None, **kwargs):
             rows = app_rows if name == "application_trend" else pub_rows
             return {"report_name": name, "label": name, "label_zh": name,
                     "rows": rows, "row_count": len(rows)}
@@ -169,19 +121,26 @@ class TrendSectionIntegrationTests(unittest.TestCase):
             ctx = chart_runner.ChartContext(
                 run_dir=Path(tmp), ranking_limit=20, ipc_levels=(4,), cpc_levels=(4,),
                 patent_ids=None, filters=None, analysis_id=None,
-                cluster_data=cluster_data)
+                report_scope="company", cluster_data=cluster_data)
             with mock.patch.object(chart_runner, "run_report", stub_run_report):
                 chart_runner._build_trend_section(ctx)
             return ctx.chart_rows["annual_trend"]
 
-    def test_with_cluster_topic_columns_present(self):
+    def test_trend_rows_have_no_topic_columns(self):
+        """🔴 契約更新（2026-08-17 使用者「這個技術主題欄位拿掉」）：
+
+        趨勢表只留年份／申請件數／授權公告件數三欄。技術主題兩欄退場的理由是
+        **圖上呈現不出來**——表格有一個維度、圖讀不到，讀者無從對照。
+        ⚠ `merge_annual_trend_rows` 仍算得出這兩欄（單元測試保留），
+        只是 `_trend_row` 不再把它們放進顯示用的 rows。
+        """
         rows = self._run({
             "topics": [{"topic_code": "T001", "source_field": "wips_independent_claims"}],
             "assignments": [{"topic_code": "T001", "patent_id": 1}],
             "patents": {1: {"application_year": 2022}},
         })
-        self.assertEqual(rows[0]["topic_count"], 1)
-        self.assertEqual(rows[0]["new_topic_count"], 1)
+        self.assertNotIn("topic_count", rows[0])
+        self.assertNotIn("new_topic_count", rows[0])
         self.assertEqual(rows[0]["family_count"], 10)
 
     def test_without_cluster_topic_columns_absent(self):

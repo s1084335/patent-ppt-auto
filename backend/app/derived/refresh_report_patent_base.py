@@ -5,6 +5,14 @@ import json
 from typing import Any
 
 
+#: 母體範圍豁免（見 backend/app/db/population_scope.py）。
+#: ⚠ 理由是給複核的人看的——「忘了接母體」與「刻意全庫」在程式碼上長得一樣。
+POPULATION_SCOPE_EXEMPT = {
+    "refresh_report_patent_base":
+        "derived 重建：report_patent_base 是全庫投影，接母體會讓別包的列刷不到",
+}
+
+
 # 0021 起 derived_layer.report_patent_base 為相容 VIEW；重建須寫回實體表 legacy_0021.report_patent_base，
 # 讀取端（報表引擎）仍走 derived_layer VIEW。VIEW 無法 TRUNCATE，故此處目標為 legacy_0021。
 REFRESH_SQL = """

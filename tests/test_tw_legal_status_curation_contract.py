@@ -313,8 +313,13 @@ class TwLegalStatusRuntimeContractTests(unittest.TestCase):
             )
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["items"][0]["workspaces"], [{"workspace_id": 2, "workspace_name": "W"}])
-        self.assertEqual(cursor.executed[0][1], {"kw": "%sample%"})
-        self.assertEqual(cursor.executed[1][1], {"kw": "%sample%", "limit": 5, "offset": 1})
+        # ⚠ 2026-08-19：參數名 `kw` → `kw_lookup`（`ba8afed` 改走 derived 搜尋
+        #   索引表）。本斷言守的是「keyword 有被 trim 並包上 %」——` sample ` 進、
+        #   `%sample%` 出，這點沒變。仍用整個 dict 比對而非只挑 value：
+        #   多帶一個參數（例如漏過濾的 workspace 條件）也要紅。
+        self.assertEqual(cursor.executed[0][1], {"kw_lookup": "%sample%"})
+        self.assertEqual(cursor.executed[1][1],
+                         {"kw_lookup": "%sample%", "limit": 5, "offset": 1})
         self.assertEqual(cursor.executed[2][1], {"pids": [7]})
 
     def test_repository_failure_classifier_distinguishes_causes(self) -> None:
@@ -367,12 +372,23 @@ class TwLegalStatusRuntimeContractTests(unittest.TestCase):
             return_value=job,
         ) as create_job:
             result = patent_queries.enqueue_tw_legal_status_refresh(workspace_id=5)
-        self.assertEqual(result, {"refresh_status": "queued", "refresh_job_id": 123})
-        create_job.assert_called_once_with(
-            "report_generate",
-            {"report_names": ["country_distribution"], "workspace_id": 5},
-            workspace_id=5,
-        )
+        # ⚠ 2026-08-19：`ba8afed`（patent search terms 線）讓本函式多排一個
+        #   搜尋索引刷新，回傳多出 `search_refresh_job_id`。本測試守的是
+        #   「**不牽動分群**」，搜尋索引不是分群，意圖未被違反 → 更新期望值。
+        #   ⚠ 仍逐鍵斷言而不是只驗子集：改成子集比對的話，哪天真的多排了分群
+        #   也不會紅，這條防線就空了。
+        self.assertEqual(result, {"refresh_status": "queued", "refresh_job_id": 123,
+                                  "search_refresh_job_id": 123})
+        # ⚠ 2026-08-19：改為斷言**完整呼叫清單**而非 assert_called_once。
+        #   search terms 線讓本函式多排一個 refresh_derived，用 once 斷言只會說
+        #   「被呼叫 2 次」，看不出第 2 次排的是什麼——而「排了什麼」正是本測試
+        #   唯一在乎的事（不得牽動分群）。列出全部呼叫，多排任何一種 job 都會紅。
+        self.assertEqual(create_job.call_args_list, [
+            mock.call("refresh_derived", {"reason": "tw_legal_status"}, workspace_id=5),
+            mock.call("report_generate",
+                      {"report_names": ["country_distribution"], "workspace_id": 5},
+                      workspace_id=5),
+        ])
 
     def test_mapping_rejects_unsupported_tw_status(self) -> None:
         with self.assertRaises(ValueError):

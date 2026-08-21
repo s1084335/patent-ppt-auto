@@ -1,4 +1,4 @@
-"""cluster_data_loader 單元＋拋棄式 DB 測試。
+﻿"""cluster_data_loader 單元＋拋棄式 DB 測試。
 
 Mock 層覆蓋純邏輯與接線；DB 層（RUN_DB_TESTS=1）在 patent_ppt_loadercheck
 驗證真實 SQL 與合併鏈解析。
@@ -293,6 +293,9 @@ class LoadClusterDataTests(unittest.TestCase):
         return {"workspace_id": 1, "source_field": "claims",
                 "run_id": 2, "state_run_id": 1, "topics": topics}
 
+    # ⚠ 2026-08-20：loader 把名稱欄 alias 成 `applicant_name`（實際查哪一欄由
+    #   report_scope 決定，見 test_applicant_caliber_single_source），故 mock 的
+    #   欄名跟著改；原本寫 `applicant_display_name` 是把「查哪一欄」洩進測試。
     def _conn(self, applicant_rows: list[dict], top_rows: list[dict]) -> mock.MagicMock:
         """mock conn：cursor 依序回 applicant、top applicant 兩批 fetchall。"""
         cur = mock.MagicMock()
@@ -311,10 +314,10 @@ class LoadClusterDataTests(unittest.TestCase):
              "topic_kind": "model", "doc_count": 1, "patent_ids": [103]},
         ])
         conn = self._conn(
-            [{"patent_id": 101, "applicant_display_name": "TSMC"},
-             {"patent_id": 102, "applicant_display_name": "TSMC"},
-             {"patent_id": 103, "applicant_display_name": "Samsung"}],
-            [{"applicant_display_name": "TSMC", "cnt": 2}])
+            [{"patent_id": 101, "applicant_name": "TSMC"},
+             {"patent_id": 102, "applicant_name": "TSMC"},
+             {"patent_id": 103, "applicant_name": "Samsung"}],
+            [{"applicant_name": "TSMC", "cnt": 2}])
         result = load_cluster_workspace_data(1, "claims", conn)
 
         self.assertEqual({t["topic_code"] for t in result["topics"]}, {"T01", "T02"})
@@ -330,9 +333,9 @@ class LoadClusterDataTests(unittest.TestCase):
              "topic_kind": "model", "doc_count": 2, "patent_ids": [101, 102]},
         ])
         conn = self._conn(
-            [{"patent_id": 101, "applicant_display_name": "TSMC"},
-             {"patent_id": 102, "applicant_display_name": "TSMC"}],
-            [{"applicant_display_name": "TSMC", "cnt": 2}])
+            [{"patent_id": 101, "applicant_name": "TSMC"},
+             {"patent_id": 102, "applicant_name": "TSMC"}],
+            [{"applicant_name": "TSMC", "cnt": 2}])
         result = load_cluster_workspace_data(1, "claims", conn)
 
         self.assertEqual({t["topic_code"] for t in result["topics"]}, {"T01"})
@@ -355,8 +358,8 @@ class LoadClusterDataTests(unittest.TestCase):
             {"topic_code": "T01", "label": "AI", "status": "active",
              "topic_kind": "model", "doc_count": 1, "patent_ids": [999]},
         ])
-        conn = self._conn([{"patent_id": 999, "applicant_display_name": "Google"}],
-                          [{"applicant_display_name": "Google", "cnt": 1}])
+        conn = self._conn([{"patent_id": 999, "applicant_name": "Google"}],
+                          [{"applicant_name": "Google", "cnt": 1}])
         result = load_cluster_workspace_data(1, "claims", conn)
         self.assertIsInstance(result["assignments"][0]["patent_id"], int)
         self.assertIsInstance(result["normalized_applicants"][0]["patent_id"], int)
@@ -500,3 +503,4 @@ class RunFullReportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

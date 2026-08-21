@@ -151,51 +151,70 @@ class ClusteringDatabaseIntegrationTests(unittest.TestCase):
                 ["patents"],
             )
 
-            cur.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'core_layer'
-                  AND table_name = 'patents'
-                  AND ordinal_position BETWEEN 2 AND 8
-                ORDER BY ordinal_position
-                """
-            )
-            actual_patent_number_columns = [row["column_name"] for row in cur.fetchall()]
-            self.assertEqual(actual_patent_number_columns, EXPECTED_PATENT_NUMBER_COLUMNS)
+            # ⚠ 2026-08-19：原本以 `ordinal_position BETWEEN 2 AND 8` 取欄位——
+            #   那綁的是**物理欄序**，不是契約。正式庫是歷年逐次 ALTER 累積出來的
+            #   欄序，乾淨庫從零 migrate 一次成形，同一段位置切到不同欄位，於是
+            #   拋棄式測試庫一接上就紅（欄名集合其實完全相符）。
+            #   ⚠ 這種脆只在乾淨庫現形，正式庫永遠測不出來——正是要驗的東西。
+            #   改為驗「這些欄位都在」：欄位少一個仍會紅，欄序調整不再假紅。
+            for schema, table in (("core_layer", "patents"),
+                                  ("derived_layer", "report_patent_base")):
+                cur.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = %s AND table_name = %s
+                    """,
+                    (schema, table),
+                )
+                actual = {row["column_name"] for row in cur.fetchall()}
+                missing = [c for c in EXPECTED_PATENT_NUMBER_COLUMNS if c not in actual]
+                self.assertEqual(
+                    missing, [],
+                    f"{schema}.{table} 缺專利號欄位：{missing}")
 
+            # ⚠ 2026-08-19：原本把五個索引一起查 core/derived/app 三個 schema，
+            #   但其中三個在 0021 併表後**只存在於 `legacy_0021` 凍結封存區**
+            #   （topics／topic_candidates 兩張表整個搬進去了）。同一個測試上方
+            #   才剛斷言 `derived_layer.topics` 必須不存在——兩條互相矛盾，
+            #   只是正式庫剛好留著舊物件所以沒現形，乾淨庫一接上就露餡。
+            #   改為照實分兩組：活動 schema 一組、封存區一組。封存區的唯一性
+            #   仍要守（凍結不等於可以爛掉），但不能假裝它在活動 schema。
             cur.execute(
                 """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'derived_layer'
-                  AND table_name = 'report_patent_base'
-                  AND ordinal_position BETWEEN 3 AND 9
-                ORDER BY ordinal_position
-                """
-            )
-            actual_report_number_columns = [row["column_name"] for row in cur.fetchall()]
-            self.assertEqual(actual_report_number_columns, EXPECTED_PATENT_NUMBER_COLUMNS)
-
-            cur.execute(
-                """
-                SELECT indexname
+                SELECT schemaname, indexname
                 FROM pg_indexes
-                WHERE schemaname IN ('core_layer', 'derived_layer', 'app_layer')
+                WHERE schemaname IN ('core_layer', 'derived_layer', 'app_layer',
+                                     'legacy_0021')
                 """
             )
-            indexes = {row["indexname"] for row in cur.fetchall()}
-            self.assertIn("ux_patent_technical_embeddings_identity", indexes)
-            self.assertIn("ux_patent_effect_embeddings_identity", indexes)
-            self.assertIn("topics_workspace_code_key", indexes)
-            self.assertIn("ux_topic_assignments_current", indexes)
-            self.assertIn("ux_topic_candidates_one_selected", indexes)
+            by_schema: dict[str, set[str]] = {}
+            for row in cur.fetchall():
+                by_schema.setdefault(row["schemaname"], set()).add(row["indexname"])
+            live = (by_schema.get("core_layer", set())
+                    | by_schema.get("derived_layer", set())
+                    | by_schema.get("app_layer", set()))
+            frozen = by_schema.get("legacy_0021", set())
 
+            for name in ("ux_patent_technical_embeddings_identity",
+                         "ux_patent_effect_embeddings_identity"):
+                self.assertIn(name, live, f"活動 schema 缺唯一索引 {name}")
+            for name in ("topics_workspace_code_key",
+                         "ux_topic_assignments_current",
+                         "ux_topic_candidates_one_selected"):
+                self.assertIn(name, frozen, f"legacy_0021 封存區缺唯一索引 {name}")
+                self.assertNotIn(name, live,
+                                 f"{name} 不該回到活動 schema——0021 已把它併走")
+
+            # ⚠ 2026-08-19：revert 三欄同樣在 0021 併表後留在封存區——
+            #   `derived_layer.topic_runs` 已精簡成 6 欄（run_id／workflow_run_id／
+            #   previous_run_id／source_field／topic_state_json／artifact_key），
+            #   21 欄的舊表整個搬進 `legacy_0021`。原斷言查活動 schema 必然落空。
             cur.execute(
                 """
                 SELECT column_name
                 FROM information_schema.columns
-                WHERE table_schema = 'derived_layer'
+                WHERE table_schema = 'legacy_0021'
                   AND table_name = 'topic_runs'
                   AND column_name IN ('reverted_at', 'reverted_by', 'reverted_by_run_id')
                 ORDER BY column_name

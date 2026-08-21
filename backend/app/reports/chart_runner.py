@@ -18,7 +18,8 @@ from backend.app.reports.cluster_analytics import (
     build_opportunity_matrix,
     build_topic_effect_table,
 )
-from backend.app.reports.population import population_notes
+from backend.app.reports.population import cluster_section_note, population_notes
+from backend.app.transforms.patent_kind import KIND_DESIGN
 from backend.app.reports.report_definitions import REPORT_DEFINITIONS
 from backend.app.reports.report_engine import parse_json_arg, run_report
 
@@ -32,8 +33,17 @@ def _app_layer_connect():
     return psycopg.connect(**get_connection_kwargs(), row_factory=dict_row, connect_timeout=15)
 
 
-def fetch_patent_kind_summary() -> dict[str, Any]:
+def fetch_patent_kind_summary(*, patent_ids: list[int] | None) -> dict[str, Any]:
     """取專利種類三分法的統計與說明字串（A4，2026-08-06）。
+
+    🔴 **2026-08-18 修：本函式原本沒有 WHERE，一律撈全庫。**
+    封面顯示 281 件（設計 21），滑雪機 workspace 實際是 55 件（設計 11）——
+    數字全錯而且不報錯。這是「母體沒接」同型錯誤的第 3 例。
+
+    ⚠ `patent_ids` **必填、無預設值**（keyword-only）。給預設值的話，呼叫端忘記傳
+    就會靜默退回全庫——那正是本 bug 的形狀，換個寫法重來一次。必填時「忘記傳」
+    是 `TypeError`，當場炸：不是「事後檢查有沒有做對」，而是「做不對就跑不起來」。
+    全庫用途仍可用，明確傳 `None` 表態即可，意圖寫在呼叫端而不是藏在預設值。
 
     ⚠ **為什麼要單獨查一次**：所有 aggregate 報表的 rows 都已經 group by 過，
     帶不到 `patent_type`／`document_kind` 這種逐件欄位；從別的報表反推
@@ -54,14 +64,68 @@ def fetch_patent_kind_summary() -> dict[str, Any]:
         kind_tally,
     )
 
+    sql = "SELECT patent_type, document_kind FROM derived_layer.report_patent_base"
+    params: tuple = ()
+    if patent_ids is not None:
+        # ⚠ 空清單也要帶條件（`= ANY('{}')` 回 0 列）——「這個 workspace 沒有成員」
+        #   與「全庫」是兩件完全不同的事，靜默退回全庫會讓封面數字看起來很正常。
+        sql += " WHERE patent_id = ANY(%s)"
+        params = ([int(i) for i in patent_ids],)
     with _app_layer_connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT patent_type, document_kind FROM derived_layer.report_patent_base")
+        cur.execute(sql, params)
         rows = [dict(r) for r in cur.fetchall()]
     return {
         "tally": kind_tally(rows),
         "summary": kind_summary(rows),
         "design_note": design_exclusion_note(rows),
+    }
+
+
+def fetch_cover_stats(*, patent_ids: list[int] | None) -> dict[str, Any]:
+    """封面四個數字：件／族／受理局／專利類型三分法（2026-08-18，tasks §2）。
+
+    ⚠ **為什麼由引擎供給**：這四個數字原本是 deck 的 CLI 自己填（範本 `stats`
+    四格是 `["<N>", "件數"]` 占位）。CLI 手上沒有權威來源，只能從別處推——
+    封面顯示 281 件而母體實際 55 件，就是這樣來的。一方產生、一方消費。
+
+    ⚠ `patent_ids` 必填無預設，理由同 `fetch_patent_kind_summary`：
+    忘記傳要當場炸，不是靜默退回全庫。
+
+    家族口徑（§2.2）：`COUNT(DISTINCT FAMILY_ID_EXPRESSION)` 於母體。
+    缺同族 ID 的專利**各自算一族**（`COALESCE(..., 'P' || patent_id)`），
+    不得併成一族「未知」——沿用 `report_engine` 的唯一定義處，不另寫一份。
+
+    三分法（§2.3）：委派 `fetch_patent_kind_summary`（其判別走
+    `transforms/patent_kind.py` 唯一定義處）。本函式**不自行比對**任何欄位。
+    """
+    from backend.app.reports.report_engine import FAMILY_ID_EXPRESSION
+
+    where = ""
+    params: tuple = ()
+    if patent_ids is not None:
+        # ⚠ 空清單也要帶條件——「這個 workspace 沒有成員」與「全庫」不是同一件事。
+        where = " WHERE patent_id = ANY(%s)"
+        params = ([int(i) for i in patent_ids],)
+
+    with _app_layer_connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT count(*) AS n FROM derived_layer.report_patent_base{where}", params)
+        patent_count = int((cur.fetchone() or {}).get("n") or 0)
+        cur.execute(
+            f"SELECT count(DISTINCT {FAMILY_ID_EXPRESSION}) AS n "
+            f"FROM derived_layer.report_patent_base{where}", params)
+        family_count = int((cur.fetchone() or {}).get("n") or 0)
+        cur.execute(
+            f"SELECT count(DISTINCT country_code) AS n "
+            f"FROM derived_layer.report_patent_base{where}", params)
+        jurisdiction_count = int((cur.fetchone() or {}).get("n") or 0)
+
+    kind = fetch_patent_kind_summary(patent_ids=patent_ids)
+    return {
+        "patent_count": patent_count,
+        "family_count": family_count,
+        "jurisdiction_count": jurisdiction_count,
+        "kind_tally": kind.get("tally") or {},
     }
 
 
@@ -138,11 +202,6 @@ def record_exports(
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output"
 
-# F-lite（2026-07-31 使用者核准）：SVG 只換配色與字體、圖型邏輯不動。
-# 色票對齊 skill 的 theme.json（Slidesgo 系）——⚠ 值以常數對齊、不做 runtime
-# 依賴（引擎不 import skill）；兩邊一致由 tests/test_chart_svg_flite.py 釘住。
-COLOR_APPLICATION = "#006DF5"   # theme blue：申請線／長條主色
-COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
 # ── 圖表畫布：以**最終顯示尺寸**設計（P-2，2026-08-03）──
 #
 # 🔴 實測：排名圖原本畫 980×724px（10.21×7.54 in），塞進 chart_hero 的
@@ -156,7 +215,24 @@ COLOR_PUBLICATION = "#C62828"   # theme alert：公告線（與藍線對比）
 # 🔴 2026-08-12（unify-chart-source）：綁定改 **WEB**——每張圖只產一份
 # WEB 尺寸的 SVG（15px 字級、1180 畫布），寫入既有原檔名；簡報端（deck）
 # 自行 refit 字級，引擎不再為 PPT 預放大。
+from backend.app.reports.chart_sizing import FONT_STACK
+from backend.app.reports.chart_sizing import (
+    PALETTE,
+    ROLE_CHART_FOOTER,
+    ROLE_CHART_NOTE,
+    SCALES,
+)
 from backend.app.reports.chart_sizing import WEB as _SIZING
+
+# F-lite（2026-07-31 使用者核准）：SVG 只換配色與字體、圖型邏輯不動。
+# 🔴 2026-08-19（§6.3）：色票的唯一定義處改為 `chart_sizing.PALETTE`。
+# ⚠ 原註解寫「色票對齊 skill 的 theme.json…值以常數對齊、不做 runtime 依賴」
+#   ——那個「兩邊各寫一份、靠測試釘住」的作法正是 §6.0 實查抓到的病灶
+#   （chart 側 48 種色、24 種完全沒有具名常數，兩側同一個深藍兩個值）。
+#   改為單一來源後不需要「釘住兩份」，因為只有一份。
+# ⚠ 這幾行必須放在 import 之後：原本在檔案上方，改吃 PALETTE 後會 NameError。
+COLOR_APPLICATION = PALETTE["DATA_PRIMARY"].hex   # 申請線／長條主色
+COLOR_PUBLICATION = PALETTE["DATA_ALERT"].hex     # 公告線（與藍線對比）
 
 
 # 🔴 P3（2026-08-07）：畫布與字級目標改**依作用中的 profile** 取值——
@@ -270,7 +346,7 @@ BUBBLE_MIN_RADIUS_PX = _SIZING.bubble_min_radius
 # 泡泡與數字都放得下。
 CHART_YEAR_WINDOW = _SIZING.year_window
 
-COLOR_BAR = "#006DF5"
+COLOR_BAR = PALETTE["DATA_PRIMARY"].hex
 # ⚠ 不得與 COLOR_TEXT_SOFT 共用色值：轉色表以**色碼**為鍵，兩個角色撞同一個
 # 字面值時下游無法分辨「這是次要文字還是次要資料」，只能一起換或一起不換
 # （2026-07-31 獨立驗收：次要長條因此被換成裝飾色族，距 accent 僅 0.4°）。
@@ -282,17 +358,30 @@ COLOR_BAR = "#006DF5"
 # 🔴 2026-08-11 使用者實機回報「三段顏色太相近」：原青 `0891B2` 與藍段同屬
 # 冷色系、明度相近，排名圖上單獨／共同幾乎分不開。改**藍橙對比**
 # （色盲安全的標準配對）：橙 `D97706` 對白底 3.32、與藍段色相差 ~180°。
-COLOR_SEGMENT = "#D97706"
-COLOR_BAR_ALT = "#C99A5B"       # 次要長條（暖中性，與資料暖色系一致）
-COLOR_MAP = "#F8FAFC"
-COLOR_GRID = "#DCE3F2"          # theme bar_track：格線
-COLOR_TEXT = "#00094A"          # theme navy：標題與主文字
-COLOR_TEXT_SOFT = "#869FB2"     # 次要文字（刻度、副標）
+COLOR_SEGMENT = PALETTE["DATA_SEGMENT"].hex
+COLOR_BAR_ALT = PALETTE["DATA_BAR_ALT"].hex       # 次要長條（暖中性）
+COLOR_MAP = PALETTE["SURFACE_MAP"].hex
+COLOR_GRID = PALETTE["LINE_GRID"].hex             # 格線
+COLOR_TEXT = PALETTE["TEXT_IN_CHART"].hex         # 圖內標題與主文字
+COLOR_TEXT_SOFT = PALETTE["TEXT_SOFT"].hex        # 次要文字（刻度、副標）
+
+#: 法律狀態堆疊色（2026-08-17 受理局圖改狀態堆疊）。**唯一定義處**——
+#: 狀態語意固定，顏色不得各處各寫一份。
+#: 順序即堆疊順序：由「剛遞件」到「權利消滅」，一條看完生命週期。
+#: ⚠ 鍵＝表格的六欄字面（`country_status_display_pivot` 的輸出），
+#:   不是四大桶——圖與表因此逐欄對得上（使用者 2026-08-17 裁決）。
+# 🔴 2026-08-19（§6.5）：色階的唯一定義處移到 `chart_sizing.SCALES["STATUS"]`。
+# 值不變，只是不再在這裡寫第二份——本檔另有三套色階（量級／龍頭涉入／象限）
+# 與它撞色（例如 #9CA3AF 同時是「放棄」與 lead=0），各自獨立、不得互相牽動。
+STATUS_COLORS: dict[str, str] = dict(SCALES["STATUS"].steps)
+
+#: 已轉讓（申請人排名圖）：2026-08-17 使用者實物驗收「斜線看不清」，改第三色。
+COLOR_TRANSFERRED = PALETTE["DATA_TRANSFERRED"].hex
 # 淺色填色上的圖元內文字色（見 readable_text_on）；不與 COLOR_TEXT 共用——
 # 那是「頁面文字」，這是「畫在圖元上的文字」，底色來源不同。
-TEXT_ON_LIGHT = "#1A1A1A"
+TEXT_ON_LIGHT = PALETTE["TEXT_ON_LIGHT"].hex
 # SVG 內建字體宣告：不宣告時瀏覽器與 PowerPoint 轉圖都退回襯線字（舊版視覺斷裂主因）。
-SVG_FONT_STYLE = "<style>text{font-family:'Microsoft JhengHei','Segoe UI',sans-serif}</style>"
+SVG_FONT_STYLE = f"<style>text{{font-family:{FONT_STACK}}}</style>"
 
 
 def xml_text(value: Any) -> str:
@@ -518,6 +607,10 @@ def render_line_chart(
         if (year := _int_or_none(row.get("授權公告年"))) is not None
         if (count := _int_or_none(row.get("patent_count"))) is not None
     }
+    # 🔴 2026-08-17（晚）使用者定案：**家族數先從趨勢圖拿掉**。
+    #    當日稍早才加上（08-05 的「真爆發 vs 同族延伸」判別燃料），實機看過後
+    #    決定不放——兩條線再加點上數字，資訊密度過高。判別需求未消失，
+    #    家族數仍可由既有家族口徑報表取得；要回復看本行 git 記錄。
     years = sorted(set(app) | set(pub))
     max_count = max([*app.values(), *pub.values(), 1])
     width, height = _sizing_value("canvas_width"), _sizing_value("canvas_max_height")
@@ -558,7 +651,8 @@ def render_line_chart(
         svg.append(f'<polyline points="{points(pub)}" fill="none" stroke="{COLOR_PUBLICATION}" stroke-width="3"/>')
     for year in years:
         x = scale(year, years[0], years[-1], left, left + plot_w)
-        svg.append(f'<circle cx="{x:.1f}" cy="{scale(app.get(year, 0), 0, max_count, top + plot_h, top):.1f}" r="3.5" fill="{COLOR_APPLICATION}"/>')
+        app_y = scale(app.get(year, 0), 0, max_count, top + plot_h, top)
+        svg.append(f'<circle cx="{x:.1f}" cy="{app_y:.1f}" r="3.5" fill="{COLOR_APPLICATION}"/>')
         if pub:
             svg.append(f'<circle cx="{x:.1f}" cy="{scale(pub.get(year, 0), 0, max_count, top + plot_h, top):.1f}" r="3.5" fill="{COLOR_PUBLICATION}"/>')
     # G-5：圖例中文化。⚠ F-9 那次只清了英文副題、沒清圖例——同一種問題只掃了一半。
@@ -584,25 +678,37 @@ def render_line_chart(
 # ⚠ 附錄2（完整名單）已定案移除，被截的部分改由網頁報表承接，註記同步改寫。
 CHART_ROW_LIMIT = 10
 
+#: 橫條的高度（px）與條間最小空白（px）。
+#: 🔴 2026-08-19：條高原本是渲染迴圈裡的字面值 `height="18"`，而列高會被
+#: 撐開到 4 倍——18px 的條擺進 108px 的列，空白是條高的 5 倍。條高與列高
+#: 是同一件事（「這張圖多密」）的兩個落點，字面值讓它們無法一起推理。
+#: ⚠ 最小空白參與 `_row_h` 的下限：列高由字級推導，字級一小就可能低於條高。
+#: ⚠ 兩者都取自 `chart_sizing`，不得在此寫字面值：2026-08-19 初版把條高寫成
+#: `BAR_HEIGHT_PX = 18`，而檔案下方早有 `BAR_HEIGHT_PX = _SIZING.bar_height`
+#: ——同一個名字兩個定義處，兩邊剛好都是 18 所以完全沒有症狀，但改
+#: `chart_sizing.bar_height` 只有一半會跟著動。
+BAR_HEIGHT_PX = _SIZING.bar_height
+BAR_MIN_GAP_PX = _SIZING.bar_min_gap
+
 
 def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_key: str, value_key: str = "patent_count", limit: int = CHART_ROW_LIMIT) -> None:
     data = rows[:limit]
     width = _sizing_value("canvas_width")
     top = 68
-    # 🔴 G-7：列少時把列高撐開，否則圖只有一小條、框空掉一半
-    # （實機 p9 CPC L4 只有 1 列，圖高 130px 放進 3.2in 的框，空 48%）。
-    # ⚠ 有上限：無限放大會讓單列長條變成一整塊色帶，也不成圖。
+    # 列高由字級推導、不隨列數變動（2026-08-19 使用者裁決，見 `_row_height`）。
     right = 150
     bottom = 34
     # 🔴 2026-08-04：字級由「這張畫布會被縮多少」反推（資料 14pt／註記 12pt）。
     # ⚠ 畫布高度又依字級而變，故迭代求解（見 solve_chart_font）。
     def _row_h(font_px: float) -> int:
-        rh = _fill_row_height(len(data), top=top, bottom=bottom,
-                              base=int(round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX)))
+        rh = _row_height(len(data), top=top, bottom=bottom,
+                         base=int(round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX)))
         # ⚠ 列多時字級縮放會把總高撐過畫布上限（P-2：畫布過高整張圖被縮小）——
         # 上限內裝不下就壓回平均列高，字仍讀得到（row ≥ font×1.25 由 20 列上限保證）。
         cap = int((_sizing_value("canvas_max_height") - top - bottom) / max(1, len(data)))
-        return max(1, min(rh, cap))
+        # ⚠ 下限＝條高＋最小間距：列高由字級推導，字級一小就可能低於條高，
+        # 條會壓到下一列去。條高是本圖的硬幾何，必須參與列高的下限。
+        return max(BAR_HEIGHT_PX + BAR_MIN_GAP_PX, min(rh, cap))
 
     def _canvas_height(font_px: float) -> float:
         return top + bottom + max(1, len(data)) * _row_h(font_px)
@@ -650,9 +756,14 @@ def render_bar_chart(path: Path, title: str, rows: list[dict[str, Any]], label_k
         color = ranking_bar_color(value, max_value)
         # 🔴 I-3：列標籤**左對齊**——字寬估算猜三次仍被裁（實測真實寬度比估算多 13%），
         # 改成從左緣固定位置開始畫，標籤多長都不可能超出左界。
-        svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{label}</text>')
-        svg.append(f'<rect x="{left}" y="{y + 5}" width="{bar_w:.1f}" height="18" rx="2" fill="{color}"/>')
-        svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{y + 20}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value}</text>')
+        # 條在列內**垂直置中**、標籤與數值對齊條的中線（2026-08-19）。
+        # ⚠ 原本是 `y + 5`／`y + 20` 兩個字面值，隱含「列高 ≈ 28」的假設；
+        # 列高一被撐開，多出來的空白就全部落在條的下方而不是上下平分。
+        bar_y = y + (row_h - BAR_HEIGHT_PX) / 2
+        text_y = bar_y + BAR_HEIGHT_PX / 2 + label_px * 0.36   # 0.36≈半個 cap height
+        svg.append(f'<text x="{LABEL_TEXT_OFFSET_PX}" y="{text_y:.1f}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{label}</text>')
+        svg.append(f'<rect x="{left}" y="{bar_y:.1f}" width="{bar_w:.1f}" height="{BAR_HEIGHT_PX}" rx="2" fill="{color}"/>')
+        svg.append(f'<text x="{left + bar_w + 8:.1f}" y="{text_y:.1f}" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value}</text>')
     svg.append("</svg>")
     _write_svg(path, svg)
 
@@ -710,6 +821,309 @@ def _paired_rows_svg(
     return parts
 
 
+def classification_variant_rows(
+    chart_rows: dict[str, Any], report_key: str, levels: tuple[int, ...]
+) -> list[dict[str, Any]]:
+    """IPC／CPC 表格跟著 tab 的階層走（2026-08-17 使用者：圖是 4 階、表卻是 5 階）。
+
+    每階的 rows 已存在 `chart_rows[f"{report_key}_L{level}"]`，但 section 沒給
+    `rows`，顯示層退回原始報表（5 階明細）。這裡取**第一階**（預設顯示那個 tab）
+    的 rows 當 section 表格。
+
+    ⚠ 切 tab 時前端換的是圖；表格若要跟著換階，需要 variant 級的 rows——
+    那是顯示層契約的擴充，本函式先確保「預設 tab 與表一致」，
+    不再出現 4 階圖配 5 階表。
+    """
+    if not levels:
+        return []
+    return list(chart_rows.get(f"{report_key}_L{levels[0]}") or [])
+
+
+def kp_profile_table_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Key Players 表精簡（13 → 6 欄；2026-08-17 使用者驗收「PPT 放不下」）。
+
+    ⚠ `patent_ids` 是內部識別碼陣列（取證用），不給決策者看。
+    保留的六欄回答「這家是誰、投入多少、布局多廣、活著多少」。
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        granted = _int_or_none(row.get("granted_count")) or 0
+        pending = _int_or_none(row.get("pending_count")) or 0
+        out.append({
+            "applicant_display_name": row.get("applicant_display_name"),
+            "patent_count": row.get("patent_count"),
+            "family_count": row.get("family_count"),
+            "country_count": row.get("country_count"),
+            # 兩欄併一欄：授權/審查中——生命週期狀態一眼可比
+            "granted_pending": f"{granted}／{pending}",
+            "kind_summary": row.get("kind_summary"),
+        })
+    return out
+
+
+def topic_table_display_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """主題分析表精簡（21 → 7 欄；2026-08-17）。
+
+    21 欄多半是各種比例與內部欄位。決策者要的是：這個主題有多少件、
+    幾家在做、集中度多高、代表玩家是誰。
+    """
+    # ⚠ source_field 必留：前端靠它 filter 出技術／功效兩個通道，
+    #    少了它整張表會被篩成空（顯示層以 DATA_TABLE_EXCLUDED_COLUMNS 隱藏此欄，
+    #    所以它在資料裡但不佔版面——不算破壞精簡）。
+    keep = ("topic_code", "label", "source_field", "patent_count",
+            "applicant_count", "top3_share", "top_applicants")
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = {k: row.get(k) for k in keep if k in row}
+        out.append(item)
+    return out
+
+
+def year_matrix_summary_rows(pivot: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """年度矩陣表改摘要（16 欄年份展開 → 5 欄；2026-08-17 使用者：「誰看得懂」）。
+
+    原表把每個年份攤成一欄，大部分格子是空的——**稀疏矩陣不適合當表格**
+    （圖已改跨度圖，那才是看分布的地方）。表格改回答四件事：
+    誰、幾件、活躍區間、最近一次投入。
+    """
+    out: list[dict[str, Any]] = []
+    for row in pivot:
+        years = sorted(
+            int(k) for k, v in row.items()
+            if k.isdigit() and str(v).strip() and str(v).strip() != "0")
+        total = row.get("total")
+        if total is None:
+            total = sum(_int_or_none(row.get(str(y))) or 0 for y in years)
+        out.append({
+            "applicant_display_name": row.get("applicant_display_name"),
+            "patent_count": total,
+            "active_years": (f"{years[0]}–{years[-1]}"
+                             if len(years) > 1 else (str(years[0]) if years else "")),
+            "year_span": len(years),
+            "latest_year": years[-1] if years else "",
+        })
+    return out
+
+
+def design_strategy_table_rows(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """設計策略明細表的**精簡欄位**（2026-08-17 使用者：PPT 放不下）。
+
+    10 欄 → 6 欄。⚠ 資訊不丟，只改承載方式：
+    - 三個年份欄（first／latest／design_years）併成一欄區間
+    - `representative_design_patent_id` 移除——內部識別碼不給決策者看
+    - `representative_design_title` 移到敘述（代表案講一句比列一欄有用）
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        first = row.get("first_design_year")
+        latest = row.get("latest_design_year")
+        if first and latest and first != latest:
+            years = f"{first}–{latest}"
+        else:
+            years = str(first or latest or "")
+        out.append({
+            "applicant": row.get("applicant"),
+            "strategy_type": row.get("strategy_type"),
+            "design_count": row.get("design_count"),
+            "tech_count": row.get("tech_count"),
+            "design_years": years,
+            "legal_status_summary": row.get("legal_status_summary"),
+        })
+    return out
+
+
+#: 設計策略矩陣的欄序（語意序，不按量排）。
+#: ⚠ 2026-08-18 拿掉「技術+設計」第三欄：`design_protection_strategy` 只收
+#: 有設計案的申請人（`if not designs: continue`），第三欄**恆等於前兩欄相加**，
+#: 永遠不會出現只走技術那一類。策略改由「技術欄是否為 0」直接讀出。
+DESIGN_STRATEGY_AXIS = ("技術", "設計")
+
+
+def design_strategy_matrix_rows(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """設計保護策略：申請人 × 技術／設計／技術+設計（2026-08-18 使用者定案）。
+
+    取代 08-17 的「申請人 × 年度」矩陣。三欄各是**件數**：
+    - 技術：該申請人的技術案件數
+    - 設計：設計案件數
+    - 技術+設計：兩者合計（＝該申請人在本主題的總投入）
+
+    ⚠ 三欄不是三種互斥策略。每個申請人只有一個 `strategy_type`
+    （`技術+設計` 或 `只走設計`），若把 x 軸當策略歸屬，每列只會有一格有值、
+    看不出投入規模。此處取「件數」讀法：策略型由「技術欄是否為 0」直接讀出
+    ——0 就是只走設計，不必另闢一欄。
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        design = _int_or_none(row.get("design_count")) or 0
+        tech = _int_or_none(row.get("tech_count")) or 0
+        applicant = str(row.get("applicant") or "")
+        for axis, value in (("技術", tech), ("設計", design)):
+            out.append({"applicant": applicant, "strategy_axis": axis,
+                        "patent_count": value})
+    return out
+
+
+def design_intersection_table_rows(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """技術交叉表的**精簡欄位**（2026-08-17 使用者：「欄位能更精簡吧」）。
+
+    🔴 2026-08-18 改為**逐家時序表**（使用者選方案 A）。原表把設計清單與技術
+    代表案並排，「交叉」是假的——沒有任何欄位表達兩者的關係。實資料裡關係很
+    清楚（帝瑪斯設計 2019 先於技術 2020；康樂佳與澳瑞特同年同步，且標題顯示
+    是同一產品的雙重保護），那才是這張表該答的事。
+
+    四欄＋一個隱藏欄：
+    - 設計／技術：件數與年份區間
+    - 佈局順序：⚠ **算術不是判斷**（比較首次申請年）。用詞守在事實層，
+      不寫「產品化訊號」那種超譯
+    - `design_patent_ids`：給 CLI 讀 `patents."文獻備註"` 自行撰寫保護標的
+      （2026-08-10 定案：資料層不預先算好餵過去，否則 CLI 無法追問）
+
+    退場的欄與理由：`strategy_type`（整欄同值）、兩個 `representative_*_patent_id`
+    （內部識別碼）、`tech_evidence`（長句擠爆表）、`has_figure`（產製端的事）、
+    `tech_labels`（**永遠是空的**——`_tech_label` 找的四個鍵在本報表都不存在，
+    空欄比沒有欄更糟，讀者會以為這些申請人沒有技術主題）。
+    """
+    return [{
+        "applicant": row.get("applicant"),
+        "design_summary": _count_year_summary(row.get("design_years")),
+        "tech_summary": _count_year_summary(row.get("tech_years")),
+        "filing_order": _filing_order(row.get("design_years"),
+                                      row.get("tech_years")),
+        "design_patent_ids": row.get("design_patent_ids") or [],
+    } for row in rows]
+
+
+def _count_year_summary(years: list[int] | None) -> str:
+    """`2 件（2019、2022）`／`5 件（2020–2024）`——連續多年用區間，少數列舉。"""
+    ys = sorted(years or [])
+    if not ys:
+        return "0 件"
+    uniq = sorted(set(ys))
+    if len(uniq) == 1:
+        span = str(uniq[0])
+    elif len(uniq) == 2:
+        span = "、".join(str(y) for y in uniq)
+    else:
+        span = f"{uniq[0]}–{uniq[-1]}"
+    return f"{len(ys)} 件（{span}）"
+
+
+def _filing_order(design_years: list[int] | None,
+                  tech_years: list[int] | None) -> str:
+    """比較兩邊的**首次**申請年。⚠ 只陳述先後與年差，不解釋動機。"""
+    d = sorted(design_years or [])
+    t = sorted(tech_years or [])
+    if not d or not t:
+        return ""
+    if d[0] < t[0]:
+        return f"設計先行 {t[0] - d[0]} 年"
+    if t[0] < d[0]:
+        return f"技術先行 {d[0] - t[0]} 年"
+    return "同年同步"
+
+
+def render_country_status_stack(
+    path: Path,
+    title: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    """受理局 × 法律狀態堆疊（2026-08-17 取代「申請 vs 現存有效」雙條）。
+
+    🔴 吃**表格同一份 rows**（`country_status_display_pivot` 的六欄字面），
+    圖與表逐欄對得上——原本圖用四大桶、表用字面折疊，兩套語意並存，
+    且圖上的「現存有效」在表中根本沒有對應欄。
+
+    🔴 保住原本的兩種分析：堆疊各段＝**當下**狀態分布，
+    每列右端的總計＝**歷史**累計申請件數。一張圖看得到兩者。
+
+    ⚠ 只畫實際有件數的狀態：全零的不佔圖例（EP 只有授權與到期時，
+    圖例就只列那兩項）。
+    """
+    if not rows:
+        return
+    present = [st for st in STATUS_COLORS
+               if any(_int_or_none(r.get(st)) for r in rows)]
+    if not present:
+        return
+
+    width = _sizing_value("canvas_width")
+    row_h = _sizing_value("row_height")
+    label_px = chart_font_px(width, row_h * max(len(rows), 1))
+    note_px = chart_font_px(width, row_h * max(len(rows), 1),
+                            target_pt=_sizing_value("note_target_pt"))
+    # 🔴 2026-08-17 使用者驗收「國家和 bar 分太開」：左欄寬**依標籤實際長度推導**，
+    #    不用固定值。受理局代碼只有 2–3 個字元，固定 150px 會空掉一大片。
+    # ⚠ 用 `_display_width` 不用 `len()`：收斂列的標籤是中文
+    #   （「EPC 指定國（24 國）」），CJK 每字約一個全形寬，用字元數會**低估一半**
+    #   ——實測那列的開頭被畫布左緣裁掉（同 G-3／H-3 的老症狀）。
+    label_w = max((_display_width(str(r.get("country_code") or "")) for r in rows),
+                  default=2.0)
+    left = max(52, int(label_w * label_px) + 22)
+    # 右欄只放一個彙總：累計申請（歷史）。
+    right, top = 120, 62
+    # 🔴 2026-08-17→18 使用者定案（同一議題三次收斂）：先加第二條 bar、
+    #    再改右欄數字、最後**整個拿掉**——「看圖就知道了」，堆疊上的「授權」段
+    #    已經在講同一件事。這裡只留累計申請一個右欄彙總。
+    bar_h = max(18, int(row_h * 0.55))
+    gap = max(10, int(row_h * 0.35))
+    row_span = bar_h + gap
+    height = top + len(rows) * row_span + 24
+    plot_w = width - left - right
+    # ⚠ 尺標用「申請件數」（歷史累計）而非各狀態加總：兩者理應相等，
+    #    不等就是資料有狀態沒收斂到——用申請件數當尺，缺口會**看得見**。
+    totals = [_int_or_none(r.get("申請件數")) or 0 for r in rows]
+    max_total = max([*totals, 1])
+
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
+        f' viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
+        '<rect width="100%" height="100%" fill="white"/>',
+        f'<text data-role="chart-title" x="{left}" y="30" font-size="{label_px:.1f}"'
+        f' font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
+    ]
+    lx = float(left)
+    for st in present:
+        svg.append(f'<rect x="{lx:.1f}" y="44" width="12" height="12"'
+                   f' fill="{STATUS_COLORS[st]}"/>')
+        svg.append(f'<text x="{lx + 17:.1f}" y="55" font-size="{note_px:.1f}"'
+                   f' fill="{COLOR_TEXT}">{xml_text(st)}</text>')
+        lx += 34 + len(st) * note_px * 0.66
+
+    for idx, row in enumerate(rows):
+        y = top + idx * row_span
+        country = xml_text(str(row.get("country_code") or ""))
+        svg.append(f'<text x="{left - 12}" y="{y + bar_h * 0.72:.1f}"'
+                   f' text-anchor="end" font-size="{label_px:.1f}"'
+                   f' fill="{COLOR_TEXT}">{country}</text>')
+        x = float(left)
+        for st in present:
+            count = _int_or_none(row.get(st)) or 0
+            if count <= 0:
+                continue
+            seg_w = plot_w * count / max_total
+            svg.append(f'<rect x="{x:.1f}" y="{y}" width="{seg_w:.1f}"'
+                       f' height="{bar_h}" fill="{STATUS_COLORS[st]}">'
+                       f'<title>{country} {xml_text(st)} {count} 件</title></rect>')
+            if seg_w > note_px * 2.4:
+                svg.append(f'<text x="{x + seg_w / 2:.1f}" y="{y + bar_h * 0.72:.1f}"'
+                           f' text-anchor="middle" font-size="{note_px:.1f}"'
+                           f' fill="{PALETTE["SURFACE_CARD"].hex}">{count}</text>')
+            x += seg_w
+        svg.append(f'<text x="{left + plot_w + 8}" y="{y + bar_h * 0.72:.1f}"'
+                   f' font-size="{label_px:.1f}" fill="{COLOR_TEXT}">'
+                   f'{totals[idx]} 件</text>')
+    svg.append(f'<text x="{left + plot_w + 8}" y="{top - 8}"'
+               f' font-size="{note_px:.1f}" fill="{COLOR_TEXT_SOFT}">累計申請</text>')
+    svg.append("</svg>")
+    _write_svg(path, svg)
+
+
 def render_paired_bar_chart(
     path: Path,
     title: str,
@@ -739,7 +1153,7 @@ def render_paired_bar_chart(
     def _row_h(font_px: float) -> int:
         bar_h, gap = _bar_metrics(font_px)
         base = round(font_px * CHART_ROW_HEIGHT / CHART_LABEL_PX) * 2
-        rh = _fill_row_height(len(data), top=top, bottom=bottom, base=base)
+        rh = _row_height(len(data), top=top, bottom=bottom, base=base)
         cap = int((_sizing_value("canvas_max_height") - top - bottom) / max(1, len(data)))
         return max(bar_h * 2 + gap * 3, min(rh, cap))
 
@@ -865,13 +1279,19 @@ def structure_bar_svg(row: dict[str, Any], *, left: float, top: float,
     if joint_w > 0:
         out.append(f'<rect class="bar-segment" x="{left + solo_w:.1f}" y="{top}" '
                    f'width="{joint_w:.1f}" height="{BAR_HEIGHT_PX}" rx="2" fill="{COLOR_SEGMENT}"/>')
-    for hatch_count, seg_start, seg_len in ((seg["solo_hatch"], left, solo_w),
+    # 已轉讓：2026-08-17 使用者實物驗收「斜線看不清」→ 改**第三種顏色**（紫）。
+    # ⚠ 語意不變：仍是疊在各段右端的第二視覺通道（顏色分段＝申請結構、
+    #    這一段＝已轉讓），只是把 pattern 換成實色。
+    # ⚠ class 名保留 `bar-transferred`（原 `bar-hatch`）——deck 的窄轉換器
+    #    詞彙表與 pitfalls 都以 class 辨識這段，改名要一起改，不可只改一邊。
+    for moved_count, seg_start, seg_len in ((seg["solo_hatch"], left, solo_w),
                                             (seg["joint_hatch"], left + solo_w, joint_w)):
-        hatch_w = width_of(hatch_count)
-        if hatch_w > 0:
-            out.append(f'<rect class="bar-hatch" x="{seg_start + seg_len - hatch_w:.1f}" '
-                       f'y="{top}" width="{hatch_w:.1f}" height="{BAR_HEIGHT_PX}" '
-                       f'rx="2" fill="url(#hatch)"/>')
+        moved_w = width_of(moved_count)
+        if moved_w > 0:
+            out.append(f'<rect class="bar-transferred" '
+                       f'x="{seg_start + seg_len - moved_w:.1f}" '
+                       f'y="{top}" width="{moved_w:.1f}" height="{BAR_HEIGHT_PX}" '
+                       f'rx="2" fill="{COLOR_TRANSFERRED}"/>')
     return out
 
 
@@ -994,9 +1414,6 @@ def render_segmented_bar_chart(
         f'<text data-role="chart-title" x="28" y="36" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         # #3 圖例：兩段色（申請結構）＋斜紋（已轉讓）。斜紋是**第二個通道**，
         # 疊在段色上——「共同且已轉讓」＝共同色＋斜紋，兩個屬性同時看得到。
-        (f'<defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" '
-         f'patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" '
-         f'stroke="{COLOR_TEXT}" stroke-width="2" stroke-opacity="0.55"/></pattern></defs>'),
         (f'<rect x="28" y="56" width="12" height="12" fill="{STRUCTURE_SOLO_COLOR}"/>'
          f'<text x="46" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">'
          f'{xml_text(structure_labels[0])}</text>'),
@@ -1006,7 +1423,7 @@ def render_segmented_bar_chart(
         # ⚠ 圖例色塊的底色要用**淺階**：深底配深斜紋等於看不見
         #   （2026-08-05 轉圖當場抓到，圖例那格是一片實心深藍）。
         *([(f'<rect x="236" y="56" width="12" height="12" fill="{STRUCTURE_SOLO_COLOR}"/>'
-            f'<rect x="236" y="56" width="12" height="12" fill="url(#hatch)"/>'
+            f'<rect x="236" y="56" width="12" height="12" fill="{COLOR_TRANSFERRED}"/>'
             f'<text x="254" y="67" font-size="{note_px:.1f}" fill="{COLOR_TEXT}">'
             f'{xml_text(hatch_label)}</text>')]
           if hatch_label else []),
@@ -1130,7 +1547,7 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">' + SVG_FONT_STYLE,
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text x="50" y="36" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<rect x="{left}" y="{top}" width="{map_w}" height="{map_h}" fill="{COLOR_MAP}" stroke="#94A3B8"/>',
+        f'<rect x="{left}" y="{top}" width="{map_w}" height="{map_h}" fill="{COLOR_MAP}" stroke="{PALETTE["AXIS_TICK_LINE"].hex}"/>',
     ]
     for lon in range(-180, 181, 60):
         x = scale(lon, -180, 180, left, left + map_w)
@@ -1157,7 +1574,7 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
         y = scale(lat, 85, -85, top, top + map_h)
         radius = 8 + 34 * math.sqrt(value / max_value)
         # 區域局用橘色，與國家（藍色）視覺區分：代表「這個地區有佈局」而非單一國家。
-        fill, stroke = ("#F59E0B", "#92400E") if is_regional else ("#2563EB", "#1E40AF")
+        fill, stroke = (_INTENSITY["高"], PALETTE["BUBBLE_STROKE_REGIONAL"].hex) if is_regional else (PALETTE["BUBBLE_FILL"].hex, PALETTE["BUBBLE_STROKE"].hex)
         svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" fill="{fill}" fill-opacity="0.68" stroke="{stroke}" stroke-width="2"/>')
         svg.append(f'<text x="{x:.1f}" y="{y + 4:.1f}" text-anchor="middle" font-size="{label_px:.1f}" fill="{readable_text_on(fill)}" data-on-fill="{fill}" font-weight="700">{xml_text(code)}</text>')
         svg.append(f'<text x="{x:.1f}" y="{y + radius + 18:.1f}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{value}</text>')
@@ -1173,16 +1590,34 @@ def render_country_map(path: Path, rows: list[dict[str, Any]], title: str = "Pat
 # 圖檔名（唯一定義處：對照表、產圖與測試都取這裡）。
 KP_QUADRANT_FILENAME = "kp_quadrant.svg"
 # 定位分類**由資料推導**，不吃 AI 給的字串——分類是統計事實不是敘述。
+# 分類色取自色階登記表（§6.5）——⚠ 這是**類別編碼不是數值色階**：
+# 同一個分類在不同泡泡必須同色，否則圖例對不上。
+_KP_COLOR = dict(SCALES["KP_CLASS"].steps)
+# 地區型受理局的泡泡填色沿用量級色階的「高」橘——⚠ 它與 INTENSITY 是同一個色，
+# 這裡不另開條目：另開會變成「改一個沒改另一個」而視覺上悄悄分家。
+_INTENSITY = dict(SCALES["INTENSITY"].steps)
+
+
+def _report_theme_css() -> str:
+    """HTML 報表主題的 `:root` 變數宣告，由色階登記表產生（§6.4／§6.5）。
+
+    ⚠ 原本 9 個 `--paper: #F4F6F9;` 這樣逐行寫死在模板字串裡。那些值與產品前端
+    `static/index.html` 的 `--text`／`--border`／`--accent`／`--accent-2`
+    是同一份知識（註解自己寫著「同一個產品不該有兩套視覺語言」），
+    跨語言不能 import，改由 `SCALES["REPORT_THEME"]` 供給並加一致性測試。
+    """
+    return "\n".join(
+        f"      --{label}: {hexv};" for label, hexv in SCALES["REPORT_THEME"].steps)
 KP_CLASS_FULL_DOMAIN = "全領域布局"
 KP_CLASS_SINGLE_TECH = "單一技術深布局"
 KP_CLASS_NICHE = "利基／探索"
 KP_CLASS_PRIOR_ART = "前案（多失效）"
 
 _KP_CLASS_COLORS = {
-    KP_CLASS_FULL_DOMAIN: "#D97706",   # 橘：範例右上大泡
-    KP_CLASS_SINGLE_TECH: "#0D9488",   # 青綠：右下
-    KP_CLASS_NICHE: "#60A5FA",         # 淺藍：左側
-    KP_CLASS_PRIOR_ART: "#6B7280",     # 灰：僅具前案價值
+    KP_CLASS_FULL_DOMAIN: _KP_COLOR["全領域布局"],   # 橘：範例右上大泡
+    KP_CLASS_SINGLE_TECH: _KP_COLOR["單一技術深布局"],  # 青綠：右下
+    KP_CLASS_NICHE: _KP_COLOR["利基／探索"],        # 淺藍：左側
+    KP_CLASS_PRIOR_ART: _KP_COLOR["前案（多失效）"],   # 灰：僅具前案價值
 }
 
 
@@ -1228,7 +1663,7 @@ def emit_kp_quadrant(ctx: ChartContext, rows: list[dict[str, Any]]) -> None:
             "label": definition.label_zh,
             "variant_key": "default",
             "file": KP_QUADRANT_FILENAME,
-            "rows": rows,
+            "rows": kp_profile_table_rows(rows),
         }],
     })
 
@@ -1395,7 +1830,7 @@ def place_bubble_labels(
                 line_y1, line_y2 = label_y + 3, y - radius
             else:
                 line_y1, line_y2 = label_y - 10, y + radius
-            out.append(f'<line x1="{x:.1f}" y1="{line_y1:.1f}" x2="{x:.1f}" y2="{line_y2:.1f}" stroke="#94A3B8" stroke-width="1"/>')
+            out.append(f'<line x1="{x:.1f}" y1="{line_y1:.1f}" x2="{x:.1f}" y2="{line_y2:.1f}" stroke="{PALETTE["AXIS_TICK_LINE"].hex}" stroke-width="1"/>')
         out.append(f'<text x="{x:.1f}" y="{label_y:.1f}" text-anchor="middle" '
                    f'font-size="{label_px:.1f}" font-weight="600" fill="{COLOR_TEXT}">{xml_text(label)}</text>')
     return out
@@ -1447,7 +1882,7 @@ def render_bubble_chart(
         x = scale(float(row[x_key]), 0, x_max, left, left + plot_w)
         y = scale(float(row[y_key]), 0, y_max, top + plot_h, top)
         radius = 6 + 30 * math.sqrt(float(row[size_key]) / s_max)
-        svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" fill="#2563EB" fill-opacity="0.45" stroke="#1E40AF" stroke-width="1.5"/>')
+        svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" fill="{PALETTE["BUBBLE_FILL"].hex}" fill-opacity="0.45" stroke="{PALETTE["BUBBLE_STROKE"].hex}" stroke-width="1.5"/>')
 
     # 標籤：全部泡泡都標。預設放泡泡正上方；重疊時上下交錯逐步外推找空位，
     # 標籤離開泡泡邊緣時畫一條引線（箭頭）指回泡泡，群聚也能對得上誰是誰。
@@ -1476,7 +1911,7 @@ def render_bubble_chart(
                 line_y1, line_y2 = label_y + 3, y - radius
             else:            # 標籤在泡泡下方
                 line_y1, line_y2 = label_y - 10, y + radius
-            svg.append(f'<line x1="{x:.1f}" y1="{line_y1:.1f}" x2="{x:.1f}" y2="{line_y2:.1f}" stroke="#94A3B8" stroke-width="1"/>')
+            svg.append(f'<line x1="{x:.1f}" y1="{line_y1:.1f}" x2="{x:.1f}" y2="{line_y2:.1f}" stroke="{PALETTE["AXIS_TICK_LINE"].hex}" stroke-width="1"/>')
         svg.append(f'<text x="{x:.1f}" y="{label_y:.1f}" text-anchor="middle" font-size="{label_px:.1f}" fill="{COLOR_TEXT}">{xml_text(label)}</text>')
     svg.append("</svg>")
     _write_svg(path, svg)
@@ -1558,10 +1993,10 @@ def render_matrix_chart(
         # 縮放，`max-width:100%` 會直接把右側與下方**裁掉**（2026-08-09 驗收頁
         # 實測，lifecycle 的 web profile 被切掉一整欄與三列，誤判成「內容比較少」）。
         (f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
-         f' viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">'),
+         f' viewBox="0 0 {width} {height}" font-family="{FONT_STACK}">'),
         f'<rect width="{width}" height="{height}" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="26" font-size="{note_px:.1f}" font-weight="bold" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="16" y="56" font-size="{label_px:.1f}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
+        f'<text x="16" y="56" font-size="{label_px:.1f}" font-weight="600" fill="{PALETTE["LEGEND_HEAD"].hex}">{LEGEND_SCALE_PREFIX}</text>',
     ]
     # 🔴 F-13：格子有三階顏色卻沒有任何說明（實機 p6），讀者無從對照。
     # ⚠ 圖例與格子共用 `bubble_legend_spans`——各算各的會出現
@@ -1571,7 +2006,7 @@ def render_matrix_chart(
     for legend_color, legend_label, legend_span in bubble_legend_spans(max_value):
         text = f"{legend_label} {legend_span}"
         parts.append(f'<rect x="{legend_x}" y="{44}" width="12" height="12" rx="2" fill="{legend_color}"/>')
-        parts.append(f'<text x="{legend_x + 20}" y="{56}" font-size="{label_px:.1f}" fill="#4B5563">'
+        parts.append(f'<text x="{legend_x + 20}" y="{56}" font-size="{label_px:.1f}" fill="{PALETTE["LEGEND_ITEM"].hex}">'
                      f'{xml_text(text)}</text>')
         legend_x += legend_step(text, mark_gap=8)
     for col_index, col in enumerate(cols):
@@ -1590,7 +2025,7 @@ def render_matrix_chart(
             value = cells.get((row_label, col))
             if value is None:
                 parts.append(
-                    f'<rect x="{x}" y="{y}" width="{cell_w - 2}" height="{cell_h - 2}" fill="#F1F5F9"/>'
+                    f'<rect x="{x}" y="{y}" width="{cell_w - 2}" height="{cell_h - 2}" fill="{PALETTE["SURFACE_TABLE_HEAD"].hex}"/>'
                 )
                 continue
             # 🔴 2026-07-31：原本用 `fill-opacity` 0.12–0.90 疊在同一色上表達大小。
@@ -1643,11 +2078,12 @@ def year_bubble_matrix_layout(
     return {"top_rows": top_rows, "years": ordered_years, "values": values, "max_value": max_value, "rows_total": len(totals)}
 
 
-YEAR_BUBBLE_COLOR_BANDS: tuple[tuple[float, str, str], ...] = (
-    (0.25, "#93C5FD", "低"),
-    (0.50, "#14B8A6", "中"),
-    (0.75, "#F59E0B", "高"),
-    (1.00, "#DC2626", "最高"),
+# ⚠ 門檻（0.25/0.50/0.75/1.00）留在這裡、色取自色階：門檻是**本圖的分帶規則**，
+# 色是**全庫共用的語意**。兩者寫在一起會讓「改色」與「改分帶」看起來像同一件事。
+YEAR_BUBBLE_COLOR_BANDS: tuple[tuple[float, str, str], ...] = tuple(
+    (threshold, hexv, label)
+    for threshold, (label, hexv) in zip(
+        (0.25, 0.50, 0.75, 1.00), SCALES["INTENSITY"].steps)
 )
 
 
@@ -1664,14 +2100,14 @@ def readable_text_on(fill: str) -> str:
     """
     value = fill.lstrip("#")
     if len(value) != 6:
-        return "#FFFFFF"
+        return PALETTE["SURFACE_CARD"].hex
     channels = []
     for offset in (0, 2, 4):
         component = int(value[offset:offset + 2], 16) / 255
         channels.append(component / 12.92 if component <= 0.03928
                         else ((component + 0.055) / 1.055) ** 2.4)
     luminance = 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
-    return TEXT_ON_LIGHT if luminance > 0.4 else "#FFFFFF"
+    return TEXT_ON_LIGHT if luminance > 0.4 else PALETTE["SURFACE_CARD"].hex
 
 
 def bubble_legend_spans(max_value: int) -> list[tuple[str, str, str]]:
@@ -1685,6 +2121,12 @@ def bubble_legend_spans(max_value: int) -> list[tuple[str, str, str]]:
     任何泡泡，硬印出來只會讓讀者對照不到東西——正確作法是不列。
     ⚠ 同時：`lo == hi` 時寫單一數字，不寫「1–1」這種假區間（實機 p16）。
     """
+    # 🔴 2026-08-17：max_value == 1 時色階退化——每一格都是「最高」，整張圖
+    #    畫成一片 #DC2626（本套配色裡紅＝到期／風險），讀者會誤讀成警訊，
+    #    而實際上只是「這格有一件」。沒有級距可分時就不要假裝有：
+    #    改用最低階的藍、標籤講事實（有申請）。
+    if max_value <= 1:
+        return [(YEAR_BUBBLE_COLOR_BANDS[0][1], "有申請", "1")]
     spans: list[tuple[str, str, str]] = []
     previous = 0.0
     for upper_bound, color, label in YEAR_BUBBLE_COLOR_BANDS:
@@ -1698,7 +2140,13 @@ def bubble_legend_spans(max_value: int) -> list[tuple[str, str, str]]:
 
 
 def year_bubble_color(value: int, max_value: int) -> tuple[str, str]:
-    """依全體前 20 家的共同尺度回傳明顯色階，確保上下兩區可直接比較。"""
+    """依全體前 20 家的共同尺度回傳明顯色階，確保上下兩區可直接比較。
+
+    ⚠ max_value <= 1 時沒有級距可分，全部回最低階的藍——與
+    `bubble_legend_spans` 的退化處理必須一致，否則圖例說藍、格子畫紅。
+    """
+    if max_value <= 1:
+        return YEAR_BUBBLE_COLOR_BANDS[0][1], "有申請"
     ratio = value / max(max_value, 1)
     for upper_bound, color, label in YEAR_BUBBLE_COLOR_BANDS:
         if ratio <= upper_bound:
@@ -1760,7 +2208,7 @@ def render_year_span_chart(
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
-        f' viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
+        f' viewBox="0 0 {width} {height}" font-family="{FONT_STACK}">',
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="28" font-size="{label_px:.1f}"'
         f' font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
@@ -1780,7 +2228,7 @@ def render_year_span_chart(
                      f' text-anchor="middle" fill="{COLOR_TEXT}">{label}</text>')
         # 淡格線：沒有它，條的起訖對不回年份刻度。
         parts.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}"'
-                     f' y2="{top + len(row_names) * row_h}" stroke="#EEF2F7" stroke-width="1"/>')
+                     f' y2="{top + len(row_names) * row_h}" stroke="{PALETTE["LINE_ROW_FAINT"].hex}" stroke-width="1"/>')
 
     for row_index, company in enumerate(row_names):
         y_center = top + row_index * row_h + row_h / 2
@@ -1809,7 +2257,7 @@ def render_year_span_chart(
         for year in active:
             parts.append(
                 f'<circle data-role="active-year" cx="{year_x[year]:.1f}" cy="{y_center:.1f}"'
-                f' r="{max(2.5, bar_h * SPAN_ACTIVE_DOT_RATIO):.1f}" fill="#FFFFFF"'
+                f' r="{max(2.5, bar_h * SPAN_ACTIVE_DOT_RATIO):.1f}" fill="{PALETTE["SURFACE_CARD"].hex}"'
                 f' stroke="{fill}" stroke-width="1.5"/>')
         parts.append(
             f'<text data-role="span-total" x="{last_x + cell_w * 0.4:.1f}"'
@@ -1870,10 +2318,10 @@ def render_year_bubble_matrix_chart(
     label_px = chart_font_px(width, height)
     note_px = chart_font_px(width, height, target_pt=_sizing_value("note_target_pt"))
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="{FONT_STACK}">',
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="16" y="28" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
-        f'<text x="16" y="90" font-size="{note_px:.1f}" font-weight="600" fill="#374151">{LEGEND_SCALE_PREFIX}</text>',
+        f'<text x="16" y="90" font-size="{note_px:.1f}" font-weight="600" fill="{PALETTE["LEGEND_HEAD"].hex}">{LEGEND_SCALE_PREFIX}</text>',
         *([(f'<text x="{width - 34}" y="{top - 14}" text-anchor="end" font-size="{note_px:.1f}" '
             f'fill="{COLOR_TEXT_SOFT}">僅顯示 {years[0]}–{years[-1]}（共 {years_total} 年）</text>')]
           if years_total > len(years) else []),
@@ -1889,7 +2337,7 @@ def render_year_bubble_matrix_chart(
     for color, label, span in bubble_legend_spans(max_value):
         text = f"{label} {span}"
         parts.append(f'<circle cx="{legend_x}" cy="86" r="9" fill="{color}"/>')
-        parts.append(f'<text x="{legend_x + 14}" y="90" font-size="{label_px:.1f}" fill="#4B5563">'
+        parts.append(f'<text x="{legend_x + 14}" y="90" font-size="{label_px:.1f}" fill="{PALETTE["LEGEND_ITEM"].hex}">'
                      f'{xml_text(text)}</text>')
         legend_x += legend_step(text, mark_width=18, mark_gap=5)
     year_labels = [_year_axis_label(year, cell_w, label_px) for year in years]
@@ -1922,7 +2370,7 @@ def render_year_bubble_matrix_chart(
             value_font_size = label_px
             parts.append(
                 f'<circle cx="{x:.1f}" cy="{y + 16:.1f}" r="{radius:.1f}" fill="{fill}" '
-                f'data-value-band="{color_band}" stroke="#374151" stroke-width="1.1">'
+                f'data-value-band="{color_band}" stroke="{PALETTE["LEGEND_HEAD"].hex}" stroke-width="1.1">'
                 f'<title>{xml_text(company)} / {year} / {value}</title></circle>'
             )
             parts.append(
@@ -1991,9 +2439,6 @@ def legend_step(label: str, *, mark_width: float = 12, mark_gap: float = 8) -> f
     """一個圖例項要佔的水平距離：色塊 ＋ 間隙 ＋ 文字 ＋ 項間距。"""
     return mark_width + mark_gap + _text_px(label) + LEGEND_ITEM_GAP_PX
 
-
-#: 排名圖長條的高度（px）。註記位置由它推導，不得各寫各的。
-BAR_HEIGHT_PX = _SIZING.bar_height
 
 #: 文字「字身上緣到 baseline」佔字級的比例，用來判斷文字會不會壓到上方元素。
 #: ⚠ 這是估算值——量的是能不能「看起來壓到」，不是精確排版。
@@ -2136,32 +2581,9 @@ def _tech_year_topics(cluster_data: dict[str, Any]) -> dict[int, set[str]]:
     return year_topics
 
 
-def annual_topic_columns(cluster_data: dict[str, Any] | None) -> dict[int, dict[str, int]]:
-    """年度 ×（涉及技術群／首現技術群）——問題 9 四欄的分群那半。
-
-    ⚠ 只算**技術通道**：技術演進看的是技術線，功效主題混進來會虛增主題數。
-    無分群資料回空 dict——呼叫端據此**不補技術群欄**，
-    0（有分群沒觸及）與缺鍵（沒分群）是兩個不同的事實。
-    """
-    if not cluster_data:
-        return {}
-    year_topics = _tech_year_topics(cluster_data)
-    first_year = {}
-    for year in sorted(year_topics):
-        for code in year_topics[year]:
-            first_year.setdefault(code, year)
-    return {
-        year: {
-            "topic_count": len(codes),
-            "new_topic_count": sum(1 for c in codes if first_year[c] == year),
-        }
-        for year, codes in year_topics.items()
-    }
-
-
-def _trend_row(year: int, app: dict[int, dict[str, Any]], pub: dict[int, int],
-               topic_columns: dict[int, dict[str, int]] | None) -> dict[str, Any]:
-    """單一年份的合併列；family／技術群欄依「有資料才有鍵」原則組裝。"""
+def _trend_row(year: int, app: dict[int, dict[str, Any]],
+               pub: dict[int, int]) -> dict[str, Any]:
+    """單一年份的合併列；`family_count` 依「有資料才有鍵」原則組裝。"""
     row: dict[str, Any] = {
         "year": year,
         "application_count": app.get(year, {}).get("count", 0),
@@ -2170,23 +2592,21 @@ def _trend_row(year: int, app: dict[int, dict[str, Any]], pub: dict[int, int],
     family = app.get(year, {}).get("family")
     if family is not None:
         row["family_count"] = family
-    if topic_columns is not None:
-        info = topic_columns.get(year) or {}
-        row["topic_count"] = int(info.get("topic_count") or 0)
-        row["new_topic_count"] = int(info.get("new_topic_count") or 0)
+    # ⚠ 2026-08-17 使用者實物驗收後移除「涉及／首現技術主題」兩欄：
+    #    圖上沒有這個維度（趨勢圖是件數雙線），而「主題演進」另有專頁講同一件事。
+    #    2026-08-18 續：連 `topic_columns` 參數與上游 `annual_topic_columns`
+    #    一併移除——留著會每次算一份 dict 丟掉，且讓人以為這條路還活著。
     return row
 
 
 def merge_annual_trend_rows(
     application_rows: list[dict[str, Any]],
     publication_rows: list[dict[str, Any]],
-    topic_columns: dict[int, dict[str, int]] | None = None,
 ) -> list[dict[str, int]]:
     """將申請年與授權公告年趨勢合併成前端表格可直接交叉對照的 rows。
 
-    年度四欄（問題 9）：`family_count` 由 SQL 聚合隨 application_rows 帶入；
-    `topic_columns` 有給（有分群）才補「涉及／首現技術群」兩欄——
-    ⚠ 沒分群時**缺鍵**而非補 0（0＝有分群沒觸及，缺鍵＝沒分群，混同會誤導解讀）。
+    `family_count` 由 SQL 聚合隨 application_rows 帶入；⚠ 缺資料時**缺鍵**
+    而非補 0——0 讀起來像「查過是 0」，缺鍵才是「沒有這筆資料」。
     """
     app: dict[int, dict[str, Any]] = {}
     for row in application_rows:
@@ -2200,7 +2620,7 @@ def merge_annual_trend_rows(
         if (year := _int_or_none(row.get("授權公告年"))) is not None
         if (count := _int_or_none(row.get("patent_count"))) is not None
     }
-    return [_trend_row(year, app, pub, topic_columns) for year in sorted(set(app) | set(pub))]
+    return [_trend_row(year, app, pub) for year in sorted(set(app) | set(pub))]
 
 
 def render_chart_embed(file: str) -> str:
@@ -2224,7 +2644,7 @@ def render_chart_embed(file: str) -> str:
 # 往上推，不是從主色往下淡——後者就是再做一次 F-2。
 # 白底（網頁報表）實測對比：10.88／7.43／5.28／3.75／3.08，全數過關。
 # 對應的深底階由 theme.json 的 chart_recolor 映射（對背景 9.24→3.53）。
-RANKING_BAR_SCALE: tuple[str, ...] = ("#0A3A80", "#0B4FB8", "#1268D6", "#2E86E0", "#4A97E3")
+RANKING_BAR_SCALE: tuple[str, ...] = tuple(h for _lbl, h in SCALES["RANKING"].steps)
 
 #: 申請結構分段的類別色（#3，2026-08-05）。⚠ 類別編碼不得用數值色階——
 #: 同一個「單獨申請」在不同列會變色，圖例就對不上。取最淺一階（W-2 保證 ≥3.0）。
@@ -2260,31 +2680,31 @@ def truncation_note(shown: int, total: int) -> str:
     return f"顯示前 {shown}/{total} 名，完整名單見網頁報表"
 
 
-#: 列數少於 3 時的列高上限倍率。
-#: ⚠ 與一般情況（4 倍）分開：1–2 列撐到 4 倍就變成色帶（H-6）。
-SPARSE_ROW_CEILING_FACTOR = 2
+def _row_height(row_count: int, *, top: int, bottom: int,
+                base: int = CHART_ROW_HEIGHT) -> int:
+    """列高＝基準值（由字級推導），不隨列數變動；圖高因此隨資料量成長。
 
+    🔴 2026-08-19 使用者裁決（實機看 IPC/CPC 四階／五階分頁）：
+    「bar 間距縮小，文字同樣大小，圖不一定要撐那麼大張，根據資料變動」。
+    **本函式原為 `_fill_row_height`——列少時撐開列高填滿畫布（G-7／H-6，
+    2026-08-03）。該行為在此裁決中被推翻。**
 
-def _fill_row_height(row_count: int, *, top: int, bottom: int,
-                     base: int = CHART_ROW_HEIGHT, ceiling_factor: int = 4) -> int:
-    """列高：列少時撐開填滿畫布，列多時維持基準值。
+    ⚠ 推翻的依據不只是偏好：G-7 的前提是「圖要填滿 PPT 的 3.2in 圖框，
+    否則空掉 37–48%」，而 `chart_scale()` 自 2026-08-12（unify-chart-source）
+    起**恆為 1.0**——PPT 二次縮放補償已退場、簡報端改由 deck skill 逐圖 refit，
+    引擎輸出即網頁顯示尺寸。撐開填框是那個時代留下來的遺留物。
 
-    🔴 G-7：列高固定 28px 時，1–2 列的圖只有 130–158px 高，放進 3.2in 的框
-    空掉 37–48%。⚠ 那不是版型給太多空間，是圖本身太矮。
+    ⚠ 實機病徵（report_trial_20260819_122745）：同一張 IPC 圖的兩個分頁，
+    四階（2 列）列距 54、五階（5 列）列距 91，切分頁時條會跳位；
+    CPC 五階（3 列）列距 108，條間空白 90px＝條高的 5 倍。
 
-    ⚠ 兩端都要守：
-    - 上限 `base × ceiling_factor`——再撐下去單列長條會變成一整塊色帶，不成圖。
-    - 下限 `base`——列多時撐開會讓畫布爆高，整張圖反而被縮小（P-2 的老問題）。
+    ⚠ 仍保留的保護：列多到 `base × row_count` 會超過畫布上限時壓回平均列高
+    ——那是防止畫布爆高後整張圖被縮小（P-2），與「填滿」是兩回事。
     """
     if row_count <= 0:
         return base
     usable = _sizing_value("canvas_max_height") - top - bottom
-    # 🔴 H-6（2026-08-03 實機 p9）：CPC 四階只有 1 列，撐到 base×4＝112px 後
-    # 那根長條橫貫全寬、粗到變成一整塊色帶，已經不像圖表了。
-    # ⚠ 列數極少時**不追求填滿**：填滿是為了避免大片留白，但把單一長條撐成色帶
-    # 是用一個可讀性問題換另一個。少列時上限收到 base×2，留白改由版型處理。
-    factor = ceiling_factor if row_count >= 3 else SPARSE_ROW_CEILING_FACTOR
-    return int(max(base, min(base * factor, usable // row_count)))
+    return int(max(1, min(base, usable // row_count)))
 
 
 #: 標籤文字與畫布左緣之間的留白（px）。
@@ -2448,8 +2868,35 @@ DATA_COLUMN_LABELS: dict[str, str] = {
     "patent_ids": "專利 ID（供查證）",
     "granted_count": "已授權",
     "pending_count": "審查中",
+    # 主題表的法律狀態分解（2026-08-18，§7e）。上面兩個 KP 表已在用，補齊另外兩個。
+    # ⚠ 這四欄目前**不進主題表版面**（`topic_table_display_rows` 的 keep 白名單擋著）
+    #   ——它們是給結論頁排序與 CLI 取證用的訊號。登記標籤是為了「哪天被加進
+    #   白名單時不會印出英文欄名」，不是宣告要顯示。
+    "inactive_count": "失效",
+    "unknown_status_count": "狀態未知",
+    # 2026-08-17：設計策略／技術交叉兩張表的欄名（實機表頭曾整排印英文 key）。
+    "applicant": "申請人",
+    "strategy_type": "策略型",
+    "design_count": "設計件數",
+    "tech_count": "技術件數",
+    "design_years": "設計申請年",
+    "legal_status_summary": "法律狀態",
+    "tech_labels": "技術主題",
+    "representative_tech_title": "代表技術案",
+    "applicant_strategy": "申請人·策略",
+    "strategy_axis": "策略面向",
+    # 技術交叉時序表（2026-08-18 方案 A）
+    "design_summary": "設計（件數／年）",
+    "tech_summary": "技術（件數／年）",
+    "filing_order": "佈局順序",
+    # 🔴 2026-08-18 使用者「單位是甚麼要標清楚」：
+    #   `granted_pending` 先前**完全沒有中文欄名**，實機表頭直接印英文 key；
+    #   `kind_summary` 的值是「新型8／發明5／設計1」，不標單位讀不出是件數。
+    "granted_pending": "已授權／審查中（件）",
+    "kind_summary": "種類組成（件）",
     "dead_count": "已失效",
-    "kind_summary": "種類組成",
+    # ⚠ 原本這裡還有一筆 "kind_summary": "種類組成"，與上方帶單位的那筆重複鍵。
+    #   Python dict 後者覆蓋前者，所以加了單位卻看不到效果（實測）。已移除。
     # 年度四欄（問題 9）
     "family_count": "家族數",
     # 🔴 2026-08-12 使用者定案術語：BERTopic 產物一律稱「技術主題」，不用「群」
@@ -2526,6 +2973,22 @@ def _read_narratives(run_dir: Path, version: str) -> dict[str, Any]:
 # cluster_topic_table：source_field 原始欄名不出現在使用者介面（2026-07-21 定案，
 # 技術/功效已由統計表分段標題表達）。
 DATA_TABLE_EXCLUDED_COLUMNS: dict[str, tuple[str, ...]] = {
+    # 🔴 2026-08-19（§3）家族數落點收斂：趨勢表的 `family_count` 不再顯示。
+    #
+    # 同一頁上 `patent_count` 與 `family_count` 都叫「數量」，讀者無從判斷該看
+    # 哪一個，而兩者口徑不同（件數 vs 同族合併後）。§2 已把家族數收斂到**封面**
+    # 由引擎統一供給，趨勢表再列一次就是同一份知識的第二個顯示落點——
+    # ⚠ 兩處若因口徑差異而不同（實測受理局頁 46 vs 封面 48 vs 家族報表 40），
+    #   讀者只會覺得報表在自相矛盾。
+    #
+    # ⚠ **隱藏顯示不刪資料**：`chart_rows` 仍帶 `family_count`，CLI 取證要用，
+    #   而且刪掉之後「同族合併後的數字」再也算不回來。
+    # ⚠ 只收 `application_trend`——實查：`publication_trend` 的 `aggregates`
+    #   是空的、根本沒有 family_count。對不存在的欄位登記排除，那條規則永遠
+    #   不生效卻**看起來像已經處理了**，比沒登記更糟。
+    # ⚠ 不動 KP 表與 KP 象限：那裡的家族數是 per-applicant 維度
+    #   （某申請人有幾個家族），與「某年有幾個家族」不是同一件事。
+    "application_trend": ("family_count",),
     # 2026-07-29 使用者定案：
     #   topic_code  → 「機制能識別就好，表格和報告不用顯示」（資料仍帶著，供合併/拆分識別）
     #   leading_*   → 「有前三大申請人好像就不用龍頭涉入了」（改以集中度兩欄表達競爭結構）
@@ -2557,6 +3020,9 @@ DATA_TABLE_EXCLUDED_COLUMNS: dict[str, tuple[str, ...]] = {
     # segment_key 畫藍色區段（轉出件數），移掉資料會讓圖表退化成單色長條。
     # 使用者定案：「欄位移除，圖表保留分段」。
     "applicant_ranking": ("recent_assignee_count",),
+    # 技術交叉表同理（2026-08-18）：id 只給解讀 CLI 逐件讀「文獻備註」寫保護標的
+    # ——沿用 2026-08-10「資料層不預先算好餵過去」定案；顯示層一定要藏。
+    "design_protection_detail": ("design_patent_ids",),
 }
 
 # 總計列可加總的欄（加總有意義＝件數類）；其餘一律「—」——applicant_count 跨主題
@@ -2786,8 +3252,9 @@ CHART_ENCODING_NOTES: dict[str, str] = {
     # ——那些看圖看不出來，而誤讀的代價很大。
     "application_trend": "兩線分別為申請與授權公告（同尺）",
     "publication_trend": "以授權公告年計，非申請年",
-    "country_distribution": "上下兩條同尺｜下＝現存有效（已授權）",
-    "jurisdiction_distribution": "上下兩條同尺｜下＝現存有效（已授權）",
+    # 2026-08-17 改單條堆疊：總長是累計、各段是當下——這兩件事看圖看不出來。
+    "country_distribution": "堆疊總長＝累計申請｜各段＝當下狀態字面",
+    "jurisdiction_distribution": "堆疊總長＝累計申請｜各段＝當下狀態字面",
     "ipc_main_distribution": "本頁為單一階層，另一階層見對頁",
     "cpc_main_distribution": "本頁為單一階層，另一階層見對頁",
     "opportunity_quadrant": "點＝技術主題（單位是主題不是件）",
@@ -3175,15 +3642,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
        不宣告 dark，避免瀏覽器自動反轉把圖表白底與頁面撞在一起。 */
     :root {{
       color-scheme: light;
-      --paper: #F4F6F9;      /* 頁面底：比純白略深，讓白卡浮起來 */
-      --card: #FFFFFF;
-      --ink: #1A1A2E;        /* 產品 --text */
-      --ink-soft: #5A6472;   /* 次要文字：比 #6C757D 深一階，小字仍讀得清 */
-      --line: #E2E6EC;       /* 產品 --border */
-      --line-soft: #EEF1F5;  /* 表格內線：只用來分列，不圍格 */
-      --brand: #0F3460;      /* 產品 --accent */
-      --brand-soft: #1A6BC4; /* 產品 --accent-2 */
-      --wash: #EDF2F9;       /* 極淺藍：chip、表頭、解讀區底 */
+{_report_theme_css()}
     }}
     * {{ box-sizing: border-box; }}
     /* Noto Sans TC 排第一（deck 字型定案，裝了就用）；未安裝時 fallback 正黑體，
@@ -3191,7 +3650,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     /* 字級（2026-08-12 使用者指定）：正文與表格 14px、章節導覽 16px、圖內字 11px。
        ⚠ 圖內字不是 CSS 能直接設的——SVG 內寫死 15.1px，顯示字級＝15.1×縮放比，
        故由 .chart-media 的寬度反推（11 ÷ 15.1 × 1180 ≈ 860px）。 */
-    body {{ font-family: "Noto Sans TC", "Microsoft JhengHei", "Segoe UI", system-ui, sans-serif;
+    body {{ font-family: {FONT_STACK};
       margin: 0; padding: 0 32px 48px; color: var(--ink); background: var(--paper);
       font-size: 14px; line-height: 1.65; }}
     .page {{ max-width: 1200px; margin: 0 auto; }}
@@ -3203,7 +3662,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     .meta-bar {{ color: var(--ink-soft); font-size: 13px; margin: 0;
       font-variant-numeric: tabular-nums; }}
     /* 產製參數對追溯有用、對讀者無用——放得到但不搶眼。 */
-    .meta-params {{ color: #8A93A3; font-size: 12px; margin: 4px 0 0;
+    .meta-params {{ color: var(--meta); font-size: 12px; margin: 4px 0 0;
       font-variant-numeric: tabular-nums; }}
     /* scroll-margin-top：錨點跳轉後把章節頂端往下推，避開常駐導覽列。
        🔴 **必須動態**：導覽列高度隨章節數與視窗寬度變（chip 會換行）——
@@ -3239,7 +3698,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
       border-bottom: 1px solid var(--line); }}
     .data-table-wrap td {{ padding: 6px 10px; border-bottom: 1px solid var(--line-soft);
       white-space: nowrap; }}
-    .data-table-wrap tbody tr:hover td {{ background: #F8FAFD; }}
+    .data-table-wrap tbody tr:hover td {{ background: var(--row-hover); }}
     .data-table-wrap td.totals-cell {{ border-top: 2px solid var(--line);
       border-bottom: none; font-weight: 700; background: var(--wash); }}
     .data-table-wrap details {{ margin-top: 8px; }}
@@ -3248,8 +3707,8 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
       border-radius: 9px; margin: 0 0 14px; }}
     .toggle-btn {{ border: none; background: transparent; color: var(--ink); font-size: 14px;
       font-weight: 600; padding: 6px 15px; border-radius: 7px; cursor: pointer; }}
-    .toggle-btn:hover {{ background: #DFE8F4; }}
-    .toggle-btn.active {{ background: var(--brand); color: #FFFFFF; }}
+    .toggle-btn:hover {{ background: var(--btn-hover); }}
+    .toggle-btn.active {{ background: var(--brand); color: var(--card); }}
     .toggle-btn:focus-visible {{ outline: 2px solid var(--brand-soft); outline-offset: 2px; }}
     .expand-btn {{ border: 1px solid var(--line); background: var(--card); color: var(--brand-soft);
       font-size: 14px; font-weight: 600; padding: 7px 14px; border-radius: 7px;
@@ -3306,7 +3765,7 @@ def render_index(path: Path, sections: list[dict[str, Any]], meta: dict[str, Any
     [hidden] {{ display: none !important; }}
     /* 列印／轉 PDF：導覽無用途，章節不要被切成兩頁。 */
     @media print {{
-      body {{ background: #FFFFFF; padding: 0; }}
+      body {{ background: var(--card); padding: 0; }}
       .chapter-nav, .table-expand, .expand-btn {{ display: none; }}
       .report-section {{ break-inside: avoid; box-shadow: none; }}
       tr.folded {{ display: table-row; }}
@@ -3505,6 +3964,9 @@ class ChartContext:
     # 消費端無從發現。
     cluster_reports: dict[str, dict[str, Any]] = field(default_factory=dict)
     _report_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # ⚠ 與 `_report_cache` 分開：那一份會整包進 report_data["reports"]，
+    #   不是報表的東西不能混進去（見 `design_count()`）。
+    _kind_cache: dict[str, int] = field(default_factory=dict)
 
     def report(self, name: str) -> dict[str, Any]:
         """取報表結果（有快取），filters／快照與數據端 run_reports_batch 同口徑。
@@ -3527,6 +3989,24 @@ class ChartContext:
         """本次實際查過的報表結果（report_data.json 落檔用）。"""
         return dict(self._report_cache)
 
+    def design_count(self) -> int | None:
+        """本批外觀設計件數；判不出來回 None。**同一次產製只查一次 DB。**
+
+        分群卡片的揭露句要它。判定走 `transforms/patent_kind` 唯一入口，
+        不在此自行比對欄位。
+
+        ⚠ 用獨立的 `_kind_cache` 而**不是** `_report_cache`：後者會被
+        `fetched_reports()` 整包倒進 `report_data["reports"]`，再依
+        `REPORT_DEFINITIONS[name]` 分流——塞一個不是報表的鍵進去會直接 KeyError。
+        """
+        if self.patent_ids is None:
+            return None
+        if "design" not in self._kind_cache:
+            tally = (fetch_patent_kind_summary(patent_ids=self.patent_ids)
+                     or {}).get("tally") or {}
+            self._kind_cache["design"] = int(tally.get(KIND_DESIGN, 0))
+        return self._kind_cache["design"]
+
 
 def _build_trend_section(ctx: ChartContext) -> None:
     """申請＋公告趨勢雙線圖（兩張報表固定同圖，選其一也會補齊另一條線）。"""
@@ -3536,9 +4016,8 @@ def _build_trend_section(ctx: ChartContext) -> None:
     trend_title = f'{application["label_zh"]}與{publication["label_zh"]}'
     render_line_chart(ctx.run_dir / "annual_trend.svg", trend_title, application["rows"], publication["rows"])
     # 年度四欄（問題 9）：圖不改（仍是件數雙線），四欄只進數據表與解讀素材。
-    topic_cols = annual_topic_columns(ctx.cluster_data) or None
     ctx.chart_rows["annual_trend"] = merge_annual_trend_rows(
-        application["rows"], publication["rows"], topic_columns=topic_cols)
+        application["rows"], publication["rows"])
     # report_key 指向 chart_rows.annual_trend，讓表格可同列對照申請年與授權公告年；
     # 圖檔仍由 application_trend + publication_trend 兩份報表共同產生。
     ctx.sections.append({
@@ -3548,54 +4027,79 @@ def _build_trend_section(ctx: ChartContext) -> None:
         # 這裡原本寫死檔名，導致組版端拿 identity 前段去 artifact_manifest
         # （用 registry 鍵）反查落空 → 判定找不到圖 → 整頁降級成 stat_callout。
         "report_key": "application_trend",
+        # 🔴 2026-08-17：顯示層自 08-11 起**優先吃 section["rows"]**
+        # （見 SECTION_PERSIST_KEYS 註記，起因是受理局交叉表）。趨勢 section
+        # 原本沒給 rows，於是退回 report_key 的原始三欄報表——**授權公告件數
+        # 靜默消失**，使用者只看到申請年／件數／家族數。
+        # ⚠ 指向同一份 chart_rows["annual_trend"]，不重算第二次。
+        "rows": ctx.chart_rows["annual_trend"],
         "variants": [{"label": "Trend", "file": "annual_trend.svg", "variant_key": "default"}],
     })
 
 
 def _build_country_map_section(ctx: ChartContext) -> None:
-    """受理局「申請 vs 現存有效」合併頁（2026-08-07 使用者定案）。
+    """受理局 × 法律狀態堆疊頁（2026-08-17 使用者定案，取代 08-07 的兩條 bar）。
 
-    原 p04（受理局分布，件）與 p06（國家佈局現有保護，存活家族數）合成一張：
-    每國兩條 bar、口徑「件 vs 件」——申請件數（全部匯入案件含死案）對
-    現存有效件數（狀態桶「已授權」）。家族數（同族合併）降為頁尾註記一行。
+    原 p04（受理局分布，件）與 p06（國家佈局現有保護，存活家族數）先合成
+    「申請 vs 現存有效」兩條 bar；08-17 使用者要求「表六欄字面、圖也畫那六欄」，
+    改為單條堆疊：**總長＝歷史累計申請、各段＝當下狀態分布**，一條看完兩種分析。
+    家族數（同族合併）維持頁尾註記一行。
     """
     from backend.app.transforms.legal_status import BUCKET_UNKNOWN
 
     report = ctx.report("country_distribution")
-    pivot = country_status_pivot(report["rows"])
-    render_paired_bar_chart(
-        ctx.run_dir / "jurisdiction_distribution.svg",
-        report["label_zh"],
-        pivot,
-        label_key="country_code",
-        series=(("申請件數", "申請件數"), ("現存有效", "已授權")),
-    )
-    ctx.chart_rows["jurisdiction_distribution"] = pivot
-    unknown_total = sum(int(r.get(BUCKET_UNKNOWN) or 0) for r in pivot)
-    # 🔴 備註要寫清楚定義（使用者原話）：兩條 bar 的口徑、有效的判定、
-    # 未知件數點名（誠實呈現，不虛增授權率）。
+    # 四大桶 pivot 只用來數「未知」（狀態桶語意），不上圖也不進 chart_rows
+    # ——⚠ 上圖與表都吃 status_pivot 的六欄字面，兩套語意不得並存。
+    bucket_pivot = country_status_pivot(report["rows"])
+    unknown_total = sum(int(r.get(BUCKET_UNKNOWN) or 0) for r in bucket_pivot)
+    # 🔴 備註只寫圖上看不出來的口徑：總長的意義、未知件數點名（誠實呈現，
+    # 不虛增授權率）。⚠ 08-17 改堆疊後這裡曾殘留兩條 bar 的說明——
+    # 改版時「只加新的、沒拆舊的」，讀者會拿到與畫面不符的定義。
     notes = [
-        "申請件數＝全部匯入案件（含死案）；現存有效＝法律狀態桶「已授權」。",
-        "審查中／已失效／未知不計入現存有效；狀態桶定義見專利狀態分析頁。",
+        "堆疊總長＝該受理局全部匯入案件（含死案）；各段＝當下法律狀態字面。",
+        "狀態字面直接取自來源登錄值，未做桶收斂；桶定義見專利狀態分析頁。",
     ]
     if unknown_total:
         notes.append(f"其中 {unknown_total} 件狀態未知（未登錄），不計入有效——待補登錄後件數會變。")
     # 家族視角降為一行註記：原「國家佈局（現有保護）」頁已併入本頁（刪 > 改版）。
+    # 🔴 2026-08-18 修：原本寫 `同族合併後存活家族共 {sum} 個`，而這張報表是
+    #    **依國家 group by**——每列是「該國有幾個家族」，相加等於同一家族跨幾國
+    #    就算幾次。實測滑雪機 40 個家族分布 4 國 → 相加得 46；割草機 144 → 159。
+    #    ⚠ 那個 46 已經以「存活 46」的形式傳進 deepen 的文件。
+    #    母體沒有問題（`ctx.report()` 一律傳 patent_ids，家族層由
+    #    build_family_scope_clause 翻譯成家族集合）——錯的是加總語意。
+    #    家族總數的權威口徑由封面數字供給（§2），這裡只講自己算得準的東西：
+    #    佈局點數與涵蓋國數，並明說跨國會重複計入。
     family_report = ctx.report("family_country_layout")
-    family_total = sum(int(r.get("patent_count") or 0) for r in family_report["rows"])
-    if family_total:
-        notes.append(f"同族合併後存活家族共 {family_total} 個（家族口徑細節不另出頁）。")
+    family_rows = family_report["rows"]
+    layout_points = sum(int(r.get("patent_count") or 0) for r in family_rows)
+    if layout_points:
+        notes.append(
+            f"同族合併後在 {len(family_rows)} 個受理局共有 {layout_points} 個家族佈局點"
+            "（同一家族跨國會重複計入，故大於家族總數；家族總數見封面）。")
     quality_note = family_quality_note(_fetch_family_quality_rows())
     if quality_note:
         notes.append(quality_note)
     # 檔名 jurisdiction_distribution ≠ 報表鍵 country_distribution，須顯式宣告查找鍵。
+    # 🔴 2026-08-17：圖與表吃**同一份** pivot（使用者：表六欄字面、圖也畫那六欄）。
+    #    原本圖用四大狀態桶、表用 status_display_term 字面折疊，兩套語意並存，
+    #    且圖上的「現存有效」在表中根本沒有對應欄。
+    #    ⚠ 實測驗證（CN 38／TW 9／US 6／EP 2）：六欄加總 == 申請件數，
+    #      故堆疊總長＝歷史累計申請、各段＝當下狀態分布，一條看完兩種分析。
+    status_pivot = country_status_display_pivot(report["rows"])
+    render_country_status_stack(
+        ctx.run_dir / "jurisdiction_distribution.svg", report["label_zh"], status_pivot)
+    # chart_rows 與 section rows 指向同一份——下游（deck／表格）不會拿到另一套語意。
+    ctx.chart_rows["jurisdiction_distribution"] = status_pivot
+
     ctx.sections.append({
         "title": report["label_zh"],
         "report_key": "country_distribution",
         # 🔴 數據表吃顯示用交叉表（2026-08-11 使用者：「狀態做橫向欄位、縱向放國家」）
         # ——section 自帶 rows＝顯示轉置（分群卡既有慣例），不帶才回 reports 桶的長格式。
-        "rows": country_status_display_pivot(report["rows"]),
-        "variants": [{"label": "Bar", "file": "jurisdiction_distribution.svg", "variant_key": "default"}],
+        "rows": status_pivot,
+        "variants": [{"label": "Bar", "file": "jurisdiction_distribution.svg",
+                      "variant_key": "default"}],
         "note": " ".join(notes),
     })
 
@@ -3709,9 +4213,24 @@ def _build_classification_section(
             rows,
             source_column,
         )
-        variants.append({"label": f"{level} 階 · {level_label.split('(')[-1].rstrip(')')}", "file": filename, "variant_key": f"L{level}"})
+        variants.append({
+            "label": f"{level} 階 · {level_label.split('(')[-1].rstrip(')')}",
+            "file": filename,
+            "variant_key": f"L{level}",
+            # 🔴 2026-08-17：**每階自帶 rows**，切 tab 時圖與表一起換
+            #    （使用者：「都會看，所以圖和表都要能切換」）。
+            #    顯示層已支援 variant 級 rows（`sectionForReportView` 的
+            #    `picked.rows`，分群卡的 opportunity／timeline 同模式），
+            #    不必擴充契約。
+            "rows": rows,
+        })
     ctx.sections.append({
         "title": report["label_zh"],
+        # 🔴 2026-08-17：section 級 rows＝預設階（前端未選 variant 時的退路）；
+        #    切 tab 時吃的是各 variant 自帶的 rows（見上方 variants.append）。
+        #    原本兩者都沒有，顯示層退回 report_key 的原始 5 階明細
+        #    ——**圖切 4 階、表卻是 5 階**。
+        "rows": classification_variant_rows(ctx.chart_rows, report_key, levels),
         # ⚠ 顯式帶 registry 鍵（2026-08-10 修）：漏設時 `_section_report_name` 會
         # fallback 成第一個 variant 的檔名 `ipc_main_distribution_L4`——多了 `_L4`
         # 就查不到圖，還會組出 `ipc_main_distribution_L4:L5` 這種自相矛盾的 identity。
@@ -3754,8 +4273,98 @@ def _build_applicant_ranking_section(ctx: ChartContext) -> None:
     )
     ctx.sections.append({
         "title": report["label_zh"],
+        # 🔴 2026-08-17：補 rows。原本沒給，顯示層退回 report_key 推導的原始報表
+        #    ——圖畫的是前 10 名分段長條，表卻可能是另一份內容。
+        "rows": report["rows"],
+        "report_key": "applicant_ranking",
         "variants": [{"label": "Applicants", "file": "applicant_ranking.svg", "variant_key": "default"}],
         "note": "總長＝申請人全部專利；藍色區段＝轉讓他家（最新受讓人≠申請人）的專利，同名未離手不計。CSV/JSON 保留受讓人公司明細欄。",
+    })
+
+
+def design_strategy_chart_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """各策略型有幾**家**申請人。
+
+    🔴 2026-08-20 更名：欄名原本叫 `patent_count`，但這裡數的是 `strategy_rows`
+    的列數＝申請人家數（一家一列）。`table_display` 把 `patent_count` 顯示成
+    「專利件數」，於是實機出現「技術+設計 4 件」——那 4 家手上的設計案其實
+    共 9 件。⚠ 數字沒錯，錯的是它自稱是什麼；這種缺陷加總與對帳全都會過。
+    """
+    counts: dict[str, int] = {}
+    for row in rows:
+        strategy_type = str(row.get("strategy_type") or "").strip()
+        if strategy_type:
+            counts[strategy_type] = counts.get(strategy_type, 0) + 1
+    return [
+        {"strategy_type": key, "applicant_count": value}
+        for key, value in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+
+
+def _build_design_protection_section(ctx: ChartContext) -> None:
+    from backend.app.reports.content_blocks import (
+        design_protection_strategy,
+        design_tech_intersections,
+    )
+
+    report = ctx.report("design_protection_detail")
+    strategy_rows = design_protection_strategy(report["rows"])
+    intersection_rows = design_tech_intersections(report["rows"])
+    # 🔴 2026-08-17 使用者實物驗收：原圖只有兩條總數（只走設計 6／技術+設計 4）
+    #    ——「這樣看得出啥？」改為**申請人 × 策略型交叉**，看得出誰用什麼策略、
+    #    各投入多少；策略型總數留在 chart_rows 供口徑對照，不再單獨出圖。
+    chart_rows = design_strategy_chart_rows(strategy_rows)
+    # 🔴 2026-08-18（三輪）使用者定案：**申請人 × 技術／設計／技術+設計**。
+    #    08-17 的「申請人 × 年度」矩陣退場（那版答的是「何時佈設計」，
+    #    使用者要的是「各類投入多少」）。
+    # ⚠ 欄序給死：三欄是語意序，按量排會讓每份報告的欄序不同。
+    matrix_rows = design_strategy_matrix_rows(strategy_rows)
+    render_matrix_chart(
+        ctx.run_dir / "design_protection_strategy.svg",
+        report["label_zh"],
+        matrix_rows,
+        row_key="applicant",
+        col_key="strategy_axis",
+        col_order=DESIGN_STRATEGY_AXIS,
+    )
+    ctx.chart_rows["design_protection_strategy"] = chart_rows
+    # ⚠ 表格用精簡欄位（10 → 6）：使用者「PPT 一定放不下」。
+    #    資訊不丟——年份三欄併區間、內部 patent_id 移除、代表案名進敘述。
+    strategy_table = design_strategy_table_rows(strategy_rows)
+    ctx.chart_rows["design_protection_strategy_table"] = strategy_table
+    # 🔴 交叉表也精簡（11 → 5，使用者二輪指正）。原本 section/variant 都給
+    #    未精簡的原始 rows，精簡結果只躺在 chart_rows 裡沒人顯示——
+    #    **函式有被呼叫≠畫面有變**，這正是上一輪自我稽核放過去的地方。
+    intersection_table = design_intersection_table_rows(intersection_rows)
+    ctx.chart_rows["design_tech_intersections"] = intersection_table
+    # 🔴 2026-08-17：代表案名從表格移出後**要真的落在敘述**——
+    #    先前只在註解裡寫「進敘述」而沒接，那是半套（欄位刪了、資訊沒了）。
+    representative_note = "；".join(
+        f'{r.get("applicant")}：{r.get("representative_design_title")}'
+        for r in strategy_rows[:5]
+        if r.get("representative_design_title"))
+    ctx.sections.append({
+        "title": report["label_zh"],
+        "report_key": "design_protection_detail",
+        "rows": strategy_table,
+        "variants": [
+            {
+                "label": "策略分布",
+                "file": "design_protection_strategy.svg",
+                "variant_key": "strategy",
+                "rows": strategy_table,
+            },
+            {
+                "label": "技術交叉",
+                "file": "",
+                "variant_key": "intersections",
+                "rows": intersection_table,
+            },
+        ],
+        "note": (
+            "設計頁使用圖表呈現保護策略分布，表格列出技術與設計交叉的申請人、"
+            "代表案與 evidence 摘要；不輸出 WIPS/PDF 連結。"
+        ),
     })
 
 
@@ -3815,9 +4424,13 @@ def _build_applicant_year_matrix_section(ctx: ChartContext) -> None:
     # 機制）——沒帶就退回 reports 桶長格式。同一份轉置同時掛兩處消費點。
     pivoted = pivot_year_matrix(report["rows"], "applicant_display_name")
     ctx.chart_rows["applicant_year_matrix"] = pivoted
+    # 🔴 2026-08-17 使用者驗收：「表格做那樣誰看得懂」——16 欄年份全展開、
+    #    多數格子是空的。**稀疏矩陣不適合當表格**（看分布請看跨度圖）。
+    #    表改摘要：誰、幾件、活躍區間、最近一次投入。
+    summary_rows = year_matrix_summary_rows(pivoted)
     ctx.sections.append({
         "title": report["label_zh"],
-        "rows": pivoted,
+        "rows": summary_rows,
         "variants": [{"label": f"Top {len(top_rows)}", "file": "applicant_year_matrix.svg",
                       "variant_key": "default"}],
         "note": (f"一列＝一家公司的投入期間（首件→末件），條上圓點＝該年實際有申請、"
@@ -3853,6 +4466,9 @@ def _build_applicant_country_section(ctx: ChartContext) -> None:
     ctx.sections.append({
         "title": report["label_zh"],
         "report_key": "applicant_country_distribution",
+        # 🔴 2026-08-17：補 rows——沒給的話顯示層退回原始報表，
+        #    表與圖（交叉表）講的不是同一件事。
+        "rows": report["rows"],
         "variants": [{"label": "Matrix", "file": "applicant_country_matrix.svg", "variant_key": "default"}],
         "note": note,
     })
@@ -3879,15 +4495,15 @@ def country_status_display_pivot(rows: list[dict[str, Any]]) -> list[dict[str, A
         TW_LEGAL_STATUS_ALLOWED,
         status_display_term,
     )
-
     by_country: dict[str, dict[str, int]] = {}
     for row in rows:
         country = str(row.get("country_code") or "").strip()
         if not country:
             continue
         term = status_display_term(row.get("legal_status"))
+        count = int(row.get("patent_count") or 0)
         entry = by_country.setdefault(country, {})
-        entry[term] = entry.get(term, 0) + int(row.get("patent_count") or 0)
+        entry[term] = entry.get(term, 0) + count
 
     present = {term for buckets in by_country.values() for term, n in buckets.items() if n}
     vocab_rank = {term: i for i, term in enumerate(TW_LEGAL_STATUS_ALLOWED)}
@@ -3899,6 +4515,11 @@ def country_status_display_pivot(rows: list[dict[str, Any]]) -> list[dict[str, A
     return [
         {"country_code": country,
          "申請件數": sum(buckets.values()),
+         # ⚠ 2026-08-18 使用者定案：**不再單獨列「現行有效」**——它恆為申請件數
+         #   的子集合（同兩個欄位推導），而堆疊上的「授權」段已經在講同一件事，
+         #   再標一次是把同一份資料呈現兩遍。08-17 的加法在此收回。
+         #   ⚠ 已知代價：英文登錄（granted／registered）在字面表自成一欄，
+         #     此時沒有任何地方給出桶層級的合計。使用者知情後仍選擇簡潔。
          **{t: (buckets.get(t) or "") for t in ordered_terms}}
         for country, buckets in ranked
     ]
@@ -3970,6 +4591,76 @@ def pivot_year_matrix(rows: list[dict[str, Any]], entity_key: str) -> list[dict[
     return sorted(grouped.values(), key=lambda x: (-x["total"], str(x[entity_key])))
 
 
+#: 轉置年度矩陣末列的列名（該欄本來放年份，這一列放的是跨年合計）。
+#: ⚠ 只有一個定義處：顯示端要辨識「這列是總計不是某一年」時一律 import 本值，
+#: 不得各自寫字串——寫死的那一份不會報錯，只會在改字時默默失去辨識能力。
+TOTAL_ROW_LABEL = "總件數"
+
+
+def pivot_year_matrix_by_year(rows: list[dict[str, Any]],
+                              entity_key: str) -> list[dict[str, Any]]:
+    """年度矩陣長格式 → **年份為列、實體為欄**的交叉表（`pivot_year_matrix` 的轉置）。
+
+    🔴 2026-08-19 使用者裁決：「一律轉置成年份為列、主題為欄」。主題演進表原本
+    5 列 × 14 欄（12 年份＋主題標籤＋總件數）必須橫捲；轉置後 12 列 × 6 欄。
+
+    輸出每列＝一個申請年，實體名成為欄位；**末列**＝各實體的總件數：
+
+        {"application_year": "2022", "風磁複合阻力裝置": 3}
+        {"application_year": "總件數", "風磁複合阻力裝置": 11}   ← 末列
+
+    🔴 2026-08-19 使用者裁決：「總件數應該算主題的，不用算各年的」。
+    轉置初版沿用 `pivot_year_matrix` 的 `total` 欄，但那在年份為列時的語意變成
+    「該年跨主題合計」——那是年度趨勢圖已經在回答的問題，擺在主題演進表裡
+    既重複又佔一欄。主題總件數才是這張表的摘要，位置在末列不是末欄。
+
+    設計取捨（與 `pivot_year_matrix` 對齊，兩張表不得在同一件事上分岔）：
+    - **該年該實體無資料回空字串不是 0**——0 讀起來像「查過但沒有」
+    - 列序＝年份由舊到新（時間軸就是列序），不依件數排
+    - 欄序＝該實體總件數降冪，重要的在左
+    - 年份由**鍵**變成**值**：前端 `Object.keys` 會把整數樣鍵排到最前，
+      年份當鍵時 `label`／`total` 會被擠到最右邊（轉置前的實際症狀）
+
+    ⚠ 實體名與保留欄名（`application_year`／`total`）相撞時**併入而非覆蓋**：
+    AI 產的主題標籤不受控，靜默覆蓋只會讓某一年的合計悄悄變成該主題的件數。
+    """
+    if not rows:
+        return []
+    entity_totals: dict[str, int] = {}
+    cells: dict[str, dict[str, int]] = {}
+    for row in rows:
+        name = str(row.get(entity_key) or "")
+        year = row.get("application_year")
+        if not name or year is None:
+            continue
+        cnt = int(row.get("patent_count") or 0)
+        entity_totals[name] = entity_totals.get(name, 0) + cnt
+        cells.setdefault(str(year), {})[name] = (
+            cells.get(str(year), {}).get(name, 0) + cnt)
+    if not cells:
+        return []
+    # 欄序：總件數降冪，同數以名稱排（結果穩定，兩次產出可對照）
+    columns = sorted(entity_totals, key=lambda n: (-entity_totals[n], n))
+    # ⚠ 與保留欄名相撞的實體改掛加註欄名，不讓 dict 靜默吃掉其中一邊——
+    #   覆蓋不會報錯，只會讓某一年的合計悄悄變成該主題的件數。
+    reserved = {"application_year"}
+    column_key = {n: (f"{n}（主題）" if n in reserved else n) for n in columns}
+    out: list[dict[str, Any]] = []
+    for year in sorted(cells):
+        by_entity = cells[year]
+        record: dict[str, Any] = {"application_year": year}
+        for name in columns:
+            record[column_key[name]] = by_entity.get(name, "")
+        out.append(record)
+    # 末列＝各實體總件數。⚠ 用與年份列**相同的鍵**，否則表頭對不齊；
+    #   首欄放「總件數」當列名，讀者一眼知道這列不是某一年。
+    total_row: dict[str, Any] = {"application_year": TOTAL_ROW_LABEL}
+    for name in columns:
+        total_row[column_key[name]] = entity_totals[name]
+    out.append(total_row)
+    return out
+
+
 def _source_segments(rows: list[dict[str, Any]]) -> list[tuple[str, str, list[dict[str, Any]]]]:
     """依 source_field 分段（技術先、功效後、未知來源殿後），回傳 [(source_field, 段名, rows)]。"""
     order = {"wips_independent_claims": 0, "effect_summary": 1}
@@ -3992,11 +4683,16 @@ def render_cluster_topic_table_html(
     parts = [
         '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">',
         '<style>',
-        'body{font-family:"Microsoft JhengHei","Segoe UI",Arial,sans-serif;margin:16px;color:#111827}',
+        f'body{{font-family:{FONT_STACK};margin:16px;color:{PALETTE["TEXT_TABLE"].hex}}}',
         'table{border-collapse:collapse;width:100%;font-size:13px;margin:0 0 18px}',
-        'th,td{text-align:left;padding:6px 10px;border-bottom:1px solid #E5E7EB}',
-        'th{background:#F1F5F9;font-weight:600;position:sticky;top:0}',
-        'tr:hover{background:#F8FAFC}',
+        # ⚠ 這三行原本是**純字串**（沒有 f 前綴）。改成引用色票時必須一併加 f，
+        #   否則 `{PALETTE[...]}` 會原樣印進 HTML——語法檢查會過、測試若只驗
+        #   「原始碼有引用色票」也會過，但產出的表格會直接壞掉。
+        f'th,td{{text-align:left;padding:6px 10px;'
+        f'border-bottom:1px solid {PALETTE["LINE_TABLE"].hex}}}',
+        f'th{{background:{PALETTE["SURFACE_TABLE_HEAD"].hex};'
+        f'font-weight:600;position:sticky;top:0}}',
+        f'tr:hover{{background:{PALETTE["SURFACE_MAP"].hex}}}',
         'h3{font-size:15px;margin:14px 0 8px}',
         '.num{text-align:right;font-variant-numeric:tabular-nums}',
         '</style></head><body>',
@@ -4103,7 +4799,7 @@ _CHIP_GAP_X = 8      # 同列 chip 間距
 _CHIP_GAP_Y = 8      # 列與列間距
 
 # 龍頭涉入三級色（沿用散點版 tier_colors）
-_TIER_COLORS = {"lead≥2": "#DC2626", "lead=1": "#F59E0B", "lead=0": "#9CA3AF"}
+_TIER_COLORS = dict(SCALES["TIER"].steps)
 
 
 def _tier_key(leading_count: int) -> str:
@@ -4122,7 +4818,7 @@ def _chip_text_color(hex_fill: str) -> str:
     g = int(hex_fill[3:5], 16)
     b = int(hex_fill[5:7], 16)
     luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-    return "#111827" if luminance > 0.6 else "#FFFFFF"
+    return PALETTE["TEXT_TABLE"].hex if luminance > 0.6 else PALETTE["SURFACE_CARD"].hex
 
 
 def _fit_chip_text(text: str, area_w: float,
@@ -4206,7 +4902,7 @@ def render_opportunity_quadrant_svg(
     inner_pad = 12
     area_w = cell_w - 2 * inner_pad
 
-    qcolors = {"q1": "#10B981", "q2": "#3B82F6", "q3": "#9CA3AF", "q4": "#F59E0B"}
+    qcolors = dict(SCALES["QUADRANT"].steps)
     # 🔴 K-4（2026-08-04 實機 p17/p18）：原本每格 header 有兩行——灰色密度標籤
     # （「低密度．高廣度」）＋象限名。改名後象限名（「低件數·多申請人」）已把同一
     # 資訊講完，灰行是舊寫法殘留；字級放大後兩行直接相疊。**刪灰行**，一格一行。
@@ -4309,11 +5005,13 @@ def render_opportunity_quadrant_svg(
     height = int(grid_bottom + chrome["bottom_h"])
 
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="Segoe UI, sans-serif">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="{FONT_STACK}">',
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text data-role="chart-title" x="{margin_l}" y="{chrome["title_y"]:.0f}" font-size="{label_px:.1f}" font-weight="700" fill="{COLOR_TEXT}">{xml_text(title)}</text>',
         # Y 軸口徑防呆註（沿用散點版文案）
-        f'<text x="{margin_l}" y="{chrome["note_y"]:.0f}" font-size="{note_px:.1f}" fill="#9CA3AF">※ 純專利訊號(申請人家數)＝衡量申請人是否已投入布局，不等於產品核心度</text>',
+        # ⚠ 角色標記不可省：deck 側重排靠它取這段文字，原本靠 fill 色值認，
+        #   §6.2 的換色一上就會靜默取不到（tasks §6.3a）。
+        f'<text data-role="{ROLE_CHART_NOTE}" x="{margin_l}" y="{chrome["note_y"]:.0f}" font-size="{note_px:.1f}" fill="{PALETTE["TEXT_NOTE"].hex}">※ 純專利訊號(申請人家數)＝衡量申請人是否已投入布局，不等於產品核心度</text>',
         # 圖例：色＝龍頭涉入三級｜數字＝件/家
         f'<text x="{margin_l}" y="{chrome["legend_y"]:.0f}" font-size="{note_px:.1f}" font-weight="600" fill="{COLOR_TEXT}">{LEGEND_PREFIX_TEXT}</text>',
     ]
@@ -4342,7 +5040,7 @@ def render_opportunity_quadrant_svg(
         battle, action = _qlabel(*probes[q], 0.5, 0.5)
         parts.append(
             f'<rect x="{cx:.1f}" y="{cy:.1f}" width="{cell_w:.1f}" height="{ch:.1f}" rx="10" '
-            f'fill="{qcolors[q]}" fill-opacity="0.07" stroke="#E5E7EB"/>')
+            f'fill="{qcolors[q]}" fill-opacity="0.07" stroke="{PALETTE["LINE_TABLE"].hex}"/>')
         # K-4：象限名＋行動建議兩行（密度灰行已刪；併一行會超出格寬，見 _chrome）。
         parts.append(
             f'<text x="{cx + inner_pad:.1f}" y="{cy + label_px * 1.35:.1f}" font-size="{label_px:.1f}" font-weight="600" '
@@ -4359,7 +5057,7 @@ def render_opportunity_quadrant_svg(
         else:
             parts.append(
                 f'<text x="{cx + inner_pad:.1f}" y="{cy + header_h + 14:.1f}" font-size="{label_px:.1f}" '
-                f'fill="#9CA3AF" font-style="italic">本案無此類</text>')
+                f'fill="{PALETTE["TEXT_NOTE"].hex}" font-style="italic">本案無此類</text>')
 
     # 語意方向軸標籤（無數值刻度）
     mid_x = margin_l + (width - margin_l - margin_r) / 2
@@ -4375,7 +5073,8 @@ def render_opportunity_quadrant_svg(
     # K-5：FTO 註是註記類 → note_px；y 排在軸說明下一行（原 26/48 兩行在
     # 24.5px 字級下行距只剩 22px，字高 34px 直接相疊）。
     parts.append(
-        f'<text x="{margin_l}" y="{axis_y + note_px * 1.7:.0f}" font-size="{note_px:.1f}" fill="#9CA3AF">'
+        f'<text data-role="{ROLE_CHART_FOOTER}" x="{margin_l}" y="{axis_y + note_px * 1.7:.0f}" '
+        f'font-size="{note_px:.1f}" fill="{PALETTE["TEXT_NOTE"].hex}">'
         f'本分析非侵權迴避(FTO)結論｜資料依公開專利資訊整理</text>')
 
     parts.append("</svg>")
@@ -4595,13 +5294,21 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
                     ctx.run_dir / timeline_file,
                     f"主題演進——{segment_label}（主題 × 申請年）",
                     layout, layout["top_rows"])
+                # 🔴 2026-08-18 使用者：「主題演進的表格和主題統計表視同一張」
+                #    ——原本掛的是 `timeline_rows`（＝主題統計表那份），
+                #    所以兩個分頁的表一模一樣。改掛**圖的同一份資料**轉成
+                #    主題 × 年交叉表。
+                # 🔴 2026-08-19 使用者裁決：「一律轉置成年份為列、主題為欄」。
+                #    實測 5 主題 × 12 年時，主題為列＝14 欄必須橫捲，
+                #    年份為列＝6 欄塞得下。使用者已知並接受主題數多時較寬的代價。
+                timeline_table = pivot_year_matrix_by_year(ty_rows, "label")
                 variants.append({
                     "label": f"主題演進{tab_suffix}",
                     "file": timeline_file,
                     "variant_key": f"timeline{suffix}",
-                    "rows": timeline_rows,
+                    "rows": timeline_table,
                 })
-                ctx.chart_rows[f"topic_timeline{suffix}"] = timeline_rows
+                ctx.chart_rows[f"topic_timeline{suffix}"] = timeline_table
         # 🔴 痛點板已整個刪除（2026-08-04 使用者定案；07-29 起本就停產）。
 
     note = (
@@ -4628,6 +5335,24 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
     )
     if backfill_n:
         note += f" 其中 {backfill_n} 件為 AI 建議、人工核准之補分指派。"
+    # 🔴 母體揭露（2026-08-18，§7e.5）：本表的分母是**分群母體**，不是封面的件數。
+    #    實測滑雪機 workspace 55 件、分群指派只有 44 件。不講出來的話，
+    #    讀者看到封面 55、這裡 44 只會覺得數字錯，而真相是「11 件被排除」沒人說。
+    #
+    # 🔴 2026-08-20 晚場：句子本身**改由 population 產生**，本處只提供數字。
+    #    原本這裡寫死「無獨立項文字者（如設計案）不進分群」——那是已被推翻的
+    #    代理指標（實測有設計案帶獨立項文字），而且它才是 HTML 讀者實際看到的
+    #    那一句；先前只改了 population 與 patent_kind，讀者一個字都沒變。
+    clustered_ids = {
+        int(a["patent_id"]) for a in (data.get("assignments") or [])
+        if isinstance(a, dict) and a.get("patent_id") is not None
+    }
+    # ⚠ `getattr` 是為了測試的假 ctx（SimpleNamespace）；正式路徑的 `ChartContext`
+    #   是 dataclass、`patent_ids` 必有此欄，不會靜默少掉這段揭露。
+    ctx_patent_ids = getattr(ctx, "patent_ids", None)
+    cover_total = len(ctx_patent_ids) if ctx_patent_ids is not None else None
+    _design_n = ctx.design_count() if hasattr(ctx, "design_count") else None
+    note += cluster_section_note(len(clustered_ids), cover_total or 0, _design_n)
     # 顯示規格（2026-07-21 二次修正）：板狀佈局完成，象限圖回歸 index——
     # cluster 卡片＝主題統計表＋各來源機會矩陣 tabs。
     ctx.sections.append({
@@ -4641,7 +5366,7 @@ def _build_cluster_analytics_section(ctx: ChartContext) -> None:
         # 切換自然沒有任何效果——這是靜默失敗：表格由另一條路徑顯示得出來，
         # 只有切換無反應，看起來像按鈕壞掉而不是資料沒給。
         # 每列本來就帶 source_field（實測技術 5 列／功效 8 列），帶上就能切。
-        "rows": topic_rows,
+        "rows": topic_table_display_rows(topic_rows),
         "variants": variants,
         "note": note,
     })
@@ -4663,10 +5388,12 @@ SECTION_SPECS: tuple[SectionSpec, ...] = (
     SectionSpec("annual_trend", ("application_trend", "publication_trend"), _build_trend_section),
     # 合併頁：country_map 同時吃 family_country_layout（家族數降為註記），
     # 兩鍵任一被選都渲染本卡；family_layout 獨立卡已刪（2026-08-07）。
-    SectionSpec("country_map", ("country_distribution", "family_country_layout"), _build_country_map_section),
+    SectionSpec("country_map", ("country_distribution", "family_country_layout"),
+                _build_country_map_section),
     SectionSpec("ipc", ("ipc_main_distribution",), _build_ipc_section),
     SectionSpec("cpc", ("cpc_main_distribution",), _build_cpc_section),
     SectionSpec("applicant_ranking", ("applicant_ranking",), _build_applicant_ranking_section),
+    SectionSpec("design_protection", ("design_protection_detail",), _build_design_protection_section),
     SectionSpec("applicant_year_matrix", ("applicant_year_matrix",), _build_applicant_year_matrix_section),
     SectionSpec("applicant_country", ("applicant_country_distribution",), _build_applicant_country_section),
     # ⚠ `lifecycle` section 2026-08-09 移除（使用者裁決刪報表）：申請人×法律狀態
@@ -4847,7 +5574,12 @@ def run_chart_trial(
             # ⚠ 設計案 11 件本來就被兩個分群通道自動排除（無獨立項、無效果摘要），
             # 但簡報上完全沒說——讀者看到封面 55、分類頁 44 只會覺得數字錯。
             # 判定一律走唯一定義處 `transforms/patent_kind.py`，不在此自行比對。
-            "patent_kind": fetch_patent_kind_summary(),
+            # 🔴 2026-08-18：必須把母體傳下去。原本沒傳（函式也沒有這個參數），
+            #    封面顯示全庫 281 件而非本 workspace 的 55 件。
+            "patent_kind": fetch_patent_kind_summary(patent_ids=ctx.patent_ids),
+            # 封面四個數字由引擎供給（2026-08-18，§2）：原本 deck 的 CLI 自己填，
+            # 手上沒有權威來源只能從別處推——封面 281 件（母體實際 55）就是這樣來的。
+            "cover_stats": fetch_cover_stats(patent_ids=ctx.patent_ids),
             # sections 持久化：--refresh-index 由此重建 index（解讀回填後重渲染）
             "sections": persistable_sections(ctx.sections),
             # 表格顯示規格（2026-07-31）：欄名對照、排除欄與儲存格呈現字串由引擎寫出，
