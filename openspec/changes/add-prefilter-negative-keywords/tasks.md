@@ -263,15 +263,64 @@ kept」，並在 docstring 註明契約變更日期與理由。仍驗「保留�
 ⚠ **F 於 A–E 全數驗收通過、且實際使用過一段時間後才啟用。**
 ⚠ 預設停用；未啟用前，驗收報告須如實揭露「本次未驗硬刪」。
 
-- [ ] F.1 Red：未滿一年者不列入刪除對象（PRE-007）
-- [ ] F.2 Red：dry-run 不變更任何資料（PRE-007、PRT-007）
-- [ ] F.3 Red：刪除後 `patent_ids_json` 不含該 id、剔除名單無孤兒列（PRE-007）
+- [x] F.1 Red：未滿一年者不列入刪除對象（PRE-007）
+      → 另補：`pending`／`kept` **永遠**不是候選（只差一個 status 欄，
+      而它們一個是還沒裁決、一個是使用者說要留）。
+- [x] F.2 Red：dry-run 不變更任何資料（PRE-007、PRT-007）
+      → 🔴 **dry-run 是預設值**：不可逆操作不得靠呼叫端記得傳參數。
+- [x] F.3 Red：刪除後 `patent_ids_json` 不含該 id、剔除名單無孤兒列（PRE-007）
 - [ ] F.4 Red：受影響報表版本被標記「來源已不完整」（PRE-007）
-- [ ] F.5 Green：清理作業（批次上限、失敗隔離、逐筆回報、執行紀錄）
-- [ ] F.6 Green：引用清理——⚠ 11 個 FK 全 CASCADE 會自動連帶刪，但
-      `patent_ids_json`／`workspace_excluded_patents` 無 FK，必須主動處理
-- [ ] F.7 Green：報表標記與前端顯示
-- [ ] F.8 驗收（實資料，先 dry-run）：確認刪除清單正確後才真跑
+      🔴 **做不到，需要使用者裁決** — 見下方「F 的規格缺口」。
+- [x] F.5 Green：清理作業（批次上限、失敗隔離、逐筆回報、執行紀錄）
+      → 逐筆獨立 savepoint；批次上限的理由是**爆炸半徑**不是效能。
+- [x] F.6 Green：引用清理
+      → 實查確認：11 條 FK **全 CASCADE**（前提為真）；
+      `derived_layer.report_patent_base` 是 **view** 不是表，無孤兒風險；
+      🔴 無 FK 保護的只有兩處：`workspaces.patent_ids_json`（jsonb 陣列）與
+      `workspace_excluded_patents`，兩者都主動清。
+      → 另加結構測試鎖住「所有指向 patents 的 FK 都是 CASCADE」：
+      日後有人加一條 `SET NULL` 的 FK，會留下 patent_id 為 NULL 的孤兒列
+      而**不報錯**，統計悄悄少一筆。
+- [ ] F.7 Green：報表標記與前端顯示 —— 隨 F.4 一併阻塞
+- [ ] F.8 驗收（實資料，先 dry-run）
+      → **已對正式庫跑過 dry-run**：候選 0 筆（`workspace_excluded_patents`
+      目前 0 列，尚無任何剔除紀錄）。雙旗標守門與「不合資格者被擋」皆實測有效。
+      ⚠ 真刪**未執行也無對象**，如實揭露。
+
+### 🔴 F 補上的一條：規格沒防到「別的 workspace 還在用」
+
+`PRE-007` 只說「封存滿一年者成為硬刪對象」，**沒說要檢查它在別的 workspace
+是不是仍為有效成員**。但排除是 **workspace 級**的（0035／0056 明訂）：
+同一件專利可以在 A 被剔除、在 B 照常分析。
+
+⇒ 照規格字面實作會**把 B 的專利刪掉**，而 B 的使用者從頭到尾不知道——
+症狀是分析母體莫名少一件，沒有任何錯誤訊息。
+
+已在候選判定加第三條：**在所有 workspace 都不是有效成員**才算候選。
+⚠ 這是對規格的補強，`PRE-007` 應回寫。
+
+### 🔴 F 的規格缺口：報表版本標記做不到（F.4／F.7 阻塞）
+
+`PRE-007`：「硬刪 SHALL 標記受影響的既有報表版本為『來源已不完整』」。
+**現行資料模型答不出「哪個版本含哪些專利」**（2026-08-21 實查）：
+
+| 查了什麼 | 結果 |
+|---|---|
+| `app_layer.report_artifacts` | 主鍵 `(version, filename)`，**無 workspace_id、無專利名單** |
+| `workflow_outputs.data_json` | 頂層鍵不含 `patent_ids`／`patent_count`／`workspace_id` |
+| `core_layer.patents` | **沒有匯入時間欄**，連「版本產生時它在不在」都推不出來 |
+
+⇒ 能做的只有「整個 workspace 的版本全標」（過度標記，含該專利匯入前就
+產生的版本）。這需要使用者裁決標記口徑，且要一次 migration 加標記欄。
+
+⚠ 本切片**先不做**並明列於此與 `purge.py` 模組 docstring、腳本執行時列印
+——不靜默略過。
+
+### 為什麼硬刪只做成腳本、不接進 Web UI
+
+不可逆操作不該有一顆按鈕。`scripts/prefilter_purge.py` 預設只列候選；
+真刪要**同時**給 `--execute` 與 `--i-understand-this-is-irreversible`
+——前者容易在複製貼上指令時被一起帶走，後者長到不會有人不小心打出來。
 
 ## 1. 範圍回歸
 
