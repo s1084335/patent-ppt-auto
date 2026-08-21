@@ -1,4 +1,4 @@
-"""排除清單複核層契約測試（2026-07-27 定案：AI 判讀 → 人工保留／確定）。
+﻿"""排除清單複核層契約測試（2026-07-27 定案：AI 判讀 → 人工保留／確定）。
 
 規格：AI 只寫得進 pending，寫不進 excluded——AI 不決定正式資料。
 
@@ -155,7 +155,15 @@ class ExclusionReviewServiceTests(unittest.TestCase):
         self.assertEqual(members, [31, 33])
 
     def test_keep_removes_row_entirely(self):
-        """保留：直接刪列——保留＝不在排除清單上，不留第三種 status。"""
+        """保留：標記 status='kept'——記得住這個決定，但不影響分析母體。
+
+        🔴 **2026-08-21 契約變更**（使用者裁決，CLU-017）：原設計是「保留＝刪列」，
+        但刪列＝記不住誰被保留過，初階篩選每次重跑都會把同一批專利重新列出來
+        要使用者再裁決一次。改為 `status='kept'`。
+
+        ⚠ 本斷言改的是**契約**不是放寬：仍驗「保留後不在任何對外清單」
+        （見下方 rows 的 status 檢查與 analysis_member_patent_ids）。
+        """
         from backend.app.clustering import exclusions
 
         with psycopg.connect(**_kw(TEST_DB)) as c:
@@ -168,7 +176,9 @@ class ExclusionReviewServiceTests(unittest.TestCase):
             rows = self._rows(c, ws)
             members = exclusions.analysis_member_patent_ids(ws, conn=c)
         self.assertEqual(kept, 1)
-        self.assertEqual(rows, {}, "保留後該列應完全移除")
+        self.assertEqual(
+            {pid: r[0] for pid, r in rows.items()}, {42: "kept"},
+            "保留後應標記為 kept（2026-08-21 契約變更，原為刪列）")
         self.assertEqual(members, [41, 42])
 
     def test_manual_exclude_defaults_to_excluded_and_manual(self):

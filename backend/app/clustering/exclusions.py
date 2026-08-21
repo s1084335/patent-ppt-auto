@@ -285,10 +285,17 @@ def store_ai_verdicts(
     正式排除必須經使用者按「確定」（confirm_exclusions）——這是 workflows.md
     「AI 只輔助、不決定正式資料」在本流程的落實。
 
-    ⚠ 不覆蓋已裁決者：ON CONFLICT 只在既有列仍為 'pending' 時更新（WHERE 子句），
+    ⚠ 不覆蓋**已確定排除**者：ON CONFLICT 只在既有列為 'pending' 或 'kept' 時更新，
     已 excluded 的列保持原狀——重跑判讀不得把使用者的決定打回草稿。
-    「保留」的專利不在表中（keep_patents 直接刪列），會被重新判讀一次；這是可接受的，
-    因為重跑通常伴隨重新分群，前次保留的判斷未必仍適用。
+
+    🔴 **`kept` 會被覆蓋是刻意的**（2026-08-21 使用者裁決）：AI 判讀的依據是
+    「這一筆在它所屬主題裡最不像」，而主題來自分群。重跑通常伴隨重新分群，
+    主題結構變了，前次「保留」的判斷基礎已不存在 ⇒ 重新判讀有意義。
+
+    ⚠ **初階篩選相反**：它跳過 kept（見 `prefilter.decisions.apply_prefilter`）
+    ——判斷依據是關鍵字比對，同樣的詞與資料答案必定相同，重問等於騷擾。
+    「誰決定要不要重問」寫在**寫入端**而非保留端，因為理由屬於「這條線的
+    判讀依據會不會變」，那是寫入端的知識。
 
     不自行 commit：交易邊界交由呼叫端（與 exclude_patents 一致）。回傳實際寫入筆數。
     """
@@ -313,8 +320,11 @@ def store_ai_verdicts(
                 "ON CONFLICT (workspace_id, patent_id) DO UPDATE SET "
                 "    reason = EXCLUDED.reason, "
                 "    ai_verdict = EXCLUDED.ai_verdict, "
+                "    status = 'pending', "
                 "    excluded_at = now() "
-                "WHERE derived_layer.workspace_excluded_patents.status = 'pending'",
+                # 'kept' 一併覆蓋回 pending——見上方 docstring 的兩條線差異說明。
+                "WHERE derived_layer.workspace_excluded_patents.status "
+                "      IN ('pending', 'kept')",
                 [(workspace_id, pid, reason, verdict) for pid, verdict, reason in rows],
             )
     return len(rows)
@@ -470,16 +480,26 @@ def keep_patents(
     *,
     conn: Any | None = None,
 ) -> int:
-    """使用者按「保留」：直接刪列——保留＝不在排除清單上，留在原主題。
+    """使用者按「保留」：標記為 status='kept'——留在原主題，但**記得住這個決定**。
 
-    ⚠ 不留第三種 status='kept'：保留的語意就是「不在排除清單內」，另立狀態會讓每個
-    查排除清單的地方都要多一個過濾條件，且與複合 PK「一列＝一個排除決定」的語意衝突。
+    🔴 **2026-08-21 推翻 0036 的「保留＝刪列」**（使用者裁決，CLU-017）。
+    原設計反對第三種狀態，理由是「另立狀態會讓每個查排除清單的地方都要多一個
+    過濾條件」。⚠ 該理由當時成立，但**需求變了**：刪列＝記不住誰被保留過，
+    初階篩選每次重跑都會把同一批專利重新列出來要使用者再裁決一次。
+
+    ⚠ 動工前窮舉全庫 11 個查排除清單的地方，**每一個都明確指定 status**，
+    故 0036 擔心的「混進既有清單」不成立。該性質由
+    `test_prefilter_decisions.test_every_exclusion_query_filters_status` 守住。
+
+    ⚠ **兩條線對「已保留」的態度刻意不同**（2026-08-21 裁決）：
+    - 初階篩選：**跳過** kept——判斷依據是關鍵字比對，重跑答案必定一樣，重問等於騷擾
+    - AI 判讀：**可覆蓋** kept——判斷依據是主題結構，重新分群後依據已變，重判有意義
+
+    只改 status='pending' 的列：已確定排除者要放回需走復原流程（另案），
+    避免「保留」誤按把已確定的排除決定悄悄撤銷。
     topic_assignments 不動——該專利本就還在原主題（pending 階段從未移除指派）。
 
-    只刪 status='pending' 的列：已確定排除者要放回需走復原流程（另案），
-    避免「保留」誤按把已確定的排除決定悄悄撤銷。
-
-    不自行 commit：交易邊界交由呼叫端。回傳實際保留（刪列）的筆數。
+    不自行 commit：交易邊界交由呼叫端。回傳實際保留的筆數。
     """
     ids = [int(pid) for pid in patent_ids]
     if not ids:
@@ -487,7 +507,8 @@ def keep_patents(
     with _conn_ctx(conn) as active:
         with active.cursor() as cur:
             cur.execute(
-                "DELETE FROM derived_layer.workspace_excluded_patents "
+                "UPDATE derived_layer.workspace_excluded_patents "
+                "SET status = 'kept', excluded_at = now() "
                 "WHERE workspace_id = %s AND patent_id = ANY(%s) AND status = 'pending'",
                 (workspace_id, ids),
             )

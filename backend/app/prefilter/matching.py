@@ -1,0 +1,168 @@
+"""初階篩選的確定性比對（PRE-003／PRE-004）。
+
+## 🔴 為什麼是「前綴詞界」而不是子字串或完整詞界
+
+三種比對方式，**子字串與完整詞界各自都會出錯，而且方向相反**（2026-08-21 實測，
+割草機 workspace 母體）：
+
+| 方式 | `ion` | `mow` | 問題 |
+|---|---|---|---|
+| 子字串 `ILIKE '%ion%'` | 265 | 187 | 🔴 `combustion`／`composition` 全中——大量誤剔除 |
+| 完整詞界 `~* '\\mion\\M'` | 0 | 11 | 🔴 `mower`／`mowing` 不中——漏掉該剔除的 |
+| **前綴詞界 `~* '\\m詞'`** | **0** | **177** | ✅ 兩端都對 |
+
+⚠ 不能用 `LIKE 'term%'`：比對要落在**單字的開頭**，不是**欄位的開頭**。
+`LIKE 'mow%'` 只在 title 剛好以 mow 起頭時命中，`"Lawn mower blade"` 會漏。
+`\\m` 是 PostgreSQL 的「詞首」錨點，才是要的語意。
+
+## 比對過程不涉及 AI
+
+AI 只在切片 B 把中文轉成英文詞，且產出要經使用者確認。到了本模組，
+輸入已經是一組確定的英文詞，比對是純 SQL 運算——**同樣的關鍵字與資料，
+兩次結果必定相同**（PRE-001「重跑可重現」）。
+"""
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from backend.app.clustering.exclusions import _conn_ctx, display_member_patent_ids
+
+#: 三個比對欄位（PRE-003）。
+#: ⚠ 獨立項的欄名是中文帶國別後綴、**不含 "claim" 字樣**——用關鍵字猜欄名會漏掉它
+#: （切片 0 量比對數字時實際踩過，少量一欄導致數字對不上規格）。
+MATCH_COLUMNS = ("title", "abstract", "獨立項[KR,JP,US,CN,EP,IN]")
+
+SOURCE_TABLE = "derived_layer.report_patent_base"
+
+
+def normalize_term(term: str) -> str:
+    """把使用者／AI 給的比對詞轉成可直接放進 `~*` 的正規式片段。
+
+    🔴 **跳脫只能在這裡做**（C.5）：使用者輸入 `c++`、`(a)`、`a|b` 是常態，
+    不跳脫的後果是 `psycopg.errors.InvalidRegularExpression`——而且是
+    **執行篩選時才炸**，不是輸入時，錯誤訊息也看不出是哪個詞造成的。
+
+    ⚠ `\\m` 是詞首錨點，必須加在跳脫**之後**——先跳脫會把反斜線本身也跳掉。
+    """
+    text = (term or "").strip()
+    if not text:
+        return ""
+    return r"\m" + re.escape(text)
+
+
+def _quoted_columns() -> list[str]:
+    return [f'"{c}"' for c in MATCH_COLUMNS]
+
+
+def _match_clause() -> str:
+    """任一比對欄位命中即算命中。"""
+    return " OR ".join(f"{c} ~* %s" for c in _quoted_columns())
+
+
+def match_patent_ids(terms: list[str], *,
+                     patent_ids: list[int] | None = None,
+                     conn: Any | None = None) -> dict[str, list[int]]:
+    """逐比對詞回傳命中的 patent_id（升冪，穩定）。
+
+    ⚠ **逐詞分開查而不是一次 OR 起來**：PRE-005 要求命中原因可追溯——
+    使用者要知道「這件是被哪個詞抓到的」。一次查完只知道「有中」。
+
+    ⚠ 空清單回空 dict，**不組 SQL**：`WHERE` 後面接空條件會變成命中全部，
+    那是最糟的失敗形式（看起來像「篩選很有效」）。
+    """
+    if not terms:
+        return {}
+
+    scope = ""
+    scope_params: tuple = ()
+    if patent_ids is not None:
+        # ⚠ 空清單也要帶條件——「這個 workspace 沒有成員」與「全庫」不是同一件事。
+        scope = " AND patent_id = ANY(%s)"
+        scope_params = ([int(i) for i in patent_ids],)
+
+    out: dict[str, list[int]] = {}
+    with _conn_ctx(conn) as c:
+        with c.cursor() as cur:
+            for term in terms:
+                pattern = normalize_term(term)
+                if not pattern:
+                    out[term] = []
+                    continue
+                cur.execute(
+                    f"SELECT patent_id FROM {SOURCE_TABLE} "
+                    f"WHERE ({_match_clause()}){scope} ORDER BY patent_id",
+                    tuple([pattern] * len(MATCH_COLUMNS)) + scope_params,
+                )
+                out[term] = [int(r[0]) for r in cur.fetchall()]
+    return out
+
+
+def blank_field_patent_ids(*, patent_ids: list[int] | None = None,
+                           conn: Any | None = None) -> list[int]:
+    """三個比對欄位皆空（NULL 或全空白）的 patent_id。
+
+    ⚠ 這不是統計裝飾：這些專利**永遠不會被任何關鍵字命中**。
+    使用者要知道「有幾件根本沒東西可比」，否則會誤以為它們都通過了篩選
+    ——那是缺席型偏差，看不到的東西不會引起懷疑。
+    """
+    blank = " AND ".join(
+        f"coalesce(btrim({c}), '') = ''" for c in _quoted_columns())
+    scope = ""
+    params: tuple = ()
+    if patent_ids is not None:
+        scope = " AND patent_id = ANY(%s)"
+        params = ([int(i) for i in patent_ids],)
+
+    with _conn_ctx(conn) as c:
+        with c.cursor() as cur:
+            cur.execute(
+                f"SELECT patent_id FROM {SOURCE_TABLE} "
+                f"WHERE ({blank}){scope} ORDER BY patent_id", params)
+            return [int(r[0]) for r in cur.fetchall()]
+
+
+
+
+
+
+def preview_counts(workspace_id: int, *,
+                   conn: Any | None = None) -> list[dict[str, Any]]:
+    """逐關鍵字的命中件數預覽（PRE-004）。
+
+    🔴 **零命中要回 0，不得省略該列**：省略的後果是使用者以為那個關鍵字
+    還沒算完、或以為自己沒輸入過。「算過了，結果是 0」與「沒算」必須分得開。
+
+    ⚠ 只算**已確認且啟用**的關鍵字——未確認者本來就不該產生任何命中（PRE-002）。
+    """
+    from backend.app.prefilter import keywords as kw
+
+    with _conn_ctx(conn) as c:
+        rows = [r for r in kw.list_keywords(workspace_id, conn=c)
+                if r["enabled"] and r["terms_confirmed"]]
+        if not rows:
+            return []
+        # 🔴 成員清單走既有唯一來源 `display_member_patent_ids`（契約＝**永遠回全部成員**），
+        #    不自己讀 `patent_ids_json`。
+        #    ⚠ 理由有兩層：
+        #    ① 同一份知識只能有一個定義處——成員判定日後若改（例如組合 workspace
+        #      的展開規則），自己讀那份就會靜默落後。
+        #    ② 初篩之後還會有其他型態的 workspace（組合、案件比對、全庫），
+        #      該函式已經一致處理它們；寫死讀 json 等於把機制綁在單一型態上。
+        #    ⚠ **不能用 `analysis_member_patent_ids`**：那條會扣掉已剔除者，
+        #      而剔除正是本功能要產生的——扣掉等於「已剔除的永遠不會再被檢視」。
+        member_ids = display_member_patent_ids(workspace_id, conn=c)
+
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            terms = [t for t in (row["match_terms"] or []) if str(t).strip()]
+            hits = match_patent_ids(terms, patent_ids=member_ids, conn=c)
+            merged = sorted({pid for ids in hits.values() for pid in ids})
+            out.append({
+                "keyword_id": row["keyword_id"],
+                "original_term": row["original_term"],
+                "match_terms": terms,
+                "patent_count": len(merged),
+                "patent_ids": merged,
+            })
+        return out

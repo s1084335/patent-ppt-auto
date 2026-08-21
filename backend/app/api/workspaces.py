@@ -518,6 +518,56 @@ async def update_negative_keyword(
     return {"workspace_id": workspace_id, "keyword": row}
 
 
+@router.get("/workspaces/{workspace_id}/prefilter/preview")
+async def preview_prefilter(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """逐關鍵字的命中件數預覽（PRE-004）。
+
+    🔴 零命中回 0 而**不省略該列**——「算過了，結果是 0」與「沒算」必須分得開。
+    ⚠ 只算已確認且啟用的關鍵字；未確認者本來就不該產生任何命中（PRE-002）。
+    """
+    from backend.app.prefilter import matching
+
+    items = await run_in_threadpool(matching.preview_counts, workspace_id)
+    return {"workspace_id": workspace_id, "items": items}
+
+
+@router.get("/workspaces/{workspace_id}/prefilter/summary")
+async def prefilter_summary(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """初階篩選入口要顯示的待辦數（WSP-013）。
+
+    ⚠ 待辦數由**後端算**：前端自數會變成第二份計數邏輯，兩份必然漂移
+    ——本專案已反覆踩過。
+    """
+    from backend.app.prefilter import keywords as kw
+
+    def _collect() -> dict[str, int]:
+        rows = kw.list_keywords(workspace_id)
+        return {
+            "keyword_count": len(rows),
+            "unconfirmed_count": sum(1 for r in rows if not r["terms_confirmed"]),
+            "pending_count": len(pending_reviews(workspace_id)),
+            "archived_count": len(excluded_patent_rows(workspace_id)),
+        }
+
+    counts = await run_in_threadpool(_collect)
+    # 入口徽章顯示的單一數字＝待確認比對詞 ＋ 待裁決，兩者都是「等使用者動作」。
+    counts["todo_count"] = counts["unconfirmed_count"] + counts["pending_count"]
+    return {"workspace_id": workspace_id, **counts}
+
+
+@router.post("/workspaces/{workspace_id}/prefilter/apply")
+async def apply_prefilter_endpoint(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """執行比對，把命中寫成待裁決項（PRE-005）。
+
+    🔴 只寫 `pending`，不直接排除——使用者裁決才算數。
+    🔴 跳過已保留（`kept`）與已封存（`excluded`）者（CLU-017）。
+    """
+    from backend.app.prefilter import decisions
+
+    count = await run_in_threadpool(decisions.apply_prefilter, workspace_id)
+    return {"workspace_id": workspace_id, "matched_count": count}
+
+
 @router.delete("/workspaces/{workspace_id}/negative-keywords/{keyword_id}")
 async def delete_negative_keyword(
     workspace_id: int = Path(ge=1),
