@@ -63,31 +63,42 @@
 - [ ] D.1 Red：未選用或無資料的報表不產生章節、不留待補空白（EXP-021）
 - [ ] D.2 Green：章節順序改依論證脈絡安排（EXP-021）
 - [ ] D.3 ⚠ 不沿用固定頁序（`decisions.md:3013` 第二世代定案）
-- [ ] D.4 Red：敘述統計出現在結論之後、第一個圖表章節之前（EXP-026）
-- [ ] D.5 Red：六個內容 scenario 各自斷言（EXP-026）
-- [ ] D.6 Red：每個數值取自確定性計算，非 AI 產生（EXP-026）
-- [ ] D.7 Red：敘述統計與各章節描述同一個量時數值相同（EXP-026）
+### D-a：敘述統計的資料層與預覽區塊（2026-08-21 完成）
+
+⚠ 本小節只做**預覽區塊**（使用者：「預覽區塊敘述統計做一下，不用圖」）。
+匯出 HTML 的章節位置（結論之後、圖表之前）留在 D-b，隨章節結構一起做。
+
+- [x] D.1 Red：15 項全紅（函式、欄位、前端區塊皆不存在）
+- [x] D.2 Green：`fetch_descriptive_stats`（`chart_runner`）——委派 `fetch_cover_stats`
+      取得件／族／受理局／類型三分法，另查狀態分布與年份範圍
+- [x] D.3 Red→Green：不自寫家族運算式、不自行判定專利種類、不列舉狀態字面（三條斷言）
+- [x] D.4 Green：`report_data.json` 帶 `descriptive_stats`
+- [x] D.5 Green：`_report_content_payload` 轉發（舊版本無此鍵時回空物件）
+- [x] D.6 Green：前端 `renderDescriptiveStatsHtml`＋`#report-descriptive-stats` 區塊
+- [x] D.7 Red→Green：區塊內無 `chart_url`／`<svg>`／`chart-media`（使用者：不用圖）
+- [x] D.8 Red→Green：前端不自算（無 `reduce(`／`filter(`）——數字一律後端供給
+- [x] D.9 🔴 **新增 DB 接縫要在既有 DB-free 測試裡多擋一個**：
+      實測未擋時 `_app_layer_connect` 仍被呼叫 1 次，當時本機 DB 剛好連得上，
+      **測試全綠但其實在偷連 DB**。已補 4 檔（`test_chart_sections`、
+      `test_report_analysis_types`、`test_workspace_name_in_report_data`、
+      `test_workspace_scoped_versions`），並加 `SeamGuardTests` 守住這條紀律。
+      擋住後重測：`_app_layer_connect` 呼叫次數 **0**。
+- [x] D.10 回歸：分支工作樹 263 passed
+
+**實測更正**（規劃時判斷有誤，已回寫 design）：
+- 受理局數**是現成的**（`fetch_cover_stats.jurisdiction_count`），規劃時誤判為需新增
+- 仍需新增的只有：時間範圍（`application_year` min／max）、主題總數
+
+### D-b：敘述統計進報表章節（未做）
+
+- [ ] D.11 Red：敘述統計出現在結論之後、第一個圖表章節之前（EXP-026）
+- [ ] D.12 Red：敘述統計與各章節描述同一個量時數值相同（EXP-026）
       🔴 這條最容易破——同一個數字出現在兩處就是兩個定義處，
       而不一致本身不會報錯，只會在讀者看到「上面 216、下面 214」時爆出來
-
-- [ ] D.8 Green：**消費既有計算**（實測 2026-08-21 已存在，直接用，不重寫）：
-      - 各專利類型件數 → `fetch_patent_kind_summary`
-        ⚠ 判定只能用 `document_kind`，不能用 `patent_type`——後者值域只有兩值，
-        11 件設計案會全被歸進發明（`transforms/patent_kind.py` 是唯一定義處）
-      - 家族數 → `chart_runner.py:115-117` 的 `COUNT(DISTINCT FAMILY_ID_EXPRESSION)`
-      - 法律狀態桶 → `transforms/legal_status.py` 的 `STATUS_BUCKET_ORDER`
-        ⚠ 不得在敘述統計裡另行列舉狀態字面
-      - 分群覆蓋率 → 既有 `cluster_section_note` 用的同一組數字
-
-- [ ] D.9 Green：**需新增的計算**（實測無現成來源，不要假設有）：
-      - 時間範圍：`application_year` 的 min／max
-      - 受理局數：去重計數
-      - 主題數：本次分群的主題總數
-        ⚠ 既有 `topic_count` 語意是「某申請人涉及主題數」，**不是**本次主題總數，
-        不要誤用
-- [ ] D.10 ⚠ 新增的計算要放進**既有的確定性計算層**，不要寫在 HTML 產生器裡
-      ——寫在產生器裡就沒有第二個消費者能重用，下次又會有人再算一次
-- [ ] D.11 驗收：逐章對照，並逐個數字與各章節比對
+- [ ] D.13 Green：主題數與分群覆蓋率（需在分群 section 建立時記到 ctx，
+      不要重算——數字在 `cluster_section_note` 那裡已經有了）
+      ⚠ 既有 `topic_count` 語意是「某申請人涉及主題數」，**不是**本次主題總數
+- [ ] D.14 驗收：逐章對照，並逐個數字與各章節比對
 
 ## 切片 E：解讀深度
 

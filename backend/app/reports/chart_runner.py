@@ -129,6 +129,64 @@ def fetch_cover_stats(*, patent_ids: list[int] | None) -> dict[str, Any]:
     }
 
 
+def fetch_descriptive_stats(*, patent_ids: list[int] | None) -> dict[str, Any]:
+    """敘述統計章節的數字（EXP-026，2026-08-21）。
+
+    位置在結論之後、圖表章節之前，回答「這份資料是什麼」——讀者在看第一張圖之前，
+    先知道涵蓋多少件、哪些類型、什麼年份、還活著多少。
+
+    🔴 **委派而非重算**：件數／家族數／受理局數／類型三分法一律取自
+    `fetch_cover_stats`。自己再查一次 `count(*)` 會產生「封面 216、敘述統計 214」
+    這種**不會報錯**的不一致——症狀要等讀者自己發現才浮出來。本函式只新增兩個
+    既有計算沒有的量：狀態分布與年份範圍。
+
+    ⚠ 狀態分桶委派 `transforms/legal_status.status_bucket` 唯一定義處，
+    本函式不列舉任何狀態字面——列舉就是第二份定義。
+
+    ⚠ `patent_ids` 必填無預設，理由同 `fetch_cover_stats`：呼叫端忘記傳要當場炸，
+    不是靜默退回全庫（那正是封面顯示 281 件而母體實際 55 件的成因）。
+
+    ⚠ **本函式是 DB 接縫**：與 `fetch_cover_stats` 同層，測試以 `mock.patch.object`
+    注入即可完全不碰 DB。⚠ 新增接縫就要在既有的 DB-free 測試裡多擋一個。
+    """
+    from backend.app.transforms.legal_status import status_bucket
+
+    where = ""
+    params: tuple = ()
+    if patent_ids is not None:
+        # ⚠ 空清單也要帶條件——「這個 workspace 沒有成員」與「全庫」不是同一件事。
+        where = " WHERE patent_id = ANY(%s)"
+        params = ([int(i) for i in patent_ids],)
+
+    with _app_layer_connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT legal_status, count(*) AS n "
+            f"FROM derived_layer.report_patent_base{where} "
+            f"GROUP BY legal_status",
+            params,
+        )
+        status_rows = [dict(r) for r in cur.fetchall()]
+        cur.execute(
+            f"SELECT min(application_year) AS min_year, max(application_year) AS max_year "
+            f"FROM derived_layer.report_patent_base{where}",
+            params,
+        )
+        years = dict(cur.fetchone() or {})
+
+    # 分桶在此彙總而非交給 SQL：桶的判定規則屬 transforms 唯一定義處，
+    # 寫進 SQL 就等於在資料庫裡又存了一份規則。
+    tally: dict[str, int] = {}
+    for row in status_rows:
+        bucket = status_bucket(row.get("legal_status"))
+        tally[bucket] = tally.get(bucket, 0) + int(row.get("n") or 0)
+
+    return {
+        **fetch_cover_stats(patent_ids=patent_ids),
+        "legal_status_tally": tally,
+        "year_range": {"min": years.get("min_year"), "max": years.get("max_year")},
+    }
+
+
 def fetch_analysis_patent_ids(analysis_id: int) -> list[int]:
     """Return the patent_id snapshot for an analysis, or raise if it is missing."""
     with _app_layer_connect() as conn:
@@ -5580,6 +5638,10 @@ def run_chart_trial(
             # 封面四個數字由引擎供給（2026-08-18，§2）：原本 deck 的 CLI 自己填，
             # 手上沒有權威來源只能從別處推——封面 281 件（母體實際 55）就是這樣來的。
             "cover_stats": fetch_cover_stats(patent_ids=ctx.patent_ids),
+            # 敘述統計（EXP-026，2026-08-21）：結論之後、圖表章節之前的「這份資料是什麼」。
+            # ⚠ 它包含 cover_stats 的四個數字（委派取得，非重算）再加狀態分布與年份範圍；
+            # 兩者並存是刻意的——cover_stats 有既有消費者，不在本次改動裡動它的形狀。
+            "descriptive_stats": fetch_descriptive_stats(patent_ids=ctx.patent_ids),
             # sections 持久化：--refresh-index 由此重建 index（解讀回填後重渲染）
             "sections": persistable_sections(ctx.sections),
             # 表格顯示規格（2026-07-31）：欄名對照、排除欄與儲存格呈現字串由引擎寫出，

@@ -485,6 +485,9 @@ def _report_content_payload(run_dir):
         "scope": parameters.get("scope", ""),
         "patent_count": parameters.get("patent_ids_count"),
         "narratives_expired": narratives_expired,
+        # 敘述統計（EXP-026）：由引擎在產製時算好寫進 report_data.json，這裡只轉發。
+        # ⚠ 舊版本目錄沒有這個鍵——回空物件而非缺鍵，讓前端有一致的形狀可判斷。
+        "descriptive_stats": report_data.get("descriptive_stats") or {},
         "sections": sections_out,
     }
 

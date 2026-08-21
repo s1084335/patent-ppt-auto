@@ -157,7 +157,7 @@ SVG 內字級 15.1px（寫死）
 | 法律狀態分布 | `transforms/legal_status.py` 四桶＋`STATUS_BUCKET_ORDER` | ✅ 現成 |
 | 分群覆蓋率 | 既有 `cluster_section_note` 用的同一組數字 | ✅ 現成 |
 | 時間範圍（起訖年） | `application_year` 欄位在用，但**無 min／max 計算** | ⚠ 需新增 |
-| 受理局數 | 無現成去重計數 | ⚠ 需新增 |
+| 受理局數 | `fetch_cover_stats.jurisdiction_count` | ✅ 現成（2026-08-21 更正：規劃時誤判為需新增） |
 | 主題數（本次分群總數） | ⚠ 既有 `topic_count` 是「某申請人涉及主題數」，**語意不同** | ⚠ 需新增 |
 
 ⚠ 最後一列是典型的**同名不同義**陷阱：`topic_count` 看起來就是要的東西，
