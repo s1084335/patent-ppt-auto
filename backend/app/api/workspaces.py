@@ -518,6 +518,50 @@ async def update_negative_keyword(
     return {"workspace_id": workspace_id, "keyword": row}
 
 
+class PrefilterScopeRequest(BaseModel):
+    """整批專利的範圍描述（PRE-008 的判讀依據）。"""
+
+    scope_description: str = ""
+
+
+@router.get("/workspaces/{workspace_id}/prefilter/scope")
+async def get_prefilter_scope(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """取得範圍描述；未設定回空字串。"""
+    from backend.app.prefilter import scope
+
+    text = await run_in_threadpool(scope.get_scope_description, workspace_id)
+    return {
+        "workspace_id": workspace_id,
+        "scope_description": text,
+        "max_length": scope.MAX_SCOPE_LENGTH,
+    }
+
+
+@router.put("/workspaces/{workspace_id}/prefilter/scope")
+async def put_prefilter_scope(
+    request: PrefilterScopeRequest,
+    workspace_id: int = Path(ge=1),
+) -> dict[str, Any]:
+    """寫入範圍描述。空字串＝清除。
+
+    ⚠ 兩種 ValueError 要分開回：超長是**輸入格式問題**（422），
+    全庫 workspace 是**對象不適用**（400）。混成同一碼的話，
+    前端無法決定該提示「縮短一點」還是「這個 workspace 不做初階篩選」。
+    """
+    from backend.app.prefilter import scope
+
+    if len(request.scope_description.strip()) > scope.MAX_SCOPE_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"範圍描述最長 {scope.MAX_SCOPE_LENGTH} 字")
+    try:
+        text = await run_in_threadpool(
+            scope.set_scope_description, workspace_id, request.scope_description)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"workspace_id": workspace_id, "scope_description": text}
+
+
 @router.get("/workspaces/{workspace_id}/prefilter/preview")
 async def preview_prefilter(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
     """逐關鍵字的命中件數預覽（PRE-004）。

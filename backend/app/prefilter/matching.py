@@ -28,12 +28,31 @@ from typing import Any
 
 from backend.app.clustering.exclusions import _conn_ctx, display_member_patent_ids
 
-#: 三個比對欄位（PRE-003）。
+#: 三個比對欄位（PRE-003）：(對外鍵名, 資料表欄名, 顯示標籤)。
+#:
 #: ⚠ 獨立項的欄名是中文帶國別後綴、**不含 "claim" 字樣**——用關鍵字猜欄名會漏掉它
 #: （切片 0 量比對數字時實際踩過，少量一欄導致數字對不上規格）。
-MATCH_COLUMNS = ("title", "abstract", "獨立項[KR,JP,US,CN,EP,IN]")
+#:
+#: ⚠ 三者綁成一個序列而不是三份平行清單：欄名、鍵名、標籤是同一份知識的三個面，
+#: 拆成三份就會各自演進，而**不一致本身不會報錯**——症狀會出現在別的地方。
+#: 顯示優先序即本序列順序（標題 > 摘要 > 獨立項）。
+MATCH_FIELDS = (
+    ("title", "title", "標題"),
+    ("abstract", "abstract", "摘要"),
+    ("claims", "獨立項[KR,JP,US,CN,EP,IN]", "獨立項"),
+)
+
+MATCH_COLUMNS = tuple(col for _, col, _ in MATCH_FIELDS)
 
 SOURCE_TABLE = "derived_layer.report_patent_base"
+
+#: 命中詞前後各保留的字數。實測正式庫抽出來 ≤86 字，畫面一行半。
+SNIPPET_CONTEXT = 40
+
+#: 命中文本硬上限。⚠ 這是**護欄不是格式**：比對詞本身可能很長，
+#: 前後各 40 字不足以保證總長有界。長獨立項單篇逾萬字，
+#: 沒有上限就會把整份請求項灌進畫面與 AI prompt。
+SNIPPET_MAX = 200
 
 
 def normalize_term(term: str) -> str:
@@ -124,6 +143,90 @@ def blank_field_patent_ids(*, patent_ids: list[int] | None = None,
 
 
 
+
+
+def _scope(patent_ids: list[int] | None) -> tuple[str, tuple]:
+    """`patent_ids` → SQL 片段與參數。None＝不限縮。
+
+    ⚠ 空清單也要帶條件——「這個 workspace 沒有成員」與「全庫」不是同一件事。
+    """
+    if patent_ids is None:
+        return "", ()
+    return " AND patent_id = ANY(%s)", ([int(i) for i in patent_ids],)
+
+
+def match_snippets(terms: list[str], *,
+                   patent_ids: list[int] | None = None,
+                   conn: Any | None = None) -> dict[int, list[dict[str, Any]]]:
+    """逐專利、逐比對詞回傳**命中的那段原文**（2026-08-21 使用者裁決）。
+
+    ## 🔴 為什麼要文本，不是只給「被哪個詞命中」
+
+    只寫「被 blower 命中」，使用者無從判斷那是不是誤剔。正式庫 #591
+    `VEHICLE WITH UNDER-BODY BLOWER` 是**帶吹風平台的割草載具**，不是吹葉機——
+    看得到那句話才分得出來。判斷成本從「自己去查那件專利」降到「讀一行字」。
+
+    ## 一個詞只回一段
+
+    ⚠ 三個欄位各回一段的話，兩個關鍵字就六段——待裁決清單會變成沒人看的牆。
+    取優先序最前的那欄（標題 > 摘要 > 獨立項），其餘欄位以 `also` 標示。
+
+    🔴 `also` 不可省略：只顯示標題那段、不說「摘要與獨立項也命中」，
+    使用者會低估命中強度。看不到的東西不會引起懷疑。
+
+    ## 跳脫沿用 `normalize_term`
+
+    ⚠ 本函式**不得自己再拼一次正規式**——那會變成第二個跳脫定義處，
+    兩邊各自演進後 `c++` 之類的輸入會在其中一條路上炸。
+
+    回傳：`{patent_id: [{term, field, label, snippet, also}]}`；未命中者不出現。
+    """
+    clean = [t for t in (terms or []) if str(t or "").strip()]
+    if not clean:
+        return {}
+
+    scope_sql, scope_params = _scope(patent_ids)
+    quoted = _quoted_columns()
+    # 每欄抽一段：命中詞往前後各取 SNIPPET_CONTEXT 字。
+    # `\w*` 讓詞形變化（mower／mowing）整個字被涵蓋，不會斷在字中間。
+    sel = ", ".join(
+        f"(regexp_match({c}, '.{{0,{SNIPPET_CONTEXT}}}' || %s || "
+        f"'\\w*.{{0,{SNIPPET_CONTEXT}}}', 'i'))[1]"
+        for c in quoted)
+
+    out: dict[int, list[dict[str, Any]]] = {}
+    with _conn_ctx(conn) as c:
+        with c.cursor() as cur:
+            for term in clean:
+                pattern = normalize_term(term)
+                if not pattern:
+                    continue
+                cur.execute(
+                    f"SELECT patent_id, {sel} FROM {SOURCE_TABLE} "
+                    f"WHERE ({_match_clause()}){scope_sql} ORDER BY patent_id",
+                    tuple([pattern] * len(MATCH_FIELDS))      # SELECT 的抽取
+                    + tuple([pattern] * len(MATCH_FIELDS))    # WHERE 的判定
+                    + scope_params,
+                )
+                for row in cur.fetchall():
+                    pid = int(row[0])
+                    # regexp_match 沒中回 NULL——哪幾欄有值就是哪幾欄命中，
+                    # 不需要另外再判一次。
+                    matched = [(key, label, row[i + 1])
+                               for i, (key, _, label) in enumerate(MATCH_FIELDS)
+                               if row[i + 1]]
+                    if not matched:
+                        continue
+                    key, label, raw = matched[0]   # MATCH_FIELDS 序即優先序
+                    snippet = " ".join(str(raw).split())[:SNIPPET_MAX]
+                    out.setdefault(pid, []).append({
+                        "term": term,
+                        "field": key,
+                        "label": label,
+                        "snippet": snippet,
+                        "also": [k for k, _, _ in matched[1:]],
+                    })
+    return out
 
 
 def preview_counts(workspace_id: int, *,

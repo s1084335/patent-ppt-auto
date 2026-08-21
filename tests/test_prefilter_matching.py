@@ -56,6 +56,13 @@ CORPUS = [
     # ── 三欄皆空：PRE-003 要能列出數量 ──
     (1011, None, None, None),
     (1012, "", "", ""),
+    # ── 命中文本抽取專用（2026-08-21 加）──
+    # ⚠ 刻意用不與 ion／mow／blade 衝突的新詞，否則會動到上面既有斷言的預期值。
+    #   長獨立項：實庫單篇逾萬字，命中文本**不得整段回傳**——
+    #   整段回傳的後果是把整份請求項灌進畫面與 AI prompt。
+    (1013, None, None, "x" * 4000 + " a hydraulic drive unit " + "y" * 4000),
+    #   三欄皆命中：驗欄位優先序與「其他欄位也命中」的標示。
+    (1014, "Rotary cutter head", "the cutter rotates fast", "a cutter mounted on"),
 ]
 
 
@@ -291,6 +298,91 @@ class PrefilterMatchingTests(unittest.TestCase):
         self.assertNotIn(
             "re.escape", outside,
             "normalize_term 之外還有跳脫邏輯——兩處各自處理特殊字元會漂移")
+
+    # ── 命中文本（2026-08-21 使用者裁決：「命中原因改顯示文本」）────────
+    #
+    # 🔴 為什麼要文本而不是只給詞：只寫「被 blower 命中」，使用者無從判斷
+    # 那到底是不是誤剔。實庫 #591「VEHICLE WITH UNDER-BODY BLOWER」是帶吹風
+    # 平台的割草載具，不是吹葉機——看得到那句話才分得出來。
+
+    def test_snippet_returns_actual_text(self):
+        """命中文本要是**原文**，且含命中詞。"""
+        from backend.app.prefilter import matching
+
+        out = matching.match_snippets(["mow"], conn=self.conn)
+        hit = next(h for h in out[1004] if h["term"] == "mow")
+        self.assertIn("mower", hit["snippet"].lower())
+        self.assertIn("Lawn mower blade assembly", hit["snippet"])
+
+    def test_snippet_prefers_title_then_abstract_then_claim(self):
+        """多欄命中時只回一段，優先序 標題 > 摘要 > 獨立項。
+
+        ⚠ 三欄各回一段的話，兩個關鍵字就六段——待裁決清單會變成沒人看的牆。
+        """
+        from backend.app.prefilter import matching
+
+        out = matching.match_snippets(["cutter"], conn=self.conn)
+        hit = next(h for h in out[1014] if h["term"] == "cutter")
+        self.assertEqual(hit["field"], "title")
+        self.assertIn("Rotary cutter head", hit["snippet"])
+
+    def test_snippet_marks_other_matched_fields(self):
+        """🔴 其他欄位也命中要標示，不得靜默丟掉。
+
+        ⚠ 只顯示標題那段、不說「摘要與獨立項也命中」，使用者會低估命中強度——
+        缺席型偏差：看不到的東西不會引起懷疑。
+        """
+        from backend.app.prefilter import matching
+
+        out = matching.match_snippets(["cutter"], conn=self.conn)
+        hit = next(h for h in out[1014] if h["term"] == "cutter")
+        self.assertEqual(sorted(hit["also"]), ["abstract", "claims"])
+
+    def test_snippet_falls_back_to_claim(self):
+        """標題與摘要都沒中時，要回獨立項那段。"""
+        from backend.app.prefilter import matching
+
+        out = matching.match_snippets(["mow"], conn=self.conn)
+        hit = next(h for h in out[1006] if h["term"] == "mow")
+        self.assertEqual(hit["field"], "claims")
+        self.assertIn("mower deck", hit["snippet"])
+        self.assertEqual(hit["also"], [])
+
+    def test_snippet_is_truncated(self):
+        """🔴 長獨立項不得整段回傳。
+
+        語料 #1013 的獨立項逾八千字；整段回傳等於把整份請求項灌進畫面與
+        AI prompt。實庫單篇逾萬字，一次 180 件就是百萬字級。
+        """
+        from backend.app.prefilter import matching
+
+        out = matching.match_snippets(["hydraulic"], conn=self.conn)
+        hit = next(h for h in out[1013] if h["term"] == "hydraulic")
+        self.assertIn("hydraulic drive unit", hit["snippet"])
+        self.assertLessEqual(
+            len(hit["snippet"]), 200,
+            f"命中文本沒截斷（{len(hit['snippet'])} 字）——長獨立項會灌爆畫面與 prompt")
+
+    def test_snippet_only_covers_matched_patents(self):
+        """未命中的專利不得出現在結果裡（含三欄皆空者）。"""
+        from backend.app.prefilter import matching
+
+        out = matching.match_snippets(["mow"], conn=self.conn)
+        self.assertEqual(sorted(out), [1004, 1005, 1006, 1007])
+
+    def test_snippet_handles_regex_special_chars(self):
+        """C.5 的跳脫要一體適用——文本抽取不得自己再拼一次正規式。"""
+        from backend.app.prefilter import matching
+
+        for bad in ("c++", "(a)", "a|b", "a*", "[x]", "a.b"):
+            with self.subTest(term=bad):
+                self.assertEqual(matching.match_snippets([bad], conn=self.conn), {})
+
+    def test_snippet_empty_terms_returns_empty(self):
+        """空清單不得組 SQL——空條件會變成命中全部。"""
+        from backend.app.prefilter import matching
+
+        self.assertEqual(matching.match_snippets([], conn=self.conn), {})
 
     # ── 成員清單走唯一來源（使用者 2026-08-21：不要寫死在某些專利上）──
     def test_membership_uses_existing_single_source(self):
