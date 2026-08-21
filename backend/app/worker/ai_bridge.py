@@ -358,6 +358,86 @@ def _run_ai_candidate_explanation_job(payload: dict[str, Any], context: JobConte
     )
 
 
+def _run_ai_keyword_expand_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """初階篩選：把負面關鍵字轉成英文比對詞（PRE-002）。
+
+    payload：keyword_id 與 original_term（皆必要）；cli_kind／model／
+    cli_timeout_seconds 沿用慣例。
+
+    ⚠ 產出一律為**未確認草稿**——`store_expansion` 把確認狀態寫死 False，
+    且該函式不接受任何確認相關參數。使用者確認才生效。
+
+    ⚠ 轉換失敗會 raise，job 標記失敗並回報原因；使用者仍可自行輸入英文比對詞
+    完成篩選（PRE-002「轉換不可用時不阻斷」）——那條路徑不經過本 job。
+    """
+    from . import ai_keyword_expand_runner
+
+    context.heartbeat("開始轉換負面關鍵字", 1)
+
+    keyword_id = payload.get("keyword_id")
+    original_term = payload.get("original_term")
+    if keyword_id is None or not str(original_term or "").strip():
+        raise ValueError(
+            "ai:keyword_expand payload requires keyword_id and original_term")
+
+    return ai_keyword_expand_runner.run_keyword_expand(
+        keyword_id=int(keyword_id),
+        original_term=str(original_term),
+        cli_kind=str(payload.get("cli_kind") or "claude"),
+        model=payload.get("model") or None,
+        # _cli_runner 供測試／Companion 注入假或替代執行器；正式跑真實 subprocess。
+        cli_runner=payload.get("_cli_runner"),
+        timeout_seconds=float(
+            payload.get("cli_timeout_seconds")
+            or ai_keyword_expand_runner.DEFAULT_CLI_TIMEOUT_SECONDS
+        ),
+        progress=context.heartbeat,
+    )
+
+
+def _run_ai_prefilter_review_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """初階篩選：AI 對命中專利建議留或剔（PRE-008）。
+
+    payload：workspace_id（必要）；char_budget／cli_kind／model／
+    cli_timeout_seconds（可選，沿用慣例）。
+
+    🔴 **只是建議**：不改變任何專利的排除狀態，使用者仍逐筆確認。
+    護欄落在 `prefilter.suggestions.store_suggestions`（UPDATE 的 SET 裡沒有
+    status，且 WHERE 限 status='pending'）——已裁決者建議到得再晚也不動。
+
+    ⚠ 沒填範圍描述會 raise `ScopeReviewError`，job 標記失敗並回報原因。
+    這是刻意的：沒有判讀依據卻硬產建議＝編造，而且會產出**看起來很肯定**的
+    錯建議，比沒有建議更糟。
+
+    進度：runner 每批回報一次（5→95，帶「第 n/N 批」），直接轉 heartbeat；
+    大量命中時使用者看得到推進，不是無限 spinner。
+    """
+    from . import ai_prefilter_review_runner
+
+    context.heartbeat("開始判讀範圍相關性", 1)
+
+    workspace_id = payload.get("workspace_id")
+    if workspace_id is None:
+        raise ValueError("ai:prefilter_review payload requires workspace_id")
+
+    return ai_prefilter_review_runner.run_prefilter_review(
+        workspace_id=int(workspace_id),
+        cli_kind=str(payload.get("cli_kind") or "claude"),
+        model=payload.get("model") or None,
+        # _cli_runner 供測試／Companion 注入假或替代執行器；正式跑真實 subprocess。
+        cli_runner=payload.get("_cli_runner"),
+        char_budget=int(
+            payload.get("char_budget")
+            or ai_prefilter_review_runner.DEFAULT_CHAR_BUDGET
+        ),
+        timeout_seconds=float(
+            payload.get("cli_timeout_seconds")
+            or ai_prefilter_review_runner.DEFAULT_CLI_TIMEOUT_SECONDS
+        ),
+        progress=context.heartbeat,
+    )
+
+
 def _run_ai_company_zh_name_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
     """執行公司中文名草稿任務：驅動 headless CLI 為待中文化的公司產市場慣用中文名草稿。
 
@@ -601,6 +681,8 @@ _AI_JOB_RUNNERS: dict[str, str] = {
     "ai:company_group_suggestion": "_run_ai_company_group_suggestion_job",
     "ai:company_normalization_suggestion": "_run_ai_company_normalization_suggestion_job",
     "ai:irrelevant_filter": "_run_ai_irrelevant_filter_job",
+    "ai:keyword_expand": "_run_ai_keyword_expand_job",
+    "ai:prefilter_review": "_run_ai_prefilter_review_job",
 }
 
 

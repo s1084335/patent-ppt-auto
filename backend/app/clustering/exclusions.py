@@ -32,6 +32,9 @@ from typing import Any, Iterable, Sequence
 from psycopg.types.json import Jsonb
 
 from backend.app.db.connection import get_pool
+# 🔴 顯示用專利號的唯一定義處——該檔註解記著它曾被複製四份而各自漂移
+# （TW 案顯示西元前綴、M 開頭授權案空白）。消費端一律 import，不自寫 COALESCE。
+from backend.app.transforms.patent_numbers import display_number_sql
 
 
 # 需要使用者裁決的 AI 判讀值（繁體中文，對齊
@@ -285,10 +288,17 @@ def store_ai_verdicts(
     正式排除必須經使用者按「確定」（confirm_exclusions）——這是 workflows.md
     「AI 只輔助、不決定正式資料」在本流程的落實。
 
-    ⚠ 不覆蓋已裁決者：ON CONFLICT 只在既有列仍為 'pending' 時更新（WHERE 子句），
+    ⚠ 不覆蓋**已確定排除**者：ON CONFLICT 只在既有列為 'pending' 或 'kept' 時更新，
     已 excluded 的列保持原狀——重跑判讀不得把使用者的決定打回草稿。
-    「保留」的專利不在表中（keep_patents 直接刪列），會被重新判讀一次；這是可接受的，
-    因為重跑通常伴隨重新分群，前次保留的判斷未必仍適用。
+
+    🔴 **`kept` 會被覆蓋是刻意的**（2026-08-21 使用者裁決）：AI 判讀的依據是
+    「這一筆在它所屬主題裡最不像」，而主題來自分群。重跑通常伴隨重新分群，
+    主題結構變了，前次「保留」的判斷基礎已不存在 ⇒ 重新判讀有意義。
+
+    ⚠ **初階篩選相反**：它跳過 kept（見 `prefilter.decisions.apply_prefilter`）
+    ——判斷依據是關鍵字比對，同樣的詞與資料答案必定相同，重問等於騷擾。
+    「誰決定要不要重問」寫在**寫入端**而非保留端，因為理由屬於「這條線的
+    判讀依據會不會變」，那是寫入端的知識。
 
     不自行 commit：交易邊界交由呼叫端（與 exclude_patents 一致）。回傳實際寫入筆數。
     """
@@ -313,8 +323,11 @@ def store_ai_verdicts(
                 "ON CONFLICT (workspace_id, patent_id) DO UPDATE SET "
                 "    reason = EXCLUDED.reason, "
                 "    ai_verdict = EXCLUDED.ai_verdict, "
+                "    status = 'pending', "
                 "    excluded_at = now() "
-                "WHERE derived_layer.workspace_excluded_patents.status = 'pending'",
+                # 'kept' 一併覆蓋回 pending——見上方 docstring 的兩條線差異說明。
+                "WHERE derived_layer.workspace_excluded_patents.status "
+                "      IN ('pending', 'kept')",
                 [(workspace_id, pid, reason, verdict) for pid, verdict, reason in rows],
             )
     return len(rows)
@@ -328,6 +341,12 @@ def pending_reviews(workspace_id: int, *, conn: Any | None = None) -> list[dict[
 
     ⚠ 另帶 **topic_label（所屬主題）** 與 **patent_note（文獻備註）**
     （2026-07-27 使用者要求）：原本只有 patent_id，光看 ID 判斷不了要保留還是確定。
+
+    ⚠ 2026-08-21 再補 **patent_number（顯示用專利號）** 與 **title**：
+    初階篩選發生在**分群之前**，`topic_label` 對它永遠是 NULL，`patent_note` 也
+    未必產過——那條線要靠標題判斷（關鍵字通常就命中在標題上）。
+    🔴 專利號走 `transforms.patent_numbers.display_number_sql` 唯一定義處：
+    該檔註解記著它曾被複製四份而漂移（TW 案顯示西元前綴、M 開頭授權案空白）。
     - 主題**跨 run 取**（DISTINCT ON 每個 patent 最新一筆）——incremental 只寫新增
       專利的 assignment，只查最新 run 會讓舊專利的主題顯示空白。
     - label 由該通道最新「topics 非空」的 run 的 state 解析（incremental run 無 topics）。
@@ -357,9 +376,17 @@ def pending_reviews(workspace_id: int, *, conn: Any | None = None) -> list[dict[
                     WHERE wr.workspace_id = %(workspace_id)s
                     ORDER BY t.value->>'topic_code', tr.run_id DESC
                 )
+                -- ⚠ 新欄位一律加在**最後**：下方映射是按位置取值
+                --   （row[0..N]），插在中間會讓既有欄位全部位移，
+                --   而症狀是「主題欄顯示成 ai」這種看起來像資料錯的東西。
                 SELECT ex.patent_id, ex.ai_verdict, ex.reason, ex.excluded_at,
                        tl.label   AS topic_label,
-                       p."文獻備註" AS patent_note
+                       p."文獻備註" AS patent_note,
+                       ex.source,
+                       """ + display_number_sql("p") + """ AS patent_number,
+                       p."title"  AS title,
+                       p."country_code" AS country_code,
+                       ex.scope_verdict, ex.scope_reason
                 FROM derived_layer.workspace_excluded_patents ex
                 LEFT JOIN latest_assign la ON la.patent_id = ex.patent_id
                 LEFT JOIN topic_labels  tl ON tl.topic_code = la.topic_key
@@ -374,18 +401,36 @@ def pending_reviews(workspace_id: int, *, conn: Any | None = None) -> list[dict[
     for row in rows:
         if isinstance(row, dict):
             values = (row["patent_id"], row["ai_verdict"], row["reason"],
-                      row["excluded_at"], row["topic_label"], row["patent_note"])
+                      row["excluded_at"], row["topic_label"], row["patent_note"],
+                      row["source"], row["patent_number"], row["title"],
+                      row["country_code"], row["scope_verdict"],
+                      row["scope_reason"])
         else:
-            values = (row[0], row[1], row[2], row[3], row[4], row[5])
-        patent_id, verdict, reason, reviewed_at, topic_label, note = values
+            values = tuple(row[i] for i in range(12))
+        (patent_id, verdict, reason, reviewed_at, topic_label, note,
+         source, patent_number, title, country_code,
+         scope_verdict, scope_reason) = values
         result.append({
             "patent_id": int(patent_id),
             "ai_verdict": verdict,
             "reason": reason,
             "reviewed_at": reviewed_at,
-            # 供前端逐筆判斷用；尚未分群／備註未產生時為 None，該筆仍列出。
+            # 供前端逐筆判斷用；尚未分群／備註未產生時為 None，該筆仍要列出。
             "topic_label": topic_label,
             "patent_note": note,
+            # 2026-08-21 補：初階篩選發生在分群之前，topic_label 對它永遠是 None、
+            # patent_note 也未必產過——那條線靠標題與專利號判斷。
+            "source": source,
+            "patent_number": patent_number,
+            "title": title,
+            "country_code": country_code,
+            # PRE-008（2026-08-21）：AI 對「與整批範圍的關係」的建議。
+            # 🔴 與 `reason`（為什麼被列入）分欄——使用者要分得出
+            # 「為什麼被抓到」與「為什麼建議剔除」。
+            # ⚠ None＝尚未產生建議；'no_basis'＝跑過但三欄皆空。
+            # 兩者前端必須顯示成不同的東西，不得都留白。
+            "scope_verdict": scope_verdict,
+            "scope_reason": scope_reason,
         })
     return result
 
@@ -470,16 +515,26 @@ def keep_patents(
     *,
     conn: Any | None = None,
 ) -> int:
-    """使用者按「保留」：直接刪列——保留＝不在排除清單上，留在原主題。
+    """使用者按「保留」：標記為 status='kept'——留在原主題，但**記得住這個決定**。
 
-    ⚠ 不留第三種 status='kept'：保留的語意就是「不在排除清單內」，另立狀態會讓每個
-    查排除清單的地方都要多一個過濾條件，且與複合 PK「一列＝一個排除決定」的語意衝突。
+    🔴 **2026-08-21 推翻 0036 的「保留＝刪列」**（使用者裁決，CLU-017）。
+    原設計反對第三種狀態，理由是「另立狀態會讓每個查排除清單的地方都要多一個
+    過濾條件」。⚠ 該理由當時成立，但**需求變了**：刪列＝記不住誰被保留過，
+    初階篩選每次重跑都會把同一批專利重新列出來要使用者再裁決一次。
+
+    ⚠ 動工前窮舉全庫 11 個查排除清單的地方，**每一個都明確指定 status**，
+    故 0036 擔心的「混進既有清單」不成立。該性質由
+    `test_prefilter_decisions.test_every_exclusion_query_filters_status` 守住。
+
+    ⚠ **兩條線對「已保留」的態度刻意不同**（2026-08-21 裁決）：
+    - 初階篩選：**跳過** kept——判斷依據是關鍵字比對，重跑答案必定一樣，重問等於騷擾
+    - AI 判讀：**可覆蓋** kept——判斷依據是主題結構，重新分群後依據已變，重判有意義
+
+    只改 status='pending' 的列：已確定排除者要放回需走復原流程（另案），
+    避免「保留」誤按把已確定的排除決定悄悄撤銷。
     topic_assignments 不動——該專利本就還在原主題（pending 階段從未移除指派）。
 
-    只刪 status='pending' 的列：已確定排除者要放回需走復原流程（另案），
-    避免「保留」誤按把已確定的排除決定悄悄撤銷。
-
-    不自行 commit：交易邊界交由呼叫端。回傳實際保留（刪列）的筆數。
+    不自行 commit：交易邊界交由呼叫端。回傳實際保留的筆數。
     """
     ids = [int(pid) for pid in patent_ids]
     if not ids:
@@ -487,7 +542,8 @@ def keep_patents(
     with _conn_ctx(conn) as active:
         with active.cursor() as cur:
             cur.execute(
-                "DELETE FROM derived_layer.workspace_excluded_patents "
+                "UPDATE derived_layer.workspace_excluded_patents "
+                "SET status = 'kept', excluded_at = now() "
                 "WHERE workspace_id = %s AND patent_id = ANY(%s) AND status = 'pending'",
                 (workspace_id, ids),
             )

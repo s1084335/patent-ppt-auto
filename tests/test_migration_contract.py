@@ -28,9 +28,12 @@ POST_0021_TABLES = {
     # 0023_market_evidence：市場資料證據庫。
     # 0034_market_doc_summary：市場 PDF metadata 與 AI 摘要版本（新市場線底層）。
     # 0035_workspace_excluded_patents：不相干專利排除清單（workspace 級）。
+    # 0055_prefilter_negative_keywords：初階篩選的負面關鍵字（**規則**，非結果）。
+    #   ⚠ 命中結果仍落 workspace_excluded_patents，兩者刻意分表——混在一起會讓
+    #   「規則改了、舊結果還在」變成無法表達的狀態。
     "derived_layer": {
         "market_evidence", "market_documents", "market_doc_summaries",
-        "workspace_excluded_patents",
+        "workspace_excluded_patents", "workspace_negative_keywords",
     },
     # 0024_import_blobs：匯入上傳內容的跨容器傳輸表。
     # 0025_report_artifacts：報表產物的跨容器共享表。

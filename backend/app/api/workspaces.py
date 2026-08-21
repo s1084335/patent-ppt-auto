@@ -434,3 +434,326 @@ async def delete_workspace_document(
     if not deleted:
         raise HTTPException(status_code=404, detail=f"document not found: {document_id}")
     return {"deleted": True, "document_id": document_id, "workspace_id": workspace_id}
+
+
+# ══════════ 初階篩選：負面關鍵字（PRE-001，切片 A）══════════
+# ⚠ 路徑一律帶 workspace_id：關鍵字以 workspace 為單位，沒有跨庫端點。
+# ⚠ 全庫 workspace 由 prefilter.keywords 內部拒絕（沿用 CLU-007），
+#   本層只負責把該例外轉成 400——不在這裡再判一次 is_global。
+
+
+class NegativeKeywordCreateRequest(BaseModel):
+    """建立負面關鍵字：只收原始詞。
+
+    ⚠ 刻意**不收** match_terms 與 terms_confirmed：比對詞由 AI 轉換或使用者
+    後續填入，且一律以未確認狀態起始（PRE-002）。開放這裡帶入等於讓呼叫端
+    可以繞過確認流程。
+    """
+
+    original_term: str = Field(min_length=1, max_length=200)
+
+
+class NegativeKeywordUpdateRequest(BaseModel):
+    """更新比對詞、確認狀態或啟用旗標；未給的欄位不動。"""
+
+    match_terms: list[str] | None = None
+    terms_confirmed: bool | None = None
+    enabled: bool | None = None
+
+
+@router.get("/workspaces/{workspace_id}/negative-keywords")
+async def list_negative_keywords(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """列出該 workspace 的負面關鍵字（含停用者，供治理介面重新啟用）。"""
+    from backend.app.prefilter import keywords as kw
+
+    items = await run_in_threadpool(kw.list_keywords, workspace_id)
+    return {"workspace_id": workspace_id, "items": items}
+
+
+@router.post("/workspaces/{workspace_id}/negative-keywords")
+async def create_negative_keyword(
+    request: NegativeKeywordCreateRequest,
+    workspace_id: int = Path(ge=1),
+) -> dict[str, Any]:
+    """建立一筆負面關鍵字（比對詞留空、未確認）。"""
+    from backend.app.prefilter import keywords as kw
+
+    try:
+        row = await run_in_threadpool(
+            kw.create_keyword, workspace_id, request.original_term)
+    except kw.PrefilterScopeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"workspace_id": workspace_id, "keyword": row}
+
+
+@router.patch("/workspaces/{workspace_id}/negative-keywords/{keyword_id}")
+async def update_negative_keyword(
+    request: NegativeKeywordUpdateRequest,
+    workspace_id: int = Path(ge=1),
+    keyword_id: int = Path(ge=1),
+) -> dict[str, Any]:
+    """更新比對詞／確認狀態／啟用旗標。
+
+    ⚠ 先驗該筆確實屬於這個 workspace 才更新——沒驗的話，知道 keyword_id
+    就能改別的 workspace 的關鍵字（路徑帶了 workspace_id 卻不用，等於裝飾）。
+    """
+    from backend.app.prefilter import keywords as kw
+
+    owned = await run_in_threadpool(kw.list_keywords, workspace_id)
+    if keyword_id not in {int(r["keyword_id"]) for r in owned}:
+        raise HTTPException(
+            status_code=404,
+            detail=f"keyword {keyword_id} not found in workspace {workspace_id}")
+    try:
+        row = await run_in_threadpool(
+            lambda: kw.update_keyword(
+                keyword_id,
+                match_terms=request.match_terms,
+                terms_confirmed=request.terms_confirmed,
+                enabled=request.enabled,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"workspace_id": workspace_id, "keyword": row}
+
+
+@router.post("/workspaces/{workspace_id}/negative-keywords/{keyword_id}/expand")
+async def trigger_keyword_expand(
+    workspace_id: int = Path(ge=1),
+    keyword_id: int = Path(ge=1),
+) -> dict[str, Any]:
+    """派工把負面關鍵字轉成英文比對詞（PRE-002）。
+
+    ⚠ 先驗歸屬：路徑帶了 workspace_id 不等於守住了——不驗的話，
+    知道 keyword_id 就能替別的 workspace 派工。
+
+    ⚠ 產出一律為未確認草稿，使用者確認才生效；轉換失敗也不阻斷——
+    使用者仍可自行輸入英文比對詞（那條路徑不經過本端點）。
+    """
+    from backend.app.prefilter import keywords as kw
+
+    owned = await run_in_threadpool(kw.list_keywords, workspace_id)
+    row = next((r for r in owned if r["keyword_id"] == keyword_id), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="關鍵字不存在或不屬於此 workspace")
+
+    # ⚠ create_job 回的是 ProcessingJob 物件不是 id。本檔既有的
+    # trigger_irrelevant_filter／trigger_patent_notes 直接把物件放在 `job_id`
+    # 鍵下（前端只看 resp.ok，所以一直沒人發現）。新端點回真正的整數，
+    # 讓鍵名與內容相符——追進度要拿它去打 /tasks。
+    job = create_job(
+        "ai:keyword_expand",
+        {"keyword_id": keyword_id, "original_term": row["original_term"]},
+        workspace_id=workspace_id,
+    )
+    return {"workspace_id": workspace_id, "keyword_id": keyword_id,
+            "job_id": job.job_id}
+
+
+@router.post("/workspaces/{workspace_id}/prefilter/review")
+async def trigger_prefilter_review(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """派工讓 AI 對命中專利建議留或剔（PRE-008）。
+
+    🔴 **沒填範圍描述就擋在這裡**（400），不讓 job 建出來再失敗：
+    使用者按下按鈕後要**立刻**知道該去填什麼，而不是等幾分鐘看到一個
+    失敗的任務卡——後者不但慢，還會被誤讀成「AI 壞了」。
+
+    ⚠ 全庫擋下：初階篩選是 workspace 級，全庫是總覽本就該全收。
+    """
+    from backend.app.prefilter import scope
+
+    if await run_in_threadpool(is_global_workspace, workspace_id):
+        raise HTTPException(
+            status_code=400,
+            detail="全庫 workspace 不做初階篩選：全庫是總覽，本就該全收")
+
+    text = await run_in_threadpool(scope.get_scope_description, workspace_id)
+    if not text:
+        raise HTTPException(
+            status_code=400,
+            detail="尚未填寫這批專利的範圍描述。AI 需要它才能判斷命中專利"
+                   "是否屬於本批範圍；請先於初階篩選頁填寫一句範圍描述。")
+
+    job = create_job(
+        "ai:prefilter_review",
+        {"workspace_id": workspace_id},
+        workspace_id=workspace_id,
+    )
+    return {"workspace_id": workspace_id, "job_id": job.job_id}
+
+
+class PrefilterScopeRequest(BaseModel):
+    """整批專利的範圍描述（PRE-008 的判讀依據）。"""
+
+    scope_description: str = ""
+
+
+@router.get("/workspaces/{workspace_id}/prefilter/scope")
+async def get_prefilter_scope(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """取得範圍描述；未設定回空字串。"""
+    from backend.app.prefilter import scope
+
+    text = await run_in_threadpool(scope.get_scope_description, workspace_id)
+    return {
+        "workspace_id": workspace_id,
+        "scope_description": text,
+        "max_length": scope.MAX_SCOPE_LENGTH,
+    }
+
+
+@router.put("/workspaces/{workspace_id}/prefilter/scope")
+async def put_prefilter_scope(
+    request: PrefilterScopeRequest,
+    workspace_id: int = Path(ge=1),
+) -> dict[str, Any]:
+    """寫入範圍描述。空字串＝清除。
+
+    ⚠ 兩種 ValueError 要分開回：超長是**輸入格式問題**（422），
+    全庫 workspace 是**對象不適用**（400）。混成同一碼的話，
+    前端無法決定該提示「縮短一點」還是「這個 workspace 不做初階篩選」。
+    """
+    from backend.app.prefilter import scope
+
+    if len(request.scope_description.strip()) > scope.MAX_SCOPE_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"範圍描述最長 {scope.MAX_SCOPE_LENGTH} 字")
+    try:
+        text = await run_in_threadpool(
+            scope.set_scope_description, workspace_id, request.scope_description)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"workspace_id": workspace_id, "scope_description": text}
+
+
+@router.get("/workspaces/{workspace_id}/prefilter/preview")
+async def preview_prefilter(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """逐關鍵字的命中件數預覽（PRE-004）。
+
+    🔴 零命中回 0 而**不省略該列**——「算過了，結果是 0」與「沒算」必須分得開。
+    ⚠ 只算已確認且啟用的關鍵字；未確認者本來就不該產生任何命中（PRE-002）。
+    """
+    from backend.app.prefilter import matching
+
+    items = await run_in_threadpool(matching.preview_counts, workspace_id)
+    return {"workspace_id": workspace_id, "items": items}
+
+
+@router.get("/workspaces/{workspace_id}/prefilter/summary")
+async def prefilter_summary(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """初階篩選入口要顯示的待辦數（WSP-013）。
+
+    ⚠ 待辦數由**後端算**：前端自數會變成第二份計數邏輯，兩份必然漂移
+    ——本專案已反覆踩過。
+    """
+    from backend.app.prefilter import decisions
+    from backend.app.prefilter import keywords as kw
+
+    def _collect() -> dict[str, int]:
+        rows = kw.list_keywords(workspace_id)
+        return {
+            "keyword_count": len(rows),
+            "unconfirmed_count": sum(1 for r in rows if not r["terms_confirmed"]),
+            # 🔴 與 `/prefilter/reviews` **同一個口徑**（只算 source='prefilter'）。
+            # ⚠ 用 pending_reviews 會把 AI 線的待複核也算進來，於是出現
+            # 「徽章說 5 筆、點進去只有 3 筆」——使用者會以為系統壞了。
+            "pending_count": len(decisions.pending_prefilter_reviews(workspace_id)),
+            "archived_count": len(excluded_patent_rows(workspace_id)),
+        }
+
+    counts = await run_in_threadpool(_collect)
+    # 入口徽章顯示的單一數字＝待確認比對詞 ＋ 待裁決，兩者都是「等使用者動作」。
+    counts["todo_count"] = counts["unconfirmed_count"] + counts["pending_count"]
+    return {"workspace_id": workspace_id, **counts}
+
+
+class PrefilterTermCountsRequest(BaseModel):
+    """要試算的比對詞（通常是尚未確認的 AI 建議詞）。"""
+
+    terms: list[str] = []
+
+
+@router.post("/workspaces/{workspace_id}/prefilter/term-counts")
+async def prefilter_term_counts(
+    request: PrefilterTermCountsRequest,
+    workspace_id: int = Path(ge=1),
+) -> dict[str, Any]:
+    """試算比對詞的命中件數與**實際命中的詞形**（確認畫面用）。
+
+    ## 🔴 為什麼不共用 `/prefilter/preview`
+
+    那支只算**已確認**的關鍵字（PRE-002：未確認者不得產生任何命中）。
+    確認畫面要看的正好是還沒確認的那些。
+
+    ## 為什麼要回詞形
+
+    AI 給的是**詞幹**（`machin`、`mechaniz`），因為比對採前綴詞界——
+    實測 `mow` 用完整詞界只中 11 件、用前綴中 177 件。
+
+    ⚠ 但同一機制讓 `engine` 也命中 `engineering`。畫面上只給幾個看起來像
+    拼錯的字，使用者沒有依據判斷哪個太寬，就只剩「全部照按」或
+    「全部不敢按」兩條路。回詞形是把這件事變成看得到的。
+
+    ⚠ 以 POST 而非 GET：比對詞是一組不定長字串，塞 query string 會遇到
+    長度與跳脫問題（使用者輸入 `c++`／`a|b` 是常態）。
+    """
+    from backend.app.clustering.exclusions import display_member_patent_ids
+    from backend.app.prefilter import matching
+
+    def _collect() -> list[dict[str, Any]]:
+        # 🔴 只算本 workspace 的成員：掃全庫的話畫面數字與實際套用結果不同，
+        # 使用者會照著一個永遠對不上的數字做決定。
+        member_ids = display_member_patent_ids(workspace_id)
+        return matching.term_hit_summary(request.terms, patent_ids=member_ids)
+
+    items = await run_in_threadpool(_collect)
+    return {"workspace_id": workspace_id, "items": items}
+
+
+@router.get("/workspaces/{workspace_id}/prefilter/reviews")
+async def list_prefilter_reviews(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """初階篩選的待裁決清單：命中原文 ＋ AI 建議（PRE-005／PRE-008）。
+
+    ⚠ 只列 `source='prefilter'`——AI 線的待複核沒有命中關鍵字，混進來會是
+    一列「沒有命中原因」的東西。它有自己的呈現處（分類頁）。
+
+    ⚠ `scope_verdict` 為 `null` 代表**尚未產生建議**，`'no_basis'` 代表
+    跑過但三個判讀欄位皆空。🔴 前端必須把兩者顯示成不同的東西，
+    不得都留白——空白會被讀成「沒問題」。
+    """
+    from backend.app.prefilter import decisions
+
+    items = await run_in_threadpool(
+        decisions.pending_prefilter_reviews, workspace_id)
+    return {"workspace_id": workspace_id, "items": items}
+
+
+@router.post("/workspaces/{workspace_id}/prefilter/apply")
+async def apply_prefilter_endpoint(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """執行比對，把命中寫成待裁決項（PRE-005）。
+
+    🔴 只寫 `pending`，不直接排除——使用者裁決才算數。
+    🔴 跳過已保留（`kept`）與已封存（`excluded`）者（CLU-017）。
+    """
+    from backend.app.prefilter import decisions
+
+    count = await run_in_threadpool(decisions.apply_prefilter, workspace_id)
+    return {"workspace_id": workspace_id, "matched_count": count}
+
+
+@router.delete("/workspaces/{workspace_id}/negative-keywords/{keyword_id}")
+async def delete_negative_keyword(
+    workspace_id: int = Path(ge=1),
+    keyword_id: int = Path(ge=1),
+) -> dict[str, Any]:
+    """刪除一筆關鍵字。⚠ 停用請用 PATCH `enabled=false`，不要用刪除代替。"""
+    from backend.app.prefilter import keywords as kw
+
+    owned = await run_in_threadpool(kw.list_keywords, workspace_id)
+    if keyword_id not in {int(r["keyword_id"]) for r in owned}:
+        raise HTTPException(
+            status_code=404,
+            detail=f"keyword {keyword_id} not found in workspace {workspace_id}")
+    await run_in_threadpool(kw.delete_keyword, keyword_id)
+    return {"deleted": True, "keyword_id": keyword_id, "workspace_id": workspace_id}
