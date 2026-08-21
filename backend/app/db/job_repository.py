@@ -74,6 +74,10 @@ AI_JOB_TYPES: frozenset[str] = frozenset(
         # （相干/可疑/不相干），輔助使用者決定是否剔除。🔴 prompt 只含文獻備註，不含
         # c-TF-IDF keywords/分數/主題 label；各筆獨立判讀、不混批。CLI 白名單為空。
         "ai:irrelevant_filter",
+        # 初階篩選：把使用者輸入的負面關鍵字（中文／英文／混雜）轉成英文比對詞。
+        # ⚠ 產出一律為**未確認草稿**，使用者確認才生效（PRE-002）。
+        # 工具權限 NO_TOOLS——只做中英轉換，不讀檔、不查 DB、不上網。
+        "ai:keyword_expand",
         # ⚠ ai:report_ppt 已隨 PPT 交付線移除（2026-08-10，remove-ppt-delivery-line）。
         # ⚠ ai:report_deck 已隨 deck 交付線移除（2026-08-20 停產定案，2026-08-21 合併時
         #   一併清掉 job type、handler 與 API 路由）。整條線封存於

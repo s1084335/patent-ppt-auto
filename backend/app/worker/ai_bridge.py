@@ -358,6 +358,43 @@ def _run_ai_candidate_explanation_job(payload: dict[str, Any], context: JobConte
     )
 
 
+def _run_ai_keyword_expand_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
+    """初階篩選：把負面關鍵字轉成英文比對詞（PRE-002）。
+
+    payload：keyword_id 與 original_term（皆必要）；cli_kind／model／
+    cli_timeout_seconds 沿用慣例。
+
+    ⚠ 產出一律為**未確認草稿**——`store_expansion` 把確認狀態寫死 False，
+    且該函式不接受任何確認相關參數。使用者確認才生效。
+
+    ⚠ 轉換失敗會 raise，job 標記失敗並回報原因；使用者仍可自行輸入英文比對詞
+    完成篩選（PRE-002「轉換不可用時不阻斷」）——那條路徑不經過本 job。
+    """
+    from . import ai_keyword_expand_runner
+
+    context.heartbeat("開始轉換負面關鍵字", 1)
+
+    keyword_id = payload.get("keyword_id")
+    original_term = payload.get("original_term")
+    if keyword_id is None or not str(original_term or "").strip():
+        raise ValueError(
+            "ai:keyword_expand payload requires keyword_id and original_term")
+
+    return ai_keyword_expand_runner.run_keyword_expand(
+        keyword_id=int(keyword_id),
+        original_term=str(original_term),
+        cli_kind=str(payload.get("cli_kind") or "claude"),
+        model=payload.get("model") or None,
+        # _cli_runner 供測試／Companion 注入假或替代執行器；正式跑真實 subprocess。
+        cli_runner=payload.get("_cli_runner"),
+        timeout_seconds=float(
+            payload.get("cli_timeout_seconds")
+            or ai_keyword_expand_runner.DEFAULT_CLI_TIMEOUT_SECONDS
+        ),
+        progress=context.heartbeat,
+    )
+
+
 def _run_ai_company_zh_name_job(payload: dict[str, Any], context: JobContext) -> dict[str, Any]:
     """執行公司中文名草稿任務：驅動 headless CLI 為待中文化的公司產市場慣用中文名草稿。
 
@@ -601,6 +638,7 @@ _AI_JOB_RUNNERS: dict[str, str] = {
     "ai:company_group_suggestion": "_run_ai_company_group_suggestion_job",
     "ai:company_normalization_suggestion": "_run_ai_company_normalization_suggestion_job",
     "ai:irrelevant_filter": "_run_ai_irrelevant_filter_job",
+    "ai:keyword_expand": "_run_ai_keyword_expand_job",
 }
 
 

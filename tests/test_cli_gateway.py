@@ -111,6 +111,11 @@ class MinimalPrivilegePreservedTests(unittest.TestCase):
         "ai:irrelevant_filter": "READ_ONLY_TOOLS",
         # 簡報產製（撰稿＋逐頁目視）：與 narrative 同級（design §2 定案）——
         # 讀素材、唯讀 MCP 取證、寫 content.json／verdict；無 Bash。
+        # 初階篩選的中英轉換（2026-08-21）：只把一個關鍵字轉成英文詞族，
+        # 不讀檔、不查 DB、不上網 ⇒ 最小權限。
+        # ⚠ runner 自行 partial(tools=NO_TOOLS)，不從其他 runner import
+        # ——那些是 partial(tools=RESEARCH_TOOLS)，會靜默取得 12 支工具＋MCP。
+        "ai:keyword_expand": "NO_TOOLS",
         }
 
     DATA_FILE_RUNNERS: ClassVar[dict[str, tuple[str, str]]] = {
@@ -175,6 +180,9 @@ class MinimalPrivilegePreservedTests(unittest.TestCase):
                 ai_company_normalization_suggestion_runner as module,
             )
             return module.build_company_normalization_cli_command("claude", "test")
+        if job_type == "ai:keyword_expand":
+            from backend.app.worker import ai_keyword_expand_runner as module
+            return module.build_keyword_expand_cli_command("claude", "test")
         self.fail(f"沒有 {job_type} 的實際 argv 取樣器")
 
     def test_every_registered_job_uses_reviewed_actual_argv_tier(self):

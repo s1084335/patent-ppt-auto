@@ -434,3 +434,102 @@ async def delete_workspace_document(
     if not deleted:
         raise HTTPException(status_code=404, detail=f"document not found: {document_id}")
     return {"deleted": True, "document_id": document_id, "workspace_id": workspace_id}
+
+
+# ══════════ 初階篩選：負面關鍵字（PRE-001，切片 A）══════════
+# ⚠ 路徑一律帶 workspace_id：關鍵字以 workspace 為單位，沒有跨庫端點。
+# ⚠ 全庫 workspace 由 prefilter.keywords 內部拒絕（沿用 CLU-007），
+#   本層只負責把該例外轉成 400——不在這裡再判一次 is_global。
+
+
+class NegativeKeywordCreateRequest(BaseModel):
+    """建立負面關鍵字：只收原始詞。
+
+    ⚠ 刻意**不收** match_terms 與 terms_confirmed：比對詞由 AI 轉換或使用者
+    後續填入，且一律以未確認狀態起始（PRE-002）。開放這裡帶入等於讓呼叫端
+    可以繞過確認流程。
+    """
+
+    original_term: str = Field(min_length=1, max_length=200)
+
+
+class NegativeKeywordUpdateRequest(BaseModel):
+    """更新比對詞、確認狀態或啟用旗標；未給的欄位不動。"""
+
+    match_terms: list[str] | None = None
+    terms_confirmed: bool | None = None
+    enabled: bool | None = None
+
+
+@router.get("/workspaces/{workspace_id}/negative-keywords")
+async def list_negative_keywords(workspace_id: int = Path(ge=1)) -> dict[str, Any]:
+    """列出該 workspace 的負面關鍵字（含停用者，供治理介面重新啟用）。"""
+    from backend.app.prefilter import keywords as kw
+
+    items = await run_in_threadpool(kw.list_keywords, workspace_id)
+    return {"workspace_id": workspace_id, "items": items}
+
+
+@router.post("/workspaces/{workspace_id}/negative-keywords")
+async def create_negative_keyword(
+    request: NegativeKeywordCreateRequest,
+    workspace_id: int = Path(ge=1),
+) -> dict[str, Any]:
+    """建立一筆負面關鍵字（比對詞留空、未確認）。"""
+    from backend.app.prefilter import keywords as kw
+
+    try:
+        row = await run_in_threadpool(
+            kw.create_keyword, workspace_id, request.original_term)
+    except kw.PrefilterScopeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"workspace_id": workspace_id, "keyword": row}
+
+
+@router.patch("/workspaces/{workspace_id}/negative-keywords/{keyword_id}")
+async def update_negative_keyword(
+    request: NegativeKeywordUpdateRequest,
+    workspace_id: int = Path(ge=1),
+    keyword_id: int = Path(ge=1),
+) -> dict[str, Any]:
+    """更新比對詞／確認狀態／啟用旗標。
+
+    ⚠ 先驗該筆確實屬於這個 workspace 才更新——沒驗的話，知道 keyword_id
+    就能改別的 workspace 的關鍵字（路徑帶了 workspace_id 卻不用，等於裝飾）。
+    """
+    from backend.app.prefilter import keywords as kw
+
+    owned = await run_in_threadpool(kw.list_keywords, workspace_id)
+    if keyword_id not in {int(r["keyword_id"]) for r in owned}:
+        raise HTTPException(
+            status_code=404,
+            detail=f"keyword {keyword_id} not found in workspace {workspace_id}")
+    try:
+        row = await run_in_threadpool(
+            lambda: kw.update_keyword(
+                keyword_id,
+                match_terms=request.match_terms,
+                terms_confirmed=request.terms_confirmed,
+                enabled=request.enabled,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"workspace_id": workspace_id, "keyword": row}
+
+
+@router.delete("/workspaces/{workspace_id}/negative-keywords/{keyword_id}")
+async def delete_negative_keyword(
+    workspace_id: int = Path(ge=1),
+    keyword_id: int = Path(ge=1),
+) -> dict[str, Any]:
+    """刪除一筆關鍵字。⚠ 停用請用 PATCH `enabled=false`，不要用刪除代替。"""
+    from backend.app.prefilter import keywords as kw
+
+    owned = await run_in_threadpool(kw.list_keywords, workspace_id)
+    if keyword_id not in {int(r["keyword_id"]) for r in owned}:
+        raise HTTPException(
+            status_code=404,
+            detail=f"keyword {keyword_id} not found in workspace {workspace_id}")
+    await run_in_threadpool(kw.delete_keyword, keyword_id)
+    return {"deleted": True, "keyword_id": keyword_id, "workspace_id": workspace_id}

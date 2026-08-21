@@ -3,37 +3,99 @@
 ⚠ 切片依**可獨立驗收的功能**拆，不按 DB／API／前端水平拆。每個切片走完
 Red → Green → Refactor 才進下一個。
 
-## 0. 基線
+## 0. 基線（2026-08-21 完成）
 
-- [ ] 0.1 記錄測試基線：`pytest tests -q` 的 passed／failed 數，並記下既有紅的清單
+- [x] 0.1 記錄測試基線：`pytest tests -q` 的 passed／failed 數，並記下既有紅的清單
       ⚠ 沒有基線就分不出「這次弄壞的」與「本來就壞的」
-- [ ] 0.2 記錄實測數字作為驗收對照：`ion` 子字串 265／前綴詞界 0、`mow` 187／177、
+      → **99 failed / 2865 passed / 49 skipped / 40 errors**（8:01）。
+      ⚠ 這不是本 change 造成的：D-4 修好後，原本靜默 skip 的 ~140 個 DB 測試
+      開始真的執行並暴露既有紅，已立案為 **D-6** 交 Codex
+      （見 `known-issues-optimization.md`）。
+- [x] 0.2 記錄實測數字作為驗收對照：`ion` 子字串 265／前綴詞界 0、`mow` 187／177、
       `blade` 64／64、`割草` 於 abstract 命中 0
-- [ ] 0.3 確認 `workspace_excluded_patents` 現有列數與各狀態分佈（改動前的存量）
+      → **四項全部吻合**（割草機 workspace 母體）。
+      🔴 第一次量出 257／170／46 是我少量了一欄：三個比對欄位是
+      `title`／`abstract`／**`獨立項[KR,JP,US,CN,EP,IN]`**，最後那個欄名是中文帶
+      國別後綴、**不含 "claim" 字樣**，用關鍵字猜欄名會漏掉它。
+- [x] 0.3 確認 `workspace_excluded_patents` 現有列數與各狀態分佈（改動前的存量）
+      → **總列數 0**（尚無任何剔除紀錄）。
 
-## 切片 A：負面關鍵字治理（純 DB，無 AI）
+## 切片 A：負面關鍵字治理（純 DB，無 AI）——2026-08-21 完成，22 passed
 
-- [ ] A.1 Red：關鍵字寫入後只作用於所屬 workspace（PRE-001）
-- [ ] A.2 Red：停用的關鍵字不參與比對（PRE-001）
-- [ ] A.3 Green：migration 建立關鍵字表（workspace 外鍵、原詞、比對詞、確認狀態、
+- [x] A.1 Red：關鍵字寫入後只作用於所屬 workspace（PRE-001）
+- [x] A.2 Red：停用的關鍵字不參與比對（PRE-001）
+- [x] A.3 Green：migration 建立關鍵字表（workspace 外鍵、原詞、比對詞、確認狀態、
       啟用旗標、時間戳）
-- [ ] A.4 Green：關鍵字 CRUD 端點與 workspace 範圍守門
-- [ ] A.5 ⚠ 全庫 workspace 不得建立關鍵字（沿用 `CLU-007` 既有限制），補測試
-- [ ] A.6 驗收：兩個 workspace 各建關鍵字，互不可見
+      → `0055_prefilter_negative_keywords`，表
+      `derived_layer.workspace_negative_keywords`。
+      ⚠ **規則與結果分表**：命中結果仍落 `workspace_excluded_patents`（schema 不改）。
+      混在一起會讓「規則改了、舊結果還在」變成無法表達的狀態。
+      ⚠ `terms_confirmed` 預設寫在 **schema** 而非只靠應用層——應用層漏一條路徑就破功。
+- [x] A.4 Green：關鍵字 CRUD 端點與 workspace 範圍守門
+      → `GET／POST /workspaces/{id}/negative-keywords`、
+      `PATCH／DELETE /workspaces/{id}/negative-keywords/{keyword_id}`。
+      🔴 PATCH／DELETE **先驗歸屬再操作**：路徑帶了 `workspace_id` 卻不用等於裝飾，
+      知道 `keyword_id` 就能改別的 workspace。已補兩支跨庫測試。
+      ⚠ 建立端點**不收** `match_terms`／`terms_confirmed`——開放等於留一條繞過確認的路。
+- [x] A.5 ⚠ 全庫 workspace 不得建立關鍵字（沿用 `CLU-007` 既有限制），補測試
+      → 委派既有 `clustering.exclusions.is_global_workspace`，並加測試斷言
+      **沒有自己查 `is_global` 欄**（否則全庫判定就有第二份定義）。
+- [x] A.6 驗收：兩個 workspace 各建關鍵字，互不可見（模組層與 API 層各一組）
 
-## 切片 B：AI 轉英文比對詞（產草稿，不生效）
+### 🔴 A 過程中挖到的真實危害：測試會靜默連上正式庫
 
-- [ ] B.1 Red：未確認的比對詞不得用於比對、不得產生任何 pending（PRE-002）
-- [ ] B.2 Red：AI 輸出直接落庫時，確認狀態仍為未確認（護欄測試，非 code review）
-- [ ] B.3 Green：新增 `ai:keyword_expand` job type
-- [ ] B.4 Green：新增 runner。⚠ **自行** `functools.partial(_gw_build_cli_command,
+`connection._pool` 是模組層單例，**第一次使用就把連線字串快取住**。
+測試改了 `PGDATABASE` 沒用——池還握著舊的。
+
+實測：漏了 `_reset_pool()` 時，`TestClient` 打的 API **實際連到 Supabase 正式庫**
+（`current_database()` 回 `postgres`、看得到正式的三個 workspace）。
+✅ 已確認零殘留：正式庫沒有這張表（0055 未在 Supabase 跑過），寫入必然失敗。
+
+⇒ 本檔加了兩道護欄：`_reset_pool()` ＋ `_assert_pool_targets_test_db()`
+（**比對 `current_database()` 必須正好是本檔的拋棄式庫**）。
+⚠ 只驗「不是正式庫」不夠——池也可能指到 `conftest` 釘的 `patent_ppt_test`，
+症狀是「表在、資料不在」，看起來像程式邏輯錯誤，會一路修錯方向。
+
+⚠ 本檔的建庫寫法也刻意與其他 DB 測試不同：**連得上才改 env**（其他檔是先改後連，
+`SkipTest` 時 `tearDownClass` 不執行就永久污染——D-4 的根因，53 檔同型）。
+
+## 切片 B：AI 轉英文比對詞（產草稿，不生效）——2026-08-21 完成，30 passed
+
+- [x] B.1 Red：未確認的比對詞不得用於比對、不得產生任何 pending（PRE-002）
+      → `active_match_terms` 同時過濾 `enabled` 與 `terms_confirmed`，兩者缺一不可。
+- [x] B.2 Red：AI 輸出直接落庫時，確認狀態仍為未確認（護欄測試，非 code review）
+      → 兩層斷言：`store_expansion` 原始碼含 `terms_confirmed=False`（寫死），
+      且**簽章不接受**任何確認相關參數——有參數就有人會傳 True。
+- [x] B.3 Green：新增 `ai:keyword_expand` job type
+- [x] B.4 Green：新增 runner。⚠ **自行** `functools.partial(_gw_build_cli_command,
       tools=NO_TOOLS)`，不從其他 runner import——兩支既有 runner 都因此靜默拿到
       RESEARCH_TOOLS（見 design 證據 5）
-- [ ] B.5 Green：三處註冊同步——`job_repository.JOB_TYPES`、
+      → 已照做，並加測試斷言「原始碼不得出現 `from backend.app.worker.ai_`」。
+- [x] B.5 Green：三處註冊同步——`job_repository.JOB_TYPES`、
       `ai_bridge._AI_JOB_RUNNERS`、`test_cli_gateway` 權限政策表
-- [ ] B.6 Red→Green：補測試斷言三處集合相等（AIC-009）
-- [ ] B.7 Green：轉換失敗時明確回報，且不阻斷使用者自行輸入（PRE-002）
-- [ ] B.8 驗收：輸入「割草」，取得含 `mow` 詞族的建議；確認前執行篩選無任何 pending
+      ⚠ 實際是**四處**：`test_cli_gateway` 另有「實際 argv 取樣器」
+      （`_actual_argv`），它不信政策表的宣告，要真的組一次指令來驗。
+      漏了它，既有守門 `test_every_registered_job_uses_reviewed_actual_argv_tier`
+      會紅——它就是為此而寫的。
+- [x] B.6 Red→Green：補測試斷言三處集合相等（AIC-009）
+      ⚠ 這條在三處都沒註冊時**也會過**（三個空集相等），只在漏其中一處時才紅
+      ——那正是它的用途。
+- [x] B.7 Green：轉換失敗時明確回報，且不阻斷使用者自行輸入（PRE-002）
+      → `KeywordExpandError`：JSON 解析失敗、缺 `terms`、或**濾完為空**都算失敗。
+      ⚠ 不得靜默寫入空陣列：使用者會看到「轉換完成」卻一個詞都沒有，
+      以為是 AI 判斷沒有對應詞，實際是解析失敗。
+      → 另補 `test_manual_terms_path_works_without_ai`：自行輸入英文詞並確認後
+      `active_match_terms` 取得到——這條路徑**完全不經過 AI job**，AI 掛掉不影響。
+- [x] B.8 驗收：輸入「割草」，取得含 `mow` 詞族的建議；確認前執行篩選無任何 pending
+      → **實跑真 CLI**（`exit_code=0`、`is_error=False`）：取得 **37 個英文比對詞**，
+      含 `mow`／`mower deck`／`lawn mow`／`robotic mower` 等詞族，全為英文無中文殘留，
+      指令未夾帶任何工具（NO_TOOLS）。⚠ 驗收腳本**不寫任何 DB**，零殘留。
+      「確認前無 pending」由 B.1 的 `active_match_terms` 為空涵蓋（切片 C 才產 pending）。
+
+### ⚠ B 的一個設計取捨：非英文詞濾掉而非報錯
+
+模型偶爾夾帶原文是常態，整批打掉會讓可用結果一起消失 ⇒ 逐詞濾。
+但**全部被濾光**要當失敗處理，否則同樣是「靜默寫空」。
 
 ## 切片 C：確定性比對與命中預覽
 
